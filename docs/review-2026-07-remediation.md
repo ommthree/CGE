@@ -133,6 +133,28 @@ the strictly-atomic (single-syscall) store swap.
 
 ---
 
+## Live EXIOBASE known-answer — DONE (the gate every review flagged)
+
+Downloaded EXIOBASE 3 (2019, pxp, ~690 MB) and ran the pipeline on real data
+(`tests/test_exiobase_known_answer.py`, opt-in via `CGE_EXIOBASE_ARCHIVE`; 4 tests pass):
+
+- **Adapter reproduces the full MRIO** — 9800×9800, 49 regions × 200 products, and detects
+  the real `satellite` extension (the round-1 fix, now confirmed on real data).
+- **Global CO₂ preserved** — adapter intensity×output equals pymrio's raw satellite total to
+  `rtol 1e-6`, proving the kg→tonne conversion and `e=F/x` construction on real data.
+- **Magnitude correct** — 30.0 Gt, the expected EXIOBASE 2019 production-accounting figure.
+- **Engine 1 runs end-to-end on real data** — a €100/t run on a coarse EUR build (14 sectors ×
+  16 regions) gives fractional price changes (mean +15.7%, coal +80–164% across regions), coal
+  the most exposed sector. Qualitatively and quantitatively sensible.
+
+Also fixed while doing this: the default `default_maps` first-word grouping produced ~1005
+sectors (exceeding the engine's dense cap) — replaced with a functional ~14-sector keyword
+grouping + continental region folding, so a real build is actually runnable. Engine 1's
+status is now "validated on toy + live EXIOBASE"; real-build numbers from a *coarse* build are
+usable and directionally sound (a curated concordance would sharpen sector-level precision).
+
+---
+
 ## Fourth review round (fixed)
 
 A fourth review confirmed round-3 and found two material residuals (both introduced by my

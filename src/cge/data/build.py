@@ -190,21 +190,152 @@ def build_test(store: DataStore | None = None) -> dict[str, str]:
     )
 
 
+# Coarse sector grouping by keyword: maps each EXIOBASE product to one of ~14 broad sectors.
+# Ordered most-specific-first (first match wins). This is a functional default so a real
+# build is actually runnable under the engine's product cap; a curated 40-50 sector
+# concordance remains the documented follow-up (roadmap P1.6 / P5).
+_SECTOR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("energy_coal", ("coal", "lignite", "peat")),
+    ("energy_oil_gas", ("petroleum", "crude", "natural gas", "gas ", "gasoline", "fuel")),
+    ("electricity", ("electricity", "power", "steam")),
+    (
+        "agriculture",
+        (
+            "cattle",
+            "crop",
+            "wheat",
+            "cereal",
+            "vegetable",
+            "fruit",
+            "animal",
+            "farming",
+            "agricultur",
+            "forestry",
+            "fishing",
+            "paddy",
+            "sugar",
+            "oil seeds",
+            "plant",
+            "meat",
+            "dairy",
+            "food",
+            "beverage",
+            "tobacco",
+        ),
+    ),
+    ("mining", ("mining", "ore", "quarry", "extraction", "metal ores")),
+    ("chemicals", ("chemical", "plastic", "rubber", "pharmaceutic", "fertiliser")),
+    ("metals", ("iron", "steel", "aluminium", "copper", "metal", "foundry")),
+    ("minerals", ("cement", "glass", "ceramic", "concrete", "mineral")),
+    (
+        "manufacturing",
+        (
+            "machinery",
+            "equipment",
+            "vehicle",
+            "motor",
+            "transport equipment",
+            "electronic",
+            "textile",
+            "wood",
+            "paper",
+            "furniture",
+            "manufactur",
+        ),
+    ),
+    ("construction", ("construction", "building")),
+    ("transport", ("transport", "shipping", "aviation", "logistics", "railway", "pipeline")),
+    ("water_waste", ("water", "waste", "sewage", "recycling", "sanitation")),
+    ("trade", ("trade", "retail", "wholesale", "sale ")),
+    (
+        "services",
+        (
+            "service",
+            "financ",
+            "insurance",
+            "real estate",
+            "education",
+            "health",
+            "hotel",
+            "communication",
+            "research",
+            "public admin",
+            "recreation",
+        ),
+    ),
+]
+
+# Region folding: keep the largest economies distinct, fold the rest into continental blocks.
+_KEY_REGIONS = {"US", "CN", "DE", "GB", "JP", "IN", "FR", "BR", "RU", "IT"}
+_CONTINENT: dict[str, str] = {
+    # EXIOBASE uses ISO2 country codes plus 5 W* rest-of-world regions; a light map to blocks.
+    "WA": "RoW_Asia",
+    "WL": "RoW_America",
+    "WE": "RoW_Europe",
+    "WF": "RoW_Africa",
+    "WM": "RoW_MiddleEast",
+}
+_EUROPE = {
+    "AT",
+    "BE",
+    "BG",
+    "CY",
+    "CZ",
+    "DK",
+    "EE",
+    "ES",
+    "FI",
+    "GR",
+    "HR",
+    "HU",
+    "IE",
+    "LT",
+    "LU",
+    "LV",
+    "MT",
+    "NL",
+    "NO",
+    "PL",
+    "PT",
+    "RO",
+    "SE",
+    "SI",
+    "SK",
+    "CH",
+    "TR",
+}
+
+
+def _coarse_sector(name: str) -> str:
+    low = str(name).lower()
+    for target, keywords in _SECTOR_KEYWORDS:
+        if any(k in low for k in keywords):
+            return target
+    return "other"
+
+
+def _coarse_region(code: str) -> str:
+    c = str(code)
+    if c in _KEY_REGIONS:
+        return c
+    if c in _CONTINENT:
+        return _CONTINENT[c]
+    if c in _EUROPE:
+        return "RoW_Europe"
+    return "RoW_Other"
+
+
 def default_maps(pio: pymrio.IOSystem) -> tuple[dict[str, str], dict[str, str]]:
     """Default EXIOBASE→small-build aggregation.
 
-    Sectors: a coarse, hand-maintained grouping of the 200 EXIOBASE products into ~40-50
-    analytically meaningful sectors. Phase 1 ships a *scaffold* that groups by EXIOBASE's
-    own broad sector prefix; a curated map is a documented follow-up (it is data, editable
-    without code — see concordance framework). Regions: keep major economies, fold the rest
-    into continental RoW blocks.
+    Groups the 200 EXIOBASE products into ~14 broad sectors (keyword match) and the 49 regions
+    into ~10-15 economies/continental blocks, giving a build of a few hundred products —
+    runnable under the engine's dense cap. A curated, analytically-precise 40-50 sector
+    concordance remains the documented follow-up (roadmap P1.6/P5); this is a functional
+    default, not that.
     """
     sectors = list(pio.get_sectors())
     regions = list(pio.get_regions())
-    # Placeholder grouping until the curated concordance lands: first token of the sector
-    # name. Deterministic and safe (every sector maps exactly once).
-    sec_map = {
-        s: s.split()[0].lower() if isinstance(s, str) and s.split() else str(s) for s in sectors
-    }
-    reg_map = {r: (r if not str(r).upper().startswith("W") else "RoW") for r in regions}
+    sec_map = {s: _coarse_sector(s) for s in sectors}
+    reg_map = {r: _coarse_region(r) for r in regions}
     return sec_map, reg_map

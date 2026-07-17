@@ -3,11 +3,12 @@
 - **Implements:** `cge.engines.io_price` (`IOPriceEngine`, v0.4.0)
 - **Roadmap phase:** 2
 - **Capabilities:** prices
-- **Status:** implemented; validated on the toy economy and against internal identities.
-  **Not yet validated against a live EXIOBASE known-answer** (published CO₂ multipliers) —
-  that requires the multi-GB download and is the outstanding item before real-build results
-  should be quoted quantitatively. Units, gas selection and time paths are covered by the
-  validation suite; see §7.
+- **Status:** implemented and validated — on the toy economy (internal identities +
+  hand-derived known answer) **and against live EXIOBASE 3 (2019 pxp)**: the adapter
+  preserves EXIOBASE's global CO₂ total (30.0 Gt), units come through correctly, and a
+  €100/t run gives fractional price changes with coal most exposed (see §7). Engine is
+  dense-only / small-build (sparse full-MRIO not implemented). Remaining refinement is a
+  tighter published-footprint comparison and a curated sector concordance.
 
 > This is the worked reference example for the [documentation standard](../documentation-standard.md):
 > it shows the equation-level detail and citation discipline every model doc must meet.
@@ -214,11 +215,23 @@ Code-level unit tests live in `tests/test_io_price.py`. Current checks:
 Additional adversarial coverage in `tests/test_io_price.py`: negative-coefficient rejection,
 missing-satellite-label rejection, revenue-recycling rejection, negative-price rejection.
 
-**Remaining (needs live data):** known-answer reproduction of published EXIOBASE
-carbon-footprint / CO₂ multipliers for a few sectors within tolerance [Stadler2018]. This is
-the outstanding gate before real-build numbers are quoted quantitatively; it requires a live
-`exiobase` build (roadmap P2.4 / P1 DoD). Independent review (2026-07) confirmed the units,
-gas, path and provenance fixes but flagged this as the one validation still missing.
+**Live EXIOBASE known-answer (the P2.4/P1 DoD gate — now met).** `tests/test_exiobase_known_answer.py`
+runs against a real EXIOBASE archive (opt-in via `CGE_EXIOBASE_ARCHIVE`; skipped in offline
+CI). Validated on **EXIOBASE 3, 2019, pxp** (2026-07):
+
+- the adapter reproduces the full 9800×9800 MRIO and detects the real `satellite` extension;
+- global CO₂ from the adapter (intensity × output) equals pymrio's raw satellite total to
+  `rtol 1e-6` — proving the kg→tonne conversion and `e = F/x` construction on real data;
+- that total is **30.0 Gt**, the expected EXIOBASE 2019 production-accounting magnitude
+  (global fossil CO₂ was ~35 Gt) [Stadler2018];
+- a €100/t run on a coarse EUR build gives **fractional** price changes (not the ~$10^9$ a
+  units bug would give), with **coal the most carbon-exposed sector** across regions —
+  the qualitative known answer.
+
+This closes the validation gap flagged through the 2026-07 reviews. Remaining refinement:
+tighter sector-level comparison against *published* EXIOBASE footprint tables (vs the
+internal-consistency + magnitude checks here) and a curated sector concordance (the current
+default is a functional ~14-sector keyword grouping, not an analytically precise map).
 
 ## 8. References
 

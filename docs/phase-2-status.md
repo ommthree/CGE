@@ -6,11 +6,13 @@ decomposition.
 
 > **Post-review (2026-07, engine v0.4.0).** Independent reviews found real defects — a ~1e9
 > units error, a broken live-build path, and ignored gas/time-path controls — since fixed. See
-> [`review-2026-07-remediation.md`](review-2026-07-remediation.md). Honest status: **validated
-> on the toy economy and internal identities (incl. a hand-derived known answer, units, gas
-> selection, time paths); NOT yet validated against live EXIOBASE published multipliers**, and
-> the engine is dense/small-build-only. Treat real-build numbers as indicative until the live
-> known-answer test is added.
+> [`review-2026-07-remediation.md`](review-2026-07-remediation.md). **Now validated on live
+> EXIOBASE 3 (2019 pxp):** the adapter reproduces the full 9800×9800 MRIO and its global CO₂
+> total (30.0 Gt, the expected magnitude), units come through correctly, and a €100/t run on a
+> coarse EUR build gives fractional price changes with coal most exposed. See
+> `tests/test_exiobase_known_answer.py`. The engine is dense/small-build-only. Remaining
+> refinement: a tighter published-footprint comparison and a curated sector concordance (the
+> default is a functional ~14-sector keyword grouping).
 
 ## Tasks (roadmap §Phase 2)
 
