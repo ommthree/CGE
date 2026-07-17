@@ -1,0 +1,13 @@
+# Example Phase 0 scenario: a flat carbon price on the toy economy, dummy engine.
+# Demonstrates the declarative scenario format and the shock vocabulary.
+name: "Carbon price €100/t (toy)"
+description: >
+  A €100/tCO2 carbon price applied economy-wide to the toy 3-sector/2-region economy.
+  Run against the dummy engine — numbers are plumbing, not economics (see roadmap P0).
+engine: dummy
+years: [2020]
+shocks:
+  - type: carbon_price
+    price: 100.0
+    gases: [CO2]
+    revenue_recycling: none
