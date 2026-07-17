@@ -4,7 +4,7 @@ Phase 2 ("Engine 1: IO carbon-cost pass-through") is implemented: the change in 
 every good under a carbon price, with full supply-chain pass-through and a direct-vs-upstream
 decomposition.
 
-> **Post-review (2026-07, engine v0.3.0).** Independent reviews found real defects — a ~1e9
+> **Post-review (2026-07, engine v0.4.0).** Independent reviews found real defects — a ~1e9
 > units error, a broken live-build path, and ignored gas/time-path controls — since fixed. See
 > [`review-2026-07-remediation.md`](review-2026-07-remediation.md). Honest status: **validated
 > on the toy economy and internal identities (incl. a hand-derived known answer, units, gas
@@ -27,7 +27,9 @@ decomposition.
 > in seconds; tests green; model doc matches the implementation.
 
 - `cge run --scenario examples/carbon_price_io.yaml` returns Δp + decomposition for every
-  label (toy and any store build, e.g. `--data exiobase-test-small`), in milliseconds.
+  label on the toy economy (and any **EUR** store build) in milliseconds. The offline
+  `exiobase-test` build is USD, which io_price correctly refuses; the store→engine seam is
+  covered by a EUR-relabelled build in the tests.
 - `cge engines` lists `io_price`; the GUI/CLI will pick it up purely via the registry.
 - Unit tests + the validation suite pass; lint + format clean. (Counts grow with each
   review round — see the current `pytest`/`cge validate` output rather than a fixed number.)

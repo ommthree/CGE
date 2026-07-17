@@ -169,9 +169,15 @@ class DataStore:
         return df
 
     def build_ids(self) -> list[str]:
-        return sorted(p.name for p in self.builds_dir.iterdir() if p.is_dir())
+        # Recover any crashed-subprocess builds first, then exclude internal dot-dirs
+        # (.tmp staging, .bak backups) — they are not builds (review).
+        self._recover_interrupted()
+        return sorted(
+            p.name for p in self.builds_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
+        )
 
     def has(self, build_id: str) -> bool:
+        self._recover_interrupted()
         return (self.builds_dir / build_id / "meta.json").exists()
 
     # -- write -----------------------------------------------------------------
@@ -190,9 +196,11 @@ class DataStore:
         is: move the old build to a ``.bak`` alongside, rename staging → final, drop the
         backup. This is **recoverable, not strictly atomic** — there is a brief window where
         the canonical path is absent, and a hard kill in that window leaves the data in the
-        backup, which ``_recover_interrupted`` (called on load/enumerate) restores. On an
-        ordinary exception the backup is restored immediately, so an existing build is never
-        lost. Avoids partial writes and stale files from in-place overwrites.
+        backup, which ``_recover_interrupted`` restores. Recovery runs on store construction
+        AND on enumerate/read (``build_ids``/``has``/``load``), so a long-lived process picks
+        up a crashed subprocess's build without recreating the store. On an ordinary exception
+        the backup is restored immediately, so an existing build is never lost. Avoids partial
+        writes and stale files from in-place overwrites.
         """
         final = self.builds_dir / meta.build_id
         backup = self.builds_dir / f".{meta.build_id}.bak"
@@ -202,8 +210,10 @@ class DataStore:
 
         # Serialise writers to this build: fail fast if another live writer holds the lock.
         _acquire_lock(lock)
-        staging.mkdir(parents=True)
         try:
+            # Inside the try so a mkdir failure still releases the lock (review: it was before
+            # the try, so a failed mkdir permanently leaked the lock).
+            staging.mkdir(parents=True)
             (staging / "meta.json").write_text(meta.model_dump_json(indent=2))
             io.A.astype("float32").to_parquet(staging / "A.parquet")
             io.final_demand.astype("float32").to_parquet(staging / "final_demand.parquet")
@@ -230,16 +240,17 @@ class DataStore:
                 raise
             if had_existing:
                 shutil.rmtree(backup, ignore_errors=True)
+            # Update the catalogue WHILE STILL HOLDING THE LOCK, so two writers can't leave
+            # catalogue metadata describing one revision while files are another (review).
+            self._catalogue_upsert(
+                meta,
+                n_labels=len(io.A.columns),
+                quality_worst=(quality.worst.value if quality else None),
+            )
         finally:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
             lock.unlink(missing_ok=True)
-
-        self._catalogue_upsert(
-            meta,
-            n_labels=len(io.A.columns),
-            quality_worst=(quality.worst.value if quality else None),
-        )
         return final
 
     # -- read ------------------------------------------------------------------

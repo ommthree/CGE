@@ -2,7 +2,9 @@
 
 These are the load-bearing interfaces of the whole system (see ADR-0002). Modules
 depend on these schemas, never on each other's implementations. Everything here is
-versioned via ``CONTRACTS_VERSION``; breaking changes bump the major.
+versioned via ``CONTRACTS_VERSION`` (semver). **Pre-1.0 convention:** while the major is 0,
+a breaking change bumps the *minor* (0.1→0.2) and additive changes bump the patch; once we
+reach 1.0, breaking changes bump the major. (Standard semver 0.x semantics.)
 
 1. data objects   -> data_objects.py
 2. shocks         -> shocks.py

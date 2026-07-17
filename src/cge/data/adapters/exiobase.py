@@ -136,6 +136,7 @@ def _ghg_satellite(
     labels: list[str],
     provenance: Provenance,
     gas_aliases: dict[str, str] | None = None,
+    monetary_unit: str = "MEUR",
 ) -> SatelliteAccount | None:
     """Build a GHG SatelliteAccount of **emission intensities in tonnes per M€ output**.
 
@@ -196,10 +197,14 @@ def _ghg_satellite(
             data[name] = np.where(x_vec > 0, tonnes / x_vec, 0.0)  # t / M€
     df = pd.DataFrame(data, index=labels).T  # stressor × label
 
+    # Denominator unit derives from the build's monetary unit (not hardcoded MEUR), so an
+    # MUSD build gets t/MUSD, not a false t/MEUR (review).
     return SatelliteAccount(
         provenance=provenance,
         name="GHG",
-        units={g: ("tCO2e/MEUR" if g == "CO2e" else "t/MEUR") for g in df.index},
+        units={
+            g: (f"tCO2e/{monetary_unit}" if g == "CO2e" else f"t/{monetary_unit}") for g in df.index
+        },
         data=df,
     )
 
@@ -265,7 +270,9 @@ def adapt_pymrio(
     )
 
     satellites: list[SatelliteAccount] = []
-    ghg = _ghg_satellite(pio, labels, provenance, gas_aliases=gas_aliases)
+    ghg = _ghg_satellite(
+        pio, labels, provenance, gas_aliases=gas_aliases, monetary_unit=monetary_unit
+    )
     if ghg is not None:
         satellites.append(ghg)
 

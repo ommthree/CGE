@@ -255,6 +255,84 @@ def test_store_recovers_build_from_backup_on_open(tmp_path):
     assert not (store.builds_dir / f".{bid}.lock").exists()  # stale lock cleaned
 
 
+def test_build_ids_excludes_internal_dirs(tmp_path):
+    """.tmp staging and .bak backup dirs must not appear as builds (review)."""
+    store = DataStore(tmp_path)
+    build_test(store=store)
+    (store.builds_dir / ".exiobase-test.somehex.tmp").mkdir()
+    (store.builds_dir / ".exiobase-test.bak").mkdir()
+    ids = store.build_ids()
+    assert all(not i.startswith(".") for i in ids)
+    assert "exiobase-test" in ids
+
+
+def test_store_lock_released_on_staging_failure(tmp_path):
+    """A staging mkdir failure must release the writer lock, not leak it (review)."""
+    import pathlib
+    from unittest import mock
+
+    store = DataStore(tmp_path)
+    build_test(store=store)
+    io, sats = adapt_pymrio(
+        load_exiobase_test(),
+        source="EXIOBASE-test",
+        source_version="test",
+        reference_year=2011,
+        gas_aliases={"emission_type1": "CO2"},
+    )
+    meta = store.load_meta("exiobase-test")
+    orig = pathlib.Path.mkdir
+
+    def flaky(self, *a, **k):
+        if ".tmp" in str(self):
+            raise OSError("mkdir fail")
+        return orig(self, *a, **k)
+
+    with mock.patch.object(pathlib.Path, "mkdir", flaky), pytest.raises(OSError):
+        store.save(meta=meta, io=io, satellites=sats)
+    assert not (store.builds_dir / ".exiobase-test.lock").exists()  # lock released
+
+
+def test_store_to_engine_seam_eur_build(tmp_path):
+    """Exercise the store→engine seam with a EUR-relabelled build (the default USD test build
+    is correctly refused by io_price; this keeps the seam covered — review)."""
+    import cge.data.store.store as store_mod
+    from cge.contracts.shocks import CarbonPrice
+    from cge.data.build import build_from_pymrio
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    store = DataStore(tmp_path)
+    build_from_pymrio(
+        load_exiobase_test(),
+        source="EXIOBASE-test-eur",
+        source_version="test",
+        reference_year=2011,
+        build_id="eur-build",
+        store=store,
+        make_small=True,
+        small_sector_map={
+            s: ["p", "e", "m"][i % 3] for i, s in enumerate(load_exiobase_test().get_sectors())
+        },
+        small_region_map={
+            r: ("A" if i < 3 else "B") for i, r in enumerate(load_exiobase_test().get_regions())
+        },
+        gas_aliases={"emission_type1": "CO2"},
+        currency="EUR",
+        monetary_unit="MEUR",  # EUR so io_price accepts it
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(store_mod, "_default", store)
+    try:
+        sc = Scenario(
+            name="seam", engine="io_price", years=[2020], shocks=[CarbonPrice(price=100.0)]
+        )
+        result = run_scenario(sc, data_source="eur-build-small", store=store)
+        assert (result.data["variable"] == "price_change").any()
+    finally:
+        monkey.undo()
+
+
 def test_store_recovery_leaves_live_writer_untouched(tmp_path):
     """Opening a second store must NOT delete a live writer's staging (review counterexample)."""
     import os

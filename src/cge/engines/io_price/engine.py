@@ -27,7 +27,7 @@ from cge.contracts.provenance import RunManifest
 from cge.contracts.results import ResultSet
 from cge.contracts.shocks import CarbonPrice, Shock
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # Assumptions from io-price-model.md §3 — printed on every result (GUI credibility). Kept in
 # sync with the model doc; the doc references this dict as the source of truth (not a
@@ -63,6 +63,10 @@ _UNIT_CO2E = "tCO2e/MEUR"
 # Dense solve + dense eigvals are O(n³) and O(n²) memory; cap products so a full MRIO can't
 # OOM. The small build (~40-60 sectors × ~10 regions) is well under this.
 MAX_DENSE_PRODUCTS = 2000
+
+# Emission intensities must be ≥ 0 (a negative would let a positive tax lower a price). Small
+# tolerance for float noise.
+NEG_INTENSITY_TOL = 1e-12
 
 # Combined-gas row name — used ONLY when a scenario explicitly selects it (or the default
 # ["CO2e"]); never as a silent fallback for an unrecognised gas (that would tax all gases).
@@ -199,6 +203,13 @@ def carbon_cost_vector(
     descs: list[str] = []
     for s in shocks:
         intensity = _gas_intensity(sat, labels, s.gases)  # tCO2e/M€ (gases validated here)
+        # Reject negative intensities PER SHOCK, before aggregation: summing first would let a
+        # negative CO2 intensity cancel against a positive gas and evade the check (review).
+        if float(np.min(intensity)) < -NEG_INTENSITY_TOL:
+            raise ValueError(
+                f"gases {s.gases} include negative emission intensities; io_price prices "
+                f"positive carbon cost only. Fix the satellite or exclude those rows."
+            )
         mask = _coverage_mask(s, labels)
         price = s.price_at(year)  # €/tonne
         cost += price * intensity * mask * MEUR_TO_EUR
@@ -332,16 +343,10 @@ class IOPriceEngine:
         records = []
         contributions_by_year: dict[int, list[str]] = {}
         for year in years:
+            # carbon_cost_vector rejects negative per-shock intensities before aggregation.
             carbon_cost, contributions_by_year[year] = carbon_cost_vector(
                 carbon_shocks, sat, labels, year
             )
-            # Selected intensities must be ≥ 0: a negative would make a positive tax *reduce*
-            # a price, breaking the cost-only interpretation (review).
-            if float(np.min(carbon_cost)) < -1e-12:
-                raise ValueError(
-                    "selected emission intensities include negatives; io_price prices positive "
-                    "carbon cost only. Fix the satellite or exclude negative-intensity rows."
-                )
             dp = price_change(A, carbon_cost, check_productive=False)
             parts = decompose(A, carbon_cost, tiers=3, check_productive=False)
             for i, label in enumerate(labels):

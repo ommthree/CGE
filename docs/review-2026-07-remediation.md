@@ -158,3 +158,33 @@ is now labelled USD/MUSD, so io_price correctly refuses it instead of trusting a
 label). Docs de-staled: engine header "verbatim" → "paraphrase", model doc/phase status →
 v0.3.0, example YAML "upper bound" → "over-states vs substitution", units note clarifies F is
 a mass total.
+
+---
+
+## Fifth review round (fixed)
+
+A fifth review confirmed round-4 and found three highs (all from round-4 changes) plus
+mediums:
+
+- **Satellite unit still hardcoded per-MEUR (high).** After the adapter took `monetary_unit`,
+  `_ghg_satellite` still labelled intensities `t/MEUR`, so an MUSD build had MUSD IO metadata
+  but per-MEUR satellite units. The denominator now derives from `monetary_unit` (MUSD build →
+  `t/MUSD`).
+- **Staging failure leaked the writer lock (high).** `staging.mkdir()` ran before the
+  try/finally, so a mkdir failure kept the lock forever and blocked all future saves. Moved
+  inside the try so the finally always releases the lock. Tested.
+- **Negative intensities cancelled against positive gases (high).** The negative check ran on
+  the summed cost, so a negative CO₂ intensity plus a positive CH₄ contribution passed. The
+  check now runs **per shock, before aggregation**, on each gas's masked intensity. Tested with
+  the CO₂=−100 / CH₄=10 counterexample.
+
+Mediums fixed: recovery now runs on enumerate/read (`build_ids`/`has`) too, so a long-lived
+process recovers a crashed subprocess's build without recreating the store; `build_ids`
+excludes internal `.tmp`/`.bak` dirs; the catalogue update moved **inside the lock** so two
+writers can't cross metadata and files; the example YAML / phase status no longer recommend
+the USD `exiobase-test-small` build (io_price refuses it), and a **EUR-relabelled build test
+restores the store→engine seam** the round-4 change had dropped; engine bumped to **v0.4.0**
+(behaviour changed) with docs synced; the contracts semver policy is corrected to standard 0.x
+semantics (a breaking change bumps the minor while major is 0). The PID-lockfile protocol has
+small theoretical races (create/write, stale reclaim) — noted; an OS-backed file lock is a
+possible future hardening.

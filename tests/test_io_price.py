@@ -249,10 +249,10 @@ def test_nan_path_rejected():
         CarbonPrice(price=100.0, path={2020: float("nan")})
 
 
-def test_engine_version_is_030():
+def test_engine_version_is_current():
     from cge.engines.io_price.engine import IOPriceEngine
 
-    assert IOPriceEngine().meta.version == "0.3.0"
+    assert IOPriceEngine().meta.version == "0.4.0"
 
 
 def test_gas_without_gwp_factor_rejected():
@@ -304,8 +304,30 @@ def test_negative_intensity_rejected():
 
     io, sat = toy_economy()
     sat.data.loc["CO2"] = -100.0  # all-negative intensities
-    with pytest.raises(ValueError, match="negatives"):
+    with pytest.raises(ValueError, match="negative emission intensities"):
         _run_toy(io, sat)
+
+
+def test_negative_gas_cannot_cancel_against_positive(tmp_path):
+    """A negative CO2 intensity must be rejected even when a positive gas outweighs it in the
+    sum (review: sum-then-check missed it)."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Provenance, SatelliteAccount
+    from cge.engines.io_price.engine import carbon_cost_vector
+
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-18"
+    )
+    sat = SatelliteAccount(
+        provenance=prov,
+        name="GHG",
+        units={"CO2": "t/MEUR", "CH4": "t/MEUR"},
+        data=pd.DataFrame({"A:x": [-100.0, 10.0]}, index=["CO2", "CH4"]),
+    )
+    shocks = [CarbonPrice(price=100.0, gases=["CO2"]), CarbonPrice(price=100.0, gases=["CH4"])]
+    with pytest.raises(ValueError, match="negative emission intensities"):
+        carbon_cost_vector(shocks, sat, ["A:x"], 2020)
 
 
 def test_multi_year_manifest_records_each_year():

@@ -2,8 +2,9 @@
 # The real model — Δprice of every good under a carbon price, with full supply-chain
 # pass-through and a direct-vs-upstream decomposition. See docs/models/io-price-model.md.
 #
-#   cge run --scenario examples/carbon_price_io.yaml            # toy economy
-#   cge run --scenario examples/carbon_price_io.yaml --data exiobase-test-small
+#   cge run --scenario examples/carbon_price_io.yaml            # toy economy (EUR)
+# io_price runs on EUR/MEUR builds. The offline 'exiobase-test' build is USD (the pymrio
+# fixture's real currency), so io_price correctly refuses it; a real EUR EXIOBASE build works.
 name: "Carbon price €100/t — Leontief pass-through"
 description: >
   A €100/tCO2 carbon price applied economy-wide, priced through the supply chain by the
