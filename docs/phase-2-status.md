@@ -4,7 +4,7 @@ Phase 2 ("Engine 1: IO carbon-cost pass-through") is implemented: the change in 
 every good under a carbon price, with full supply-chain pass-through and a direct-vs-upstream
 decomposition.
 
-> **Post-review (2026-07, engine v0.2.0).** An independent review found real defects — a ~1e9
+> **Post-review (2026-07, engine v0.3.0).** Independent reviews found real defects — a ~1e9
 > units error, a broken live-build path, and ignored gas/time-path controls — since fixed. See
 > [`review-2026-07-remediation.md`](review-2026-07-remediation.md). Honest status: **validated
 > on the toy economy and internal identities (incl. a hand-derived known answer, units, gas

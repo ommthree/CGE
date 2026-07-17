@@ -54,6 +54,8 @@ def build_from_pymrio(
     small_sector_map: dict[str, str] | None = None,
     small_region_map: dict[str, str] | None = None,
     gas_aliases: dict[str, str] | None = None,
+    currency: str = "EUR",
+    monetary_unit: str = "MEUR",
 ) -> dict[str, str]:
     """Adapt, quality-check, store a full build and (optionally) a derived small build.
 
@@ -66,6 +68,8 @@ def build_from_pymrio(
         source_version=source_version,
         reference_year=reference_year,
         gas_aliases=gas_aliases,
+        currency=currency,
+        monetary_unit=monetary_unit,
     )
     # Consistency gate 1: the adapted build must be structurally sound before we store it.
     assert_structural(io, satellites)
@@ -76,6 +80,8 @@ def build_from_pymrio(
         source_version=source_version,
         reference_year=reference_year,
         licence=io.provenance.licence,
+        currency=currency,
+        monetary_unit=monetary_unit,
         retrieved=date.today().isoformat(),
     )
     quality = build_quality_report(build_id, io, satellites, row_regions=_region_row_labels(io))
@@ -176,6 +182,11 @@ def build_test(store: DataStore | None = None) -> dict[str, str]:
         # The test MRIO's stressors aren't real gases; alias one onto CO2 so the offline
         # build carries a GHG account for downstream engine tests. Real EXIOBASE: no alias.
         gas_aliases={"emission_type1": "CO2"},
+        # The bundled pymrio fixture is Mill USD; label it honestly. io_price (EUR-only) will
+        # correctly refuse to run on it — that is the intended behaviour, and engine tests use
+        # the EUR toy economy. This build exists to exercise the data pipeline, not the engine.
+        currency="USD",
+        monetary_unit="MUSD",
     )
 
 

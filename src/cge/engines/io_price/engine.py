@@ -7,8 +7,8 @@ The core result is that doc's equation (5):
 
 computed as a linear solve (not an explicit inverse), where ``e`` is direct emission
 intensity and ``τ`` the carbon price. Decomposition into direct-vs-upstream uses the
-Neumann series (equation 6). Assumptions emitted in the manifest match the doc's §3
-verbatim, per the documentation standard.
+Neumann series (equation 6). The manifest assumptions paraphrase the doc's §3 (kept
+consistent with it, not a byte-for-byte copy), per the documentation standard.
 
 Numerics: the dense NumPy solve is used (core dependency, exact for the small build). This
 engine is **dense-only** and enforces a product cap (``MAX_DENSE_PRODUCTS``); the full
@@ -97,6 +97,20 @@ def _assert_units(io: IOSystem, sat: SatelliteAccount) -> None:
             )
 
 
+def _assert_coverage_labels(shocks: list[CarbonPrice], io: IOSystem) -> None:
+    """Reject coverage labels not in the build's classification — a typo would otherwise
+    silently give a zero-impact scenario (review)."""
+    sectors = set(io.sectors.labels)
+    regions = set(io.regions.labels)
+    for s in shocks:
+        bad_s = [x for x in s.coverage_sectors if x not in sectors]
+        bad_r = [x for x in s.coverage_regions if x not in regions]
+        if bad_s:
+            raise ValueError(f"coverage_sectors not in the build: {bad_s}")
+        if bad_r:
+            raise ValueError(f"coverage_regions not in the build: {bad_r}")
+
+
 def _assert_labels_aligned(sat: SatelliteAccount, labels: list[str]) -> None:
     missing = [x for x in labels if x not in sat.data.columns]
     if missing:
@@ -144,9 +158,17 @@ def _gas_intensity(sat: SatelliteAccount, labels: list[str], gases: list[str]) -
             f"Requested gases {missing_gases} not in satellite {sat.name!r} "
             f"(available: {sorted(available)}). Refusing to substitute the aggregate row."
         )
+    # Every component gas must have an explicit GWP-100 factor; a default of 1.0 would treat
+    # a tonne of e.g. SF6 (GWP ~23500) as a tonne of CO2e — a large scientific error (review).
+    no_gwp = [g for g in gases if g not in GWP100_AR5]
+    if no_gwp:
+        raise ValueError(
+            f"No GWP-100 factor for {no_gwp}; add it to cge.constants.GWP100_AR5 rather than "
+            f"defaulting to 1.0 (which would mis-weight the gas)."
+        )
     acc = np.zeros(len(labels))
     for g in gases:
-        weight = GWP100_AR5.get(g, 1.0)  # per-gas rows are physical tonnes of that gas
+        weight = GWP100_AR5[g]  # per-gas rows are physical tonnes of that gas
         acc += weight * sat.data.loc[g].reindex(labels).to_numpy(dtype=float)
     return acc
 
@@ -303,10 +325,23 @@ class IOPriceEngine:
                 f"cost-push price model. Use a CGE engine (Phase 5) for revenue recycling."
             )
 
+        # Coverage labels must exist in the build's classification — a typo'd sector/region
+        # would otherwise silently produce a zero-impact scenario (review).
+        _assert_coverage_labels(carbon_shocks, io)
+
         records = []
-        intensity_desc: list[str] = []
+        contributions_by_year: dict[int, list[str]] = {}
         for year in years:
-            carbon_cost, intensity_desc = carbon_cost_vector(carbon_shocks, sat, labels, year)
+            carbon_cost, contributions_by_year[year] = carbon_cost_vector(
+                carbon_shocks, sat, labels, year
+            )
+            # Selected intensities must be ≥ 0: a negative would make a positive tax *reduce*
+            # a price, breaking the cost-only interpretation (review).
+            if float(np.min(carbon_cost)) < -1e-12:
+                raise ValueError(
+                    "selected emission intensities include negatives; io_price prices positive "
+                    "carbon cost only. Fix the satellite or exclude negative-intensity rows."
+                )
             dp = price_change(A, carbon_cost, check_productive=False)
             parts = decompose(A, carbon_cost, tiers=3, check_productive=False)
             for i, label in enumerate(labels):
@@ -323,7 +358,11 @@ class IOPriceEngine:
             scenario={"shocks": [s.model_dump(mode="json") for s in shocks], "years": years},
             assumptions={
                 **ASSUMPTIONS,
-                "shock_contributions": intensity_desc,
+                # Per-year so a time-path run records every year's effective prices, not just
+                # the last (review). Keyed by year as strings for JSON.
+                "shock_contributions_by_year": {
+                    str(y): c for y, c in contributions_by_year.items()
+                },
                 "monetary_unit": io.unit,
                 "unit_scaling": "τ(€/t)·e(t/MEUR)·1e-6 → dimensionless cost share",
                 "value_meaning": "Δp is a fractional change in unit price index (base p₀=1)",

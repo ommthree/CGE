@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import uuid
 from pathlib import Path
 
 import duckdb
@@ -37,6 +38,42 @@ from cge.contracts.quality import QualityReport
 from cge.data.metadata import BuildMeta
 
 DEFAULT_ROOT = Path("data_store")
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)  # signal 0: existence check, doesn't actually signal
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    return True
+
+
+def _lock_is_live(lock: Path) -> bool:
+    """A lock is live iff it holds the pid of a running process."""
+    try:
+        pid = int(lock.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    return _pid_alive(pid)
+
+
+def _acquire_lock(lock: Path) -> None:
+    """Create the per-build writer lock, or raise if a *live* writer already holds it. A stale
+    lock (dead pid) is reclaimed. This serialises concurrent saves to the same build."""
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        if _lock_is_live(lock):
+            raise RuntimeError(
+                f"build {lock.name[1:-5]!r} is being written by another process; "
+                f"concurrent save refused."
+            ) from None
+        lock.unlink(missing_ok=True)  # stale lock from a dead writer; reclaim
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    with os.fdopen(fd, "w") as f:
+        f.write(str(os.getpid()))
 
 
 def _meta_to_provenance(meta: BuildMeta) -> Provenance:
@@ -62,18 +99,30 @@ class DataStore:
         self._init_catalogue()
 
     def _recover_interrupted(self) -> None:
-        """Restore builds left in a ``.bak`` by a save that was hard-killed mid-swap (the
-        brief window where the canonical path is absent). Also sweeps stale ``.tmp`` staging
-        dirs. Makes the recoverable-swap strategy self-healing on next open."""
-        for bak in self.builds_dir.glob(".*.bak"):
-            build_id = bak.name[1:-4]  # strip leading '.' and trailing '.bak'
+        """Recover from a save hard-killed mid-swap, WITHOUT touching another writer's active
+        work. A build is only recovered/cleaned if its writer lock is *stale* (no live holder):
+
+        - a ``.bak`` with no canonical build ⇒ crash after old→bak, before staging→final;
+          restore it.
+        - staging (``.tmp``) and stale locks from a dead writer ⇒ remove.
+
+        Live staging/backups (lock held by a running process) are left untouched — the earlier
+        version unconditionally deleted every ``.tmp``, which removed a concurrent writer's
+        live staging (review)."""
+        for lock in self.builds_dir.glob(".*.lock"):
+            build_id = lock.name[1:-5]  # strip leading '.' and trailing '.lock'
+            if _lock_is_live(lock):
+                continue  # a writer is active on this build; hands off
+            # Stale lock: finish/clean its interrupted swap, then remove its artefacts.
             final = self.builds_dir / build_id
-            if not final.exists():
-                bak.replace(final)  # crash happened after old→bak, before staging→final
-            else:
-                shutil.rmtree(bak, ignore_errors=True)  # final present ⇒ backup is stale
-        for tmp in self.builds_dir.glob(".*.tmp"):
-            shutil.rmtree(tmp, ignore_errors=True)
+            bak = self.builds_dir / f".{build_id}.bak"
+            if bak.exists() and not final.exists():
+                bak.replace(final)
+            elif bak.exists():
+                shutil.rmtree(bak, ignore_errors=True)
+            for tmp in self.builds_dir.glob(f".{build_id}.*.tmp"):
+                shutil.rmtree(tmp, ignore_errors=True)
+            lock.unlink(missing_ok=True)
 
     # -- catalogue -------------------------------------------------------------
     def _init_catalogue(self) -> None:
@@ -146,12 +195,14 @@ class DataStore:
         lost. Avoids partial writes and stale files from in-place overwrites.
         """
         final = self.builds_dir / meta.build_id
-        staging = self.builds_dir / f".{meta.build_id}.{os.getpid()}.tmp"
         backup = self.builds_dir / f".{meta.build_id}.bak"
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True)
+        # Unique staging dir per save (uuid), so two same-process saves never collide.
+        staging = self.builds_dir / f".{meta.build_id}.{uuid.uuid4().hex}.tmp"
+        lock = self.builds_dir / f".{meta.build_id}.lock"
 
+        # Serialise writers to this build: fail fast if another live writer holds the lock.
+        _acquire_lock(lock)
+        staging.mkdir(parents=True)
         try:
             (staging / "meta.json").write_text(meta.model_dump_json(indent=2))
             io.A.astype("float32").to_parquet(staging / "A.parquet")
@@ -182,6 +233,7 @@ class DataStore:
         finally:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
+            lock.unlink(missing_ok=True)
 
         self._catalogue_upsert(
             meta,

@@ -130,3 +130,31 @@ status text de-staled ("upper bound"/"CO2e by default" removed); the README quic
 Still deferred (unchanged): live EXIOBASE known-answer test, sparse full-MRIO, content-hashed
 build ids, curated concordance, DuckDB-paginated explorer, async builds, EXIOBASE 3.9.x, and
 the strictly-atomic (single-syscall) store swap.
+
+---
+
+## Fourth review round (fixed)
+
+A fourth review confirmed round-3 and found two material residuals (both introduced by my
+round-3 fixes) plus several mediums:
+
+- **Store recovery deleted a live writer's staging (high).** `_recover_interrupted`
+  unconditionally removed every `.tmp`, so opening a second store deleted a concurrent
+  writer's staging; PID-based staging names also collided within a process. Replaced with a
+  **per-build writer lock** (pid lockfile with liveness check): saves use a uuid staging dir
+  and a lock; recovery only cleans up builds whose lock is *stale* (dead pid), leaving live
+  writers untouched, and a concurrent save on a held build is refused. Two tests.
+- **Gas without a GWP factor got GWP=1 (high).** `GWP100_AR5.get(g, 1.0)` treated a tonne of
+  SF6 (GWP ~23500) as a tonne of CO2e. Now any component gas lacking an explicit GWP factor
+  is rejected.
+
+Mediums fixed: `CONTRACTS_VERSION` bumped 0.1.0 → **0.2.0** (the tightened validation is
+breaking); negative selected intensities rejected; coverage labels validated against the
+build's classification (a typo no longer yields a silent zero-impact run); `CarbonPrice.price`
+must be finite (rejects `inf`); `CO2e` mixed with component gases rejected **at construction**
+(not only in the engine); the manifest records **per-year** shock contributions (not just the
+last year); the adapter takes `currency`/`monetary_unit` as parameters (the USD test fixture
+is now labelled USD/MUSD, so io_price correctly refuses it instead of trusting a false EUR
+label). Docs de-staled: engine header "verbatim" → "paraphrase", model doc/phase status →
+v0.3.0, example YAML "upper bound" → "over-states vs substitution", units note clarifies F is
+a mass total.

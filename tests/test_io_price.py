@@ -255,6 +255,73 @@ def test_engine_version_is_030():
     assert IOPriceEngine().meta.version == "0.3.0"
 
 
+def test_gas_without_gwp_factor_rejected():
+    """A gas present in the data but absent from the GWP table must be rejected, not given
+    GWP=1 (review: SF6 with GWP~23500 ran as if it were CO2)."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Provenance, SatelliteAccount
+    from cge.engines.io_price.engine import _gas_intensity
+
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-18"
+    )
+    sat = SatelliteAccount(
+        provenance=prov,
+        name="GHG",
+        units={"SF6": "t/MEUR"},
+        data=pd.DataFrame({"A:x": [100.0]}, index=["SF6"]),
+    )
+    with pytest.raises(ValueError, match="No GWP-100 factor"):
+        _gas_intensity(sat, ["A:x"], ["SF6"])
+
+
+def test_infinite_carbon_price_rejected():
+    with pytest.raises(ValueError):
+        CarbonPrice(price=float("inf"))
+
+
+def test_co2e_mixed_with_component_rejected_at_construction():
+    with pytest.raises(ValueError, match="cannot mix"):
+        CarbonPrice(price=100.0, gases=["CO2e", "CO2"])
+
+
+def test_coverage_typo_rejected():
+    """A coverage label absent from the build must raise, not silently zero the scenario."""
+    scenario = Scenario(
+        name="t",
+        engine="io_price",
+        years=[2020],
+        shocks=[CarbonPrice(price=100.0, coverage_regions=["NOT_A_REGION"])],
+    )
+    with pytest.raises(ValueError, match="coverage_regions not in the build"):
+        run_scenario(scenario, data_source="toy")
+
+
+def test_negative_intensity_rejected():
+    """A negative selected intensity would make a positive tax lower a price; reject it."""
+    from cge.validation import toy_economy
+
+    io, sat = toy_economy()
+    sat.data.loc["CO2"] = -100.0  # all-negative intensities
+    with pytest.raises(ValueError, match="negatives"):
+        _run_toy(io, sat)
+
+
+def test_multi_year_manifest_records_each_year():
+    """A time-path run records every year's contributions, not only the last (review)."""
+    scenario = Scenario(
+        name="p",
+        engine="io_price",
+        years=[2020, 2030],
+        shocks=[CarbonPrice(price=0.0, path={2020: 50.0, 2030: 200.0})],
+    )
+    result = run_scenario(scenario, data_source="toy")
+    by_year = result.manifest.assumptions["shock_contributions_by_year"]
+    assert set(by_year) == {"2020", "2030"}
+    assert "50" in str(by_year["2020"]) and "200" in str(by_year["2030"])
+
+
 def test_time_path_varies_by_year():
     scenario = Scenario(
         name="p",

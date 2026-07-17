@@ -212,8 +212,17 @@ def adapt_pymrio(
     reference_year: int,
     licence: str = EXIOBASE_LICENCE,
     gas_aliases: dict[str, str] | None = None,
+    currency: str = "EUR",
+    monetary_unit: str = "MEUR",
 ) -> tuple[IOSystem, list[SatelliteAccount]]:
-    """Map a parsed pymrio IOSystem into our harmonised IOSystem + satellites."""
+    """Map a parsed pymrio IOSystem into our harmonised IOSystem + satellites.
+
+    ``currency``/``monetary_unit`` default to EXIOBASE 3's basic-price EUR/MEUR convention.
+    They are parameters (not hardcoded) so a differently-denominated source is labelled
+    honestly rather than silently relabelled EUR — the engine's exact-unit guard then trusts
+    accurate metadata. (The bundled pymrio test fixture is Mill USD; the test build passes
+    that through so the label reflects reality.)
+    """
     labels = _labels(pio.A.index)
     provenance = Provenance(
         source=source,
@@ -249,8 +258,8 @@ def adapt_pymrio(
         sectors=Classification(name=f"{source}-sectors", kind="sector", labels=sectors),
         regions=Classification(name=f"{source}-regions", kind="region", labels=regions),
         price_basis="basic",
-        currency="EUR",
-        unit="MEUR",
+        currency=currency,
+        unit=monetary_unit,
         A=A,
         final_demand=final_demand,
     )

@@ -15,7 +15,9 @@ Provenance/config live alongside in provenance.py.
 
 # Semver for the contracts as a set. Data builds, engines and results record the
 # contracts version they were produced against so mismatches are detectable.
-CONTRACTS_VERSION = "0.1.0"
+# 0.2.0: post-review hardening tightened validation (manifests, shocks, results,
+# classifications, concordances now reject inputs 0.1.0 accepted) — a breaking change.
+CONTRACTS_VERSION = "0.2.0"
 
 from cge.contracts.data_objects import (  # noqa: E402
     SAM,

@@ -235,23 +235,41 @@ def test_store_save_preserves_build_on_swap_failure(tmp_path):
 
 
 def test_store_recovers_build_from_backup_on_open(tmp_path):
-    """A hard-kill mid-swap leaves data in a .bak with the canonical path absent; opening the
-    store must recover it (crash-in-window recovery)."""
+    """A hard-kill mid-swap leaves data in a .bak with the canonical path absent AND a stale
+    lock (dead writer). Opening the store must recover it — but only because the lock is
+    stale, not for a live writer."""
     import shutil
 
     store = DataStore(tmp_path)
     build_test(store=store)
     bid = "exiobase-test"
     final = store.builds_dir / bid
-    # Simulate a crash after old→bak but before staging→final: move the build to .bak.
+    # Simulate crash after old→bak, before staging→final, with a STALE lock (pid never runs).
     bak = store.builds_dir / f".{bid}.bak"
     shutil.move(str(final), str(bak))
+    (store.builds_dir / f".{bid}.lock").write_text("999999")  # a pid that isn't alive
     assert not final.exists()
 
-    # Reopening the store should restore it.
-    store2 = DataStore(tmp_path)
+    store2 = DataStore(tmp_path)  # recovery on open
     assert store2.has(bid)
-    assert not bak.exists()
+    assert not (store.builds_dir / f".{bid}.lock").exists()  # stale lock cleaned
+
+
+def test_store_recovery_leaves_live_writer_untouched(tmp_path):
+    """Opening a second store must NOT delete a live writer's staging (review counterexample)."""
+    import os
+
+    store = DataStore(tmp_path)
+    bid = "wip"
+    lock = store.builds_dir / f".{bid}.lock"
+    lock.write_text(str(os.getpid()))  # a LIVE writer (this process)
+    staging = store.builds_dir / f".{bid}.deadbeef.tmp"
+    staging.mkdir()
+    (staging / "marker").write_text("live")
+
+    DataStore(tmp_path)  # second store open
+    assert staging.exists()  # live staging untouched
+    lock.unlink()
 
 
 def test_structural_gate_rejects_nan_final_demand():

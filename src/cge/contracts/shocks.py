@@ -72,11 +72,22 @@ class CarbonPrice(Shock):
     def _validate(self) -> CarbonPrice:
         import math
 
+        # Price must be finite (ge=0 alone accepts +inf, which fails only later at result
+        # validation — review).
+        if not math.isfinite(self.price):
+            raise ValueError(f"CarbonPrice.price must be finite, got {self.price}")
         # ``gases`` must be a non-empty, unique list (an explicit [] is an error, not CO2).
         if not self.gases:
             raise ValueError("CarbonPrice.gases must be non-empty")
         if len(set(self.gases)) != len(self.gases):
             raise ValueError(f"CarbonPrice.gases has duplicates: {self.gases}")
+        # Cannot mix the aggregate CO2e row with component gases (double-count) — reject at
+        # construction, matching the engine (review: the doc claimed this but only the engine
+        # enforced it).
+        if "CO2e" in self.gases and len(self.gases) > 1:
+            raise ValueError(
+                f"CarbonPrice.gases cannot mix 'CO2e' with component gases: {self.gases}"
+            )
         # Path values must be finite and non-negative (a carbon price is ≥ 0; NaN bypasses <0).
         if self.path:
             for yr, v in self.path.items():

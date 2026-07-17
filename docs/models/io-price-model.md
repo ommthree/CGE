@@ -12,7 +12,8 @@
 > This is the worked reference example for the [documentation standard](../documentation-standard.md):
 > it shows the equation-level detail and citation discipline every model doc must meet.
 
-> **Units (post-review).** EXIOBASE emission flows are in **kg per M€** output; the adapter
+> **Units (post-review).** EXIOBASE emission flows `F` are **mass totals (kg)**; dividing by
+> monetary output (M€) gives an intensity in **kg per M€**. The adapter
 > converts to **tonnes per M€** using the source unit metadata. A carbon price in €/tonne is
 > then scaled by 1e‑6 (M€→€) so that τ·e is a **dimensionless cost share**. Δp is therefore a
 > **fractional change in the unit price index** (baseline p₀=1) — e.g. 0.06 = a 6% price rise.
@@ -182,7 +183,7 @@ reimplementation a local change.
 - $\mathbf{A}$, $\mathbf{e}$: directly from EXIOBASE (Phase 1 data build); no free
   parameters.
 - $\tau$ (price and optional time path), `gases`, and sector/region coverage: from the
-  `CarbonPrice` scenario. There is **no scope option** in v0.2.0 (see the scope note in §3);
+  `CarbonPrice` scenario. There is **no scope option** in v0.3.0 (see the scope note in §3);
   the engine prices scope-1 emissions of the selected gases.
 
 There are no fitted parameters — a strength of this engine, and why its *cost* answers are

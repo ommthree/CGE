@@ -34,12 +34,13 @@ def test_service_catalogue_and_frames(tmp_path):
 
 
 def test_service_run_produces_result(tmp_path):
+    # io_price is EUR-only; run on the EUR toy economy (the USD test build is correctly
+    # refused by the engine's currency guard).
     svc = _service(tmp_path)
-    build_id = next(b for b in svc.build_ids() if b.endswith("small"))
     scenario = Scenario(
         name="t", engine="io_price", years=[2020], shocks=[CarbonPrice(price=100.0)]
     )
-    result = svc.run(scenario, data_source=build_id)
+    result = svc.run(scenario, data_source="toy")
     assert (result.data["variable"] == "price_change").any()
 
 

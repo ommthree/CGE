@@ -7,7 +7,8 @@
 name: "Carbon price €100/t — Leontief pass-through"
 description: >
   A €100/tCO2 carbon price applied economy-wide, priced through the supply chain by the
-  Leontief price model. Results are an upper bound on cost impact (no volume response).
+  Leontief price model. Cost impact only (no volume response); under fixed technology and
+  full pass-through this tends to over-state cost vs a model with substitution.
 engine: io_price
 years: [2020]
 shocks:
