@@ -7,6 +7,7 @@ cge build --test                                offline build from pymrio test M
 cge data                                         list data builds in the store
 cge quality <build_id>                           show a build's quality report
 cge validate [--suite io_price] [--strict]       run the model validation suite
+cge gui                                          launch the Streamlit web GUI
 """
 
 from __future__ import annotations
@@ -91,6 +92,24 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 1 if (args.strict and not summary.passed) else 0
 
 
+def _cmd_gui(args: argparse.Namespace) -> int:
+    import subprocess
+
+    from cge.gui import APP_PATH
+
+    cmd = ["streamlit", "run", APP_PATH]
+    if args.port:
+        cmd += ["--server.port", str(args.port)]
+    try:
+        return subprocess.call(cmd)
+    except FileNotFoundError:
+        print(
+            "Streamlit not installed. Install the GUI extra: pip install -e '.[gui]'",
+            file=sys.stderr,
+        )
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cge", description="CGE/IAM platform CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -119,6 +138,10 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("--suite", action="append", help="limit to named suite(s)")
     validate.add_argument("--strict", action="store_true", help="exit non-zero on any failure")
     validate.set_defaults(func=_cmd_validate)
+
+    gui = sub.add_parser("gui", help="launch the Streamlit web GUI")
+    gui.add_argument("--port", type=int, default=None, help="port for the Streamlit server")
+    gui.set_defaults(func=_cmd_gui)
 
     args = parser.parse_args(argv)
     return args.func(args)

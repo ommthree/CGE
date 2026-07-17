@@ -15,7 +15,7 @@ jobs:
       - name: Set up Python
         run: uv python install 3.11
       - name: Install (core + dev)
-        run: uv pip install --system -e ".[dev,data]"
+        run: uv pip install --system -e ".[dev,data,gui]"
       - name: Lint
         run: ruff check src tests scripts
       - name: Format check

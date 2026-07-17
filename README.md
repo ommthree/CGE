@@ -12,14 +12,16 @@ example: [`docs/models/io-price-model.md`](docs/models/io-price-model.md)).
 
 ## Status
 
-**Phase 2 — Engine 1 (carbon-cost price model) complete.** The platform produces real
-answers: the change in the price of every good under a carbon price, with full supply-chain
-pass-through and a direct-vs-upstream decomposition ([`docs/models/io-price-model.md`](docs/models/io-price-model.md)).
-Built on the Phase 1 data layer (live EXIOBASE ingestion + quality/consistency checks) and
-the Phase 0 contracts. A standing model-validation suite ([`docs/validation.md`](docs/validation.md))
-audits correctness. Next: partial-equilibrium volume response (Phase 4) or the GUI (Phase 3).
+**Phase 3 — Web GUI complete.** A Streamlit app ([`docs/gui.md`](docs/gui.md)) now covers the
+everyday workflow: browse data builds, explore any build's matrices like a spreadsheet, check
+data quality, build datasets, run carbon-price scenarios, and explore results with a
+supply-chain decomposition waterfall and assumptions printout. Built on the Phase 2 engine
+(Leontief carbon-cost price model), the Phase 1 data layer (live EXIOBASE + quality/consistency
+checks), and the Phase 0 contracts, with a standing model-validation suite
+([`docs/validation.md`](docs/validation.md)). Next: partial-equilibrium volume response (Phase 4).
 
 ```bash
+cge gui                                             # launch the web GUI
 cge build --test                                    # offline data build (no download)
 cge build --exiobase                                # live EXIOBASE build from Zenodo
 cge data                                            # list builds in the store
