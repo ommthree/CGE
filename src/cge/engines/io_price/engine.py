@@ -10,9 +10,10 @@ intensity and ``τ`` the carbon price. Decomposition into direct-vs-upstream use
 Neumann series (equation 6). Assumptions emitted in the manifest match the doc's §3
 verbatim, per the documentation standard.
 
-Numerics: the dense NumPy solve is used (core dependency, exact for the small build).
-For the full ~9800² MRIO a sparse ``scipy.sparse.linalg.spsolve`` is the drop-in path;
-gated behind the ``[cge]`` extra so the core install stays light (see ADR-0003).
+Numerics: the dense NumPy solve is used (core dependency, exact for the small build). This
+engine is **dense-only** and enforces a product cap (``MAX_DENSE_PRODUCTS``); the full
+~9800² MRIO is NOT supported. A sparse path is intended but not implemented (see the model
+doc §5). Run on a small/aggregated build.
 """
 
 from __future__ import annotations
@@ -28,79 +29,112 @@ from cge.contracts.shocks import CarbonPrice, Shock
 
 VERSION = "0.2.0"
 
-# Assumptions from io-price-model.md §3 — printed on every result (GUI credibility).
+# Assumptions from io-price-model.md §3 — printed on every result (GUI credibility). Kept in
+# sync with the model doc; the doc references this dict as the source of truth (not a
+# separate verbatim copy).
 ASSUMPTIONS = {
     "model": "Leontief price model (cost-push), full supply-chain pass-through",
     "fixed_technology": "A held at base year; no input substitution",
     "full_cost_pass_through": "producers pass 100% of cost increases downstream",
     "price_formation": "cost-push (Leontief price dual), not demand-driven",
-    "carbon_cost_basis": "per-unit cost on direct (scope-1) emissions by default",
+    "carbon_cost_basis": "per-unit cost on emissions in the selected GHG account (scope-1)",
     "linearity": "price system is linear; independent shocks add",
-    "interpretation": "UPPER BOUND on cost impact; NO volume effects (see Engine 2)",
+    "interpretation": (
+        "Cost-pass-through price change under FIXED technology and FULL pass-through; no "
+        "input substitution, demand response, or volume effect. Because substitution would "
+        "let firms avoid some cost, this is expected to OVER-state the cost impact relative "
+        "to a model with substitution — but it is not a proven upper bound over every model."
+    ),
     "reference": "Miller & Blair (2009) §2.3-2.6",
 }
 
-# Monetary base is million EUR (EXIOBASE, and the toy fixture by convention); intensities
-# are tonnes per M€. A carbon price in €/tonne must therefore be scaled by 1e-6 (M€ → €) so
-# that τ·e is a dimensionless cost share (fraction of unit value). This is the units fix.
+# A carbon price in €/tonne is scaled by 1e-6 (M€ → €) so τ·e is a dimensionless cost share.
+# Only valid when the monetary base is million-EUR (M€) and intensities are t/M€ — the engine
+# asserts both from the data's unit metadata before applying it.
 MEUR_TO_EUR = 1e-6
+_MONETARY_UNIT = "MEUR"
+_INTENSITY_UNIT_SUFFIX = "/MEUR"  # e.g. 't/MEUR', 'tCO2e/MEUR'
 
-# Combined-gas row name used when a scenario selects all/default gases.
+# Dense solve + dense eigvals are O(n³) and O(n²) memory; cap products so a full MRIO can't
+# OOM. The small build (~40-60 sectors × ~10 regions) is well under this.
+MAX_DENSE_PRODUCTS = 2000
+
+# Combined-gas row name — used ONLY when a scenario explicitly selects it (or the default
+# ["CO2e"]); never as a silent fallback for an unrecognised gas (that would tax all gases).
 _CO2E_ROW = "CO2e"
 
 
-def _intensity_for_gases(
-    sat: SatelliteAccount, labels: list[str], gases: list[str]
-) -> tuple[np.ndarray, str]:
-    """Return (GWP-weighted intensity per label in tCO2e/M€, description) for the selected
-    gases. Honours the scenario's ``gases``: sums the named per-gas rows with GWP-100 weights.
-
-    Falls back to the combined ``CO2e`` row only when the requested gases aren't individually
-    present but CO2e is (e.g. the toy fixture). Raises if nothing usable is found — silently
-    zeroing would hide a data/scenario mismatch.
-    """
-    available = list(sat.data.index)
-
-    # A product missing from the satellite is an alignment error, not a zero-emission
-    # product; refuse to silently zero-fill it (review).
-    missing_labels = [x for x in labels if x not in sat.data.columns]
-    if missing_labels:
+def _assert_labels_aligned(sat: SatelliteAccount, labels: list[str]) -> None:
+    missing = [x for x in labels if x not in sat.data.columns]
+    if missing:
         raise ValueError(
-            f"Satellite {sat.name!r} is missing {len(missing_labels)} product columns present "
-            f"in the IO system, e.g. {missing_labels[:5]}; intensities are not aligned."
+            f"Satellite {sat.name!r} is missing {len(missing)} product columns present in the "
+            f"IO system, e.g. {missing[:5]}; intensities are not aligned."
         )
 
-    present = [g for g in gases if g in available]
-    if present:
-        acc = np.zeros(len(labels))
-        for g in present:
-            weight = GWP100_AR5.get(g, 1.0)  # per-gas rows are physical tonnes of that gas
-            acc += weight * sat.data.loc[g].reindex(labels).to_numpy(dtype=float)
-        return acc, f"gases={present} (GWP-100 weighted)"
 
-    if _CO2E_ROW in available:
-        series = sat.data.loc[_CO2E_ROW].reindex(labels)
-        return series.to_numpy(
-            dtype=float
-        ), f"{_CO2E_ROW} (requested {gases} not individually present)"
+def _gas_intensity(sat: SatelliteAccount, labels: list[str], gases: list[str]) -> np.ndarray:
+    """CO2e intensity (tCO2e/M€) per label for exactly the requested ``gases``.
 
-    raise ValueError(
-        f"Satellite {sat.name!r} has none of the requested gases {gases} nor a {_CO2E_ROW} "
-        f"row; available: {available}"
-    )
-
-
-def _effective_price(shocks: list[CarbonPrice], labels: list[str], year: int) -> np.ndarray:
-    """Per-label carbon price τ (currency/tonne) in ``year``. Multiple carbon shocks add
-    where they overlap (linearity); each shock reads its own time path via ``price_at``.
-
-    A shock with no coverage applies everywhere; with coverage, only to matching labels.
+    Each named gas MUST be present as its own row (weighted by GWP-100), OR the request must
+    be exactly the combined row ``["CO2e"]``. An unknown gas — or a mix where one gas is
+    missing — RAISES rather than silently falling back to the aggregate (review: falling back
+    let ``["NOT_A_GAS"]`` tax all gases and ``["CO2","TYPO"]`` drop the typo silently).
     """
-    tau = np.zeros(len(labels), dtype=float)
+    available = set(sat.data.index)
+
+    if gases == [_CO2E_ROW]:
+        if _CO2E_ROW not in available:
+            raise ValueError(
+                f"Satellite {sat.name!r} has no {_CO2E_ROW} row; available: {sorted(available)}"
+            )
+        return sat.data.loc[_CO2E_ROW].reindex(labels).to_numpy(dtype=float)
+
+    missing_gases = [g for g in gases if g not in available]
+    if missing_gases:
+        raise ValueError(
+            f"Requested gases {missing_gases} not in satellite {sat.name!r} "
+            f"(available: {sorted(available)}). Refusing to substitute the aggregate row."
+        )
+    acc = np.zeros(len(labels))
+    for g in gases:
+        weight = GWP100_AR5.get(g, 1.0)  # per-gas rows are physical tonnes of that gas
+        acc += weight * sat.data.loc[g].reindex(labels).to_numpy(dtype=float)
+    return acc
+
+
+def _coverage_mask(shock: CarbonPrice, labels: list[str]) -> np.ndarray:
+    """1.0 where the shock applies, 0.0 elsewhere (per label)."""
+    mask = np.zeros(len(labels), dtype=float)
     for i, label in enumerate(labels):
         region, sector = label.split(":", 1)
-        tau[i] = sum(s.price_at(year) for s in shocks if s.applies_to(sector, region))
-    return tau
+        if shock.applies_to(sector, region):
+            mask[i] = 1.0
+    return mask
+
+
+def carbon_cost_vector(
+    shocks: list[CarbonPrice], sat: SatelliteAccount, labels: list[str], year: int
+) -> tuple[np.ndarray, list[str]]:
+    """Dimensionless direct carbon cost share per product for ``year``.
+
+    Each shock contributes independently: its own price(year) × its own gases' intensity ×
+    its own coverage. Contributions are then summed. This is the correct composition — the
+    earlier version unioned gases and summed prices first, which cross-multiplied one shock's
+    price against another shock's gas (review bug). The 1e-6 (M€→€) scaling makes the result a
+    dimensionless share.
+    """
+    _assert_labels_aligned(sat, labels)
+    cost = np.zeros(len(labels))
+    descs: list[str] = []
+    for s in shocks:
+        gases = s.gases or ["CO2"]
+        intensity = _gas_intensity(sat, labels, gases)  # tCO2e/M€
+        mask = _coverage_mask(s, labels)
+        price = s.price_at(year)  # €/tonne
+        cost += price * intensity * mask * MEUR_TO_EUR
+        descs.append(f"€{price:g}/t on {gases}")
+    return cost, descs
 
 
 # Tolerance for the "negative coefficient" admissibility check. EXIOBASE can carry tiny
@@ -194,13 +228,34 @@ class IOPriceEngine:
         sat: SatelliteAccount = data["SatelliteAccount"]
         labels = list(io.A.columns)
         A = io.A.to_numpy(dtype=float)
+
+        # The 1e-6 cost-share scaling is only valid for a million-EUR monetary base and
+        # t/MEUR intensities. Verify from the data's unit metadata rather than assuming.
+        if io.unit != _MONETARY_UNIT:
+            raise ValueError(
+                f"io_price assumes a {_MONETARY_UNIT} monetary base; build unit is {io.unit!r}. "
+                f"The M€→€ cost-share scaling would be wrong."
+            )
+        bad_units = {u for u in sat.units.values() if not str(u).endswith(_INTENSITY_UNIT_SUFFIX)}
+        if bad_units:
+            raise ValueError(
+                f"io_price expects intensities per {_MONETARY_UNIT} (…{_INTENSITY_UNIT_SUFFIX}); "
+                f"satellite has units {sorted(bad_units)}."
+            )
+
         # Productivity is a per-run precondition; check once, then skip in the year loop.
         _assert_productive(A)
 
+        # Dense-only implementation: enforce the documented small-build restriction so a
+        # full ~9800² MRIO cannot trigger an OOM / multi-minute dense solve.
+        if len(labels) > MAX_DENSE_PRODUCTS:
+            raise ValueError(
+                f"io_price is dense-only and limited to ≤{MAX_DENSE_PRODUCTS} products; this "
+                f"build has {len(labels)}. Use a small/aggregated build (a sparse path is not "
+                f"yet implemented — see the model doc)."
+            )
+
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
-        # Gas selection is the union of gases named across carbon shocks (default CO2).
-        gases = sorted({g for s in carbon_shocks for g in s.gases}) or ["CO2"]
-        intensity, intensity_desc = _intensity_for_gases(sat, labels, gases)
 
         # revenue_recycling has no meaning in a pure cost-push price model (no household /
         # government budget). Reject it rather than silently ignoring a declared control.
@@ -212,9 +267,9 @@ class IOPriceEngine:
             )
 
         records = []
+        intensity_desc: list[str] = []
         for year in years:
-            tau = _effective_price(carbon_shocks, labels, year)  # €/tonne, per year
-            carbon_cost = tau * intensity * MEUR_TO_EUR  # dimensionless cost share
+            carbon_cost, intensity_desc = carbon_cost_vector(carbon_shocks, sat, labels, year)
             dp = price_change(A, carbon_cost, check_productive=False)
             parts = decompose(A, carbon_cost, tiers=3, check_productive=False)
             for i, label in enumerate(labels):
@@ -231,8 +286,7 @@ class IOPriceEngine:
             scenario={"shocks": [s.model_dump(mode="json") for s in shocks], "years": years},
             assumptions={
                 **ASSUMPTIONS,
-                "gases_selected": gases,
-                "intensity_source": intensity_desc,
+                "shock_contributions": intensity_desc,
                 "monetary_unit": io.unit,
                 "unit_scaling": "τ(€/t)·e(t/MEUR)·1e-6 → dimensionless cost share",
                 "value_meaning": "Δp is a fractional change in unit price index (base p₀=1)",

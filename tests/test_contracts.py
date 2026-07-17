@@ -61,3 +61,70 @@ def test_shock_coverage_filtering():
 def test_content_hash_is_stable_and_order_independent():
     assert content_hash({"a": 1, "b": 2}) == content_hash({"b": 2, "a": 1})
     assert content_hash({"a": 1}) != content_hash({"a": 2})
+
+
+# -- review-round-2 hardening -------------------------------------------------
+def test_classification_rejects_duplicate_labels():
+    from cge.contracts.data_objects import Classification
+
+    with pytest.raises(ValueError, match="duplicate labels"):
+        Classification(name="c", kind="sector", labels=["a", "b", "a"])
+
+
+def test_concordance_rejects_negative_weights_that_sum_to_one():
+    with pytest.raises(ValueError, match="negatives"):
+        ConcordanceMap(
+            provenance=_prov(),
+            from_classification="s",
+            to_classification="d",
+            weights={"a": {"X": 1.5, "Y": -0.5}},  # sums to 1 but has a negative
+        )
+
+
+def test_naturestress_severity_bounded():
+    from cge.contracts.shocks import NatureStress
+
+    NatureStress(service="pollination", severity=0.3)  # ok
+    with pytest.raises(ValueError):
+        NatureStress(service="pollination", severity=2.0)
+
+
+def test_resultset_rejects_string_and_duplicate_and_bad_band():
+    import pandas as pd
+
+    from cge.contracts.provenance import RunManifest
+    from cge.contracts.results import RESULT_COLUMNS, ResultSet
+
+    m = RunManifest.build(
+        engine_name="e",
+        engine_version="1",
+        data_source="d",
+        scenario={},
+        assumptions={"x": 1},
+    )
+    # numeric-looking string value rejected
+    df = pd.DataFrame([["price", "s", "r", 2020, "central", "1.5"]], columns=RESULT_COLUMNS)
+    with pytest.raises(ValueError, match="numeric dtype"):
+        ResultSet(data=df, manifest=m).validate_schema()
+    # duplicate rows rejected
+    row = ["price", "s", "r", 2020, "central", 1.0]
+    dup = pd.DataFrame([row, row], columns=RESULT_COLUMNS)
+    with pytest.raises(ValueError, match="duplicate"):
+        ResultSet(data=dup, manifest=m).validate_schema()
+    # invalid band rejected
+    bad = pd.DataFrame([["price", "s", "r", 2020, "bogus", 1.0]], columns=RESULT_COLUMNS)
+    with pytest.raises(ValueError, match="band labels"):
+        ResultSet(data=bad, manifest=m).validate_schema()
+
+
+def test_manifest_rejects_empty_assumptions():
+    from cge.contracts.provenance import RunManifest
+
+    with pytest.raises(ValueError, match="empty assumptions"):
+        RunManifest.build(
+            engine_name="e",
+            engine_version="1",
+            data_source="d",
+            scenario={},
+            assumptions={},
+        )

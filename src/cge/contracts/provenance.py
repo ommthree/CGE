@@ -48,6 +48,13 @@ class RunManifest(BaseModel):
         scenario: dict[str, Any],
         assumptions: dict[str, Any],
     ) -> RunManifest:
+        # Assumptions are the credibility surface (printed on every result); an engine that
+        # produces numbers must declare them. Empty here is a programming error.
+        if not assumptions:
+            raise ValueError(
+                f"engine {engine_name!r} produced a result with empty assumptions; the "
+                f"assumptions dump is mandatory (it is printed on every result)."
+            )
         return cls(
             engine_name=engine_name,
             engine_version=engine_version,

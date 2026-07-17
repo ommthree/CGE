@@ -198,6 +198,42 @@ def test_structural_guard_rejects_broken_build():
         assert_structural(bad2, sats)
 
 
+def test_store_save_preserves_build_on_swap_failure(tmp_path):
+    """If the staging→final swap fails, the pre-existing build must be restored, not lost
+    (review: the old dir was deleted before the rename)."""
+    import pathlib
+    from unittest import mock
+
+    store = DataStore(tmp_path)
+    build_test(store=store)
+    bid = "exiobase-test"
+    before = sorted(p.name for p in (store.builds_dir / bid).iterdir())
+
+    pio = load_exiobase_test()
+    io, sats = adapt_pymrio(
+        pio,
+        source="EXIOBASE-test",
+        source_version="test",
+        reference_year=2011,
+        gas_aliases={"emission_type1": "CO2"},
+    )
+    meta = store.load_meta(bid)
+
+    orig = pathlib.Path.replace
+
+    def flaky(self, target):
+        if ".tmp" in str(self) and str(target).endswith("/" + bid):
+            raise OSError("simulated staging→final failure")
+        return orig(self, target)
+
+    with mock.patch.object(pathlib.Path, "replace", flaky), pytest.raises(OSError):
+        store.save(meta=meta, io=io, satellites=sats)
+
+    assert (store.builds_dir / bid).exists()
+    after = sorted(p.name for p in (store.builds_dir / bid).iterdir())
+    assert after == before  # prior build intact
+
+
 def test_structural_gate_rejects_nan_final_demand():
     """A NaN in final demand must fail the structural gate (review: it previously passed all
     gates because NaN comparisons silently evaluate false)."""

@@ -92,15 +92,17 @@ def _energy():
 @check(SUITE, "coverage_filtering")
 def _coverage():
     """A carbon price restricted to region A leaves region-B *direct* costs at zero
-    (upstream can still leak via trade, so we check the direct term)."""
-    from cge.engines.io_price.engine import _effective_price
+    (upstream can still leak via trade, so we check the direct-cost vector)."""
+    from cge.engines.io_price.engine import carbon_cost_vector
+    from cge.validation.toy import toy_economy
 
-    labels, _, _ = _toy_arrays()
+    io, sat = toy_economy()
+    labels = list(io.A.columns)
     shock = CarbonPrice(price=100.0, coverage_regions=["A"])
-    tau = _effective_price([shock], labels, 2020)
-    b_direct = {lab: t for lab, t in zip(labels, tau, strict=True) if lab.startswith("B:")}
-    ok = all(t == 0.0 for t in b_direct.values())
-    return ok, f"region-B direct carbon price all zero under A-only coverage: {ok}"
+    cost, _ = carbon_cost_vector([shock], sat, labels, 2020)
+    b_cost = [c for lab, c in zip(labels, cost, strict=True) if lab.startswith("B:")]
+    ok = all(c == 0.0 for c in b_cost)
+    return ok, f"region-B direct carbon cost all zero under A-only coverage: {ok}"
 
 
 @check(SUITE, "well_posedness_guard")
@@ -169,7 +171,7 @@ def _gas_selection():
     import pandas as pd
 
     from cge.contracts.data_objects import Provenance, SatelliteAccount
-    from cge.engines.io_price.engine import _intensity_for_gases
+    from cge.engines.io_price.engine import _gas_intensity
 
     prov = Provenance(
         source="t", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-17"
@@ -177,12 +179,12 @@ def _gas_selection():
     sat = SatelliteAccount(
         provenance=prov,
         name="GHG",
-        units={"CO2": "t/MEUR", "CH4": "t/MEUR", "CO2e": "tCO2e/MEUR"},
-        data=pd.DataFrame({"L0": [100.0, 10.0, 380.0]}, index=["CO2", "CH4", "CO2e"]),
+        units={"CO2": "t/MEUR", "CH4": "t/MEUR"},
+        data=pd.DataFrame({"A:x": [100.0, 10.0]}, index=["CO2", "CH4"]),
     )
-    co2, _ = _intensity_for_gases(sat, ["L0"], ["CO2"])
-    ch4, _ = _intensity_for_gases(sat, ["L0"], ["CH4"])
-    both, _ = _intensity_for_gases(sat, ["L0"], ["CO2", "CH4"])
+    co2 = _gas_intensity(sat, ["A:x"], ["CO2"])
+    ch4 = _gas_intensity(sat, ["A:x"], ["CH4"])
+    both = _gas_intensity(sat, ["A:x"], ["CO2", "CH4"])
     ok = not np.allclose(co2, ch4) and np.allclose(both, co2 + ch4)
     return ok, f"CO2={co2[0]}, CH4(×GWP)={ch4[0]}, combined additive={ok}"
 

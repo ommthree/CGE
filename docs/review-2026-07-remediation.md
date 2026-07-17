@@ -62,3 +62,43 @@ This records what was fixed, what remains, and the honest status.
 
 Phase status docs and the model doc have been updated to reflect this; "validated" now means
 "validated on the toy + internal identities", explicitly not "validated against live data".
+
+---
+
+## Second review round (fixed)
+
+A second independent review found further real defects — including one the first round
+*introduced*:
+
+- **Multi-gas cross-multiplication (new bug, high).** The round-1 fix unioned all gases and
+  summed all prices, then multiplied — cross-multiplying one shock's price against another's
+  gas. Rewritten: each shock contributes `price(year) × its own gases' intensity × its own
+  coverage`, summed. Counterexample (CO2@€100 + CH4@€10) now gives 0.0128, not 0.0528.
+- **Store overwrite still not atomic (high).** The old dir was deleted before the rename, so
+  a rename failure lost the build. Rewritten to move the old build aside, swap staging in,
+  then drop the backup — with restore-on-failure; per-pid staging avoids writer races. Test
+  simulates a swap failure and asserts the prior build survives.
+- **Live archive selection (high).** Removed the fallback to "any archive for the year"; a
+  `pxp` request now refuses to return an `ixi` file.
+- **Path bypassed the non-negative-price check (high).** `CarbonPrice.path` values are now
+  validated ≥ 0.
+- **Unknown/partial gas silently aggregated (high).** `_gas_intensity` now raises for an
+  unknown gas or a partially-missing mix, instead of falling back to CO2e (which taxed all
+  gases).
+- **Small-build-only not enforced (high).** The engine now rejects builds above
+  `MAX_DENSE_PRODUCTS` and validates `io.unit == MEUR` and `t/MEUR` intensities before the
+  1e-6 scaling. The engine header no longer claims a sparse path exists.
+- **Doc/theory fixes.** "Upper bound" softened to "expected to over-state vs substitution,
+  not a proven bound"; the non-negative-inverse statement now states the required A ≥ 0;
+  tier aggregates explicitly distinguished from structural path analysis; the scope option
+  is documented as **not implemented** (with the double-counting rationale); "verbatim
+  assumptions" corrected to "paraphrase kept consistent"; fixed test-count claims.
+- **Contract hardening.** `ResultSet.validate_schema` rejects string values, duplicates and
+  bad bands; `RunManifest` rejects empty assumptions; `Classification` rejects duplicate
+  labels; `ConcordanceMap` rejects negative weights; `NatureStress.severity` bounded [0,1].
+- **Packaging.** The `[gui]` extra now includes duckdb/pyarrow/pymrio (the GUI imports the
+  data store and Parquet exporter). The GUI results page labels changes as **percent** and
+  states they are fractional cost-only.
+
+Still deferred (unchanged): live EXIOBASE known-answer test, sparse full-MRIO, content-hashed
+build ids, curated concordance, DuckDB-paginated explorer, async builds, EXIOBASE 3.9.x.

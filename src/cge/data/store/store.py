@@ -20,6 +20,7 @@ risks). Everything else is JSON so it stays diffable and human-readable.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -125,28 +126,44 @@ class DataStore:
         prior build with more accounts) lingering after an overwrite.
         """
         final = self.builds_dir / meta.build_id
-        staging = self.builds_dir / f".{meta.build_id}.tmp"
+        # Per-process, per-pid staging name to avoid concurrent-writer collisions.
+        staging = self.builds_dir / f".{meta.build_id}.{os.getpid()}.tmp"
         if staging.exists():
             shutil.rmtree(staging)
         staging.mkdir(parents=True)
 
-        (staging / "meta.json").write_text(meta.model_dump_json(indent=2))
-        io.A.astype("float32").to_parquet(staging / "A.parquet")
-        io.final_demand.astype("float32").to_parquet(staging / "final_demand.parquet")
-        if not io.value_added.empty:
-            io.value_added.astype("float32").to_parquet(staging / "value_added.parquet")
-        for sat in satellites:
-            sat.data.astype("float32").to_parquet(staging / f"satellite_{sat.name}.parquet")
-            (staging / f"satellite_{sat.name}.units.json").write_text(
-                json.dumps(sat.units, indent=2)
-            )
-        if quality is not None:
-            (staging / "quality.json").write_text(quality.model_dump_json(indent=2))
+        try:
+            (staging / "meta.json").write_text(meta.model_dump_json(indent=2))
+            io.A.astype("float32").to_parquet(staging / "A.parquet")
+            io.final_demand.astype("float32").to_parquet(staging / "final_demand.parquet")
+            if not io.value_added.empty:
+                io.value_added.astype("float32").to_parquet(staging / "value_added.parquet")
+            for sat in satellites:
+                sat.data.astype("float32").to_parquet(staging / f"satellite_{sat.name}.parquet")
+                (staging / f"satellite_{sat.name}.units.json").write_text(
+                    json.dumps(sat.units, indent=2)
+                )
+            if quality is not None:
+                (staging / "quality.json").write_text(quality.model_dump_json(indent=2))
 
-        # Atomic replace: remove the old build dir, move staging into place.
-        if final.exists():
-            shutil.rmtree(final)
-        staging.replace(final)
+            # Swap staging into place without a window where the build is absent: move any
+            # existing build aside to a backup, put staging in place, then drop the backup.
+            # On failure the backup is restored, so an existing valid build is never lost.
+            backup = self.builds_dir / f".{meta.build_id}.bak.{os.getpid()}"
+            had_existing = final.exists()
+            if had_existing:
+                final.replace(backup)
+            try:
+                staging.replace(final)
+            except OSError:
+                if had_existing:
+                    backup.replace(final)  # restore the prior build
+                raise
+            if had_existing:
+                shutil.rmtree(backup, ignore_errors=True)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
 
         self._catalogue_upsert(
             meta,

@@ -41,13 +41,22 @@ class ResultSet(BaseModel):
             raise ValueError(f"ResultSet has unexpected columns: {sorted(extra)}")
         if self.data.empty:
             return self
-        values = pd.to_numeric(self.data["value"], errors="coerce")
-        if not values.notna().all() or not pd.Series(values).map(lambda v: v == v).all():
-            raise ValueError("ResultSet 'value' contains non-numeric or NaN entries")
         import numpy as np
+        from pandas.api.types import is_numeric_dtype
 
-        if not np.isfinite(values.to_numpy(dtype=float)).all():
-            raise ValueError("ResultSet 'value' contains non-finite (inf) entries")
+        # Require a genuinely numeric dtype — reject string values (even numeric-looking ones
+        # like "1.5") rather than silently coercing and retaining the str (review).
+        if not is_numeric_dtype(self.data["value"]):
+            raise ValueError(
+                f"ResultSet 'value' must be a numeric dtype, got {self.data['value'].dtype}"
+            )
+        values = self.data["value"].to_numpy(dtype=float)
+        if not np.isfinite(values).all():
+            raise ValueError("ResultSet 'value' contains NaN or infinite entries")
+        if self.data[["variable", "sector", "region", "year", "scenario"]].duplicated().any():
+            raise ValueError(
+                "ResultSet has duplicate (variable, sector, region, year, scenario) rows"
+            )
         bad_bands = set(self.data["scenario"].unique()) - {"low", "central", "high"}
         if bad_bands:
             raise ValueError(f"ResultSet 'scenario' has invalid band labels: {sorted(bad_bands)}")

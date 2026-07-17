@@ -29,9 +29,11 @@ decomposition.
 - `cge run --scenario examples/carbon_price_io.yaml` returns Δp + decomposition for every
   label (toy and any store build, e.g. `--data exiobase-test-small`), in milliseconds.
 - `cge engines` lists `io_price`; the GUI/CLI will pick it up purely via the registry.
-- 33 unit tests + the validation suite pass; lint + format clean.
-- Model doc `docs/models/io-price-model.md` matches the code (assumptions generated from the
-  engine's `ASSUMPTIONS`), and its status is now "implemented & validated".
+- Unit tests + the validation suite pass; lint + format clean. (Counts grow with each
+  review round — see the current `pytest`/`cge validate` output rather than a fixed number.)
+- Model doc `docs/models/io-price-model.md` matches the code (manifest assumptions restate
+  the engine's `ASSUMPTIONS`); status is "implemented; validated on toy + identities, **not**
+  against live EXIOBASE" (see `review-2026-07-remediation.md`).
 
 ## Validation suite (addresses the "comprehensive validation tests + script" request)
 
@@ -41,8 +43,9 @@ New standing model-validation subsystem (`cge.validation`, `docs/validation.md`)
   registry; a check that raises is a failure, not a crash.
 - Runner: `scripts/validate.py` and `cge validate` (`--suite`, `--strict`, `--markdown`),
   plus `tests/test_validation.py` so CI fails on any model regression.
-- Suites: `io_price` (9 checks mapping to the model doc §7) and `data_layer` (4 economic
-  identities on a built dataset).
+- Suites: `io_price` (checks mapping to the model doc §7 — analytic, units, gas selection,
+  time path, coverage, well-posedness, known-answer) and `data_layer` (economic identities
+  on a built dataset).
 
 **The suite already earned its keep:** it caught that the well-posedness guard relied on the
 linear solve failing, which `np.linalg.solve` does not do for merely non-productive matrices.

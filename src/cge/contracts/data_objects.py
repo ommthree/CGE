@@ -27,6 +27,13 @@ class Classification(BaseModel):
     kind: Literal["sector", "region"]
     labels: list[str]
 
+    @model_validator(mode="after")
+    def _labels_unique(self) -> Classification:
+        if len(set(self.labels)) != len(self.labels):
+            dupes = sorted({x for x in self.labels if self.labels.count(x) > 1})
+            raise ValueError(f"Classification {self.name!r} has duplicate labels: {dupes}")
+        return self
+
     def __len__(self) -> int:
         return len(self.labels)
 
@@ -140,8 +147,13 @@ class ConcordanceMap(_DataObject):
     weights: dict[str, dict[str, float]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _weights_sum_to_one(self) -> ConcordanceMap:
+    def _weights_valid(self) -> ConcordanceMap:
         for src, targets in self.weights.items():
+            # Weights are shares — each must be non-negative (negatives that happen to sum to
+            # 1 are not a valid split; review), and they must sum to 1.
+            negatives = {t: w for t, w in targets.items() if w < 0}
+            if negatives:
+                raise ValueError(f"Concordance weights for {src!r} include negatives: {negatives}")
             total = sum(targets.values())
             if abs(total - 1.0) > 1e-6:
                 raise ValueError(f"Concordance weights for {src!r} sum to {total}, expected 1.0")

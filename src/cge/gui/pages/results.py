@@ -25,17 +25,23 @@ def render() -> None:
         f"data `{result.manifest.data_source}`  ·  hash `{result.manifest.scenario_hash}`"
     )
 
+    st.info(
+        "Δprice is a **fractional** change in the unit price index (baseline = 1), shown as a "
+        "**percent**. E.g. +6.0% means the good's price rises 6%. Cost impact only — no volume "
+        "effect (see the Run page's engine notes)."
+    )
     stats = rv.summary_stats(result)
     if stats:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Goods", stats["goods"])
-        c2.metric("Mean Δprice", f"{stats['mean']:.2f}")
-        c3.metric("Max Δprice", f"{stats['max']:.2f}")
-        c4.metric("Min Δprice", f"{stats['min']:.2f}")
+        c2.metric("Mean Δprice", f"{stats['mean'] * 100:+.2f}%")
+        c3.metric("Max Δprice", f"{stats['max'] * 100:+.2f}%")
+        c4.metric("Min Δprice", f"{stats['min'] * 100:+.2f}%")
 
-    # -- headline table --------------------------------------------------------
+    # -- headline table (fractional + percent) ---------------------------------
     st.subheader("Price change by good")
-    table = rv.headline_table(result)
+    table = rv.headline_table(result).copy()
+    table["change_%"] = (table["value"] * 100).round(3)
     st.dataframe(table, width="stretch", hide_index=True)
 
     # -- decomposition waterfall ----------------------------------------------

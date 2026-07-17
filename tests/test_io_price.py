@@ -69,47 +69,101 @@ def test_negative_coefficient_rejected():
         price_change(A, np.array([1.0, 0.0]))
 
 
-def test_gas_selection_distinct_and_additive():
-    """gases=[CO2] and gases=[CH4] give different intensities; combined is GWP-additive."""
+def _ghg_sat():
     import pandas as pd
 
     from cge.contracts.data_objects import Provenance, SatelliteAccount
-    from cge.engines.io_price.engine import _intensity_for_gases
 
     prov = Provenance(
         source="t", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-17"
     )
-    sat = SatelliteAccount(
+    return SatelliteAccount(
         provenance=prov,
         name="GHG",
         units={"CO2": "t/MEUR", "CH4": "t/MEUR"},
-        data=pd.DataFrame({"L0": [100.0, 10.0]}, index=["CO2", "CH4"]),
+        data=pd.DataFrame({"A:x": [100.0, 10.0]}, index=["CO2", "CH4"]),
     )
-    co2, _ = _intensity_for_gases(sat, ["L0"], ["CO2"])
-    ch4, _ = _intensity_for_gases(sat, ["L0"], ["CH4"])
-    both, _ = _intensity_for_gases(sat, ["L0"], ["CO2", "CH4"])
+
+
+def test_gas_selection_distinct_and_additive():
+    """gases=[CO2] and gases=[CH4] give different intensities; combined is GWP-additive."""
+    from cge.engines.io_price.engine import _gas_intensity
+
+    sat = _ghg_sat()
+    co2 = _gas_intensity(sat, ["A:x"], ["CO2"])
+    ch4 = _gas_intensity(sat, ["A:x"], ["CH4"])
+    both = _gas_intensity(sat, ["A:x"], ["CO2", "CH4"])
     assert not np.allclose(co2, ch4)  # 100 vs 280 (10×28)
     assert np.allclose(both, co2 + ch4)
 
 
+def test_unknown_gas_rejected_not_silently_aggregated():
+    """An unknown or partially-unavailable gas must raise, never fall back to CO2e (review)."""
+    from cge.engines.io_price.engine import _gas_intensity
+
+    sat = _ghg_sat()
+    with pytest.raises(ValueError, match="not in satellite"):
+        _gas_intensity(sat, ["A:x"], ["NOT_A_GAS"])
+    with pytest.raises(ValueError, match="not in satellite"):
+        _gas_intensity(sat, ["A:x"], ["CO2", "TYPO"])
+
+
+def test_multi_gas_shocks_do_not_cross_multiply():
+    """Two shocks, each pricing its own gas, contribute price×own-gas independently — not
+    union-gases-and-sum-prices (the review's cross-multiplication counterexample)."""
+    from cge.engines.io_price.engine import MEUR_TO_EUR, carbon_cost_vector
+
+    sat = _ghg_sat()
+    shocks = [CarbonPrice(price=100.0, gases=["CO2"]), CarbonPrice(price=10.0, gases=["CH4"])]
+    cost, _ = carbon_cost_vector(shocks, sat, ["A:x"], 2020)
+    expected = (100.0 * 100.0 + 10.0 * 280.0) * MEUR_TO_EUR  # CO2@100·100 + CH4@10·280
+    assert np.isclose(cost[0], expected)
+
+
 def test_missing_satellite_label_rejected():
     """A product missing from the satellite is an alignment error, not zero emissions."""
-    import pandas as pd
+    from cge.engines.io_price.engine import carbon_cost_vector
 
-    from cge.contracts.data_objects import Provenance, SatelliteAccount
-    from cge.engines.io_price.engine import _intensity_for_gases
-
-    prov = Provenance(
-        source="t", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-17"
-    )
-    sat = SatelliteAccount(
-        provenance=prov,
-        name="GHG",
-        units={"CO2": "t/MEUR"},
-        data=pd.DataFrame({"L0": [100.0]}, index=["CO2"]),
-    )
+    sat = _ghg_sat()
     with pytest.raises(ValueError, match="missing"):
-        _intensity_for_gases(sat, ["L0", "L1"], ["CO2"])
+        carbon_cost_vector([CarbonPrice(price=100.0)], sat, ["A:x", "A:y"], 2020)
+
+
+def test_negative_path_rejected_at_construction():
+    with pytest.raises(ValueError):
+        CarbonPrice(price=100.0, path={2020: -20.0})
+
+
+def test_full_build_rejected_dense_only():
+    """The dense engine refuses builds above the product cap (small-build-only enforcement)."""
+    from cge.engines.io_price.engine import MAX_DENSE_PRODUCTS, IOPriceEngine
+    from cge.validation import toy_economy
+
+    io, sat = toy_economy()
+    # Fake a too-large build by padding the label count check via a monkeyish wrapper.
+    big_labels = [f"R{i}:s" for i in range(MAX_DENSE_PRODUCTS + 1)]
+    io.A = io.A.reindex(index=big_labels, columns=big_labels).fillna(0.0)
+    with pytest.raises(ValueError, match="dense-only"):
+        IOPriceEngine().run(
+            data={"IOSystem": io, "SatelliteAccount": sat},
+            shocks=[CarbonPrice(price=100.0)],
+            years=[2020],
+        )
+
+
+def test_wrong_monetary_unit_rejected():
+    """The 1e-6 scaling is only valid for a MEUR base; a different unit must be rejected."""
+    from cge.engines.io_price.engine import IOPriceEngine
+    from cge.validation import toy_economy
+
+    io, sat = toy_economy()
+    io.unit = "EUR"  # not MEUR
+    with pytest.raises(ValueError, match="MEUR monetary base"):
+        IOPriceEngine().run(
+            data={"IOSystem": io, "SatelliteAccount": sat},
+            shocks=[CarbonPrice(price=100.0)],
+            years=[2020],
+        )
 
 
 def test_time_path_varies_by_year():
@@ -150,8 +204,8 @@ def test_end_to_end_via_runner():
     assert (df["variable"] == "price_change").sum() == 6
     # decomposition variables present
     assert (df["variable"] == "price_change_direct").sum() == 6
-    # assumptions carry the interpretation caveat
-    assert "UPPER BOUND" in result.manifest.assumptions["interpretation"]
+    # assumptions carry the interpretation caveat (no volume effect; over-states vs substitution)
+    assert "volume effect" in result.manifest.assumptions["interpretation"]
 
 
 def test_engine_rejects_unsupported_shock():

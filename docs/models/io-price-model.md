@@ -32,10 +32,13 @@ increase in all of its direct and indirect inputs has propagated through?"*
 vs upstream contributions.
 
 **Explicitly not modelled:** no substitution between inputs (technology is fixed), no
-demand response, no change in production volumes, no factor-market effects. The result is
-therefore an **upper bound on the cost impact** and says nothing about quantities. Volume
-response is Engine 2 (Phase 4); relaxing fixed technology is the CGE (Phase 5). This
-boundary is the single most important thing to state when presenting results.
+demand response, no change in production volumes, no factor-market effects. Because
+substitution would let firms avoid part of the cost, this fixed-technology / full-pass-through
+result is expected to **over-state the cost impact relative to a model with substitution** —
+but it is *not* a proven upper bound over every possible model (supply constraints, market
+power, or factor-market effects can push the true impact either way). It says nothing about
+quantities. Volume response is Engine 2 (Phase 4); relaxing fixed technology is the CGE
+(Phase 5). This boundary is the single most important thing to state when presenting results.
 
 ## 2. Notation
 
@@ -62,11 +65,21 @@ Emission intensities $\mathbf{e}$ come from the `SatelliteAccount`; $\mathbf{A}$
    margins are constant. (No pass-through parameter < 1 in v1.)
 3. **Cost-push price formation.** Prices are set by unit cost (Leontief price model), not
    by demand — consistent with the fixed-quantity assumption.
-4. **Carbon cost enters as a per-unit cost on direct (scope-1) emissions** by default;
-   an option adds emissions embodied in purchased energy explicitly.
+4. **Carbon cost enters as a per-unit cost on the scenario's selected GHG account** (the
+   producer's own scope-1 emissions, priced by `gases`). A scope-2 (embodied-energy) option
+   is **not implemented** — see the note below.
 5. **Linearity.** The price system is linear, so impacts of independent shocks add.
 
-Assumptions 1–5 must be reproduced verbatim in the engine's `RunManifest.assumptions`.
+> **On scope.** Equation (5) already propagates each supplier's own carbon cost through the
+> Leontief inverse, so a downstream good already bears its suppliers' emission costs. Adding
+> the buyer's *purchased-energy* emissions directly to its own cost vector would double-count
+> unless framed as a distinct scope-2 policy liability. Because that distinction is a
+> modelling decision not yet made, **no scope option exists in v0.2.0**; the engine prices
+> scope-1 emissions of the selected gases only.
+
+These assumptions are the single source of truth; the engine's `ASSUMPTIONS` dict (emitted
+into every `RunManifest.assumptions`) restates them for machine consumption and must stay
+consistent with this list — it is a paraphrase for the manifest, not a byte-for-byte copy.
 
 ## 4. Derivation
 
@@ -122,15 +135,21 @@ $$
 $$
 
 so $\Delta\mathbf{p} = \underbrace{\tau\mathbf{e}}_{\text{direct}} + \underbrace{\mathbf{A}^{\!\top}\tau\mathbf{e} + (\mathbf{A}^{\!\top})^2\tau\mathbf{e} + \cdots}_{\text{upstream, by tier}}$.
-The first term is the good's own emissions; each subsequent term is one more tier up the
-supply chain. Truncating after 2–3 terms gives the dominant supply-chain paths for the
-result explorer (structural path analysis, [MillerBlair2009, Ch. 12]).
+The first term is the good's own emissions; each subsequent term is the *aggregate*
+contribution of one more tier up the supply chain. The implementation reports these **tier
+aggregates plus a residual**, which sum exactly to $\Delta\mathbf{p}$. These are *not*
+enumerated individual supply-chain paths — full **structural path analysis** [MillerBlair2009,
+Ch. 12] would enumerate paths and is a separate, heavier method not implemented here.
 
-**Well-posedness.** $(\mathbf{I}-\mathbf{A}^{\!\top})^{-1}$ exists and is non-negative iff
-the spectral radius $\rho(\mathbf{A}) < 1$. For a productive economy every column sum of
-$\mathbf{A}$ (input cost share) is $< 1$, which guarantees $\rho(\mathbf{A})<1$ by the
-Perron–Frobenius bound [MillerBlair2009, §2.6]. The toy fixture is constructed to satisfy
-this; for EXIOBASE the engine asserts $\rho(\mathbf{A})<1$ as a precondition.
+**Well-posedness.** Assume $\mathbf{A} \ge 0$ (non-negative technical coefficients). Then
+$(\mathbf{I}-\mathbf{A}^{\!\top})^{-1}$ exists and **is non-negative iff** the spectral radius
+$\rho(\mathbf{A}) < 1$ [MillerBlair2009, §2.6]. The $\mathbf{A}\ge 0$ condition is essential:
+with negative entries the inverse can exist yet fail to be non-negative, so the
+"pass-through only adds cost" guarantee breaks (a positive tax could lower another good's
+price). The engine therefore asserts **both** $\mathbf{A}\ge 0$ (within a small tolerance for
+rounding) **and** $\rho(\mathbf{A})<1$ as preconditions. For a productive economy every
+column sum of $\mathbf{A}$ (input cost share) is $<1$, which gives $\rho(\mathbf{A})<1$ by the
+Perron–Frobenius bound.
 
 > **Implementation note.** `price_change` computes $\rho(\mathbf{A})$ explicitly and raises
 > if $\ge 1$, rather than relying on the linear solve to fail. This matters: `np.linalg.solve`
@@ -165,9 +184,9 @@ reimplementation a local change.
 
 - $\mathbf{A}$, $\mathbf{e}$: directly from EXIOBASE (Phase 1 data build); no free
   parameters.
-- $\tau$, gas coverage, sector/region coverage, scope: from the `CarbonPrice` scenario.
-- The only modelling choice is **scope** (scope-1 only vs including embodied energy);
-  exposed as a scenario option and recorded in the manifest.
+- $\tau$ (price and optional time path), `gases`, and sector/region coverage: from the
+  `CarbonPrice` scenario. There is **no scope option** in v0.2.0 (see the scope note in §3);
+  the engine prices scope-1 emissions of the selected gases.
 
 There are no fitted parameters — a strength of this engine, and why its *cost* answers are
 the most defensible in the whole platform.

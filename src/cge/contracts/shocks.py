@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Shock(BaseModel):
@@ -68,6 +68,14 @@ class CarbonPrice(Shock):
     gases: list[str] = Field(default_factory=lambda: ["CO2"])
     revenue_recycling: Literal["none", "lump_sum", "labour_tax_cut"] = "none"
 
+    @model_validator(mode="after")
+    def _path_nonnegative(self) -> CarbonPrice:
+        # A carbon price cannot be negative; the path must respect the same bound as ``price``
+        # (otherwise ``path={2020: -20}`` would bypass the ge=0 constraint — review).
+        if self.path and any(v < 0 for v in self.path.values()):
+            raise ValueError("CarbonPrice.path values must be ≥ 0 (a carbon price is non-negative)")
+        return self
+
     def price_at(self, year: int) -> float:
         """The carbon price level in ``year`` (reads ``path`` if present, else ``price``)."""
         return self._path_level_at(year, self.price)
@@ -108,7 +116,9 @@ class NatureStress(Shock):
 
     type: Literal["nature_stress"] = "nature_stress"
     service: str = Field(description="e.g. 'pollination', 'surface_water'")
-    severity: float = Field(description="fractional degradation of the service, 0..1")
+    severity: float = Field(
+        description="fractional degradation of the service, 0..1", ge=0.0, le=1.0
+    )
 
 
 AnyShock = Annotated[

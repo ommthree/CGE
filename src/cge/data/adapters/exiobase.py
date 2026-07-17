@@ -63,15 +63,16 @@ def fetch_exiobase(
         doi=doi,
         overwrite_existing=overwrite,
     )
-    # pymrio writes one archive per (year, system), e.g. 'IOT_2019_pxp.zip'. Locate it so we
-    # return the archive itself, not the download directory.
-    candidates = sorted(storage.glob(f"*{year}*{system}*.zip")) or sorted(
-        storage.glob(f"*{year}*.zip")
-    )
+    # pymrio writes one archive per (year, system), e.g. 'IOT_2019_pxp.zip'. Require the
+    # SYSTEM to match — do NOT fall back to any archive for the year, or a request for pxp
+    # could silently return an ixi (industry-by-industry) file (review).
+    candidates = sorted(storage.glob(f"*{year}*{system}*.zip"))
     if not candidates:
+        others = [p.name for p in storage.glob(f"*{year}*.zip")]
         raise FileNotFoundError(
-            f"EXIOBASE download completed but no archive for year {year}, system {system!r} "
-            f"was found in {storage}. Contents: {[p.name for p in storage.iterdir()]}"
+            f"No EXIOBASE archive matching year {year}, system {system!r} in {storage}. "
+            f"Other {year} archives present: {others or 'none'}. "
+            f"Refusing to guess a different system."
         )
     return candidates[0]
 
