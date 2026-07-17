@@ -69,11 +69,23 @@ class CarbonPrice(Shock):
     revenue_recycling: Literal["none", "lump_sum", "labour_tax_cut"] = "none"
 
     @model_validator(mode="after")
-    def _path_nonnegative(self) -> CarbonPrice:
-        # A carbon price cannot be negative; the path must respect the same bound as ``price``
-        # (otherwise ``path={2020: -20}`` would bypass the ge=0 constraint — review).
-        if self.path and any(v < 0 for v in self.path.values()):
-            raise ValueError("CarbonPrice.path values must be ≥ 0 (a carbon price is non-negative)")
+    def _validate(self) -> CarbonPrice:
+        import math
+
+        # ``gases`` must be a non-empty, unique list (an explicit [] is an error, not CO2).
+        if not self.gases:
+            raise ValueError("CarbonPrice.gases must be non-empty")
+        if len(set(self.gases)) != len(self.gases):
+            raise ValueError(f"CarbonPrice.gases has duplicates: {self.gases}")
+        # Path values must be finite and non-negative (a carbon price is ≥ 0; NaN bypasses <0).
+        if self.path:
+            for yr, v in self.path.items():
+                if not math.isfinite(v):
+                    raise ValueError(f"CarbonPrice.path[{yr}] is not finite: {v}")
+                if v < 0:
+                    raise ValueError(
+                        f"CarbonPrice.path[{yr}]={v} < 0 (a carbon price is non-negative)"
+                    )
         return self
 
     def price_at(self, year: int) -> float:

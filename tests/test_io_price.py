@@ -166,6 +166,95 @@ def test_wrong_monetary_unit_rejected():
         )
 
 
+def _run_toy(io, sat):
+    from cge.engines.io_price.engine import IOPriceEngine
+
+    return IOPriceEngine().run(
+        data={"IOSystem": io, "SatelliteAccount": sat},
+        shocks=[CarbonPrice(price=100.0)],
+        years=[2020],
+    )
+
+
+def test_kg_per_meur_intensity_rejected():
+    """kg/MEUR passes a '/MEUR' suffix but is 1000× wrong; exact-unit check must reject it."""
+    from cge.validation import toy_economy
+
+    io, sat = toy_economy()
+    sat.units = {"CO2": "kg/MEUR"}
+    with pytest.raises(ValueError, match="expected 't/MEUR'"):
+        _run_toy(io, sat)
+
+
+def test_missing_intensity_units_rejected():
+    from cge.validation import toy_economy
+
+    io, sat = toy_economy()
+    sat.units = {}
+    with pytest.raises(ValueError, match="no unit metadata"):
+        _run_toy(io, sat)
+
+
+def test_non_eur_currency_rejected():
+    from cge.validation import toy_economy
+
+    io, sat = toy_economy()
+    io.currency = "USD"
+    with pytest.raises(ValueError, match="currency"):
+        _run_toy(io, sat)
+
+
+def test_size_cap_runs_before_dense_ops():
+    """The dense-size cap must fire before any eigvals/solve (else the guard is pointless)."""
+    import numpy as np
+
+    from cge.engines.io_price.engine import MAX_DENSE_PRODUCTS
+    from cge.validation import toy_economy
+
+    io, sat = toy_economy()
+    big = [f"R{i}:s" for i in range(MAX_DENSE_PRODUCTS + 1)]
+    io.A = io.A.reindex(index=big, columns=big).fillna(0.0)
+
+    called = {"eigvals": False}
+    orig = np.linalg.eigvals
+    np.linalg.eigvals = lambda A: called.__setitem__("eigvals", True) or orig(A)
+    try:
+        with pytest.raises(ValueError, match="dense-only"):
+            _run_toy(io, sat)
+    finally:
+        np.linalg.eigvals = orig
+    assert called["eigvals"] is False  # cap fired before the dense eigenvalue computation
+
+
+def test_malformed_gas_selections_rejected():
+    from cge.engines.io_price.engine import _validate_gases
+
+    with pytest.raises(ValueError, match="non-empty"):
+        _validate_gases([])
+    with pytest.raises(ValueError, match="duplicates"):
+        _validate_gases(["CO2", "CO2"])
+    with pytest.raises(ValueError, match="mix"):
+        _validate_gases(["CO2e", "CO2"])
+
+
+def test_empty_or_duplicate_gases_rejected_at_construction():
+    with pytest.raises(ValueError):
+        CarbonPrice(price=100.0, gases=[])
+    with pytest.raises(ValueError):
+        CarbonPrice(price=100.0, gases=["CO2", "CO2"])
+
+
+def test_nan_path_rejected():
+    with pytest.raises(ValueError):
+        CarbonPrice(price=100.0, path={2020: float("nan")})
+
+
+def test_engine_version_is_030():
+    from cge.engines.io_price.engine import IOPriceEngine
+
+    assert IOPriceEngine().meta.version == "0.3.0"
+
+
 def test_time_path_varies_by_year():
     scenario = Scenario(
         name="p",

@@ -100,5 +100,33 @@ A second independent review found further real defects — including one the fir
   data store and Parquet exporter). The GUI results page labels changes as **percent** and
   states they are fractional cost-only.
 
+---
+
+## Third review round (fixed)
+
+A third review confirmed the round-2 fixes and found four more real issues:
+
+- **Unit guard permitted a 1000× error (high).** The check only tested a `/MEUR` *suffix*, so
+  `kg/MEUR` passed and was treated as `t/MEUR`. Now the engine requires **exact** units per
+  row (`t/MEUR` for gases, `tCO2e/MEUR` for CO2e), rejects missing units, and requires
+  `currency == EUR` and `unit == MEUR`. Engine version bumped **0.2.0 → 0.3.0**.
+- **Size cap ran after the dense eigenvalue computation (high).** `_assert_productive` (which
+  calls `eigvals`) ran before the product cap, so a full MRIO still risked OOM. The cap now
+  runs **first**, before `to_numpy`/`eigvals`/solve. Test asserts `eigvals` is not reached.
+- **Store "truly atomic" claim was wrong (high).** A directory rename can't atomically replace
+  a non-empty dir, so there is a brief window where the canonical path is absent. Reworded to
+  **recoverable, not strictly atomic**, and added `_recover_interrupted` (runs on store open)
+  that restores a build left in `.bak` by a crash mid-swap. Tested.
+- **Engine version not bumped (high).** Fixed (now 0.3.0), so manifests are distinguishable.
+
+Medium items also fixed: `gases` must be non-empty/unique and cannot mix `CO2e` with
+component gases (validated at construction *and* in the engine); `path` rejects NaN;
+`ConcordanceMap` rejects NaN weights; `RunManifest` rejects empty assumptions at construction
+(not just via `build`); `ResultSet` rejects a string `year`; the adapter verifies A is square
+and reindexes final demand onto A's products (rejects mis-ordered/misaligned sources); phase
+status text de-staled ("upper bound"/"CO2e by default" removed); the README quickstart installs
+`.[dev,data,gui]` (the tests need them).
+
 Still deferred (unchanged): live EXIOBASE known-answer test, sparse full-MRIO, content-hashed
-build ids, curated concordance, DuckDB-paginated explorer, async builds, EXIOBASE 3.9.x.
+build ids, curated concordance, DuckDB-paginated explorer, async builds, EXIOBASE 3.9.x, and
+the strictly-atomic (single-syscall) store swap.

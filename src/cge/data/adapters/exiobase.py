@@ -224,10 +224,18 @@ def adapt_pymrio(
         notes="Adapted from pymrio IOSystem.",
     )
 
+    # A must be square with identical row/column ordering; verify rather than assume, since a
+    # silently mis-ordered source would be relabelled wrongly (review).
+    if list(pio.A.index) != list(pio.A.columns):
+        raise ValueError("pymrio A index and columns differ; cannot map to a square IOSystem")
     A = pd.DataFrame(pio.A.to_numpy(dtype=float), index=labels, columns=labels)
-    final_demand = pd.DataFrame(
-        {"final_demand": pio.Y.sum(axis=1).to_numpy(dtype=float)}, index=labels
-    )
+
+    # Reindex final demand onto A's product order explicitly (Y's row order need not match A);
+    # a missing row would be a real alignment error, not a zero.
+    y_by_product = pio.Y.sum(axis=1).reindex(pio.A.index)
+    if y_by_product.isna().any():
+        raise ValueError("final demand (Y) is not aligned with A's products after reindexing")
+    final_demand = pd.DataFrame({"final_demand": y_by_product.to_numpy(dtype=float)}, index=labels)
 
     sectors, regions = [], []
     for region, sector in pio.A.index:

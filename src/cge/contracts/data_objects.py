@@ -148,9 +148,15 @@ class ConcordanceMap(_DataObject):
 
     @model_validator(mode="after")
     def _weights_valid(self) -> ConcordanceMap:
+        import math
+
         for src, targets in self.weights.items():
-            # Weights are shares — each must be non-negative (negatives that happen to sum to
-            # 1 are not a valid split; review), and they must sum to 1.
+            # Weights are shares — each must be finite (NaN would corrupt any downstream sum;
+            # review) and non-negative (negatives that happen to sum to 1 are not a valid
+            # split), and they must sum to 1.
+            nonfinite = {t: w for t, w in targets.items() if not math.isfinite(w)}
+            if nonfinite:
+                raise ValueError(f"Concordance weights for {src!r} are not finite: {nonfinite}")
             negatives = {t: w for t, w in targets.items() if w < 0}
             if negatives:
                 raise ValueError(f"Concordance weights for {src!r} include negatives: {negatives}")

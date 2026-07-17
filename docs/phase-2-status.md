@@ -53,8 +53,9 @@ The engine now checks ρ(A) explicitly (documented in the model doc's implementa
 
 ## What's genuine vs pending
 
-- **Genuine now:** correct Leontief pass-through, decomposition, coverage filtering, uses the
-  `CO2e` intensity on real builds and `CO2` on the toy — all validated against theory.
+- **Genuine now:** correct Leontief pass-through, decomposition, coverage filtering, and
+  per-gas selection (a scenario's `gases`, default `["CO2"]`, priced against that gas's
+  intensity) — all validated against theory.
 - **Pending live data:** the known-answer check reproducing published EXIOBASE CO₂
   multipliers within tolerance [Stadler2018] needs an `exiobase` build. It's specified in the
   model doc §7 and the validation doc; add it to the `io_price` suite once real data is built.
@@ -64,5 +65,6 @@ The engine now checks ρ(A) explicitly (documented in the model doc's implementa
 - The results explorer can render the decomposition directly: each good has `price_change`
   plus `price_change_direct` / `price_change_upstream_tier_{1,2,3}` / `..._residual` rows —
   a ready-made waterfall.
-- Every run's `RunManifest.assumptions` carries the model's caveats (incl. "UPPER BOUND on
-  cost impact; NO volume effects") for the assumptions printout.
+- Every run's `RunManifest.assumptions` carries the model's caveats (fixed technology, full
+  pass-through, no volume effect — expected to over-state vs a substitution model, not a proven
+  upper bound) for the assumptions printout.

@@ -44,18 +44,20 @@ Modules talk through versioned schemas, never by importing each other. See
 ## Quickstart
 
 ```bash
-# Environment — uv if you have it, else stdlib venv works identically
-uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
+# Environment — uv if you have it, else stdlib venv works identically.
+# Install dev + data (+ gui) extras: the test suite exercises the data layer and GUI.
+uv venv && source .venv/bin/activate && uv pip install -e ".[dev,data,gui]"
 #   or:
-python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev,data,gui]"
 
 # Prove the seams: run the dummy engine on the toy economy
 cge engines                                        # list registered engines
-cge run --scenario examples/carbon_price_toy.yaml  # run end-to-end
+cge run --scenario examples/carbon_price_io.yaml   # run Engine 1 end-to-end
 
-# Tests + lint
+# Tests + lint + model validation
 pytest
-ruff check src tests && ruff format --check src tests
+ruff check src tests scripts && ruff format --check src tests scripts
+cge validate --strict
 ```
 
 > The core install is intentionally light (pydantic, pandas, numpy, pyyaml). The heavier

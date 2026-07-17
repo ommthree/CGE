@@ -1,6 +1,6 @@
 # Model description: Engine 1 — Leontief carbon-cost price model
 
-- **Implements:** `cge.engines.io_price` (`IOPriceEngine`, v0.2.0)
+- **Implements:** `cge.engines.io_price` (`IOPriceEngine`, v0.3.0)
 - **Roadmap phase:** 2
 - **Capabilities:** prices
 - **Status:** implemented; validated on the toy economy and against internal identities.
@@ -12,14 +12,11 @@
 > This is the worked reference example for the [documentation standard](../documentation-standard.md):
 > it shows the equation-level detail and citation discipline every model doc must meet.
 
-> **Units (v0.2.0, post-review).** EXIOBASE emission flows are in **kg per M€** output; the
-> adapter converts to **tonnes per M€** using the source unit metadata. A carbon price in
-> €/tonne is then scaled by 1e‑6 (M€→€) so that τ·e is a **dimensionless cost share**. Δp is
-> therefore a **fractional change in the unit price index** (baseline p₀=1) — e.g. 0.06 = a
-> 6% price rise. An earlier version omitted both conversions and overstated impacts by ~1e9.
-
-> This is the worked reference example for the [documentation standard](../documentation-standard.md):
-> it shows the equation-level detail and citation discipline every model doc must meet.
+> **Units (post-review).** EXIOBASE emission flows are in **kg per M€** output; the adapter
+> converts to **tonnes per M€** using the source unit metadata. A carbon price in €/tonne is
+> then scaled by 1e‑6 (M€→€) so that τ·e is a **dimensionless cost share**. Δp is therefore a
+> **fractional change in the unit price index** (baseline p₀=1) — e.g. 0.06 = a 6% price rise.
+> The engine asserts the exact units (t/MEUR, tCO2e/MEUR) and EUR/MEUR base before scaling.
 
 ## 1. Purpose & scope
 
@@ -74,7 +71,7 @@ Emission intensities $\mathbf{e}$ come from the `SatelliteAccount`; $\mathbf{A}$
 > Leontief inverse, so a downstream good already bears its suppliers' emission costs. Adding
 > the buyer's *purchased-energy* emissions directly to its own cost vector would double-count
 > unless framed as a distinct scope-2 policy liability. Because that distinction is a
-> modelling decision not yet made, **no scope option exists in v0.2.0**; the engine prices
+> modelling decision not yet made, **no scope option exists in v0.3.0**; the engine prices
 > scope-1 emissions of the selected gases only.
 
 These assumptions are the single source of truth; the engine's `ASSUMPTIONS` dict (emitted

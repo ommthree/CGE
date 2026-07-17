@@ -234,6 +234,26 @@ def test_store_save_preserves_build_on_swap_failure(tmp_path):
     assert after == before  # prior build intact
 
 
+def test_store_recovers_build_from_backup_on_open(tmp_path):
+    """A hard-kill mid-swap leaves data in a .bak with the canonical path absent; opening the
+    store must recover it (crash-in-window recovery)."""
+    import shutil
+
+    store = DataStore(tmp_path)
+    build_test(store=store)
+    bid = "exiobase-test"
+    final = store.builds_dir / bid
+    # Simulate a crash after old→bak but before staging→final: move the build to .bak.
+    bak = store.builds_dir / f".{bid}.bak"
+    shutil.move(str(final), str(bak))
+    assert not final.exists()
+
+    # Reopening the store should restore it.
+    store2 = DataStore(tmp_path)
+    assert store2.has(bid)
+    assert not bak.exists()
+
+
 def test_structural_gate_rejects_nan_final_demand():
     """A NaN in final demand must fail the structural gate (review: it previously passed all
     gates because NaN comparisons silently evaluate false)."""

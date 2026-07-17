@@ -58,7 +58,22 @@ class DataStore:
         self.builds_dir = self.root / "builds"
         self.catalogue_path = self.root / "catalogue.duckdb"
         self.builds_dir.mkdir(parents=True, exist_ok=True)
+        self._recover_interrupted()
         self._init_catalogue()
+
+    def _recover_interrupted(self) -> None:
+        """Restore builds left in a ``.bak`` by a save that was hard-killed mid-swap (the
+        brief window where the canonical path is absent). Also sweeps stale ``.tmp`` staging
+        dirs. Makes the recoverable-swap strategy self-healing on next open."""
+        for bak in self.builds_dir.glob(".*.bak"):
+            build_id = bak.name[1:-4]  # strip leading '.' and trailing '.bak'
+            final = self.builds_dir / build_id
+            if not final.exists():
+                bak.replace(final)  # crash happened after old→bak, before staging→final
+            else:
+                shutil.rmtree(bak, ignore_errors=True)  # final present ⇒ backup is stale
+        for tmp in self.builds_dir.glob(".*.tmp"):
+            shutil.rmtree(tmp, ignore_errors=True)
 
     # -- catalogue -------------------------------------------------------------
     def _init_catalogue(self) -> None:
@@ -119,15 +134,20 @@ class DataStore:
         satellites: list[SatelliteAccount],
         quality: QualityReport | None = None,
     ) -> Path:
-        """Persist a build atomically: write to a temp dir, then replace the target dir.
+        """Persist a build with crash-safe replacement.
 
-        This avoids two hazards of writing in place (review): a partially-written build if
-        the process dies mid-save, and stale files (e.g. a satellite/value-added file from a
-        prior build with more accounts) lingering after an overwrite.
+        Write to a staging dir, then swap it into place. Because a POSIX directory rename
+        cannot atomically replace a *non-empty* existing directory in one syscall, the swap
+        is: move the old build to a ``.bak`` alongside, rename staging → final, drop the
+        backup. This is **recoverable, not strictly atomic** — there is a brief window where
+        the canonical path is absent, and a hard kill in that window leaves the data in the
+        backup, which ``_recover_interrupted`` (called on load/enumerate) restores. On an
+        ordinary exception the backup is restored immediately, so an existing build is never
+        lost. Avoids partial writes and stale files from in-place overwrites.
         """
         final = self.builds_dir / meta.build_id
-        # Per-process, per-pid staging name to avoid concurrent-writer collisions.
         staging = self.builds_dir / f".{meta.build_id}.{os.getpid()}.tmp"
+        backup = self.builds_dir / f".{meta.build_id}.bak"
         if staging.exists():
             shutil.rmtree(staging)
         staging.mkdir(parents=True)
@@ -146,15 +166,13 @@ class DataStore:
             if quality is not None:
                 (staging / "quality.json").write_text(quality.model_dump_json(indent=2))
 
-            # Swap staging into place without a window where the build is absent: move any
-            # existing build aside to a backup, put staging in place, then drop the backup.
-            # On failure the backup is restored, so an existing valid build is never lost.
-            backup = self.builds_dir / f".{meta.build_id}.bak.{os.getpid()}"
             had_existing = final.exists()
             if had_existing:
-                final.replace(backup)
+                if backup.exists():
+                    shutil.rmtree(backup)
+                final.replace(backup)  # move old aside (recoverable marker)
             try:
-                staging.replace(final)
+                staging.replace(final)  # atomic when 'final' is now absent
             except OSError:
                 if had_existing:
                     backup.replace(final)  # restore the prior build

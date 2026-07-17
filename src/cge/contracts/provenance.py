@@ -14,7 +14,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from cge.contracts import CONTRACTS_VERSION
 
@@ -33,10 +33,18 @@ class RunManifest(BaseModel):
     engine_version: str
     data_source: str = Field(description="e.g. 'EXIOBASE 3.8.2 / small-build-45'")
     scenario_hash: str
-    # Free-form but *mandatory* dump of the assumptions behind the numbers. The GUI
-    # prints this on every run page. Engines are expected to populate it richly.
-    assumptions: dict[str, Any] = Field(default_factory=dict)
+    # *Mandatory* dump of the assumptions behind the numbers (printed on every run page).
+    # Required with no default so a manifest cannot be constructed — directly or via build —
+    # without it; a non-empty check enforces it is actually populated (review).
+    assumptions: dict[str, Any]
     created: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+    @field_validator("assumptions")
+    @classmethod
+    def _assumptions_nonempty(cls, v: dict[str, Any]) -> dict[str, Any]:
+        if not v:
+            raise ValueError("RunManifest.assumptions is mandatory and must be non-empty")
+        return v
 
     @classmethod
     def build(

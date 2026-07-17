@@ -128,3 +128,37 @@ def test_manifest_rejects_empty_assumptions():
             scenario={},
             assumptions={},
         )
+
+
+# -- review-round-3 hardening -------------------------------------------------
+def test_concordance_rejects_nan_weights():
+    with pytest.raises(ValueError, match="not finite"):
+        ConcordanceMap(
+            provenance=_prov(),
+            from_classification="s",
+            to_classification="d",
+            weights={"a": {"X": float("nan")}},
+        )
+
+
+def test_manifest_rejects_empty_assumptions_at_construction():
+    from cge.contracts.provenance import RunManifest
+
+    with pytest.raises(ValueError, match="mandatory"):
+        RunManifest(
+            engine_name="e", engine_version="1", data_source="d", scenario_hash="h", assumptions={}
+        )
+
+
+def test_resultset_rejects_string_year():
+    import pandas as pd
+
+    from cge.contracts.provenance import RunManifest
+    from cge.contracts.results import RESULT_COLUMNS, ResultSet
+
+    m = RunManifest.build(
+        engine_name="e", engine_version="1", data_source="d", scenario={}, assumptions={"x": 1}
+    )
+    df = pd.DataFrame([["price", "s", "r", "2020", "central", 1.0]], columns=RESULT_COLUMNS)
+    with pytest.raises(ValueError, match="year"):
+        ResultSet(data=df, manifest=m).validate_schema()

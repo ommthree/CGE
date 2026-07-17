@@ -42,13 +42,18 @@ class ResultSet(BaseModel):
         if self.data.empty:
             return self
         import numpy as np
-        from pandas.api.types import is_numeric_dtype
+        from pandas.api.types import is_integer_dtype, is_numeric_dtype
 
         # Require a genuinely numeric dtype — reject string values (even numeric-looking ones
         # like "1.5") rather than silently coercing and retaining the str (review).
         if not is_numeric_dtype(self.data["value"]):
             raise ValueError(
                 f"ResultSet 'value' must be a numeric dtype, got {self.data['value'].dtype}"
+            )
+        # 'year' must be an integer dtype — a string year like "2020" is rejected (review).
+        if not is_integer_dtype(self.data["year"]):
+            raise ValueError(
+                f"ResultSet 'year' must be an integer dtype, got {self.data['year'].dtype}"
             )
         values = self.data["value"].to_numpy(dtype=float)
         if not np.isfinite(values).all():

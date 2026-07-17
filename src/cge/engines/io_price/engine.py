@@ -27,7 +27,7 @@ from cge.contracts.provenance import RunManifest
 from cge.contracts.results import ResultSet
 from cge.contracts.shocks import CarbonPrice, Shock
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 # Assumptions from io-price-model.md §3 — printed on every result (GUI credibility). Kept in
 # sync with the model doc; the doc references this dict as the source of truth (not a
@@ -50,10 +50,15 @@ ASSUMPTIONS = {
 
 # A carbon price in €/tonne is scaled by 1e-6 (M€ → €) so τ·e is a dimensionless cost share.
 # Only valid when the monetary base is million-EUR (M€) and intensities are t/M€ — the engine
-# asserts both from the data's unit metadata before applying it.
+# asserts BOTH exactly (not just a '/MEUR' suffix: 'kg/MEUR' would be 1000× wrong) plus the
+# currency, before applying it.
 MEUR_TO_EUR = 1e-6
 _MONETARY_UNIT = "MEUR"
-_INTENSITY_UNIT_SUFFIX = "/MEUR"  # e.g. 't/MEUR', 'tCO2e/MEUR'
+_CURRENCY = "EUR"
+# Exact intensity units accepted, per gas row. A physical gas must be tonnes/M€; the combined
+# row must be tCO2e/M€. Anything else (kg/M€, g/M€, missing) is rejected.
+_UNIT_PHYSICAL_GAS = "t/MEUR"
+_UNIT_CO2E = "tCO2e/MEUR"
 
 # Dense solve + dense eigvals are O(n³) and O(n²) memory; cap products so a full MRIO can't
 # OOM. The small build (~40-60 sectors × ~10 regions) is well under this.
@@ -62,6 +67,34 @@ MAX_DENSE_PRODUCTS = 2000
 # Combined-gas row name — used ONLY when a scenario explicitly selects it (or the default
 # ["CO2e"]); never as a silent fallback for an unrecognised gas (that would tax all gases).
 _CO2E_ROW = "CO2e"
+
+
+def _assert_units(io: IOSystem, sat: SatelliteAccount) -> None:
+    """Reject anything that would make the 1e-6 M€→€ cost-share scaling wrong.
+
+    Requires: monetary unit exactly MEUR, currency exactly EUR, and every satellite row's
+    unit exactly t/MEUR (physical gas) or tCO2e/MEUR (the CO2e row). A '/MEUR' *suffix* is
+    insufficient — 'kg/MEUR' passes a suffix test but is 1000× off (review).
+    """
+    if io.unit != _MONETARY_UNIT:
+        raise ValueError(
+            f"io_price requires a {_MONETARY_UNIT} monetary base; build unit is {io.unit!r}."
+        )
+    if io.currency != _CURRENCY:
+        raise ValueError(
+            f"io_price applies euro-specific scaling; build currency is {io.currency!r}, "
+            f"expected {_CURRENCY!r}."
+        )
+    if not sat.units:
+        raise ValueError(f"satellite {sat.name!r} has no unit metadata; cannot verify t/MEUR.")
+    for row in sat.data.index:
+        unit = sat.units.get(row)
+        expected = _UNIT_CO2E if row == _CO2E_ROW else _UNIT_PHYSICAL_GAS
+        if unit != expected:
+            raise ValueError(
+                f"satellite row {row!r} has unit {unit!r}, expected {expected!r}; the M€→€ "
+                f"cost-share scaling assumes exactly this unit."
+            )
 
 
 def _assert_labels_aligned(sat: SatelliteAccount, labels: list[str]) -> None:
@@ -73,14 +106,29 @@ def _assert_labels_aligned(sat: SatelliteAccount, labels: list[str]) -> None:
         )
 
 
+def _validate_gases(gases: list[str]) -> None:
+    """Reject malformed gas selections (review): empty, duplicates, or mixing the aggregate
+    CO2e row with component gases (which would double-count)."""
+    if not gases:
+        raise ValueError("gases must be a non-empty list")
+    if len(set(gases)) != len(gases):
+        raise ValueError(f"gases contains duplicates: {gases} (would multiply-count a gas)")
+    if _CO2E_ROW in gases and len(gases) > 1:
+        raise ValueError(
+            f"cannot mix {_CO2E_ROW} with component gases {gases}: {_CO2E_ROW} already "
+            f"aggregates them (double-counting)."
+        )
+
+
 def _gas_intensity(sat: SatelliteAccount, labels: list[str], gases: list[str]) -> np.ndarray:
     """CO2e intensity (tCO2e/M€) per label for exactly the requested ``gases``.
 
     Each named gas MUST be present as its own row (weighted by GWP-100), OR the request must
-    be exactly the combined row ``["CO2e"]``. An unknown gas — or a mix where one gas is
-    missing — RAISES rather than silently falling back to the aggregate (review: falling back
-    let ``["NOT_A_GAS"]`` tax all gases and ``["CO2","TYPO"]`` drop the typo silently).
+    be exactly the combined row ``["CO2e"]``. Malformed selections (empty, duplicate, or
+    CO2e-mixed-with-components) and unknown/partially-missing gases all RAISE rather than
+    silently misinterpreting (review).
     """
+    _validate_gases(gases)
     available = set(sat.data.index)
 
     if gases == [_CO2E_ROW]:
@@ -128,12 +176,11 @@ def carbon_cost_vector(
     cost = np.zeros(len(labels))
     descs: list[str] = []
     for s in shocks:
-        gases = s.gases or ["CO2"]
-        intensity = _gas_intensity(sat, labels, gases)  # tCO2e/M€
+        intensity = _gas_intensity(sat, labels, s.gases)  # tCO2e/M€ (gases validated here)
         mask = _coverage_mask(s, labels)
         price = s.price_at(year)  # €/tonne
         cost += price * intensity * mask * MEUR_TO_EUR
-        descs.append(f"€{price:g}/t on {gases}")
+        descs.append(f"€{price:g}/t on {s.gases}")
     return cost, descs
 
 
@@ -227,33 +274,23 @@ class IOPriceEngine:
         io: IOSystem = data["IOSystem"]
         sat: SatelliteAccount = data["SatelliteAccount"]
         labels = list(io.A.columns)
-        A = io.A.to_numpy(dtype=float)
 
-        # The 1e-6 cost-share scaling is only valid for a million-EUR monetary base and
-        # t/MEUR intensities. Verify from the data's unit metadata rather than assuming.
-        if io.unit != _MONETARY_UNIT:
-            raise ValueError(
-                f"io_price assumes a {_MONETARY_UNIT} monetary base; build unit is {io.unit!r}. "
-                f"The M€→€ cost-share scaling would be wrong."
-            )
-        bad_units = {u for u in sat.units.values() if not str(u).endswith(_INTENSITY_UNIT_SUFFIX)}
-        if bad_units:
-            raise ValueError(
-                f"io_price expects intensities per {_MONETARY_UNIT} (…{_INTENSITY_UNIT_SUFFIX}); "
-                f"satellite has units {sorted(bad_units)}."
-            )
-
-        # Productivity is a per-run precondition; check once, then skip in the year loop.
-        _assert_productive(A)
-
-        # Dense-only implementation: enforce the documented small-build restriction so a
-        # full ~9800² MRIO cannot trigger an OOM / multi-minute dense solve.
+        # Dense-only: enforce the size cap FIRST — before to_numpy / eigvals / solve — so a
+        # full ~9800² MRIO can't incur the OOM/runtime the guard exists to prevent.
         if len(labels) > MAX_DENSE_PRODUCTS:
             raise ValueError(
                 f"io_price is dense-only and limited to ≤{MAX_DENSE_PRODUCTS} products; this "
                 f"build has {len(labels)}. Use a small/aggregated build (a sparse path is not "
                 f"yet implemented — see the model doc)."
             )
+
+        # The 1e-6 cost-share scaling is valid ONLY for a million-EUR base in EUR with exact
+        # t/MEUR (or tCO2e/MEUR) intensities. Check exactly — a '/MEUR' suffix is not enough
+        # ('kg/MEUR' would be 1000× wrong); missing units are rejected too.
+        _assert_units(io, sat)
+
+        A = io.A.to_numpy(dtype=float)
+        _assert_productive(A)  # per-run precondition; check once, then skip in the year loop
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
 
