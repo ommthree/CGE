@@ -65,26 +65,44 @@ def render() -> None:
     st.subheader("Assumptions behind these numbers")
     st.json(result.manifest.assumptions)
 
-    # -- export ----------------------------------------------------------------
+    # -- export (with provenance) ----------------------------------------------
     st.subheader("Export")
-    c1, c2 = st.columns(2)
+    st.caption("Exports carry the run manifest so results stay traceable to their inputs.")
+    c1, c2, c3 = st.columns(3)
     c1.download_button(
         "Results (CSV)",
         result.data.to_csv(index=False).encode(),
         file_name="results.csv",
         mime="text/csv",
+        help="Data only; download the manifest alongside for provenance.",
     )
     c2.download_button(
-        "Results (Parquet)",
-        _to_parquet(result.data),
+        "Results (Parquet + manifest)",
+        _to_parquet(result),
         file_name="results.parquet",
         mime="application/octet-stream",
+        help="Parquet with the run manifest embedded in file metadata.",
+    )
+    c3.download_button(
+        "Manifest (JSON)",
+        result.manifest.model_dump_json(indent=2).encode(),
+        file_name="manifest.json",
+        mime="application/json",
     )
 
 
-def _to_parquet(df) -> bytes:
+def _to_parquet(result) -> bytes:
+    """Parquet bytes with the run manifest embedded in the file's key-value metadata, so a
+    downloaded result file remains traceable to the data build and scenario that produced it."""
     import io
 
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table = pa.Table.from_pandas(result.data, preserve_index=False)
+    meta = dict(table.schema.metadata or {})
+    meta[b"cge_manifest"] = result.manifest.model_dump_json().encode()
+    table = table.replace_schema_metadata(meta)
     buf = io.BytesIO()
-    df.to_parquet(buf)
+    pq.write_table(table, buf)
     return buf.getvalue()

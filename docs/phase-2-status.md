@@ -1,8 +1,16 @@
 # Phase 2 — status
 
-Phase 2 ("Engine 1: IO carbon-cost pass-through") from `roadmap.md` is complete. The
-platform now produces **real economic answers**: the change in the price of every good under
-a carbon price, with full supply-chain pass-through and a direct-vs-upstream decomposition.
+Phase 2 ("Engine 1: IO carbon-cost pass-through") is implemented: the change in the price of
+every good under a carbon price, with full supply-chain pass-through and a direct-vs-upstream
+decomposition.
+
+> **Post-review (2026-07, engine v0.2.0).** An independent review found real defects — a ~1e9
+> units error, a broken live-build path, and ignored gas/time-path controls — since fixed. See
+> [`review-2026-07-remediation.md`](review-2026-07-remediation.md). Honest status: **validated
+> on the toy economy and internal identities (incl. a hand-derived known answer, units, gas
+> selection, time paths); NOT yet validated against live EXIOBASE published multipliers**, and
+> the engine is dense/small-build-only. Treat real-build numbers as indicative until the live
+> known-answer test is added.
 
 ## Tasks (roadmap §Phase 2)
 

@@ -57,6 +57,8 @@ def assert_structural(io: IOSystem, satellites: list[SatelliteAccount]) -> None:
     fd_labels = list(io.final_demand.index)
     if fd_labels != labels:
         raise ConsistencyError("final_demand index is not aligned with A")
+    if not np.isfinite(io.final_demand.to_numpy(dtype=float)).all():
+        raise ConsistencyError("final_demand contains non-finite values (NaN/inf)")
 
     # Leontief inverse must exist (productive economy).
     rho = float(np.max(np.abs(np.linalg.eigvals(A.to_numpy(dtype=float)))))

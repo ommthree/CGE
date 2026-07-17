@@ -198,6 +198,39 @@ def test_structural_guard_rejects_broken_build():
         assert_structural(bad2, sats)
 
 
+def test_structural_gate_rejects_nan_final_demand():
+    """A NaN in final demand must fail the structural gate (review: it previously passed all
+    gates because NaN comparisons silently evaluate false)."""
+    from cge.data.quality import ConsistencyError, assert_structural
+
+    pio = load_exiobase_test()
+    io, sats = adapt_pymrio(pio, source="t", source_version="test", reference_year=2011)
+    bad = io.model_copy()
+    fd = bad.final_demand.copy()
+    fd.iloc[0, 0] = np.nan
+    bad.final_demand = fd
+    with pytest.raises(ConsistencyError, match="final_demand contains non-finite"):
+        assert_structural(bad, sats)
+
+
+def test_adapter_ghg_intensity_in_tonnes_per_meur():
+    """Units fix: the GHG satellite is in t/MEUR (kg source unit converted to tonnes),
+    and carries per-gas + CO2e rows with correct unit labels."""
+    pio = load_exiobase_test()
+    _, sats = adapt_pymrio(
+        pio,
+        source="t",
+        source_version="test",
+        reference_year=2011,
+        gas_aliases={"emission_type1": "CO2"},
+    )
+    ghg = next(s for s in sats if s.name == "GHG")
+    assert ghg.units["CO2"] == "t/MEUR"
+    assert ghg.units["CO2e"] == "tCO2e/MEUR"
+    # kg→t conversion makes intensities ~1000× smaller than the raw kg/MEUR numbers.
+    assert ghg.data.loc["CO2"].abs().max() < 1.0  # test fixture is low-intensity
+
+
 def test_aggregation_conservation_check_reports_pass():
     """The cross-stage conservation check passes for a correct aggregation and is stored
     in the build's quality report (so a broken aggregation would surface, not hide)."""

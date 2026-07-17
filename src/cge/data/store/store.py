@@ -20,6 +20,7 @@ risks). Everything else is JSON so it stays diffable and human-readable.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import duckdb
@@ -44,6 +45,8 @@ def _meta_to_provenance(meta: BuildMeta) -> Provenance:
         licence=meta.licence,
         reference_year=meta.reference_year,
         retrieved=meta.retrieved,
+        build_id=meta.build_id,
+        aggregation=meta.aggregation,
         notes=meta.notes,
     )
 
@@ -115,28 +118,42 @@ class DataStore:
         satellites: list[SatelliteAccount],
         quality: QualityReport | None = None,
     ) -> Path:
-        d = self.builds_dir / meta.build_id
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "meta.json").write_text(meta.model_dump_json(indent=2))
+        """Persist a build atomically: write to a temp dir, then replace the target dir.
 
-        io.A.astype("float32").to_parquet(d / "A.parquet")
-        io.final_demand.astype("float32").to_parquet(d / "final_demand.parquet")
+        This avoids two hazards of writing in place (review): a partially-written build if
+        the process dies mid-save, and stale files (e.g. a satellite/value-added file from a
+        prior build with more accounts) lingering after an overwrite.
+        """
+        final = self.builds_dir / meta.build_id
+        staging = self.builds_dir / f".{meta.build_id}.tmp"
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+
+        (staging / "meta.json").write_text(meta.model_dump_json(indent=2))
+        io.A.astype("float32").to_parquet(staging / "A.parquet")
+        io.final_demand.astype("float32").to_parquet(staging / "final_demand.parquet")
         if not io.value_added.empty:
-            io.value_added.astype("float32").to_parquet(d / "value_added.parquet")
-
+            io.value_added.astype("float32").to_parquet(staging / "value_added.parquet")
         for sat in satellites:
-            sat.data.astype("float32").to_parquet(d / f"satellite_{sat.name}.parquet")
-            (d / f"satellite_{sat.name}.units.json").write_text(json.dumps(sat.units, indent=2))
-
+            sat.data.astype("float32").to_parquet(staging / f"satellite_{sat.name}.parquet")
+            (staging / f"satellite_{sat.name}.units.json").write_text(
+                json.dumps(sat.units, indent=2)
+            )
         if quality is not None:
-            (d / "quality.json").write_text(quality.model_dump_json(indent=2))
+            (staging / "quality.json").write_text(quality.model_dump_json(indent=2))
+
+        # Atomic replace: remove the old build dir, move staging into place.
+        if final.exists():
+            shutil.rmtree(final)
+        staging.replace(final)
 
         self._catalogue_upsert(
             meta,
             n_labels=len(io.A.columns),
             quality_worst=(quality.worst.value if quality else None),
         )
-        return d
+        return final
 
     # -- read ------------------------------------------------------------------
     def load_meta(self, build_id: str) -> BuildMeta:

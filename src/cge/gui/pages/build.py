@@ -1,8 +1,12 @@
 """Build data page (task 3.4): trigger a data build and stream its log.
 
-Builds run as a background subprocess (via the service's job wrapper) so a long EXIOBASE
-download doesn't freeze the UI; the page streams stdout live and refreshes the catalogue
-when the job finishes.
+Builds run in a **subprocess** (via the service's job wrapper) so a crash in the build can't
+take down the app, and the log streams live. Note: the current implementation reads the
+subprocess output synchronously within ``render()``, so *this browser tab* is busy until the
+build finishes — the subprocess keeps the work out of the app process but does not make the
+page interactive during a long download. A fully non-blocking build (background thread +
+polling, or a job queue) is deferred to Phase 7; for now prefer the offline test build in the
+UI and run long EXIOBASE builds from the CLI (`cge build --exiobase`).
 """
 
 from __future__ import annotations

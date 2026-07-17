@@ -20,16 +20,17 @@ from pydantic import BaseModel, Field
 class Shock(BaseModel):
     """Base for all shocks. ``type`` is the discriminator used for (de)serialisation.
 
-    ``coverage`` narrows where the shock applies; empty means 'everywhere'. A shock
-    with a ``path`` (year -> multiplier-or-level, shock-specific) is a time path;
-    otherwise ``at(year)`` returns the shock unchanged.
+    ``coverage`` narrows where the shock applies; empty means 'everywhere'. A shock with a
+    ``path`` (year -> scalar level, shock-specific) is a time path; ``level_at(year)`` reads
+    it (piecewise-linear between given years, flat outside the range), falling back to the
+    shock's own scalar when no path is set.
     """
 
     type: str
     coverage_sectors: list[str] = Field(default_factory=list)
     coverage_regions: list[str] = Field(default_factory=list)
     path: dict[int, float] | None = Field(
-        default=None, description="optional year -> scalar time path"
+        default=None, description="optional year -> scalar level time path"
     )
 
     def applies_to(self, sector: str, region: str) -> bool:
@@ -37,14 +38,39 @@ class Shock(BaseModel):
         ok_r = not self.coverage_regions or region in self.coverage_regions
         return ok_s and ok_r
 
+    def _path_level_at(self, year: int, default: float) -> float:
+        """Piecewise-linear interpolation of ``path`` at ``year``; flat-extrapolate ends.
+        Returns ``default`` when there is no path."""
+        if not self.path:
+            return default
+        years = sorted(self.path)
+        if year <= years[0]:
+            return float(self.path[years[0]])
+        if year >= years[-1]:
+            return float(self.path[years[-1]])
+        for lo, hi in zip(years, years[1:], strict=False):
+            if lo <= year <= hi:
+                frac = (year - lo) / (hi - lo)
+                return float(self.path[lo] + frac * (self.path[hi] - self.path[lo]))
+        return default  # unreachable given the bracketing above
+
 
 class CarbonPrice(Shock):
-    """A carbon price (currency per tonne CO2e)."""
+    """A carbon price (currency per tonne CO2e).
+
+    ``gases`` selects which greenhouse gases the price applies to (must exist in the data's
+    GHG account). ``path`` (if set) gives the price *level* per year, overriding ``price``
+    for those years; ``price`` is the level when no path applies.
+    """
 
     type: Literal["carbon_price"] = "carbon_price"
-    price: float = Field(description="currency per tCO2e")
+    price: float = Field(description="currency per tCO2e", ge=0.0)
     gases: list[str] = Field(default_factory=lambda: ["CO2"])
     revenue_recycling: Literal["none", "lump_sum", "labour_tax_cut"] = "none"
+
+    def price_at(self, year: int) -> float:
+        """The carbon price level in ``year`` (reads ``path`` if present, else ``price``)."""
+        return self._path_level_at(year, self.price)
 
 
 class ProductivityShock(Shock):
