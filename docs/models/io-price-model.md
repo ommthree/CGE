@@ -1,9 +1,10 @@
 # Model description: Engine 1 — Leontief carbon-cost price model
 
-- **Implements:** `cge.engines.io_price` (Phase 2; not yet built — this doc is its spec)
+- **Implements:** `cge.engines.io_price` (`IOPriceEngine`, v0.1.0)
 - **Roadmap phase:** 2
 - **Capabilities:** prices
-- **Status:** draft (specification ahead of implementation)
+- **Status:** implemented & validated (this doc was written as the spec first; the code
+  matches it, and the manifest assumptions are generated from `ASSUMPTIONS` in the engine)
 
 > This is the worked reference example for the [documentation standard](../documentation-standard.md):
 > it shows the equation-level detail and citation discipline every model doc must meet.
@@ -119,6 +120,12 @@ $\mathbf{A}$ (input cost share) is $< 1$, which guarantees $\rho(\mathbf{A})<1$ 
 Perron–Frobenius bound [MillerBlair2009, §2.6]. The toy fixture is constructed to satisfy
 this; for EXIOBASE the engine asserts $\rho(\mathbf{A})<1$ as a precondition.
 
+> **Implementation note.** `price_change` computes $\rho(\mathbf{A})$ explicitly and raises
+> if $\ge 1$, rather than relying on the linear solve to fail. This matters: `np.linalg.solve`
+> succeeds numerically for many non-productive matrices (it only errors on exact
+> singularity), so a solve-only guard would silently return meaningless prices. The
+> validation suite caught exactly this gap during Phase 2.
+
 ## 5. Algorithm
 
 1. Assemble $\mathbf{A}$ (sector×region) and $\mathbf{e}$ from the data objects; align on
@@ -126,14 +133,16 @@ this; for EXIOBASE the engine asserts $\rho(\mathbf{A})<1$ as a precondition.
 2. Form $\mathbf{c} = \tau\mathbf{e}$, zeroing entries outside the shock's coverage
    (sector/region filters from the `CarbonPrice` shock).
 3. Solve $(\mathbf{I}-\mathbf{A}^{\!\top})\,\Delta\mathbf{p} = \mathbf{c}$ for
-   $\Delta\mathbf{p}$ — a linear solve, **not** an explicit inverse (`scipy.linalg.solve`
-   / sparse `spsolve`), which is more accurate and cheaper.
-4. For decomposition, accumulate the first $k$ Neumann terms (matrix–vector products only).
+   $\Delta\mathbf{p}$ — a linear solve, **not** an explicit inverse (`np.linalg.solve` on
+   the small build; sparse `scipy.sparse.linalg.spsolve` is the drop-in for the full MRIO,
+   gated behind the `[cge]` extra), which is more accurate and cheaper.
+4. For decomposition, accumulate the first $k$ Neumann terms (matrix–vector products only)
+   and take the residual against the full solve so the parts sum exactly to $\Delta\mathbf{p}$.
 
-**Complexity.** One $n\times n$ linear solve, $O(n^3)$ dense or far less sparse. On the
-small build ($n\sim 450$–600) this is milliseconds; on the full MRIO ($n\sim 9800$) it is
-seconds and runs sparse. This is a LAPACK/SciPy call, so the hot path is compiled (cf.
-ADR-0003); no Python-level optimisation is needed here.
+**Complexity.** One $n\times n$ linear solve, $O(n^3)$ dense or far less sparse, plus one
+eigenvalue computation for the productivity guard. On the small build ($n\sim 450$–600) this
+is milliseconds; on the full MRIO ($n\sim 9800$) it is seconds and runs sparse. This is a
+LAPACK call, so the hot path is compiled (cf. ADR-0003); no Python-level optimisation needed.
 
 ## 6. Calibration / parameters
 
@@ -148,15 +157,25 @@ the most defensible in the whole platform.
 
 ## 7. Validation
 
-- **Analytic (toy economy):** on `validation.toy_economy()`, hand-compute $\Delta\mathbf{p}$
-  from (5) for a known $\tau$ and assert equality to machine precision.
-- **Zero shock:** $\tau=0 \Rightarrow \Delta\mathbf{p}=\mathbf{0}$.
-- **Monotonicity/linearity:** doubling $\tau$ doubles $\Delta\mathbf{p}$.
-- **Known-answer (real data):** reproduce published EXIOBASE carbon-footprint / CO₂
-  multipliers for a few sectors within tolerance [Stadler2018].
-- **Well-posedness guard:** assert $\rho(\mathbf{A})<1$ on the loaded build.
+Implemented as the `io_price` **validation suite** (`cge.validation.suites.io_price`), run
+by `scripts/validate.py` / `cge validate` and gated in CI via `tests/test_validation.py`.
+Code-level unit tests live in `tests/test_io_price.py`. Current checks:
 
-Tests: `tests/test_io_price.py` (Phase 2). Identity checks run in CI.
+| Check | Property (equation) |
+|---|---|
+| `analytic_matches_explicit_inverse` | linear solve equals $(\mathbf{I}-\mathbf{A}^{\!\top})^{-1}\tau\mathbf{e}$ to machine precision (5) |
+| `zero_shock_zero_change` | $\tau=0 \Rightarrow \Delta\mathbf{p}=\mathbf{0}$ |
+| `linearity_in_price` | doubling $\tau$ doubles $\Delta\mathbf{p}$ (assumption 5) |
+| `pass_through_adds_cost` | $\Delta\mathbf{p} \ge$ direct cost everywhere ($\mathbf{A},\mathbf{e}\ge 0$) |
+| `decomposition_sums_to_total` | direct + upstream tiers + residual $= \Delta\mathbf{p}$ (6) |
+| `energy_most_exposed` | emissions-intensive sector has the largest impact (plausibility) |
+| `coverage_filtering` | region/sector-restricted shock zeroes direct cost elsewhere |
+| `well_posedness_guard` | non-productive economy ($\rho(\mathbf{A})\ge 1$) is rejected |
+| `engine_end_to_end` | runner → registered engine → schema-valid `ResultSet` + assumptions |
+
+**Remaining (needs live data):** known-answer reproduction of published EXIOBASE
+carbon-footprint / CO₂ multipliers for a few sectors within tolerance [Stadler2018] — add
+as an `io_price` suite check once a live `exiobase` build is available (roadmap P2.4 / P1 DoD).
 
 ## 8. References
 

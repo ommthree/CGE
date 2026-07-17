@@ -12,17 +12,20 @@ example: [`docs/models/io-price-model.md`](docs/models/io-price-model.md)).
 
 ## Status
 
-**Phase 1 — Data layer complete.** Builds from the live EXIOBASE source (with an offline
-test path) into harmonised data objects at full + small resolution, with correctness and
-consistency checks enforced along the pipeline and a stored quality report per build. The
-five inter-module contracts (Phase 0) are in place and a dummy engine proves the seams
-end-to-end. No economics engines yet — Engine 1 is next (Phase 2).
+**Phase 2 — Engine 1 (carbon-cost price model) complete.** The platform produces real
+answers: the change in the price of every good under a carbon price, with full supply-chain
+pass-through and a direct-vs-upstream decomposition ([`docs/models/io-price-model.md`](docs/models/io-price-model.md)).
+Built on the Phase 1 data layer (live EXIOBASE ingestion + quality/consistency checks) and
+the Phase 0 contracts. A standing model-validation suite ([`docs/validation.md`](docs/validation.md))
+audits correctness. Next: partial-equilibrium volume response (Phase 4) or the GUI (Phase 3).
 
 ```bash
-cge build --test            # offline build from pymrio's test MRIO (no download)
-cge build --exiobase        # live EXIOBASE build from Zenodo (large download)
-cge data                    # list builds in the store
-cge quality <build_id>      # show a build's quality + consistency report
+cge build --test                                    # offline data build (no download)
+cge build --exiobase                                # live EXIOBASE build from Zenodo
+cge data                                            # list builds in the store
+cge quality <build_id>                              # build quality + consistency report
+cge run --scenario examples/carbon_price_io.yaml    # Engine 1: carbon-cost price impacts
+cge validate                                        # run the model-validation suite
 ```
 
 ## The five contracts

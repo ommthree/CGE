@@ -6,6 +6,7 @@ cge build --exiobase [--year 2019]              live EXIOBASE build (downloads)
 cge build --test                                offline build from pymrio test MRIO
 cge data                                         list data builds in the store
 cge quality <build_id>                           show a build's quality report
+cge validate [--suite io_price] [--strict]       run the model validation suite
 """
 
 from __future__ import annotations
@@ -81,6 +82,15 @@ def _cmd_quality(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_validate(args: argparse.Namespace) -> int:
+    from cge.validation import run_all
+    from cge.validation.report import format_text
+
+    summary = run_all(only=args.suite)
+    print(format_text(summary))
+    return 1 if (args.strict and not summary.passed) else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cge", description="CGE/IAM platform CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -104,6 +114,11 @@ def main(argv: list[str] | None = None) -> int:
     quality = sub.add_parser("quality", help="show a build's quality report")
     quality.add_argument("build_id")
     quality.set_defaults(func=_cmd_quality)
+
+    validate = sub.add_parser("validate", help="run the model validation suite")
+    validate.add_argument("--suite", action="append", help="limit to named suite(s)")
+    validate.add_argument("--strict", action="store_true", help="exit non-zero on any failure")
+    validate.set_defaults(func=_cmd_validate)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -1,0 +1,17 @@
+# Engine 1 (io_price): Leontief carbon-cost pass-through on the toy economy.
+# The real model — Δprice of every good under a carbon price, with full supply-chain
+# pass-through and a direct-vs-upstream decomposition. See docs/models/io-price-model.md.
+#
+#   cge run --scenario examples/carbon_price_io.yaml            # toy economy
+#   cge run --scenario examples/carbon_price_io.yaml --data exiobase-test-small
+name: "Carbon price €100/t — Leontief pass-through"
+description: >
+  A €100/tCO2 carbon price applied economy-wide, priced through the supply chain by the
+  Leontief price model. Results are an upper bound on cost impact (no volume response).
+engine: io_price
+years: [2020]
+shocks:
+  - type: carbon_price
+    price: 100.0
+    gases: [CO2]
+    revenue_recycling: none
