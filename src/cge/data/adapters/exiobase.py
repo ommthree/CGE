@@ -50,7 +50,9 @@ def fetch_exiobase(
     """Download EXIOBASE 3 for ``year`` from the live Zenodo record into ``storage_folder``.
 
     ``system='pxp'`` selects product-by-product tables (roadmap decision). Returns the path
-    to the downloaded archive folder. Large (multi-GB); cached — re-runs skip existing files.
+    to the **downloaded archive for this year** — the file ``parse_exiobase3`` expects, not
+    the parent directory (which pymrio would not parse). Large (multi-GB); cached — re-runs
+    skip existing files.
     """
     storage = Path(storage_folder)
     storage.mkdir(parents=True, exist_ok=True)
@@ -61,7 +63,17 @@ def fetch_exiobase(
         doi=doi,
         overwrite_existing=overwrite,
     )
-    return storage
+    # pymrio writes one archive per (year, system), e.g. 'IOT_2019_pxp.zip'. Locate it so we
+    # return the archive itself, not the download directory.
+    candidates = sorted(storage.glob(f"*{year}*{system}*.zip")) or sorted(
+        storage.glob(f"*{year}*.zip")
+    )
+    if not candidates:
+        raise FileNotFoundError(
+            f"EXIOBASE download completed but no archive for year {year}, system {system!r} "
+            f"was found in {storage}. Contents: {[p.name for p in storage.iterdir()]}"
+        )
+    return candidates[0]
 
 
 def parse_exiobase(path: str | Path) -> pymrio.IOSystem:
@@ -75,76 +87,118 @@ def load_exiobase_test() -> pymrio.IOSystem:
     return pymrio.load_test().calc_all()
 
 
+# Extension folder / attribute names that carry emission stressors, across EXIOBASE
+# versions: 3.8.x uses 'emissions' in some products and 'satellite' in others; 'ghg' as a
+# fallback. Order matters only for logging; all matching extensions are scanned.
+_EMISSION_EXT_HINTS = ("satellite", "emiss", "ghg")
+
+# Convert a stressor's native mass unit to tonnes. Carbon costs are €/tonne, so every gas
+# flow must be normalised to tonnes before applying a carbon price (units defect fix).
+_MASS_TO_TONNE = {
+    "kg": 1e-3,
+    "t": 1.0,
+    "tonnes": 1.0,
+    "tonne": 1.0,
+    "Mt": 1e6,
+    "kt": 1e3,
+    "g": 1e-6,
+}
+
+
+def _emission_extension_names(pio: pymrio.IOSystem) -> list[str]:
+    ext = list(pio.get_extensions())
+    return [e for e in ext if any(h in e.lower() for h in _EMISSION_EXT_HINTS)]
+
+
+def _stressor_unit_to_tonne(ext, stressor) -> float:
+    """Return the multiplier taking this stressor's native unit to tonnes.
+
+    Reads the extension's ``unit`` metadata (pymrio carries it). Raises if the unit is
+    unrecognised — silently guessing a mass unit is exactly the class of error this fix
+    exists to prevent.
+    """
+    unit_df = getattr(ext, "unit", None)
+    if unit_df is None:
+        raise ValueError(f"extension has no unit metadata; cannot convert stressor {stressor!r}")
+    raw = unit_df.loc[stressor]
+    unit = str(raw.iloc[0] if hasattr(raw, "iloc") else raw).strip()
+    if unit not in _MASS_TO_TONNE:
+        raise ValueError(
+            f"unrecognised emission unit {unit!r} for stressor {stressor!r}; "
+            f"known: {sorted(_MASS_TO_TONNE)}"
+        )
+    return _MASS_TO_TONNE[unit]
+
+
 def _ghg_satellite(
     pio: pymrio.IOSystem,
     labels: list[str],
     provenance: Provenance,
     gas_aliases: dict[str, str] | None = None,
 ) -> SatelliteAccount | None:
-    """Build a GHG SatelliteAccount of **emission intensities** (per unit output).
+    """Build a GHG SatelliteAccount of **emission intensities in tonnes per M€ output**.
 
-    Looks for an emissions extension; sums stressors matching each GHG and adds a combined
-    CO2e row via GWP-100 (AR5). Intensities = F / x (extension flow per unit gross output).
-    Returns None if no emissions extension is present or no stressors match.
+    For each GHG (CO2, CH4, N2O) matching stressors' flows are unit-normalised to tonnes
+    (via the extension's ``unit`` metadata), summed, and divided by gross output. A combined
+    ``CO2e`` row is added via GWP-100 (AR5). Per-gas rows are kept so the engine can honour a
+    scenario's ``gases`` selection. Returns None if no emission extension/stressors are found.
 
-    ``gas_aliases`` maps a substring of a stressor name to a gas symbol, letting the tiny
-    pymrio test system (whose stressors are ``emission_type1/2``) stand in for real gases
-    so the offline pipeline carries a GHG account. Real EXIOBASE needs no aliases.
+    Units are **t/MEUR** (CO2e: **tCO2e/MEUR**). Because output is in M€, a carbon price in
+    €/t applied to these intensities must still be scaled by 1e-6 (M€→€) to yield a
+    dimensionless cost share — done in the engine, documented there.
+
+    ``gas_aliases`` maps a substring of a stressor name to a gas symbol so the tiny pymrio
+    test system (stressors ``emission_type1/2``) can stand in for real gases offline.
     """
-    ext_name = next(
-        (e for e in pio.get_extensions() if "emiss" in e.lower() or "ghg" in e.lower()),
-        None,
-    )
-    if ext_name is None:
-        return None
-    ext = getattr(pio, ext_name)
+    import numpy as np
 
-    # Gross output x per (region, sector); align to labels.
-    x = pio.x["indout"] if hasattr(pio, "x") and pio.x is not None else None
+    ext_names = _emission_extension_names(pio)
+    if not ext_names:
+        return None
+
+    x = pio.x["indout"] if getattr(pio, "x", None) is not None else None
     if x is None:
         return None
-    x = x.reindex(pio.A.columns)
-    x_vec = x.to_numpy(dtype=float)
+    x_vec = x.reindex(pio.A.columns).to_numpy(dtype=float)
 
-    F = ext.F  # stressor × (region, sector)
-
-    def _matches(stressor: str, gas: str) -> bool:
-        s = str(stressor)
-        if s.upper().startswith(gas):  # real EXIOBASE, e.g. 'CO2 - combustion'
+    def _matches(stressor, gas: str) -> bool:
+        s = str(stressor[0] if isinstance(stressor, tuple) else stressor)
+        if s.upper().startswith(gas):  # real EXIOBASE, e.g. 'CO2 - combustion - air'
             return True
-        if gas_aliases:  # alias substrings onto a gas (test system)
+        if gas_aliases:
             return any(sub in s and alias == gas for sub, alias in gas_aliases.items())
         return False
 
-    rows: dict[str, pd.Series] = {}
-    for gas in GWP100_AR5:
-        mask = [_matches(s, gas) for s in F.index]
-        if not any(mask):
-            continue
-        gas_total = F.loc[mask].sum(axis=0).reindex(pio.A.columns).to_numpy(dtype=float)
-        rows[gas] = pd.Series(gas_total, index=labels)
+    # Accumulate tonne-normalised totals per gas across all emission extensions.
+    gas_totals: dict[str, np.ndarray] = {}
+    for ext_name in ext_names:
+        ext = getattr(pio, ext_name)
+        F = ext.F
+        for gas in GWP100_AR5:
+            matched = [s for s in F.index if _matches(s, gas)]
+            if not matched:
+                continue
+            acc = gas_totals.setdefault(gas, np.zeros(len(labels)))
+            for stressor in matched:
+                factor = _stressor_unit_to_tonne(ext, stressor)
+                flow = F.loc[[stressor]].sum(axis=0).reindex(pio.A.columns).to_numpy(dtype=float)
+                acc += flow * factor  # now in tonnes
 
-    if not rows:
+    if not gas_totals:
         return None
 
-    # Combined CO2e (GWP-weighted sum of available gases).
-    co2e_total = sum(GWP100_AR5[g] * rows[g].to_numpy(dtype=float) for g in rows)
-    rows["CO2e"] = pd.Series(co2e_total, index=labels)
-
-    # Convert totals -> intensities (per unit output); guard divide-by-zero.
-    import numpy as np
+    gas_totals["CO2e"] = sum(GWP100_AR5[g] * gas_totals[g] for g in gas_totals if g in GWP100_AR5)
 
     data = {}
-    for name, series in rows.items():
+    for name, tonnes in gas_totals.items():
         with np.errstate(divide="ignore", invalid="ignore"):
-            intens = np.where(x_vec > 0, series.to_numpy(dtype=float) / x_vec, 0.0)
-        data[name] = intens
+            data[name] = np.where(x_vec > 0, tonnes / x_vec, 0.0)  # t / M€
     df = pd.DataFrame(data, index=labels).T  # stressor × label
 
     return SatelliteAccount(
         provenance=provenance,
         name="GHG",
-        units={g: "tCO2e/MEUR" if g == "CO2e" else "t/MEUR" for g in df.index},
+        units={g: ("tCO2e/MEUR" if g == "CO2e" else "t/MEUR") for g in df.index},
         data=df,
     )
 

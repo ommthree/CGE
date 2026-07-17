@@ -20,13 +20,9 @@ EXIOBASE = {
     "monetary_unit": "MEUR",
 }
 
-# GHG gases we lift into the GHG SatelliteAccount, mapped to GWP-100 (AR5) CO2e factors.
-# Used to build a single CO2e stressor row alongside the per-gas rows.
-GWP100_AR5 = {
-    "CO2": 1.0,
-    "CH4": 28.0,
-    "N2O": 265.0,
-}
+# GWP-100 (AR5) factors live in cge.constants (shared with engines); re-exported here for
+# the adapter that lifts gases into the GHG SatelliteAccount.
+from cge.constants import GWP100_AR5  # noqa: E402, F401
 
 
 class BuildMeta(BaseModel):

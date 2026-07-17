@@ -29,11 +29,28 @@ class ResultSet(BaseModel):
     manifest: RunManifest
 
     def validate_schema(self) -> ResultSet:
-        """Raise if ``data`` doesn't match the canonical columns. Called by the runner
-        so no malformed result ever reaches the store or GUI."""
-        missing = set(RESULT_COLUMNS) - set(self.data.columns)
+        """Raise if ``data`` is malformed. Called by the runner so no bad result reaches the
+        store or GUI. Checks: required columns present, no unexpected columns, ``value`` is
+        numeric and finite (no NaN/inf), and ``scenario`` uses known band labels."""
+        cols = set(self.data.columns)
+        missing = set(RESULT_COLUMNS) - cols
         if missing:
             raise ValueError(f"ResultSet missing columns: {sorted(missing)}")
+        extra = cols - set(RESULT_COLUMNS)
+        if extra:
+            raise ValueError(f"ResultSet has unexpected columns: {sorted(extra)}")
+        if self.data.empty:
+            return self
+        values = pd.to_numeric(self.data["value"], errors="coerce")
+        if not values.notna().all() or not pd.Series(values).map(lambda v: v == v).all():
+            raise ValueError("ResultSet 'value' contains non-numeric or NaN entries")
+        import numpy as np
+
+        if not np.isfinite(values.to_numpy(dtype=float)).all():
+            raise ValueError("ResultSet 'value' contains non-finite (inf) entries")
+        bad_bands = set(self.data["scenario"].unique()) - {"low", "central", "high"}
+        if bad_bands:
+            raise ValueError(f"ResultSet 'scenario' has invalid band labels: {sorted(bad_bands)}")
         return self
 
     @classmethod

@@ -72,12 +72,14 @@ def toy_economy() -> tuple[IOSystem, SatelliteAccount]:
         final_demand=final_demand.to_frame(),
     )
 
-    # GHG intensities (tCO2 per unit output): energy dirty, manufacturing mid, ag low.
-    intensity = pd.Series([0.2, 2.5, 0.6, 0.2, 2.5, 0.6], index=labels, name="CO2")
+    # GHG intensities in tonnes CO2 per M€ output (the engine's convention), at plausible
+    # EXIOBASE-like magnitudes: energy dirty (~2000 t/M€), manufacturing mid, agriculture low.
+    # These make an end-to-end €100/t run produce fractional (percent-scale) price changes.
+    intensity = pd.Series([200.0, 2000.0, 600.0, 200.0, 2000.0, 600.0], index=labels, name="CO2")
     sat = SatelliteAccount(
         provenance=prov,
         name="GHG",
-        units={"CO2": "tCO2/unit"},
+        units={"CO2": "t/MEUR"},
         data=intensity.to_frame().T,  # 1 row (CO2) × n columns
     )
     return io, sat

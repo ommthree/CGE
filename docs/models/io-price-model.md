@@ -1,10 +1,22 @@
 # Model description: Engine 1 — Leontief carbon-cost price model
 
-- **Implements:** `cge.engines.io_price` (`IOPriceEngine`, v0.1.0)
+- **Implements:** `cge.engines.io_price` (`IOPriceEngine`, v0.2.0)
 - **Roadmap phase:** 2
 - **Capabilities:** prices
-- **Status:** implemented & validated (this doc was written as the spec first; the code
-  matches it, and the manifest assumptions are generated from `ASSUMPTIONS` in the engine)
+- **Status:** implemented; validated on the toy economy and against internal identities.
+  **Not yet validated against a live EXIOBASE known-answer** (published CO₂ multipliers) —
+  that requires the multi-GB download and is the outstanding item before real-build results
+  should be quoted quantitatively. Units, gas selection and time paths are covered by the
+  validation suite; see §7.
+
+> This is the worked reference example for the [documentation standard](../documentation-standard.md):
+> it shows the equation-level detail and citation discipline every model doc must meet.
+
+> **Units (v0.2.0, post-review).** EXIOBASE emission flows are in **kg per M€** output; the
+> adapter converts to **tonnes per M€** using the source unit metadata. A carbon price in
+> €/tonne is then scaled by 1e‑6 (M€→€) so that τ·e is a **dimensionless cost share**. Δp is
+> therefore a **fractional change in the unit price index** (baseline p₀=1) — e.g. 0.06 = a
+> 6% price rise. An earlier version omitted both conversions and overstated impacts by ~1e9.
 
 > This is the worked reference example for the [documentation standard](../documentation-standard.md):
 > it shows the equation-level detail and citation discipline every model doc must meet.
@@ -132,17 +144,22 @@ this; for EXIOBASE the engine asserts $\rho(\mathbf{A})<1$ as a precondition.
    the shared classification.
 2. Form $\mathbf{c} = \tau\mathbf{e}$, zeroing entries outside the shock's coverage
    (sector/region filters from the `CarbonPrice` shock).
-3. Solve $(\mathbf{I}-\mathbf{A}^{\!\top})\,\Delta\mathbf{p} = \mathbf{c}$ for
-   $\Delta\mathbf{p}$ — a linear solve, **not** an explicit inverse (`np.linalg.solve` on
-   the small build; sparse `scipy.sparse.linalg.spsolve` is the drop-in for the full MRIO,
-   gated behind the `[cge]` extra), which is more accurate and cheaper.
-4. For decomposition, accumulate the first $k$ Neumann terms (matrix–vector products only)
+3. Convert the carbon price to a dimensionless cost share $\mathbf{c} = \tau\,\mathbf{e}\,
+   \times 10^{-6}$ (M€→€; see the units note above), zeroing entries outside the shock's
+   coverage. Multiple carbon shocks add; each reads its own time path per year.
+4. Solve $(\mathbf{I}-\mathbf{A}^{\!\top})\,\Delta\mathbf{p} = \mathbf{c}$ for
+   $\Delta\mathbf{p}$ — a linear solve (`np.linalg.solve`), **not** an explicit inverse.
+5. For decomposition, accumulate the first $k$ Neumann terms (matrix–vector products only)
    and take the residual against the full solve so the parts sum exactly to $\Delta\mathbf{p}$.
 
-**Complexity.** One $n\times n$ linear solve, $O(n^3)$ dense or far less sparse, plus one
-eigenvalue computation for the productivity guard. On the small build ($n\sim 450$–600) this
-is milliseconds; on the full MRIO ($n\sim 9800$) it is seconds and runs sparse. This is a
-LAPACK call, so the hot path is compiled (cf. ADR-0003); no Python-level optimisation needed.
+**Complexity & scope of the current implementation.** The implementation is **dense**
+(`np.linalg.solve` + a dense eigenvalue check for the admissibility guard), which is exact
+and fast on the small build ($n\sim 450$–600: milliseconds). It is **not** yet suitable for
+the full ~9800² MRIO: a dense float64 matrix is ~768 MB before LAPACK workspace, and the
+solve/eigvals are $O(n^3)$. A sparse path (`scipy.sparse.linalg`, iterative or `spsolve`, and
+a sparse spectral-radius estimate) is the intended drop-in but is **not implemented**. Until
+it is, run the engine on the small build only. The engine seam (ADR-0002) makes a sparse
+reimplementation a local change.
 
 ## 6. Calibration / parameters
 
@@ -171,11 +188,20 @@ Code-level unit tests live in `tests/test_io_price.py`. Current checks:
 | `energy_most_exposed` | emissions-intensive sector has the largest impact (plausibility) |
 | `coverage_filtering` | region/sector-restricted shock zeroes direct cost elsewhere |
 | `well_posedness_guard` | non-productive economy ($\rho(\mathbf{A})\ge 1$) is rejected |
+| `known_answer_full_pipeline` | full run on the toy at €100/t matches a **hand-derived** vector (checks units + orientation, not just the solve) |
+| `units_plausible_magnitude` | €100/t on the toy gives $0<\Delta p<1$ (fractional), not the ~$10^3$–$10^9$ a missing unit conversion would give |
+| `gas_selection_distinct` | `gases=[CO2]` ≠ `gases=[CH4]`; combined is GWP-additive |
+| `time_path_varies_by_year` | a price path produces year-varying results |
 | `engine_end_to_end` | runner → registered engine → schema-valid `ResultSet` + assumptions |
 
+Additional adversarial coverage in `tests/test_io_price.py`: negative-coefficient rejection,
+missing-satellite-label rejection, revenue-recycling rejection, negative-price rejection.
+
 **Remaining (needs live data):** known-answer reproduction of published EXIOBASE
-carbon-footprint / CO₂ multipliers for a few sectors within tolerance [Stadler2018] — add
-as an `io_price` suite check once a live `exiobase` build is available (roadmap P2.4 / P1 DoD).
+carbon-footprint / CO₂ multipliers for a few sectors within tolerance [Stadler2018]. This is
+the outstanding gate before real-build numbers are quoted quantitatively; it requires a live
+`exiobase` build (roadmap P2.4 / P1 DoD). Independent review (2026-07) confirmed the units,
+gas, path and provenance fixes but flagged this as the one validation still missing.
 
 ## 8. References
 

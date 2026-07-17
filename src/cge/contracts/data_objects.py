@@ -40,6 +40,12 @@ class Provenance(BaseModel):
     licence: str
     reference_year: int
     retrieved: str = Field(description="ISO date the raw data was retrieved")
+    build_id: str | None = Field(
+        default=None, description="exact data build this object came from (set on load)"
+    )
+    aggregation: str | None = Field(
+        default=None, description="aggregation name/hash, e.g. 'full' or 'small'"
+    )
     notes: str = ""
 
 
