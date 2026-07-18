@@ -130,6 +130,7 @@ def _meta_to_provenance(meta: BuildMeta) -> Provenance:
         retrieved=meta.retrieved,
         build_id=meta.build_id,
         aggregation=meta.aggregation,
+        generation=meta.generation,
         notes=meta.notes,
     )
 
@@ -140,8 +141,10 @@ class DataStore:
         self.builds_dir = self.root / "builds"
         self.catalogue_path = self.root / "catalogue.duckdb"
         self.builds_dir.mkdir(parents=True, exist_ok=True)
-        self._recover_interrupted()
+        # Migrate the catalogue schema BEFORE recovery: recovery reads the `generation` column,
+        # which a legacy catalogue lacks until _init_catalogue adds it (review P1a).
         self._init_catalogue()
+        self._recover_interrupted()
 
     def _recover_interrupted(self) -> None:
         """Recover from a save hard-killed mid-swap, WITHOUT touching another writer's active
@@ -153,11 +156,19 @@ class DataStore:
         There is no filesystem-only marker and hence no window where a committed build looks
         uncommitted.
 
+        Commit state is decided fail-safe by ``_final_is_committed`` — a build is kept as
+        committed only when positively proven so, so an ambiguous or damaged state never
+        discards the backup. This handles both the current generation scheme and a store left
+        by the **predecessor marker-based** implementation: a legacy mid-write leaves a
+        ``.uncommitted`` marker inside ``final`` (honoured here) and NULL generations everywhere
+        (safe to treat as committed only when that marker is absent). Corrupt/unreadable final
+        metadata is treated as uncommitted, never as a legacy NULL match (review P1).
+
         For each stale-locked build:
-        - ``final`` present and its generation == the catalogue's ⇒ committed; drop any ``.bak``.
-        - ``final`` present but generation ≠ catalogue's (or catalogue has no row) ⇒ the swap
-          happened before the catalogue commit; the on-disk files are uncommitted. Restore the
-          ``.bak`` (the last committed state) if present, else remove the uncommitted files.
+        - ``final`` present and proven committed ⇒ drop any ``.bak``.
+        - ``final`` present but not proven committed (legacy ``.uncommitted`` marker, corrupt
+          meta, no catalogue row, or mismatched generations) ⇒ uncommitted swap; restore the
+          ``.bak`` if present, else remove the uncommitted files.
         - only ``.bak`` (no ``final``) ⇒ crash before the swap; restore it.
 
         Live staging/backups (lock held by a running process) are left untouched."""
@@ -167,15 +178,13 @@ class DataStore:
                 continue  # a writer is active on this build; hands off
             final = self.builds_dir / build_id
             bak = self.builds_dir / f".{build_id}.bak"
-            committed_gen = self._committed_generation(build_id)
+            has_row, committed_gen = self._catalogue_state(build_id)
 
             if final.exists():
-                final_gen = self._read_generation(final)
-                if committed_gen is not None and final_gen == committed_gen:
+                if self._final_is_committed(final, has_row, committed_gen):
                     shutil.rmtree(bak, ignore_errors=True)  # committed; backup is stale
                 else:
-                    # Files present but NOT the committed generation → uncommitted swap.
-                    shutil.rmtree(final, ignore_errors=True)
+                    shutil.rmtree(final, ignore_errors=True)  # uncommitted swap
                     if bak.exists():
                         bak.replace(final)  # restore last committed files
             elif bak.exists():
@@ -185,16 +194,50 @@ class DataStore:
                 shutil.rmtree(tmp, ignore_errors=True)
             lock.unlink(missing_ok=True)
 
+    # Legacy commit marker written by the predecessor (marker-based) implementation *inside* the
+    # build dir and removed only after the catalogue committed. Its presence next to a ``final``
+    # is authoritative evidence that ``final`` was a mid-write, uncommitted swap — regardless of
+    # generations (which the predecessor never wrote). Recovery must honour it (review P1).
+    _LEGACY_UNCOMMITTED_MARKER = ".uncommitted"
+
+    def _final_is_committed(self, final: Path, has_row: bool, committed_gen: str | None) -> bool:
+        """Decide whether an installed ``final`` (under a stale lock) is a committed build.
+
+        The rule is *fail-safe*: a build is committed only when we can positively prove it, so an
+        ambiguous or damaged state never leads to discarding the backup (review P1).
+
+        - A legacy ``.uncommitted`` marker inside ``final`` ⇒ it was a mid-write swap by the
+          predecessor implementation ⇒ NOT committed (restore the backup).
+        - Unreadable/corrupt meta ⇒ we cannot prove commit ⇒ NOT committed.
+        - No catalogue row ⇒ NOT committed.
+        - Readable meta + catalogue row: committed iff the generations match. For genuine legacy
+          builds both are NULL; the *absence* of the ``.uncommitted`` marker (checked first) is
+          what makes NULL==NULL safe to treat as committed — the predecessor always wrote that
+          marker during a mid-write, so a legacy build without it was not mid-write.
+        """
+        if (final / self._LEGACY_UNCOMMITTED_MARKER).exists():
+            return False
+        readable, final_gen = self._read_generation(final)
+        if not readable or not has_row:
+            return False
+        return final_gen == committed_gen
+
     @staticmethod
-    def _read_generation(build_dir: Path) -> str | None:
-        """The generation id recorded in a build dir's meta.json (None if absent/unreadable)."""
+    def _read_generation(build_dir: Path) -> tuple[bool, str | None]:
+        """``(readable, generation)`` from a build dir's meta.json.
+
+        ``readable`` is False when the meta is absent, corrupt, or unreadable — those cases must
+        NOT be treated as a legacy NULL generation (a corrupt final could otherwise match a
+        legacy NULL catalogue row and be kept as 'committed'; review P1). ``readable=True,
+        generation=None`` is a genuine legacy build written before the generation field existed.
+        """
         meta_path = build_dir / "meta.json"
         if not meta_path.exists():
-            return None
+            return (False, None)
         try:
-            return json.loads(meta_path.read_text()).get("generation")
+            return (True, json.loads(meta_path.read_text()).get("generation"))
         except (OSError, ValueError):
-            return None
+            return (False, None)
 
     # -- catalogue -------------------------------------------------------------
     def _with_catalogue(self, fn):
@@ -244,14 +287,20 @@ class DataStore:
         self._with_catalogue(_do)
 
     def _committed_generation(self, build_id: str) -> str | None:
-        """The generation id the catalogue currently records for a build (the authoritative
-        committed state), or None if the build has no catalogue row."""
+        """The generation id the catalogue records for a build, or None if no row (kept for
+        callers that only need the id; recovery uses _catalogue_state to also learn whether a
+        catalogue row exists at all)."""
+        return self._catalogue_state(build_id)[1]
+
+    def _catalogue_state(self, build_id: str) -> tuple[bool, str | None]:
+        """(row_exists, generation). Distinguishes 'no catalogue row' from 'row with a legacy
+        NULL generation' — recovery must not confuse the two (review P1a)."""
 
         def _do(con):
             r = con.execute(
                 "SELECT generation FROM builds WHERE build_id = ?", [build_id]
             ).fetchone()
-            return r[0] if r else None
+            return (True, r[0]) if r is not None else (False, None)
 
         return self._with_catalogue(_do)
 

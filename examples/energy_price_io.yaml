@@ -1,0 +1,26 @@
+# Engine 1 (io_price): cost impact of an energy-carrier output-price change, optionally
+# combined with a carbon price. An EnergyPrice raises the carrier's output price by a fractional
+# amount and propagates it through the supply chain via the same Leontief pass-through as a
+# carbon cost; the two compose additively. See docs/models/io-price-model.md and
+# docs/energy-and-temperature-plan.md (Feature 1).
+#
+#   cge run --scenario examples/energy_price_io.yaml
+#
+# NB: 'carrier' must be an energy sector in the build. The default 'toy' build has a single
+# 'energy' sector; a coarse EXIOBASE build has 'energy_coal', 'energy_oil_gas', 'electricity'.
+name: "Energy price +30% (+ carbon €50/t)"
+description: >
+  A +30% rise in the energy carrier's output price, in addition to a €50/tCO2 carbon price.
+  Cost impact per good via the Leontief cost-push model; energy-intensive goods move most. The
+  carbon and energy contributions add (independent cost shocks in a linear price system).
+engine: io_price
+years: [2020]
+shocks:
+  - type: carbon_price
+    price: 50.0
+    gases: [CO2]
+  - type: energy_price
+    carrier: energy        # 'energy' on the toy build; 'electricity'/'energy_coal'/... on coarse
+    change: 0.30           # +30% output-price rise
+    # coverage_regions: [A]   # optional: restrict the carrier price rise to given countries
+    # path: {2025: 0.0, 2035: 0.30}   # optional time path (fractional change per year)

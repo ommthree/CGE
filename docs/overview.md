@@ -56,7 +56,7 @@ picked up Engines 2 with **zero GUI changes**.
 | Contract | What it is |
 |---|---|
 | **Data objects** | `IOSystem`, `SAM`, `SatelliteAccount`, `ElasticitySet`, `ConcordanceMap` — every data source is an *adapter* into these |
-| **Shock vocabulary** | typed, optionally time-pathed shocks (`CarbonPrice`, `NatureStress`, …); nature/climate modules *emit* shocks rather than calling engines |
+| **Shock vocabulary** | typed, optionally time-pathed shocks (`CarbonPrice`, `EnergyPrice`, `NatureStress`, …); nature/climate modules *emit* shocks rather than calling engines |
 | **Engine protocol** | engines declare capabilities (`prices`/`volumes`/`general_equilibrium`/`dynamic`) + supported shocks; a registry lists them, and the GUI renders from that metadata |
 | **Result schema** | one long-format `ResultSet` with a mandatory provenance manifest (data version, scenario hash, assumption dump) |
 | **Module slots** | `ClimateModule`, `DamageModule` interfaces for the future pathway stack |
@@ -91,12 +91,27 @@ parameters.
 for the documentation standard).
 
 ### Engine 2 — partial-equilibrium volume response — *the volume answer*
-Applies demand elasticities to Engine 1's prices: `Δq/q = ε·Δp`, across low/central/high
+Turns Engine 1's prices into a **production-volume** answer: a finite-change demand response
+`Δy/y=(1+Δp)^ε−1` cuts final demand, then propagates through the Leontief quantity system
+`x=(I−A)⁻¹y` so upstream suppliers fall too (`Δx/x`). Evaluated across low/central/high
 elasticity **bands** so the answer is an uncertainty envelope, not a point. Reuses Engine 1 for
 prices (single source of truth). Volume magnitudes are **indicative** — there is no clean open
 elasticity database, so the default set is assembled, ranged, and flags where it falls back to
 a default.
 → [`docs/models/partial-equilibrium.md`](models/partial-equilibrium.md) (equation-level).
+
+### Macroeconomic aggregates — *GVA, GDP, deflators; real vs nominal (planned, Phase 4b)*
+On top of the per-good price/volume answers, the platform rolls results up to the aggregates a
+macro reader expects, **per time-step and country**: **gross value added (GVA) per sector**,
+**GDP per country**, and an aggregate **price deflator** — with every figure available in both
+**nominal** and **real** terms (real = nominal deflated by the index). These come in two tiers: an
+*indicative* tier computed from the IO engines' responses (labelled indicative, like the volume
+answer), and an *exact* tier native to the CGE (GVA/GDP/CPI as model variables, the CPI as
+numéraire). **GDP growth** over time needs the recursive-dynamic wrapper (Phase 7.1). One honest
+limit: **interest rates** — the CGE yields a *capital rental rate* (real return to capital), but a
+*monetary* interest rate needs a macro-financial closure the core lacks, so it is an optional,
+clearly-illustrative overlay, never a headline.
+→ Roadmap [Phase 4b](../roadmap.md).
 
 ### Engine 3 — static CGE — *the general-equilibrium answer (planned)*
 A small static computable general equilibrium model: nested-CES production, Armington trade, a
@@ -122,12 +137,13 @@ mode. Not a process IAM — it consumes pathways others generate and adds sector
 resolution. → Roadmap [Phase 7](../roadmap.md), detail in
 [`docs/energy-and-temperature-plan.md`](energy-and-temperature-plan.md).
 
-### Planned scenario inputs — *energy prices & temperature targets*
+### Scenario inputs — *energy prices & temperature targets*
 Two requested extensions that slot into the existing shock/module seams (no new engines):
-- **Country-level energy prices** — an optional per-country, per-carrier energy-cost change
-  applied *on top of* a carbon price; near-term, low-risk, reuses the same supply-chain
-  propagation.
-- **Temperature-target back-solving** — the Phase 7 feature above.
+- **Country-level energy prices** — ✅ **implemented**. An optional per-country, per-carrier
+  energy output-price change (`EnergyPrice`) applied *on top of* a carbon price; it reuses the
+  same Leontief supply-chain propagation and composes additively with the carbon cost. See
+  `examples/energy_price_io.yaml` and io-price-model.md §5a.
+- **Temperature-target back-solving** — the Phase 7 feature above (planned).
 
 → [`docs/energy-and-temperature-plan.md`](energy-and-temperature-plan.md).
 
@@ -220,6 +236,7 @@ cge validate                                           # model-validation suite
 ## Document map
 
 - **This overview** — start here.
+- [`user-guide.md`](user-guide.md) — hands-on walkthrough from the simplest toy run to every feature.
 - [`roadmap.md`](../roadmap.md) — the full plan, effort, dependencies, feasibility.
 - **Model docs** (equation-level): [data layer](models/data-layer.md) ·
   [Engine 1 price](models/io-price-model.md) · [Engine 2 volume](models/partial-equilibrium.md).

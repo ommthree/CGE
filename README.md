@@ -7,6 +7,8 @@ quality, model builds, and model runs.
 
 > **New here? Start with [`docs/overview.md`](docs/overview.md)** — the executive summary of
 > what the platform does, how the components fit together, and where everything is documented.
+> Then follow [`docs/user-guide.md`](docs/user-guide.md) — a hands-on walkthrough from the
+> simplest toy run up through every current feature.
 
 See also [`roadmap.md`](roadmap.md) for the full plan, [`docs/adr/`](docs/adr/) for design
 decisions, and [`docs/documentation-standard.md`](docs/documentation-standard.md) for the

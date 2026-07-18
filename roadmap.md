@@ -152,22 +152,62 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 
 ### Phase 4 — Engine 2: partial-equilibrium volume response (2–4 wk) — ✅ IMPLEMENTED
 
-> **Done** (see `docs/phase-4-status.md`). Δq/q = ε·Δp on Engine-1 prices, with a
-> low/central/high elasticity band; functional default elasticity library; `partial_eq`
-> engine + validation suite; GUI picks it up via the registry. Volume magnitudes are
-> indicative (elasticity-dependent); the Armington nest and a curated elasticity set are
-> documented follow-ups.
+> **Done** (see `docs/phase-4-status.md`). Production-volume response: a finite-change demand
+> response Δy/y=(1+Δp)^ε−1 propagated through the Leontief quantity system x=(I−A)⁻¹y to give
+> Δx/x, on Engine-1 prices, with a low/central/high elasticity band; functional default
+> elasticity library; `partial_eq` engine + validation suite; GUI picks it up via the registry.
+> Volume magnitudes are indicative (elasticity-dependent); the Armington nest and a curated
+> elasticity set are documented follow-ups.
 
 | # | Task | Effort |
 |---|---|---|
 | 4.1 | Elasticity library: schema (value, source citation, native classification + concordance, confidence tag, low/central/high range); initial population from literature (published GTAP parameter papers, USDA, meta-analyses) for the small build's sectors | 3–5 d (then ongoing) |
-| 4.2 | PE engine: demand response Δq = ε·Δp on Engine 1 prices; optional Armington-style domestic/import substitution; fixed-point iteration between quantity weights and prices until converged | 3–5 d |
+| 4.2 | PE engine: finite-change demand response Δy/y=(1+Δp)^ε−1 on Engine 1 prices, propagated through the Leontief quantity system x=(I−A)⁻¹y to give production volume Δx/x (a linear solve, not the old linear ε·Δp / fixed-point form); Armington domestic/import substitution specified but not implemented (v1) | 3–5 d |
 | 4.3 | Uncertainty as a first-class output: run low/central/high elasticity bundles → result envelopes in `ResultSet` | 1–2 d |
 | 4.4 | Validation: sign/magnitude sanity vs published carbon-price incidence studies; convergence tests; toy-economy analytics | 2–3 d |
 
 **DoD:** volume impact *ranges* per sector/region for a carbon-price scenario; the GUI picks up the new engine purely via the registry (no GUI changes); every result carries its elasticity provenance; **model doc (equation-level demand/Armington response + per-parameter sourcing) exists** per the documentation standard.
 **Risks:** elasticity gaps for many sectors — be explicit about defaults and tag them; resist inventing precision.
 **Depends on:** P2 (elasticity gathering can start any time). **Unblocks:** volume answers; elasticity library feeds P5.
+
+### Phase 4b — Macroeconomic aggregates: GVA, GDP, deflators; real vs nominal (1–2 wk PE tier; native in P5)
+
+> **What the user asked for:** per time-step, **gross value added (GVA) per sector/country**,
+> **GDP (and its growth) per country**, and — if possible — **interest rates and inflation**, so
+> results can be read in **real or nominal** terms. This phase makes those first-class outputs and
+> is explicit about which are genuine model outputs versus which need a macro closure the IO/CGE
+> core does not have. Delivered in **two tiers** (indicative PE now; proper GE at P5).
+
+**The economics, stated honestly (this drives the scope):**
+- **GVA & GDP are native to this framework.** GVA is value added by sector (`IOSystem.value_added`
+  already carries the base year); GDP by country is the sum of sectoral GVA (production approach).
+  A carbon/energy shock changes them through the price and volume responses the engines already
+  compute. So GVA/GDP *changes* are derivable — indicatively in PE, properly in the CGE.
+- **Inflation = a price index (deflator), which is native.** An economy-wide price-level change
+  (GDP deflator / CPI) is exactly what a price model produces; in the CGE the CPI is the standard
+  numéraire. This is what makes **real vs nominal** well-defined: real = nominal deflated by the
+  index. A crude aggregate deflator is available even in the PE tier (a value-added-weighted mean
+  of sector price changes); the proper CPI/GDP-deflator distinction is a CGE output.
+- **Interest rates are NOT a native IO/CGE output — flagged, not faked.** A static CGE has a
+  **capital rental rate** (the real return to capital, an equilibrium factor price) — we *can*
+  report that, and it is the closest honest analogue. A **nominal monetary interest rate** needs a
+  monetary/macro-financial closure (a policy rule, money demand) the model does not contain;
+  promising one from this core would be inventing precision. It is scoped as an **optional
+  documented bolt-on** (a reduced-form Taylor-rule-style mapping from the model's inflation +
+  output-gap outputs), clearly labelled illustrative — never a headline result.
+
+| # | Task | Effort |
+|---|---|---|
+| 4b.1 | **GVA/GDP accounting layer (PE tier).** From an engine run, compute ΔGVA per sector/region (base-year value-added share × the price/volume responses) and ΔGDP per region (Σ sectoral GVA), per time-step; add `gva_change` / `gdp_change` result variables and a per-region rollup. Indicative (inherits the PE caveats); clearly labelled as such | 3–5 d |
+| 4b.2 | **Deflators & real-vs-nominal (PE tier).** Value-added-weighted aggregate price index per region (an indicative GDP deflator); expose every value as both **nominal** and **real** (nominal deflated by the index) in the `ResultSet` and GUI, with the deflator itself reported and provenance-tagged | 2–3 d |
+| 4b.3 | **GVA/GDP/CPI as native CGE outputs (GE tier, folds into P5).** In the CGE these are model variables, not post-hoc arithmetic: factor income → GVA, CPI/GDP-deflator as the numéraire, real vs nominal exact. Report the **capital rental rate** as the honest "interest-rate-like" factor price. Cross-check the P5 aggregates against the 4b.1/4b.2 PE estimates (should be same-sign, GE typically smaller) | folded into P5.2/5.3 |
+| 4b.4 | **GDP growth over time.** A path of GDP/GVA per region across the scenario's time-steps; a *growth-rate* series needs the recursive-dynamic wrapper (**7.1**) for capital/labour/productivity updating between years — static runs give a level per year, dynamics give genuine growth | with 7.1 |
+| 4b.5 | **Optional interest-rate bolt-on (illustrative).** A documented reduced-form mapping (Taylor-rule-style) from the model's inflation + output-gap to a nominal policy rate, behind a clearly-labelled "illustrative macro-financial overlay" flag — off by default, never a headline | 3–5 d, optional |
+
+**DoD (PE tier, 4b.1–4b.2):** every engine run reports GVA per sector/region, GDP per region, and an aggregate deflator per region per time-step, each available in real and nominal terms, provenance-tagged, in the `ResultSet` and GUI; a validation check ties ΔGDP to Σ ΔGVA and confirms real = nominal at zero inflation. **DoD (GE tier):** the CGE emits GVA/GDP/CPI and the capital rental rate as native variables reproducing the base-year SAM aggregates; the PE-vs-GE cross-check is green.
+**Decisions forced:** deflator base (CPI vs GDP deflator — report both once in the CGE); whether to ship the interest-rate overlay at all (recommend: document it, build only if asked).
+**Risks:** the PE-tier GVA/GDP are indicative and will move under GE substitution — label them exactly as Engine 2's volumes are labelled; **do not let the interest-rate overlay be read as a real forecast** — it is the item most likely to be over-interpreted, so it is opt-in and caveated.
+**Depends on:** P4 (needs the volume response for real GVA) for the full PE tier; the deflator alone needs only P1/P2. **Unblocks:** real/nominal reporting everywhere; feeds the P5 credibility cross-checks and the P7 dynamic GDP-growth paths.
 
 ### Phase 5 — Engine 3: simple static CGE (6–12 wk) ⚠ the hard part
 
@@ -240,7 +280,9 @@ A true process IAM (GCAM/REMIND-class) is a multi-year team effort; the achievab
 ```
 P0 ─▶ P1 ─▶ P2 ─▶ P3 (GUI v1)
             │
-            ├──▶ P4 ─▶ P5 ─▶ P7
+            ├──▶ P4 ─▶ P4b ─▶ P5 ─▶ P7
+            │         (macro aggregates: GVA/GDP/deflator, real vs nominal;
+            │          native + exact in P5; GDP *growth* needs 7.1)
             │
             └──▶ P6 (parallel with P4/P5; GE-mode nature runs need P5)
 ```
@@ -250,7 +292,8 @@ P0 ─▶ P1 ─▶ P2 ─▶ P3 (GUI v1)
 | Milestone | Cumulative FTE | You can… |
 |---|---|---|
 | End P3 | ~6–9 wk | Browse data & quality in the GUI; get supply-chain **cost** impacts of any carbon price on any good, with decomposition |
-| End P4 | ~8–13 wk | Add first-order **volume** responses with explicit uncertainty ranges |
+| End P4 | ~8–13 wk | Add production-**volume** responses (finite-change demand → Leontief propagation) with explicit uncertainty ranges |
+| End P4b | ~9–15 wk | **GVA per sector/country, GDP per country, and a deflator** per time-step, in **real and nominal** terms (indicative PE tier; native and exact in the CGE) |
 | End P6 (skipping P5) | ~11–19 wk | Nature dependency/impact exposure of any good, incl. via its supply chain, plus nature stress runs |
 | End P5 | ~16–25 wk | General-equilibrium price + volume answers with carbon-tax revenue recycling |
 | Full incl. P7 pathway stack | 6–12 months | NGFS-driven dynamic pathways to 2050 with temperature reporting, multi-source data, scenario library |

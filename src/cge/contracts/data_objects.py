@@ -53,6 +53,10 @@ class Provenance(BaseModel):
     aggregation: str | None = Field(
         default=None, description="aggregation name/hash, e.g. 'full' or 'small'"
     )
+    generation: str | None = Field(
+        default=None,
+        description="per-save generation id of the build (distinguishes rewrites of one id)",
+    )
     notes: str = ""
 
 

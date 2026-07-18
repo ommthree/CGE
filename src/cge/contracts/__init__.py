@@ -19,7 +19,10 @@ Provenance/config live alongside in provenance.py.
 # contracts version they were produced against so mismatches are detectable.
 # 0.2.0: post-review hardening tightened validation (manifests, shocks, results,
 # classifications, concordances now reject inputs 0.1.0 accepted) — a breaking change.
-CONTRACTS_VERSION = "0.2.0"
+# 0.2.1: additive — Provenance.generation (per-save id) and per-input identity/content-hash
+# records in run manifests (review: additive changes bump the patch).
+# 0.2.2: additive — EnergyPrice shock (carrier output-price change) added to the vocabulary.
+CONTRACTS_VERSION = "0.2.2"
 
 from cge.contracts.data_objects import (  # noqa: E402
     SAM,
@@ -36,6 +39,7 @@ from cge.contracts.results import ResultSet  # noqa: E402
 from cge.contracts.shocks import (  # noqa: E402
     CarbonPrice,
     DemandShift,
+    EnergyPrice,
     NatureStress,
     ProductivityShock,
     Shock,
@@ -53,6 +57,7 @@ __all__ = [
     # shocks
     "Shock",
     "CarbonPrice",
+    "EnergyPrice",
     "ProductivityShock",
     "DemandShift",
     "TradeCost",

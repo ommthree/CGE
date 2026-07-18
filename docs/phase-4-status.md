@@ -9,9 +9,9 @@ each good change under a carbon price, with an explicit uncertainty band.
 | # | Task | Status | Where |
 |---|---|---|---|
 | 4.1 | Elasticity library: schema (value, source, low/central/high, confidence); initial literature-sourced set | ✅ (functional defaults; curated set is follow-up) | `data/elasticities/` |
-| 4.2 | PE engine: Δq/q = ε·Δp on Engine-1 prices | ✅ | `engines/partial_eq/engine.py` |
+| 4.2 | PE engine: finite-change demand Δy/y=(1+Δp)^ε−1 propagated through Leontief x=(I−A)⁻¹y → Δx/x (production), on Engine-1 prices | ✅ | `engines/partial_eq/engine.py` |
 | 4.3 | Uncertainty as a first-class output: low/central/high band → envelope | ✅ | engine emits a `volume_change` row per band |
-| 4.4 | Validation: sign/proportionality/band-order/pass-through/provenance | ✅ (published-incidence comparison is follow-up) | `validation/suites/partial_eq.py`, `tests/test_partial_eq.py` |
+| 4.4 | Validation: volume-sign / bounded > −100% / Leontief propagation / band-order / pass-through / provenance | ✅ (published-incidence comparison is follow-up) | `validation/suites/partial_eq.py`, `tests/test_partial_eq.py` |
 
 ## Definition of done
 
@@ -20,16 +20,17 @@ each good change under a carbon price, with an explicit uncertainty band.
 > doc exists.
 
 All satisfied:
-- `cge run --scenario examples/carbon_price_volume.yaml` returns Δq/q per good with a
-  low/central/high band; negative (a carbon price reduces volumes), energy/manufacturing
-  hit hardest.
+- `cge run --scenario examples/carbon_price_volume.yaml` returns Δx/x (production volume) per
+  good with a low/central/high band; negative (a carbon price reduces volumes),
+  energy/manufacturing hit hardest.
 - The engine appears in `cge engines` and the GUI Run page **purely via the registry** (no
   GUI code changed to add it); the Results page shows a volume-envelope table when a result
   has `volume_change` rows.
 - Every result carries `elasticity_used` per good and a manifest count of goods using the
   default elasticity; Engine 1's price caveats are carried into the manifest too.
 - Model doc `docs/models/partial-equilibrium.md` matches the code.
-- 104 offline tests + `partial_eq` validation suite (5 checks) pass; lint + format clean.
+- 121 offline tests pass (4 live-network tests skipped offline); `partial_eq` validation suite
+  (6 checks) and the full standing suite (23 checks) pass; lint + format clean.
 
 ## Design
 

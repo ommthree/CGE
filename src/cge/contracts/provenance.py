@@ -25,6 +25,35 @@ def content_hash(obj: Any) -> str:
     return hashlib.sha256(blob).hexdigest()[:12]
 
 
+def data_source_id(provenance) -> str:
+    """Generation-aware data-source identity for a run manifest. Two rewrites of the same
+    build id produce different results; the generation makes them distinguishable (review P1c).
+    Falls back to source+version when there is no build id."""
+    if provenance.build_id:
+        gen = f"@{provenance.generation}" if getattr(provenance, "generation", None) else ""
+        return f"{provenance.build_id}{gen}"
+    return f"{provenance.source} {provenance.source_version}"
+
+
+def input_identity(name: str, provenance, *, content) -> dict[str, Any]:
+    """Reproducibility descriptor for one data input to a run.
+
+    Records the input's provenance identity (build id + generation, or source+version) **and** a
+    content hash of its numeric payload, so two runs that differ in *any* substantive input —
+    e.g. the same IO system with a different satellite generation or doubled emissions — produce
+    distinguishable manifests (review P1: manifests recorded only the IO system, so a changed
+    satellite that moved prices left the manifest identical). ``content`` is any
+    JSON-serialisable view of the payload (a DataFrame's ``.round(...).to_dict()`` etc.).
+    """
+    return {
+        "name": name,
+        "source_id": data_source_id(provenance),
+        "build_id": getattr(provenance, "build_id", None),
+        "generation": getattr(provenance, "generation", None),
+        "content_hash": content_hash(content),
+    }
+
+
 class RunManifest(BaseModel):
     """The reproducibility record for one engine run."""
 

@@ -1,18 +1,20 @@
 # Model description: Engine 2 — partial-equilibrium volume response
 
-- **Implements:** `cge.engines.partial_eq` (`PartialEqEngine`, v0.1.0)
+- **Implements:** `cge.engines.partial_eq` (`PartialEqEngine`, v0.3.0)
 - **Roadmap phase:** 4
 - **Capabilities:** prices, volumes
-- **Status:** implemented (`PartialEqEngine` v0.1.0); validated on the toy economy and internal
-  identities (`partial_eq` validation suite: sign, proportionality, band ordering, price
-  pass-through, elasticity provenance). Volume magnitudes depend on assembled elasticities and
-  are **indicative, not precise** (see §6). The Armington nest (equation 2) is specified but
-  not yet implemented — v1 applies the own-price response (1) only.
+- **Status:** implemented (`PartialEqEngine` v0.3.0); validated on the toy economy and internal
+  identities (`partial_eq` validation suite: volume sign, bounded > −100%, Leontief propagation,
+  band ordering, price pass-through, elasticity provenance). Volume magnitudes depend on
+  assembled elasticities and are **indicative, not precise** (see §6). The Armington nest
+  (§4, "Armington substitution") is specified but not yet implemented — v1 applies the
+  own-price demand response (1) and its Leontief propagation to production volume (2) only.
 
 ## 1. Purpose & scope
 
-Estimate the **first-order change in production volume** of each good under a carbon price,
-by applying demand elasticities to the price changes Engine 1 computes. Answers: *"if a
+Estimate the **change in production volume** of each good under a carbon price, by applying
+demand elasticities (a finite-change response) to the price changes Engine 1 computes and
+propagating the resulting demand change through the Leontief quantity system. Answers: *"if a
 carbon price raises the price of good X by Δp, roughly how much does its produced quantity
 fall?"* — with an explicit uncertainty range.
 
@@ -37,11 +39,14 @@ fixed. It is deliberately simpler than the CGE and remains useful as a cross-che
 
 ## 3. Assumptions
 
-1. **First-order / log-linear.** Responses are linear in the (small) price change:
-   $\Delta q_i/q_i = \varepsilon_i\,\Delta p_i$. Valid for modest price changes; large shocks
-   need the CGE.
-2. **Own-price only** by default. Cross-price effects enter only through the optional
-   Armington nest.
+1. **Finite-change constant elasticity.** The final-demand response uses the finite-change form
+   $\Delta y_i/y_i = (1+\Delta p_i)^{\varepsilon_i} - 1$, which stays bounded below by $-100\%$
+   for any price rise (the linear form $\varepsilon_i\,\Delta p_i$ produces impossible sub-$-100\%$
+   volumes on the large price changes real carbon-price runs generate). It is exact for a
+   constant-elasticity demand curve; the *general-equilibrium* re-balancing (income effects,
+   factor markets, cross-price substitution beyond Armington) still needs the CGE.
+2. **Own-price only.** Cross-price effects would enter only through the Armington nest, which is
+   specified in §4 but **not implemented** in v1.
 3. **Prices are taken from Engine 1** (the corrected, unit-consistent price model) and are
    exogenous to this engine — no feedback from quantity back to price.
 4. **Elasticities are uncertain.** Each is a (low, central, high) triple with a cited source;
@@ -97,9 +102,11 @@ Leontief propagation (2) only. Adding it requires a build with a domestic/import
 1. Run Engine 1 to get $\Delta p_i$ for the scenario (reuse, don't reimplement).
 2. Load the demand `ElasticitySet` (validated: finite, band-ordered, $\le 0$, sourced). For
    goods with no assembled value, use a documented default and **tag it** `default`.
-3. Precompute the Leontief inverse $(I-A)^{-1}$ and baseline $x_0 = (I-A)^{-1} y_0$.
+3. Form $M = (I-A)$ and baseline output $x_0$ by **solving** $M x_0 = y_0$ (a linear solve, not
+   an explicit inverse — the inverse is dense and $O(n^3)$ to materialise, and we never need it
+   in full).
 4. For each band $b$: $\Delta y_i/y_i = (1+\Delta p_i)^{\varepsilon_i^{(b)}}-1$ (1); form
-   $y_{\text{new}} = y_0(1+\Delta y/y)$; propagate $x_{\text{new}} = (I-A)^{-1} y_{\text{new}}$;
+   $y_{\text{new}} = y_0(1+\Delta y/y)$; propagate output by solving $M x_{\text{new}} = y_{\text{new}}$;
    report $\Delta x_i/x_i = (x_{\text{new},i}-x_{0,i})/x_{0,i}$ (2).
 5. Emit into the `ResultSet`, per good per band: `final_demand_change` (Δy/y), `volume_change`
    (Δx/x, production), plus `price_change` and `elasticity_used` (central). The manifest carries
@@ -108,12 +115,21 @@ Leontief propagation (2) only. Adding it requires a build with a domestic/import
 
 Note: elasticities are matched to build sectors by **name** (with a flagged default for
 unmatched goods), not via a formal `ConcordanceMap` — a proper concordance is a follow-up.
+Because name-matching is unsafe across unrelated classifications, the engine **rejects** an
+elasticity set whose `classification` is not compatible with the build's sector classification
+(the coarse-sector family or an exact match), rather than matching by coincidental labels.
 
-No iteration is needed for the first-order form; the "fixed-point between quantity weights and
-prices" in the roadmap is only required if prices are made to respond to quantities, which is
-out of scope for this PE engine (it is what the CGE does).
+No iteration is needed: the finite-change response and its one Leontief solve are direct. The
+"fixed-point between quantity weights and prices" once sketched in the roadmap is only required
+if prices are made to respond to quantities, which is out of scope for this PE engine (it is
+what the CGE does).
 
-**Complexity.** One Engine-1 solve plus $O(n)$ elementwise products per band — negligible.
+**Complexity.** One Engine-1 solve, one baseline dense solve $M x_0 = y_0$, then one dense solve
+$M x_{\text{new}} = y_{\text{new}}$ per band (three bands) — each $O(n^3)$ for the factorisation
+in $n =$ sectors×regions, plus $O(n)$ elementwise demand-response work. This is dense-only and
+capped at `MAX_DENSE_PRODUCTS` products (the cap is enforced **before** any $n \times n$ array is
+built); a full MRIO must be aggregated to a small build first. (An optimisation not yet taken:
+factorise $M$ once and reuse it across bands, turning the per-band cost into an $O(n^2)$ solve.)
 
 ## 6. Calibration / parameters
 

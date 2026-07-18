@@ -207,6 +207,57 @@ def _time_path():
     return ok, f"totals by year: {by_year.round(4).to_dict()} (should increase)"
 
 
+@check(SUITE, "energy_price_direct_share_and_propagation")
+def _energy_price():
+    """EnergyPrice interpretation (1): the direct cost share is exactly the fractional change on
+    the carrier's own products (zero elsewhere), and after propagation the carrier's own price
+    rises by at least that change. Guards the energy-price feature's core semantics."""
+    from cge.contracts.shocks import EnergyPrice
+    from cge.engines.io_price.engine import energy_cost_vector, price_change
+    from cge.validation.toy import toy_economy
+
+    io, _ = toy_economy()
+    labels = list(io.A.columns)
+    A = io.A.to_numpy(dtype=float)
+    cost, _desc = energy_cost_vector([EnergyPrice(carrier="energy", change=0.3)], labels, 2020)
+    direct_ok = all(
+        (c == 0.3 if lab.split(":", 1)[1] == "energy" else c == 0.0)
+        for lab, c in zip(labels, cost, strict=True)
+    )
+    dp = price_change(A, cost)
+    carrier_dp = [d for lab, d in zip(labels, dp, strict=True) if lab.split(":", 1)[1] == "energy"]
+    prop_ok = all(d >= 0.3 - 1e-9 for d in carrier_dp)
+    ok = direct_ok and prop_ok
+    return ok, f"direct share on carrier only={direct_ok}, carrier Δp ≥ change={prop_ok}"
+
+
+@check(SUITE, "carbon_energy_additive")
+def _carbon_energy_additive():
+    """A combined carbon + energy scenario equals the sum of the two run separately (linear
+    price system; independent cost shocks add) — the composition property of the feature."""
+    from cge.contracts.shocks import EnergyPrice
+    from cge.engines.io_price.engine import IOPriceEngine
+    from cge.validation.toy import toy_economy
+
+    io, sat = toy_economy()
+    data = {"IOSystem": io, "SatelliteAccount": sat}
+
+    def _p(shocks):
+        d = IOPriceEngine().run(data=data, shocks=shocks, years=[2020]).data
+        return (
+            d[d["variable"] == "price_change"]
+            .set_index(["region", "sector"])["value"]
+            .sort_index()
+            .to_numpy()
+        )
+
+    carbon = [CarbonPrice(price=100.0)]
+    energy = [EnergyPrice(carrier="energy", change=0.3)]
+    resid = float(np.max(np.abs(_p(carbon + energy) - (_p(carbon) + _p(energy)))))
+    ok = resid < 1e-10
+    return ok, f"max|both − (carbon+energy)| = {resid:.2e}"
+
+
 @check(SUITE, "engine_end_to_end")
 def _end_to_end():
     """Full path: runner → registered engine → schema-valid ResultSet with assumptions."""

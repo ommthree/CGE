@@ -23,11 +23,11 @@ import numpy as np
 from cge.constants import GWP100_AR5
 from cge.contracts.data_objects import IOSystem, SatelliteAccount
 from cge.contracts.engine import Capability, EngineMeta, registry
-from cge.contracts.provenance import RunManifest
+from cge.contracts.provenance import RunManifest, data_source_id, input_identity
 from cge.contracts.results import ResultSet
-from cge.contracts.shocks import CarbonPrice, Shock
+from cge.contracts.shocks import CarbonPrice, EnergyPrice, Shock
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 # Assumptions from io-price-model.md §3 — printed on every result (GUI credibility). Kept in
 # sync with the model doc; the doc references this dict as the source of truth (not a
@@ -115,6 +115,19 @@ def _assert_coverage_labels(shocks: list[CarbonPrice], io: IOSystem) -> None:
             raise ValueError(f"coverage_regions not in the build: {bad_r}")
 
 
+def _assert_energy_carriers(shocks: list[EnergyPrice], io: IOSystem) -> None:
+    """Every EnergyPrice carrier must be a sector in the build; otherwise the price rise lands on
+    nothing and the scenario is silently zero-impact (same discipline as coverage labels)."""
+    sectors = set(io.sectors.labels)
+    bad = sorted({s.carrier for s in shocks if s.carrier not in sectors})
+    if bad:
+        raise ValueError(
+            f"EnergyPrice carrier(s) not a sector in this build: {bad}. Available energy "
+            f"sectors depend on the aggregation; a coarse build has "
+            f"'energy_coal', 'energy_oil_gas', 'electricity'."
+        )
+
+
 def _assert_labels_aligned(sat: SatelliteAccount, labels: list[str]) -> None:
     missing = [x for x in labels if x not in sat.data.columns]
     if missing:
@@ -200,8 +213,9 @@ def _gas_intensity(
     return acc
 
 
-def _coverage_mask(shock: CarbonPrice, labels: list[str]) -> np.ndarray:
-    """1.0 where the shock applies, 0.0 elsewhere (per label)."""
+def _coverage_mask(shock: Shock, labels: list[str]) -> np.ndarray:
+    """1.0 where the shock applies, 0.0 elsewhere (per label). Uses ``Shock.applies_to`` so it
+    works for any shock type (carbon price, energy price, …)."""
     mask = np.zeros(len(labels), dtype=float)
     for i, label in enumerate(labels):
         region, sector = label.split(":", 1)
@@ -234,6 +248,45 @@ def carbon_cost_vector(
         cost += price * intensity * mask * MEUR_TO_EUR
         descs.append(f"€{price:g}/t on {s.gases}")
     return cost, descs
+
+
+def energy_cost_vector(
+    shocks: list[EnergyPrice], labels: list[str], year: int
+) -> tuple[np.ndarray, list[str]]:
+    """Dimensionless direct cost share per product from energy-carrier **output-price** changes.
+
+    Interpretation (1): a carrier's output price rises by ``change`` (fractional), so the direct
+    cost share placed on that carrier's own products is exactly ``change`` (a +30% output price is
+    a +0.30 direct cost share on the carrier), restricted to the shock's coverage regions. This
+    is *already* dimensionless — no unit scaling — because it is a fractional price change, not a
+    €/tonne quantity. The Leontief solve then propagates it to every good in proportion to how
+    much of the carrier that good uses (directly and upstream), exactly as for the carbon cost.
+
+    Each shock contributes independently and the contributions are summed, so multiple carriers
+    (and multiple carbon prices) compose additively (the price system is linear).
+    """
+    cost = np.zeros(len(labels))
+    descs: list[str] = []
+    for s in shocks:
+        # Mask = carrier's sector AND the shock's region coverage. applies_to already ANDs the
+        # shock's own coverage_sectors; we additionally require the label's sector == carrier so
+        # the price lands only on the carrier's products.
+        mask = np.array(
+            [
+                1.0 if (lab.split(":", 1)[1] == s.carrier and s.applies_to(*_rs(lab))) else 0.0
+                for lab in labels
+            ]
+        )
+        change = s.change_at(year)  # fractional carrier output-price change
+        cost += change * mask  # direct cost share = the fractional change on the carrier itself
+        descs.append(f"{change:+.0%} output price on {s.carrier}")
+    return cost, descs
+
+
+def _rs(label: str) -> tuple[str, str]:
+    """(sector, region) from a 'region:sector' label — argument order for ``Shock.applies_to``."""
+    region, sector = label.split(":", 1)
+    return sector, region
 
 
 # Tolerance for the "negative coefficient" admissibility check. EXIOBASE can carry tiny
@@ -316,9 +369,12 @@ class IOPriceEngine:
     meta = EngineMeta(
         name="io_price",
         version=VERSION,
-        description="Leontief carbon-cost pass-through: Δprice of every good under a carbon price.",
+        description=(
+            "Leontief cost-push pass-through: Δprice of every good under a carbon price and/or "
+            "an energy-carrier output-price change."
+        ),
         capabilities=[Capability.PRICES],
-        supported_shocks=["carbon_price"],
+        supported_shocks=["carbon_price", "energy_price"],
         required_data=["IOSystem", "SatelliteAccount"],
     )
 
@@ -345,6 +401,7 @@ class IOPriceEngine:
         _assert_productive(A)  # per-run precondition; check once, then skip in the year loop
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+        energy_shocks = [s for s in shocks if isinstance(s, EnergyPrice)]
 
         # revenue_recycling has no meaning in a pure cost-push price model (no household /
         # government budget). Reject it rather than silently ignoring a declared control.
@@ -357,17 +414,23 @@ class IOPriceEngine:
 
         # Coverage labels must exist in the build's classification — a typo'd sector/region
         # would otherwise silently produce a zero-impact scenario (review).
-        _assert_coverage_labels(carbon_shocks, io)
+        _assert_coverage_labels(carbon_shocks + energy_shocks, io)
+        # Each energy carrier must be a real sector in this build; a carrier absent from the
+        # (aggregated) classification would otherwise silently give a zero-impact scenario.
+        _assert_energy_carriers(energy_shocks, io)
 
         records = []
         contributions_by_year: dict[int, list[str]] = {}
         for year in years:
             # carbon_cost_vector rejects negative per-shock intensities before aggregation.
-            carbon_cost, contributions_by_year[year] = carbon_cost_vector(
-                carbon_shocks, sat, labels, year
-            )
-            dp = price_change(A, carbon_cost, check_productive=False)
-            parts = decompose(A, carbon_cost, tiers=3, check_productive=False)
+            carbon_cost, carbon_desc = carbon_cost_vector(carbon_shocks, sat, labels, year)
+            # Energy-carrier output-price change → its own direct cost share, composed additively
+            # (the price system is linear; independent cost shocks add before the Leontief solve).
+            energy_cost, energy_desc = energy_cost_vector(energy_shocks, labels, year)
+            total_cost = carbon_cost + energy_cost
+            contributions_by_year[year] = carbon_desc + energy_desc
+            dp = price_change(A, total_cost, check_productive=False)
+            parts = decompose(A, total_cost, tiers=3, check_productive=False)
             for i, label in enumerate(labels):
                 region, sector = label.split(":", 1)
                 records.append(_rec("price_change", sector, region, year, dp[i]))
@@ -377,8 +440,7 @@ class IOPriceEngine:
         manifest = RunManifest.build(
             engine_name=self.meta.name,
             engine_version=self.meta.version,
-            data_source=io.provenance.build_id
-            or f"{io.provenance.source} {io.provenance.source_version}",
+            data_source=data_source_id(io.provenance),
             scenario={"shocks": [s.model_dump(mode="json") for s in shocks], "years": years},
             assumptions={
                 **ASSUMPTIONS,
@@ -389,15 +451,43 @@ class IOPriceEngine:
                 },
                 "monetary_unit": io.unit,
                 "unit_scaling": "τ(€/t)·e(t/MEUR)·1e-6 → dimensionless cost share",
+                "energy_price_basis": (
+                    "EnergyPrice adds the carrier's fractional output-price change directly as a "
+                    "(dimensionless) cost share on the carrier's products; propagated identically "
+                    "to the carbon cost and composed additively"
+                ),
                 "value_meaning": "Δp is a fractional change in unit price index (base p₀=1)",
                 "n_products": len(labels),
                 "carbon_shocks": len(carbon_shocks),
+                "energy_shocks": len(energy_shocks),
                 "decomposition_tiers": 3,
                 "data_build_id": io.provenance.build_id,
+                "data_generation": io.provenance.generation,
+                # Identify EVERY substantive input (IO system AND satellite), each with a content
+                # hash — a changed satellite (different generation, or doubled emissions) moves
+                # prices and must move the manifest (review P1). The IO-only data_source above is
+                # kept for back-compatibility; ``inputs`` is the complete record.
+                "inputs": [
+                    input_identity("IOSystem", io.provenance, content=_df_fingerprint(io.A)),
+                    input_identity(
+                        "SatelliteAccount", sat.provenance, content=_df_fingerprint(sat.data)
+                    ),
+                ],
                 "reference_year": io.provenance.reference_year,
             },
         )
         return ResultSet.from_records(records, manifest)
+
+
+def _df_fingerprint(df) -> dict:
+    """A stable, content-sensitive view of a numeric DataFrame for manifest hashing. Labels plus
+    a rounded flattened value list — changing any value (e.g. doubling an emission row) changes
+    the hash, while float noise below the rounding is ignored. Cheap on the small build."""
+    return {
+        "index": [str(x) for x in df.index],
+        "columns": [str(x) for x in df.columns],
+        "values": [round(float(v), 10) for v in df.to_numpy(dtype=float).ravel().tolist()],
+    }
 
 
 def _rec(variable: str, sector: str, region: str, year: int, value: float) -> dict:

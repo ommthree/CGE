@@ -22,13 +22,15 @@
 
 ## 1. Purpose & scope
 
-Compute the change in the price of every good (in every region) caused by a carbon price,
-accounting for **full supply-chain cost pass-through**. Answers: *"if a carbon price of
-$\tau$ per tonne is imposed, how much more expensive does good $i$ become, once the cost
+Compute the change in the price of every good (in every region) caused by a carbon price
+**and/or an energy-carrier output-price change**, accounting for **full supply-chain cost
+pass-through**. Answers: *"if a carbon price of $\tau$ per tonne (and/or a +$\delta$ change in an
+energy carrier's price) is imposed, how much more expensive does good $i$ become, once the cost
 increase in all of its direct and indirect inputs has propagated through?"*
 
-**In scope:** cost pass-through through the fixed IO technology; decomposition into direct
-vs upstream contributions.
+**In scope:** cost pass-through through the fixed IO technology; carbon-price and
+energy-carrier-price cost shocks (composed additively); decomposition into direct vs upstream
+contributions.
 
 **Explicitly not modelled:** no substitution between inputs (technology is fixed), no
 demand response, no change in production volumes, no factor-market effects. Because
@@ -171,6 +173,31 @@ $\ge 1$ while still satisfying $\rho(\mathbf{A})<1$, so the engine checks $\rho$
 5. For decomposition, accumulate the first $k$ Neumann terms (matrix–vector products only)
    and take the residual against the full solve so the parts sum exactly to $\Delta\mathbf{p}$.
 
+### 5a. Energy-carrier output-price changes (`EnergyPrice`)
+
+The engine also accepts an **energy-carrier output-price change** as an additional, optional cost
+shock (see `docs/energy-and-temperature-plan.md`, Feature 1). An `EnergyPrice` with carrier $k$
+and fractional change $\delta_k$ says "carrier $k$'s output price rises by $\delta_k$". Because a
+fractional output-price change *is* a direct cost share on the carrier's own products, its
+contribution to the cost vector is simply
+
+$$ c^{\text{energy}}_i = \sum_{k} \delta_k \, \mathbb{1}[\,\text{sector}(i)=k\,]\,m^{(k)}_i, $$
+
+where $m^{(k)}$ is the shock's coverage mask (1 on covered regions, 0 elsewhere). This term is
+**already dimensionless** — no M€→€ scaling — because it is a price *ratio*, not a €/tonne
+quantity. It is added to the carbon cost vector and solved through the **same**
+$(\mathbf{I}-\mathbf{A}^{\!\top})^{-1}$, so it propagates to every good in proportion to how much
+of carrier $k$ that good uses, directly and upstream. Carbon and energy shocks therefore
+**compose additively** (the price system is linear; validated to machine precision by the
+`carbon_energy_additive` check). The carrier must be a real energy sector in the build (the
+engine rejects an unknown carrier rather than returning a silent zero-impact result).
+
+Interpretation (1) — a rise in the carrier's *output price* — is implemented. Interpretation (2)
+— a rise in *every sector's energy-input cost*, scaled by each sector's energy purchase share —
+is documented as available-if-needed but not implemented (it overlaps with (1) for the same
+carrier). In the CGE (Phase 5) the same `EnergyPrice` shifts substitution in the production nest;
+no new shock type is needed.
+
 **Complexity & scope of the current implementation.** The implementation is **dense**
 (`np.linalg.solve` + a dense eigenvalue check for the admissibility guard), which is exact
 and fast on the small build ($n\sim 450$–600: milliseconds). It is **not** yet suitable for
@@ -211,10 +238,13 @@ Code-level unit tests live in `tests/test_io_price.py`. Current checks:
 | `units_plausible_magnitude` | €100/t on the toy gives $0<\Delta p<1$ (fractional), not the ~$10^3$–$10^9$ a missing unit conversion would give |
 | `gas_selection_distinct` | `gases=[CO2]` ≠ `gases=[CH4]`; combined is GWP-additive |
 | `time_path_varies_by_year` | a price path produces year-varying results |
+| `energy_price_direct_share_and_propagation` | `EnergyPrice` direct share is the fractional change on the carrier only; carrier price rises ≥ that change after propagation (§5a) |
+| `carbon_energy_additive` | carbon + energy = sum of the two run separately, to machine precision (linear price system) |
 | `engine_end_to_end` | runner → registered engine → schema-valid `ResultSet` + assumptions |
 
 Additional adversarial coverage in `tests/test_io_price.py`: negative-coefficient rejection,
-missing-satellite-label rejection, revenue-recycling rejection, negative-price rejection.
+missing-satellite-label rejection, revenue-recycling rejection, negative-price rejection,
+unknown energy-carrier rejection, energy-price linearity / coverage / time-path.
 
 **Live EXIOBASE known-answer (the P2.4/P1 DoD gate — now met).** `tests/test_exiobase_known_answer.py`
 runs against a real EXIOBASE archive (opt-in via `CGE_EXIOBASE_ARCHIVE`; skipped in offline

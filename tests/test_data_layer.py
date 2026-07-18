@@ -338,6 +338,107 @@ def test_catalogue_failure_rolls_back_filesystem(tmp_path):
     _ = store_mod  # ensure import used
 
 
+def test_legacy_catalogue_migrates_and_keeps_legacy_build(tmp_path):
+    """A pre-generation catalogue (no `generation` column) with a stale lock on a legacy build
+    must: (1) migrate the schema before recovery reads it (no BinderException); (2) NOT delete
+    the legacy build whose catalogue+meta both have NULL generation (review P1a)."""
+    import duckdb
+
+    store = DataStore(tmp_path)
+    build_test(store=store)
+    bid = "exiobase-test"
+
+    # Downgrade the catalogue to the legacy 8-column schema (no generation).
+    con = duckdb.connect(str(store.catalogue_path))
+    con.execute(
+        "CREATE TABLE builds_old AS SELECT build_id, source, source_version, reference_year, "
+        "aggregation, n_labels, quality_worst, retrieved FROM builds"
+    )
+    con.execute("DROP TABLE builds")
+    con.execute("ALTER TABLE builds_old RENAME TO builds")
+    con.close()
+    # Make the build legacy (strip its generation) and leave a stale lock.
+    mp = store.builds_dir / bid / "meta.json"
+    m = json.loads(mp.read_text())
+    m.pop("generation", None)
+    mp.write_text(json.dumps(m))
+    (store.builds_dir / f".{bid}.lock").write_text("999999")
+
+    store2 = DataStore(tmp_path)  # migrate + recover on open
+    assert store2.has(bid)  # legacy build survived (matching NULL generations = committed)
+
+
+def test_legacy_marker_crash_restores_backup_not_uncommitted_final(tmp_path):
+    """The exact predecessor crash state (review P1): a store written by the OLD marker-based
+    implementation, hard-killed between the swap and the catalogue commit. On disk: catalogue at
+    v1 (legacy NULL generation), '.bak' at v1, 'final' at an uncommitted v2 carrying the legacy
+    '.uncommitted' marker and a NULL generation, plus a stale lock. Recovery must honour the
+    marker: discard the uncommitted v2 and restore the committed v1 backup — never keep v2 and
+    delete the backup."""
+    import shutil
+
+    import duckdb
+
+    store = DataStore(tmp_path)
+    build_test(store=store)
+    bid = "exiobase-test"
+    final = store.builds_dir / bid
+    bak = store.builds_dir / f".{bid}.bak"
+
+    # Downgrade catalogue to legacy schema (NULL generation) — the migration will re-add it.
+    con = duckdb.connect(str(store.catalogue_path))
+    con.execute(
+        "CREATE TABLE builds_old AS SELECT build_id, source, source_version, reference_year, "
+        "aggregation, n_labels, quality_worst, retrieved FROM builds"
+    )
+    con.execute("DROP TABLE builds")
+    con.execute("ALTER TABLE builds_old RENAME TO builds")
+    con.close()
+
+    # v1 committed files → .bak (legacy: strip generation).
+    shutil.copytree(final, bak)
+    mb = json.loads((bak / "meta.json").read_text())
+    mb.pop("generation", None)
+    mb["source_version"] = "v1-committed"
+    (bak / "meta.json").write_text(json.dumps(mb))
+
+    # 'final' = uncommitted v2 with the legacy .uncommitted marker and NULL generation.
+    mf = json.loads((final / "meta.json").read_text())
+    mf.pop("generation", None)
+    mf["source_version"] = "v2-uncommitted"
+    (final / "meta.json").write_text(json.dumps(mf))
+    (final / ".uncommitted").write_text("")  # the predecessor's mid-write commit marker
+    (store.builds_dir / f".{bid}.lock").write_text("999999")  # stale lock
+
+    recovered = DataStore(tmp_path).load_meta(bid)
+    assert recovered.source_version == "v1-committed"  # backup restored, not the uncommitted v2
+    assert not bak.exists()  # backup consumed by the restore
+
+
+def test_recovery_treats_corrupt_final_metadata_as_uncommitted(tmp_path):
+    """Corrupt/unreadable final metadata must NOT be mistaken for a legacy NULL-generation
+    committed build (review P1: _read_generation returned None for unreadable meta, which then
+    matched a legacy NULL catalogue row). With a valid backup present, recovery restores it."""
+    import shutil
+
+    store = DataStore(tmp_path)
+    build_test(store=store)
+    bid = "exiobase-test"
+    final = store.builds_dir / bid
+    bak = store.builds_dir / f".{bid}.bak"
+
+    shutil.copytree(final, bak)
+    mb = json.loads((bak / "meta.json").read_text())
+    mb["source_version"] = "v1-committed"
+    (bak / "meta.json").write_text(json.dumps(mb))
+
+    (final / "meta.json").write_text("{ this is not valid json ")  # corrupt final meta
+    (store.builds_dir / f".{bid}.lock").write_text("999999")
+
+    recovered = DataStore(tmp_path).load_meta(bid)
+    assert recovered.source_version == "v1-committed"  # corrupt final rejected, backup restored
+
+
 def test_recovery_discards_uncommitted_final_restores_backup(tmp_path):
     """Crash BEFORE the catalogue commit: 'final' holds files whose generation does NOT match
     the catalogue → recovery must discard them and restore the backup (review P1)."""
@@ -382,7 +483,8 @@ def test_recovery_keeps_committed_final_after_post_commit_crash(tmp_path):
     # backup from a prior generation, plus a stale lock — as if the process died right after
     # the catalogue commit but before dropping the backup.
     committed_gen = store._committed_generation(bid)
-    assert store._read_generation(final) == committed_gen
+    readable, final_gen = store._read_generation(final)
+    assert readable and final_gen == committed_gen
     shutil.copytree(final, bak)  # a stale backup (older files) left around
     old = _json.loads((bak / "meta.json").read_text())
     old["source_version"] = "v1-old"

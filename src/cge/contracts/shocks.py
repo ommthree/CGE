@@ -104,6 +104,62 @@ class CarbonPrice(Shock):
         return self._path_level_at(year, self.price)
 
 
+class EnergyPrice(Shock):
+    """An exogenous change in an energy carrier's **output price** (fractional).
+
+    Interpretation (1) of the energy-price feature (see docs/energy-and-temperature-plan.md):
+    the carrier (coal / oil-gas / electricity) becomes ``change`` more expensive to buy, and that
+    cost propagates to every good in proportion to how much of the carrier it uses — directly and
+    upstream — via the same Leontief pass-through as a carbon cost. It composes **additively**
+    with a ``CarbonPrice`` (independent cost shocks add before the Leontief solve).
+
+    ``carrier`` names a coarse energy sector; the engine maps it to the build's sector labels.
+    ``coverage_regions`` (from the base ``Shock``) restricts the carrier's price rise to given
+    countries; empty means everywhere. ``path`` (if set) gives the fractional change per year,
+    overriding ``change`` for those years.
+    """
+
+    type: Literal["energy_price"] = "energy_price"
+    carrier: str = Field(
+        description=(
+            "the energy-sector label whose output price changes. On a coarse build these are "
+            "'energy_coal', 'energy_oil_gas', 'electricity'; the engine validates the carrier "
+            "against the build's actual sectors so any energy sector name is accepted"
+        )
+    )
+    change: float = Field(
+        description="fractional change in the carrier's output price, e.g. 0.30 for +30%"
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> EnergyPrice:
+        import math
+
+        if not self.carrier.strip():
+            raise ValueError("EnergyPrice.carrier must be a non-empty sector label")
+        # A finite change; ≥ −1 (a price cannot fall below zero, i.e. more than −100%). Positive
+        # is the usual case (energy gets dearer); a modest negative (cheaper energy) is allowed.
+        if not math.isfinite(self.change):
+            raise ValueError(f"EnergyPrice.change must be finite, got {self.change}")
+        if self.change < -1.0:
+            raise ValueError(
+                f"EnergyPrice.change={self.change} < -1 (a price cannot fall by more than 100%)"
+            )
+        if self.path:
+            for yr, v in self.path.items():
+                if not math.isfinite(v):
+                    raise ValueError(f"EnergyPrice.path[{yr}] is not finite: {v}")
+                if v < -1.0:
+                    raise ValueError(
+                        f"EnergyPrice.path[{yr}]={v} < -1 (a price cannot fall by more than 100%)"
+                    )
+        return self
+
+    def change_at(self, year: int) -> float:
+        """The fractional carrier-price change in ``year`` (reads ``path`` if present)."""
+        return self._path_level_at(year, self.change)
+
+
 class ProductivityShock(Shock):
     """A proportional change in total-factor or sectoral productivity.
 
@@ -145,7 +201,7 @@ class NatureStress(Shock):
 
 
 AnyShock = Annotated[
-    CarbonPrice | ProductivityShock | DemandShift | TradeCost | NatureStress,
+    CarbonPrice | EnergyPrice | ProductivityShock | DemandShift | TradeCost | NatureStress,
     Field(discriminator="type"),
 ]
 """Discriminated union of concrete shocks — use this in scenario models so YAML

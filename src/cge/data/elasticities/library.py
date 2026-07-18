@@ -9,6 +9,12 @@ carries a (low, central, high) triple, a source tag, and a confidence tag.
 **These are functional defaults for a screening tool, not a calibrated elasticity database.**
 Treat the volume envelope as indicative. Replacing this with curated, sector-matched values is
 the natural follow-up (roadmap P4.1 / P5 elasticities).
+
+**Provenance limitation (review):** the ``source`` strings below are *descriptive attributions*
+(the body of literature a range is drawn from), not per-value citations to a specific paper,
+table, and estimate. Auditable per-parameter citations — a DOI/table reference for each value —
+are part of the curated-set follow-up; until then, confidence tags flag how firmly each value is
+grounded and 'default' marks unsupported fallbacks.
 """
 
 from __future__ import annotations
@@ -35,10 +41,27 @@ _COARSE_DEMAND: dict[str, tuple[float, float, float, str, str]] = {
     "energy_oil_gas": (-0.8, -0.4, -0.2, "energy demand literature", "medium"),
     "electricity": (-0.5, -0.3, -0.1, "electricity demand studies (inelastic)", "medium"),
     "agriculture": (-0.6, -0.4, -0.2, "food demand systems (inelastic staples)", "medium"),
-    "mining": (-0.9, -0.6, -0.3, "intermediate-input demand (derived)", "low"),
-    "chemicals": (-1.0, -0.7, -0.4, "GTAP intermediate elasticities", "low"),
-    "metals": (-1.1, -0.8, -0.5, "GTAP intermediate elasticities", "low"),
-    "minerals": (-0.9, -0.6, -0.3, "GTAP intermediate elasticities", "low"),
+    # NB: these four are intermediate goods with little direct final demand. No clean
+    # *final-demand* own-price elasticity exists for them, so the ranges below are a
+    # **proxy derived from** GTAP's intermediate-substitution (Armington) elasticities — a
+    # different parameter used here as a stand-in. Flagged 'low' confidence accordingly; a
+    # proper final-demand calibration is the P4 follow-up.
+    "mining": (
+        -0.9,
+        -0.6,
+        -0.3,
+        "proxy from intermediate-substitution elasticities (derived)",
+        "low",
+    ),
+    "chemicals": (
+        -1.0,
+        -0.7,
+        -0.4,
+        "proxy from GTAP intermediate-substitution elasticities",
+        "low",
+    ),
+    "metals": (-1.1, -0.8, -0.5, "proxy from GTAP intermediate-substitution elasticities", "low"),
+    "minerals": (-0.9, -0.6, -0.3, "proxy from GTAP intermediate-substitution elasticities", "low"),
     "manufacturing": (-1.3, -0.9, -0.6, "manufactured-goods demand (elastic)", "medium"),
     "construction": (-0.7, -0.5, -0.3, "investment-good demand", "low"),
     "transport": (-1.0, -0.6, -0.3, "transport demand studies", "medium"),

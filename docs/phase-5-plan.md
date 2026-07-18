@@ -205,6 +205,14 @@ Build the model **smallest-first**:
   carbon-price shock (as a per-unit emissions tax) → solve → emit `ResultSet` with
   `price_change`, `volume_change`, plus GE-specific outputs (factor prices, welfare, government
   revenue) and a manifest recording the SAM build id, closure, elasticities, solver + status.
+- **5.2e Macro aggregates (the GE tier of Phase 4b).** Emit as **native** model variables, per
+  region and time-step: **GVA per sector** (factor income by activity), **GDP per region**
+  (Σ GVA / final-expenditure identity — report both and check they agree), the **GDP deflator and
+  CPI**, and every nominal value alongside its **real** counterpart (deflated by the index; the
+  CPI numéraire makes this exact and homogeneity-test-backed). Report the **capital rental rate**
+  as the honest "interest-rate-like" factor price — a *monetary* interest rate is out of scope for
+  the CGE core (see roadmap 4b.5). Cross-check these against the indicative PE-tier estimates
+  (roadmap 4b.1–4b.2): same sign, GE typically smaller in magnitude.
 
 **Decisions forced (make explicit in the model doc):**
 - nesting structure (KL-E-M recommended so carbon pricing bites the energy nest);

@@ -7,7 +7,14 @@ typed shock vocabulary and the module slots, see `docs/overview.md` §2).
 
 ---
 
-## Feature 1 — Country-level energy prices as optional inputs (near-term; low risk)
+## Feature 1 — Country-level energy prices as optional inputs (near-term; low risk) — ✅ IMPLEMENTED
+
+**Status: implemented** in Engine 1 (`io_price`) and available to Engine 2 (`partial_eq`) via the
+shared price step. Interpretation (1) — a rise in the carrier's *output price* — is built;
+interpretation (2) is documented as available-if-needed but not implemented. See
+`docs/models/io-price-model.md` §5a for the equation-level method, `examples/energy_price_io.yaml`
+for a runnable scenario, and the `energy_price_direct_share_and_propagation` /
+`carbon_energy_additive` validation checks. Below is the design as built.
 
 ### What it is
 An **exogenous energy-price change**, per country and energy carrier (coal / oil-gas /

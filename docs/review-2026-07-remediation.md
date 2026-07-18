@@ -276,3 +276,37 @@ and "structural paths" corrected to Neumann-tier aggregates.
 Remaining genuinely open (documented, not defects): an **independent published-footprint**
 comparison; a **curated sector concordance**; sparse full-MRIO; content-hashed full-build ids;
 EXIOBASE 3.9.x.
+
+## Follow-up review round (Engine 2 rewrite + store) — fixed
+
+A later review of the Engine-2 production-volume rewrite and the store's generation-based
+recovery found two blockers and several mediums; all fixed:
+
+- **P1 — legacy crash recovery could keep uncommitted data and delete the committed backup.**
+  A store left by the *predecessor marker-based* implementation, hard-killed between the swap and
+  the catalogue commit, has a legacy `.uncommitted` marker inside `final` and NULL generations
+  everywhere; the generation-only recovery treated NULL==NULL as committed and discarded the
+  valid backup. Recovery now decides commit state **fail-safe** (`_final_is_committed`): it
+  honours the legacy `.uncommitted` marker, treats corrupt/unreadable final metadata as
+  uncommitted (never as a legacy NULL match), and only keeps `final` when commit is positively
+  proven. Regression tests reproduce the exact predecessor crash and the corrupt-metadata case.
+- **P1 — run manifests identified only the IO system, not the satellite that determines prices.**
+  A different satellite (generation or doubled emissions) moved prices but left the manifest
+  identical. Both engines now record an `inputs` list — an identity (build id + generation) and a
+  content hash for **every** substantive input (IO system, satellite, and, for partial_eq, the
+  elasticity set). Tests assert a changed satellite moves the manifest.
+- **P2 — fallback elasticity band was invisible in the manifest.** The hash covered only explicit
+  values and per-good records held only the central value. The manifest now records each good's
+  full applied (low, central, high) triple and an `effective_content_hash` over the *applied*
+  triples, so a changed fallback band moves the manifest. Test added.
+- **P2 — elasticity classification was unenforced.** An unrelated `classification` was accepted
+  and matched by coincidental sector names. partial_eq now rejects an elasticity set whose
+  classification is not compatible (coarse-sector family or exact match) with the build's sector
+  classification. Test added.
+- **P2 — version identifiers advanced.** `CONTRACTS_VERSION` 0.2.0 → **0.2.1** (additive:
+  `generation` + manifest input identities); `io_price` 0.4.0 → **0.5.0**; `partial_eq` 0.2.0 →
+  **0.3.0** (classification enforcement + manifest semantics).
+- **P3 — docs de-staled.** `partial-equilibrium.md` (equation-2 mislabel, "first-order"/"optional
+  Armington" wording, v0.3.0), `phase-4-status.md` (test/check counts), `roadmap.md` (old linear
+  ε·Δp / fixed-point wording) corrected. Elasticity `source` strings documented honestly as
+  descriptive attributions, not per-value citations (curated citations remain a follow-up).

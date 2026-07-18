@@ -147,6 +147,23 @@ def test_manifest_sensitive_to_elasticity_values():
     assert h1 != h2  # different values → different content hash
 
 
+def test_manifest_distinguishes_build_generations():
+    """Two runs on the *same* build_id but different generations (a rewrite) must produce
+    distinguishable manifests, so results stay reproducible (review P1c: generation protected
+    recovery but not the run manifest's data-source identity)."""
+    data_a = _two_sector_network(eps=-0.5)
+    data_b = _two_sector_network(eps=-0.5)
+    for d, gen in ((data_a, "genA"), (data_b, "genB")):
+        prov = d["IOSystem"].provenance.model_copy(update={"build_id": "b1", "generation": gen})
+        d["IOSystem"] = d["IOSystem"].model_copy(update={"provenance": prov})
+    shocks = [CarbonPrice(price=100.0)]
+    ma = PartialEqEngine().run(data=data_a, shocks=shocks, years=[2020]).manifest
+    mb = PartialEqEngine().run(data=data_b, shocks=shocks, years=[2020]).manifest
+    assert ma.data_source == "b1@genA" and mb.data_source == "b1@genB"
+    assert ma.data_source != mb.data_source
+    assert ma.assumptions["data_generation"] == "genA"
+
+
 def test_manifest_carries_per_good_elasticity_provenance():
     data = _two_sector_network(eps=-0.5)
     m = PartialEqEngine().run(data=data, shocks=[CarbonPrice(price=100.0)], years=[2020]).manifest
@@ -226,6 +243,113 @@ def test_engine_rejects_wrong_kind_elasticity_set():
     )
     with pytest.raises(ValueError, match="demand ElasticitySet"):
         PartialEqEngine().run(data=data, shocks=[CarbonPrice(price=100.0)], years=[2020])
+
+
+def test_manifest_sensitive_to_fallback_band(monkeypatch):
+    """Changing the FALLBACK elasticity band (applied to goods with no explicit value) must move
+    the manifest, even though no explicit value changed (review P2: the hash covered only explicit
+    values, so a fallback change left the substantive manifest identical)."""
+    import cge.data.elasticities.library as lib
+    import cge.engines.partial_eq.engine as pe
+
+    # A network whose goods have NO explicit elasticity → both fall back to the default triple.
+    def _net():
+        d = _two_sector_network()
+        d["ElasticitySet"] = ElasticitySet(
+            provenance=_prov(),
+            kind="demand",
+            classification="s",
+            values={},  # empty → every good uses the fallback
+            sources={},
+            confidence={},
+        )
+        return d
+
+    shocks = [CarbonPrice(price=100.0)]
+    monkeypatch.setattr(lib, "DEFAULT_DEMAND_ELASTICITY", (-0.8, -0.5, -0.2))
+    monkeypatch.setattr(pe, "DEFAULT_DEMAND_ELASTICITY", (-0.8, -0.5, -0.2))
+    m1 = PartialEqEngine().run(data=_net(), shocks=shocks, years=[2020]).manifest
+
+    monkeypatch.setattr(lib, "DEFAULT_DEMAND_ELASTICITY", (-1.6, -0.5, -0.1))
+    monkeypatch.setattr(pe, "DEFAULT_DEMAND_ELASTICITY", (-1.6, -0.5, -0.1))
+    m2 = PartialEqEngine().run(data=_net(), shocks=shocks, years=[2020]).manifest
+
+    e1 = m1.assumptions["elasticity_set"]["effective_content_hash"]
+    e2 = m2.assumptions["elasticity_set"]["effective_content_hash"]
+    assert e1 != e2  # different fallback band → different effective hash
+    # And the full triple is recorded per good, not just the central value.
+    per_good = m1.assumptions["elasticity_per_good"]["up"]
+    assert per_good["low"] == -0.8 and per_good["central"] == -0.5 and per_good["high"] == -0.2
+
+
+def test_rejects_incompatible_classification():
+    """An elasticity set on an unrelated classification is rejected, not matched by coincidental
+    sector names (review P2)."""
+    data = _two_sector_network()
+    data["ElasticitySet"] = ElasticitySet(
+        provenance=_prov(),
+        kind="demand",
+        classification="completely-unrelated",
+        values={"up": (-0.5, -0.5, -0.5), "fin": (-0.5, -0.5, -0.5)},
+        sources={"up": "t", "fin": "t"},
+        confidence={"up": "high", "fin": "high"},
+    )
+    with pytest.raises(ValueError, match="not compatible"):
+        PartialEqEngine().run(data=data, shocks=[CarbonPrice(price=100.0)], years=[2020])
+
+
+def test_manifest_distinguishes_satellite_generations():
+    """Same IO system, different SATELLITE (generation and doubled emissions) → the prices change,
+    so the manifest must change too (review P1: manifests recorded only the IO system)."""
+    base = _two_sector_network()
+    other = _two_sector_network()
+    # Double the satellite emissions and stamp a different provenance generation.
+    sat = other["SatelliteAccount"]
+    prov2 = sat.provenance.model_copy(update={"build_id": "sat", "generation": "g2"})
+    other["SatelliteAccount"] = sat.model_copy(update={"data": sat.data * 2.0, "provenance": prov2})
+    prov1 = base["SatelliteAccount"].provenance.model_copy(
+        update={"build_id": "sat", "generation": "g1"}
+    )
+    base["SatelliteAccount"] = base["SatelliteAccount"].model_copy(update={"provenance": prov1})
+
+    shocks = [CarbonPrice(price=100.0)]
+    m1 = PartialEqEngine().run(data=base, shocks=shocks, years=[2020]).manifest
+    m2 = PartialEqEngine().run(data=other, shocks=shocks, years=[2020]).manifest
+    sat1 = next(i for i in m1.assumptions["inputs"] if i["name"] == "SatelliteAccount")
+    sat2 = next(i for i in m2.assumptions["inputs"] if i["name"] == "SatelliteAccount")
+    assert sat1["generation"] != sat2["generation"]
+    assert sat1["content_hash"] != sat2["content_hash"]  # doubled emissions → different hash
+
+
+def test_energy_price_drives_volume_response():
+    """An EnergyPrice flows through Engine 1's prices into the volume response: a carrier price
+    rise reduces production volumes, with no positive central responses."""
+    from cge.contracts.shocks import EnergyPrice
+
+    sc = Scenario(
+        name="e",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[EnergyPrice(carrier="energy", change=0.5)],
+    )
+    df = run_scenario(sc, data_source="toy").data
+    vol = df[(df["variable"] == "volume_change") & (df["scenario"] == "central")]["value"]
+    assert (vol <= 1e-9).all() and (vol < -1e-6).any()  # volumes fall, some materially
+    assert (vol > -1.0).all()  # bounded above −100%
+
+
+def test_carbon_plus_energy_supported_by_partial_eq():
+    """partial_eq accepts a combined carbon + energy scenario (both are supported shocks)."""
+    from cge.contracts.shocks import EnergyPrice
+
+    sc = Scenario(
+        name="ce",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[CarbonPrice(price=50.0), EnergyPrice(carrier="energy", change=0.2)],
+    )
+    df = run_scenario(sc, data_source="toy").data
+    assert (df["variable"] == "volume_change").any()
 
 
 def test_rejects_unsupported_shock():

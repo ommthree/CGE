@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 from cge.contracts.engine import registry
-from cge.contracts.shocks import CarbonPrice, NatureStress
-from cge.engines.io_price.engine import decompose, price_change
+from cge.contracts.shocks import CarbonPrice, EnergyPrice, NatureStress
+from cge.engines.io_price.engine import decompose, energy_cost_vector, price_change
 from cge.runner import run_scenario
 from cge.scenarios.loader import Scenario
 from cge.validation import toy_economy
@@ -204,6 +204,117 @@ def test_non_eur_currency_rejected():
         _run_toy(io, sat)
 
 
+def test_manifest_identifies_satellite_not_just_io():
+    """Same IO system, different satellite (doubled emissions + different generation) moves the
+    prices, so the manifest must change too — it must identify the satellite, not only the IO
+    system (review P1)."""
+    from cge.validation import toy_economy
+
+    io, sat = toy_economy()
+    prov1 = sat.provenance.model_copy(update={"build_id": "sat", "generation": "g1"})
+    sat1 = sat.model_copy(update={"provenance": prov1})
+    prov2 = sat.provenance.model_copy(update={"build_id": "sat", "generation": "g2"})
+    sat2 = sat.model_copy(update={"data": sat.data * 2.0, "provenance": prov2})
+
+    m1 = _run_toy(io, sat1).manifest
+    m2 = _run_toy(io, sat2).manifest
+    s1 = next(i for i in m1.assumptions["inputs"] if i["name"] == "SatelliteAccount")
+    s2 = next(i for i in m2.assumptions["inputs"] if i["name"] == "SatelliteAccount")
+    assert s1["generation"] == "g1" and s2["generation"] == "g2"
+    assert s1["content_hash"] != s2["content_hash"]  # doubled emissions → different content hash
+
+
+def _run_shocks(io, sat, shocks):
+    from cge.engines.io_price.engine import IOPriceEngine
+
+    return IOPriceEngine().run(
+        data={"IOSystem": io, "SatelliteAccount": sat}, shocks=shocks, years=[2020]
+    )
+
+
+def _price_series(result):
+    d = result.data
+    return d[d["variable"] == "price_change"].set_index(["region", "sector"])["value"].sort_index()
+
+
+def test_energy_price_raises_carrier_and_energy_users():
+    """A carrier output-price rise lands on the carrier itself and propagates to energy users;
+    energy-intensive sectors move more than others (the whole point of the feature)."""
+    io, sat = toy_economy()
+    dp = _price_series(_run_shocks(io, sat, [EnergyPrice(carrier="energy", change=0.5)]))
+    # The energy sector itself rises by AT LEAST the +50% direct change (plus its own upstream).
+    for region in ("A", "B"):
+        assert dp.loc[(region, "energy")] >= 0.5 - 1e-9
+        # manufacturing uses more energy than agriculture in the toy economy → larger price rise.
+        assert dp.loc[(region, "manufacturing")] > dp.loc[(region, "agriculture")] > 0.0
+
+
+def test_energy_price_linear_in_change():
+    """Doubling the carrier price change doubles every price response (the system is linear)."""
+    io, sat = toy_economy()
+    d1 = _price_series(_run_shocks(io, sat, [EnergyPrice(carrier="energy", change=0.2)]))
+    d2 = _price_series(_run_shocks(io, sat, [EnergyPrice(carrier="energy", change=0.4)]))
+    assert np.allclose(d2.to_numpy(), 2.0 * d1.to_numpy(), atol=1e-12)
+
+
+def test_carbon_and_energy_compose_additively():
+    """A scenario with both a CarbonPrice and an EnergyPrice equals the sum of the two run
+    separately — independent cost shocks add before the Leontief solve (as for multi-gas)."""
+    io, sat = toy_economy()
+    carbon = [CarbonPrice(price=100.0)]
+    energy = [EnergyPrice(carrier="energy", change=0.3)]
+    c = _price_series(_run_shocks(io, sat, carbon))
+    e = _price_series(_run_shocks(io, sat, energy))
+    both = _price_series(_run_shocks(io, sat, carbon + energy))
+    assert np.allclose(both.to_numpy(), (c + e).to_numpy(), atol=1e-12)
+
+
+def test_energy_price_coverage_restricts_direct_hit():
+    """A region-restricted energy price hits that region's carrier directly; another region moves
+    only through cross-region supply-chain use, so by strictly less on its own carrier."""
+    io, sat = toy_economy()
+    dp = _price_series(
+        _run_shocks(io, sat, [EnergyPrice(carrier="energy", change=0.5, coverage_regions=["A"])])
+    )
+    assert dp.loc[("A", "energy")] >= 0.5 - 1e-9  # direct hit
+    assert dp.loc[("B", "energy")] < dp.loc[("A", "energy")]  # only indirect in B
+
+
+def test_unknown_carrier_rejected():
+    """A carrier that is not a sector in the build is rejected, not silently zero-impact."""
+    io, sat = toy_economy()
+    with pytest.raises(ValueError, match="carrier"):
+        _run_shocks(io, sat, [EnergyPrice(carrier="not_a_sector", change=0.5)])
+
+
+def test_energy_cost_vector_is_direct_share_on_carrier():
+    """Unit-level: the direct energy cost share equals the fractional change on exactly the
+    carrier's labels and zero elsewhere (before Leontief propagation)."""
+    io, _ = toy_economy()
+    labels = list(io.A.columns)
+    cost, _desc = energy_cost_vector([EnergyPrice(carrier="energy", change=0.3)], labels, 2020)
+    for lab, c in zip(labels, cost, strict=True):
+        expected = 0.3 if lab.split(":", 1)[1] == "energy" else 0.0
+        assert c == pytest.approx(expected)
+
+
+def test_energy_price_time_path():
+    """An EnergyPrice path is read per year (piecewise-linear), like every shock."""
+    io, sat = toy_economy()
+    from cge.engines.io_price.engine import IOPriceEngine
+
+    ep = EnergyPrice(carrier="energy", change=0.0, path={2020: 0.0, 2030: 0.4})
+    d = (
+        IOPriceEngine()
+        .run(data={"IOSystem": io, "SatelliteAccount": sat}, shocks=[ep], years=[2020, 2025, 2030])
+        .data
+    )
+    energy = d[(d["variable"] == "price_change") & (d["sector"] == "energy") & (d["region"] == "A")]
+    by_year = energy.set_index("year")["value"]
+    assert by_year[2020] == pytest.approx(0.0)
+    assert by_year[2020] < by_year[2025] < by_year[2030]  # ramps up along the path
+
+
 def test_size_cap_runs_before_dense_ops():
     """The dense-size cap must fire before any eigvals/solve (else the guard is pointless)."""
     import numpy as np
@@ -252,7 +363,7 @@ def test_nan_path_rejected():
 def test_engine_version_is_current():
     from cge.engines.io_price.engine import IOPriceEngine
 
-    assert IOPriceEngine().meta.version == "0.4.0"
+    assert IOPriceEngine().meta.version == "0.5.0"
 
 
 def test_gas_without_gwp_factor_rejected():

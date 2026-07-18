@@ -247,6 +247,11 @@ _SECTOR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "bitumen",
             "fuel oil",
             "hydrocarbon",
+            # refined-product / gas labels the review found unmatched → 'other':
+            "ethane",
+            "white spirit",
+            "paraffin",
+            "blast furnace gas",
         ),
     ),
     # 'hydroelectric'/'hydro power' only — NOT 'hydro' alone (it matches 'Hydrocarbons').
@@ -290,7 +295,7 @@ _SECTOR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
     ("mining", ("mining", "ore", "quarry", "extraction", "metal ores")),
     ("chemicals", ("chemical", "plastic", "rubber", "pharmaceutic", "fertiliser")),
     ("metals", ("iron", "steel", "aluminium", "copper", "metal", "foundry")),
-    ("minerals", ("cement", "glass", "ceramic", "concrete", "mineral")),
+    ("minerals", ("cement", "glass", "ceramic", "concrete", "mineral", "stone", "sand and clay")),
     (
         "manufacturing",
         (

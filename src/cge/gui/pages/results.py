@@ -55,9 +55,11 @@ def render() -> None:
     if rv.has_volume(result):
         st.subheader("Volume change by good (with uncertainty band)")
         st.caption(
-            "Δq/q = ε·Δp — fractional change in produced volume, shown as percent. "
-            "low/central/high span the demand-elasticity uncertainty (Engine 2 is "
-            "**indicative**, not precise). Negative = volume falls."
+            "Δx/x — fractional change in **production** (gross-output) volume, shown as percent. "
+            "A carbon price raises prices; the finite-change demand response Δy/y=(1+Δp)^ε−1 cuts "
+            "final demand; that propagates through the Leontief system x=(I−A)⁻¹y so upstream "
+            "suppliers fall too. low/central/high span the demand-elasticity uncertainty "
+            "(Engine 2 is **indicative**, not precise). Negative = volume falls."
         )
         env = rv.volume_envelope(result).copy()
         for b in ("low", "central", "high"):

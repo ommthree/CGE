@@ -6,9 +6,10 @@
 #   cge run --scenario examples/carbon_price_volume.yaml
 name: "Carbon price €100/t — volume response"
 description: >
-  A €100/tCO2 carbon price: prices via the Leontief model, then first-order demand response
-  Δq/q = ε·Δp. Volume magnitudes are INDICATIVE (elasticity-dependent), with an uncertainty
-  band — use for screening, cross-check with the CGE (Phase 5).
+  A €100/tCO2 carbon price: prices via the Leontief model, then a finite-change demand response
+  Δy/y=(1+Δp)^ε−1 propagated through the Leontief quantity system x=(I−A)⁻¹y to give the
+  production-volume change Δx/x. Volume magnitudes are INDICATIVE (elasticity-dependent), with an
+  uncertainty band — use for screening, cross-check with the CGE (Phase 5).
 engine: partial_eq
 years: [2020]
 shocks:
