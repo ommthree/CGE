@@ -209,18 +209,22 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 **Risks:** the PE-tier GVA/GDP are indicative and will move under GE substitution — label them exactly as Engine 2's volumes are labelled; **do not let the interest-rate overlay be read as a real forecast** — it is the item most likely to be over-interpreted, so it is opt-in and caveated.
 **Depends on:** P4 (needs the volume response for real GVA) for the full PE tier; the deflator alone needs only P1/P2. **Unblocks:** real/nominal reporting everywhere; feeds the P5 credibility cross-checks and the P7 dynamic GDP-growth paths.
 
-### Phase 5 — Engine 3: simple static CGE (6–12 wk) ⚠ the hard part — 🔶 PILOT IMPLEMENTED (5.0 + 5.2a)
+### Phase 5 — Engine 3: simple static CGE (6–12 wk) ⚠ the hard part — 🔶 PILOT ON REAL DATA (5.0 + 5.1 + 5.2a)
 
-> **Progress:** the **solver gate (5.0)** and the **correctness-first 2-sector pilot (5.2a)** are
-> built and green. `cge.engines.cge_static` calibrates to a hand-checkable balanced SAM and passes
-> the standard CGE battery — **benchmark replication** (to machine precision), **homogeneity**, and
-> **Walras' law** — plus theory-consistent carbon-price responses (dirty output falls, dirty price
-> rises, real GDP falls). Solver abstraction: IPOPT via pyomo when present, scipy fallback so CI
-> needs no binary; a non-optimal solve raises. Model doc: `docs/models/cge-static.md`.
+> **Progress:** the **solver gate (5.0)**, **SAM construction & balancing (5.1)**, and the
+> **correctness-first pilot (5.2a)** are built and green. `cge.engines.cge_static` calibrates to a
+> hand-checkable balanced SAM **and to a SAM built from a real (aggregated) EXIOBASE build**, and in
+> both cases passes the standard CGE battery — **benchmark replication** (to machine precision),
+> **homogeneity**, and **Walras' law** — plus theory-consistent carbon-price responses (dirty
+> output falls, dirty price rises, real GDP falls). SAM build (`cge.data.sam`): closed single-region
+> construction from the IO identity, RAS balancer, and a SAM quality report (balance, aggregate
+> preservation, adjustment audit, assumed capital share) surfaced in the run manifest; a failing SAM
+> is rejected. Solver: IPOPT via pyomo when present, scipy fallback so CI needs no binary; a
+> non-optimal solve raises. Model doc: `docs/models/cge-static.md`.
 >
-> **Remaining for the full phase:** a real balanced **EXIOBASE SAM** (5.1b, the rabbit hole),
-> **Armington/CET** open economy, **multiple regions**, **revenue recycling** + the carbon-price
-> experiment (5.3), and the GE tier of the macro aggregates (native GVA/GDP/CPI + capital rental
+> **Remaining for the full phase:** **Armington/CET** open economy, **multiple regions**,
+> **revenue recycling** + the carbon-price experiment (5.3), and the GE tier of the macro
+> aggregates (native GVA/GDP/CPI + capital rental
 > rate). The pilot is the provable core those build on.
 
 > **Detailed plan: [`docs/phase-5-plan.md`](docs/phase-5-plan.md)** — solver-first sequencing,
@@ -233,10 +237,10 @@ not currently installed; the plan chooses IPOPT (via `idaes` binary) with a pure
 fallback so CI stays solver-independent on the 2-sector toy. A solver abstraction records the
 solver + termination status; a non-optimal solve raises (never returns numbers).
 
-**5.1 SAM construction (2–4 wk)**
-- Map EXIOBASE flows into SAM accounts: activities, commodities, factors (labour, capital), representative household, government, savings/investment, rest-of-world — at the small build's aggregation (~30–50 sectors; start with **one region + RoW**, multi-region after the pilot works).
-- Fill EXIOBASE's thin spots (taxes less subsidies, margins, income flows) with documented assumptions; balance with RAS or cross-entropy; emit a SAM-specific `QualityReport` (imbalance before/after, adjustment magnitudes).
-- **DoD:** balanced SAM reproducing EXIOBASE aggregates within tolerance, with an adjustment audit trail.
+**5.1 SAM construction (2–4 wk) — ✅ closed single-region done; open-economy accounts pending**
+- ✅ Map EXIOBASE flows into SAM accounts: sectors (activity=commodity, collapsed), factors (labour, capital), representative household — **single-region closed** economy (regions summed; the pilot is closed). Government / savings-investment / rest-of-world accounts land with the open-economy + recycling sub-phase (5.3). `cge.data.sam.build_sam`.
+- ✅ Value added derived from the IO identity and split capital/labour by a documented assumption; RAS balancer (`balance.py`) for the thin-data path; SAM-specific `QualityReport` (`quality.py`): balance, **aggregate preservation**, adjustment audit, negative-cell + assumed-share flags — surfaced in the run manifest, and a failing SAM is rejected.
+- **DoD (met for the closed single-region SAM):** balanced SAM reproducing EXIOBASE aggregates to 1e-6 with an audit trail; the CGE calibrates on it and replicates its benchmark to machine precision (`replicates_on_real_exiobase_sam` validation check).
 
 **5.2 Model core (2–4 wk)**
 - Static CGE in pyomo/IPOPT: nested CES production (KL–E–M nesting so carbon pricing can shift the energy nest), Armington imports / CET exports, household demand (Cobb-Douglas first, LES if needed), government with carbon-tax revenue and recycling options (lump-sum vs labour-tax cut), investment, standard closure choices (recommend: savings-driven, fixed trade balance, numéraire = CPI), square-model and degrees-of-freedom checks.

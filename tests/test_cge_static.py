@@ -62,13 +62,14 @@ def test_ras_balances_an_unbalanced_matrix():
 # -- calibration --------------------------------------------------------------
 def test_calibration_reproduces_benchmark_parameters():
     cal = _cal()
-    assert np.allclose(cal.X0, [100.0, 120.0])
-    assert np.allclose(cal.ax, [[0.0, 0.2], [0.15, 0.0]])  # input j per unit output i
+    # Levels are GDP-normalised (a CGE is scale-free); ratios and shares are what matter.
+    assert np.allclose(cal.X0, [100.0 / 181.0, 120.0 / 181.0])  # scaled by benchmark GDP 181
+    assert np.allclose(cal.ax, [[0.0, 0.2], [0.15, 0.0]])  # input j per unit output i (scale-free)
     assert np.allclose(cal.va_share, [0.85, 0.8])
     assert np.allclose(cal.beta, [[0.5, 0.5], [0.5, 0.5]])  # 50/50 CAP/LAB
     assert np.allclose(cal.gamma.sum(), 1.0)
-    assert np.allclose(cal.endowment, [90.5, 90.5])
-    assert np.isclose(cal.gdp0, 181.0)
+    assert np.allclose(cal.endowment, [90.5 / 181.0, 90.5 / 181.0])  # normalised factor income
+    assert np.isclose(cal.gdp0, 1.0)  # GDP normalised to 1
 
 
 def test_zero_profit_holds_at_benchmark():

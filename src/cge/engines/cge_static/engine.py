@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cge.contracts.data_objects import SAM
+from cge.contracts.data_objects import SAM, IOSystem
 from cge.contracts.engine import Capability, EngineMeta, registry
 from cge.contracts.provenance import RunManifest, data_source_id, input_identity
 from cge.contracts.results import ResultSet
@@ -84,15 +84,15 @@ class CGEStaticEngine:
         description="Static CGE pilot: GE price + volume response with factor-market feedback.",
         capabilities=[Capability.GENERAL_EQUILIBRIUM, Capability.PRICES, Capability.VOLUMES],
         supported_shocks=["carbon_price"],
-        required_data=["SAM"],
+        # Accepts either a supplied SAM (toy pilot) or an IOSystem (a real build, from which the
+        # SAM is built + quality-gated). Validated in _resolve_sam, so no hard required_data here.
+        required_data=[],
     )
 
     def run(self, *, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
-        sam: SAM = data["SAM"]
+        sam, sectors, sam_quality, e = _resolve_sam(data)
         factors = [f for f in _DEFAULT_FACTORS if f in sam.accounts]
-        sectors = data.get("sectors") or _infer_sectors(sam, factors)
         cal = calibrate(sam, sectors=sectors, factors=factors)
-        e = _emission_intensity(data, sectors)
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
         recycling = {s.revenue_recycling for s in carbon_shocks} - {"none"}
@@ -128,13 +128,72 @@ class CGEStaticEngine:
                 "factors": factors,
                 "solver_backends": sorted(backends),
                 "emissions_priced": bool(np.any(e != 0.0)),
-                "benchmark_gdp": cal.gdp0,
+                "benchmark_gdp_normalised": cal.gdp0,
+                # SAM credibility surface: worst quality severity + per-check summary, so a run
+                # states how much the SAM data was helped (roadmap 5.1c). None when a SAM was
+                # supplied directly (the toy pilot) rather than built here.
+                "sam_quality": (
+                    {"worst": sam_quality.worst.value, "summary": sam_quality.summary()}
+                    if sam_quality is not None
+                    else "supplied directly"
+                ),
                 "inputs": [
                     input_identity("SAM", sam.provenance, content=_sam_fingerprint(sam)),
                 ],
             },
         )
         return ResultSet.from_records(records, manifest)
+
+
+def _resolve_sam(data: dict):
+    """Return ``(sam, sectors, sam_quality_or_None, emission_intensity)`` from ``data``.
+
+    Two entry points: a ``SAM`` supplied directly (the toy pilot — no quality report, emission
+    intensity read from ``data``), or an ``IOSystem`` (a real EXIOBASE build) from which the SAM is
+    **built and quality-gated** here (5.1b) and per-sector emission intensities are derived from the
+    satellite account. A SAM whose quality report FAILS (unbalanced / aggregates not preserved) is
+    rejected — we do not calibrate on a bad SAM (mirrors the data-layer conservation gates)."""
+    if "SAM" in data:
+        sam: SAM = data["SAM"]
+        factors = [f for f in _DEFAULT_FACTORS if f in sam.accounts]
+        sectors = data.get("sectors") or _infer_sectors(sam, factors)
+        return sam, sectors, None, _emission_intensity(data, sectors)
+
+    io = data.get("IOSystem")
+    if io is None:
+        raise ValueError("cge_static needs a 'SAM' or an 'IOSystem' in data")
+    from cge.data.sam import build_sam
+
+    sam, quality, sectors = build_sam(io)
+    if not quality.passed:
+        failed = [c.name for c in quality.checks if c.severity.value == "fail"]
+        raise ValueError(f"SAM quality gate failed for the build: {failed}; refusing to calibrate.")
+    e = _emission_intensity_from_satellite(data.get("SatelliteAccount"), io, sectors)
+    return sam, sectors, quality, e
+
+
+def _emission_intensity_from_satellite(sat, io: IOSystem, sectors: list[str]) -> np.ndarray:
+    """Per-sector emission intensity (emissions per unit gross output), aggregated over regions
+    from the satellite's CO2 row. The satellite holds **intensities** (t per unit output), so the
+    single-region intensity is the output-weighted mean of the regional intensities:
+    ``Σ_r e[r,i]·x[r,i] / Σ_r x[r,i]``. Zero when no satellite/row is available (a carbon price then
+    has no cost wedge, and the manifest's ``emissions_priced`` flag says so)."""
+    if sat is None or sat.data.empty:
+        return np.zeros(len(sectors))
+    row = "CO2" if "CO2" in sat.data.index else sat.data.index[0]
+    labels = list(io.A.columns)
+    A = io.A.to_numpy(dtype=float)
+    fd = io.final_demand.sum(axis=1).reindex(labels).fillna(0.0).to_numpy(dtype=float)
+    x = np.linalg.solve(np.eye(A.shape[0]) - A, fd)  # gross output per label
+    intensity = sat.data.loc[row].reindex(labels).fillna(0.0).to_numpy(dtype=float)  # per label
+    s_index = {s: k for k, s in enumerate(sectors)}
+    num = np.zeros(len(sectors))  # Σ e·x  (total emissions)
+    den = np.zeros(len(sectors))  # Σ x    (total output)
+    for lb, e_i, xi in zip(labels, intensity, x, strict=True):
+        k = s_index[lb.split(":", 1)[1]]
+        num[k] += e_i * xi
+        den[k] += xi
+    return np.divide(num, den, out=np.zeros_like(num), where=den > 0)
 
 
 def _infer_sectors(sam: SAM, factors: list[str]) -> list[str]:

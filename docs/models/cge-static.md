@@ -1,14 +1,15 @@
 # Model description: Engine 3 — static CGE (pilot)
 
 - **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.1.0)
-- **Roadmap phase:** 5 (pilot: 5.0 solver + 5.2a 2-sector model; sub-phases 5.1b/5.3 pending)
+- **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model; sub-phase 5.3 pending)
 - **Capabilities:** general_equilibrium, prices, volumes
-- **Status:** implemented as the **correctness-first pilot** — a small, single-region, closed
-  economy calibrated to a hand-checkable 2-sector SAM. It passes the standard CGE correctness
-  battery (benchmark replication, homogeneity, Walras) and produces theory-consistent carbon-price
-  responses (`cge_static` validation suite). It is deliberately **not** the production model yet: a
-  real EXIOBASE SAM (5.1b), Armington trade, multiple regions, and revenue recycling (5.3) are the
-  next sub-phases. Magnitudes from the pilot are illustrative.
+- **Status:** implemented as the **correctness-first pilot** that now runs on **real EXIOBASE
+  data**. The model calibrates to a hand-checkable 2-sector SAM *and* to a SAM built from an
+  aggregated EXIOBASE build (§5a), and in both cases passes the standard CGE correctness battery
+  (benchmark replication, homogeneity, Walras) with theory-consistent carbon-price responses
+  (`cge_static` validation suite). It is deliberately **not** the full production model yet:
+  Armington trade, multiple regions, and revenue recycling (5.3) are the next sub-phases.
+  Magnitudes from the pilot are illustrative.
 
 ## 1. Purpose & scope
 
@@ -90,6 +91,39 @@ $\beta_{fi} = F^0_{fi}/VA^0_i$; $av_i = \prod_f \beta_{fi}^{-\beta_{fi}}$;
 $\gamma_i = FD^0_i / \sum_k FD^0_k$; $FF_f = \sum_i F^0_{fi}$. By construction the **zero-profit
 identity** $\sum_j ax_{ji} + va_i = 1$ holds exactly, which is why the benchmark replicates.
 
+**Scale normalisation.** All benchmark levels are divided by benchmark GDP before calibration, so
+magnitudes are $O(1)$. A CGE is homogeneous of degree zero, so the level scale is arbitrary and
+every reported result is a relative change — normalisation changes no ratio, share, or output. It
+matters only for numerics: real EXIOBASE flows are $\sim 10^9$, where an *absolute* solver residual
+never reaches a tight tolerance; unit-scaling makes the benchmark residual genuinely machine-zero.
+
+## 5a. SAM construction from EXIOBASE (Phase 5.1)
+
+The real-data calibration target is built by `cge.data.sam.build_sam` from an aggregated EXIOBASE
+`IOSystem`:
+
+1. **Gross output** $x = (I-A)^{-1}\,fd$ (Leontief), then intermediate flows $Z = A\,\mathrm{diag}(x)$.
+2. **Collapse to one region** (the pilot is closed): sum $Z$, final demand and value added over
+   regions to a sector-by-sector table. Inter-regional trade is folded into the domestic block
+   until the open-economy sub-phase adds a rest-of-world account (documented, not hidden).
+3. **Value added** $VA_i = x_i - \sum_j Z_{ji}$, **split** into capital/labour by a documented share
+   (EXIOBASE's factor detail is thin; the split is an explicit assumption recorded in the SAM
+   quality report, default 0.4 capital / 0.6 labour).
+4. **Assemble** the SAM (sectors, factors CAP/LAB, one household) and **quality-gate** it.
+
+**Balancing & quality.** A closed IO construction is balanced by construction; if a residual
+imbalance remains (thin data, fabricated cells) it is **RAS**-balanced [MillerBlair2009, §7.4] and
+the adjustment magnitude is recorded. The `cge.data.sam.quality` report checks: balance identity
+(fatal), **aggregate preservation** (the SAM reproduces the source EXIOBASE gross output / final
+demand / value added within $10^{-6}$), balancing-adjustment magnitude (WARN past 5%), negative
+cells, and the assumed capital share — so a run states how much the data was "helped". A SAM whose
+report **fails** is rejected; the engine will not calibrate on a bad SAM. The report's worst
+severity and summary are surfaced in the run manifest (`sam_quality`).
+
+**Emission intensities.** For a real build, per-sector emission intensity is the output-weighted
+mean of the regional intensities from the satellite CO₂ row — reusing the same emissions data as
+Engine 1, so the carbon-price wedge $\tau e_i$ is unit-consistent across engines.
+
 ## 6. Solver
 
 The equilibrium is a square nonlinear system $F(z)=0$ solved by `cge.engines.cge_static.solver`:
@@ -112,6 +146,7 @@ battery, §7 of the phase-5 plan):
 | `walras_law` | the dropped factor market clears residually at the solution |
 | `carbon_price_direction` | a carbon price contracts the dirty sector's output and cuts real GDP |
 | `carbon_price_raises_dirty_relative_price` | the dirty good's price rises relative to the clean good's |
+| `replicates_on_real_exiobase_sam` | the CGE calibrates on a SAM built from a real EXIOBASE build and replicates its benchmark to machine precision (the 5.1b gate) |
 
 Plus solver checks (known-answer, non-convergence raises, IPOPT gated) and engine tests
 (zero-shock replication, GE outputs emitted, cross-engine sign consistency with Engine 2, recycling

@@ -66,6 +66,14 @@ def calibrate(sam: SAM, *, sectors: list[str], factors: list[str]) -> Calibrated
     Z0 = np.array([[m.loc[j, i] for i in sectors] for j in sectors], dtype=float)  # [j,i]
     F0 = np.array([[m.loc[f, i] for i in sectors] for f in factors], dtype=float)  # [f,i]
     FD0 = np.array([m.loc[i, household] for i in sectors], dtype=float)  # [i]
+    # Normalise all levels by GDP so magnitudes are O(1): a CGE is homogeneous of degree zero, so
+    # the *level* scale is arbitrary and results are relative changes. Real EXIOBASE flows are
+    # ~1e9, where absolute solver residuals never reach a 1e-9 tolerance; unit-scaling fixes that
+    # without changing any calibrated ratio or reported change (it cancels in every % result).
+    scale = float(F0.sum())  # benchmark GDP (= total value added)
+    if scale <= 0:
+        raise ValueError("SAM has non-positive total value added; cannot calibrate")
+    Z0, F0, FD0 = Z0 / scale, F0 / scale, FD0 / scale
     X0 = Z0.sum(axis=0) + F0.sum(axis=0)  # output = Σ intermediate cost + Σ value added
 
     # Leontief intermediate coefficients: input j per unit output i.

@@ -1,0 +1,26 @@
+# Engine 3 (cge_static): general-equilibrium carbon-price response.
+# The static CGE builds a Social Accounting Matrix from the data build, calibrates to reproduce
+# the benchmark exactly, then solves for the new equilibrium under the carbon price — reporting
+# price, output (volume), factor-price and real-GDP changes with input substitution and
+# factor-market feedback (the mechanism Engines 1-2 cannot capture).
+# See docs/models/cge-static.md.
+#
+# NB: cge_static needs a data BUILD (it constructs the SAM from the IOSystem); it does not run on
+# the built-in 'toy' fixture. Build one first, then point --data at its id:
+#
+#   cge build --test                                    # offline build
+#   cge data                                            # copy the small build id
+#   cge run --scenario examples/carbon_price_cge.yaml --data <small_build_id>
+#
+name: "Carbon price €50/t — general equilibrium (CGE)"
+description: >
+  A €50/tCO2 carbon price solved in general equilibrium: the SAM is built from the data build and
+  the model re-solves with input substitution and factor markets clearing. Reports GE price and
+  volume changes, factor prices, and real GDP. Pilot model (single region, no revenue recycling
+  yet) — indicative magnitudes; cross-checks Engines 1-2 (brackets prices, same-sign volumes).
+engine: cge_static
+years: [2020]
+shocks:
+  - type: carbon_price
+    price: 50.0
+    gases: [CO2]

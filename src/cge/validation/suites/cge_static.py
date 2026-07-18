@@ -126,3 +126,29 @@ def _relative_price():
         None,
         None,
     )
+
+
+@check(SUITE, "replicates_on_real_exiobase_sam")
+def _real_sam_replication():
+    """The 5.1b gate: build a SAM from a real (offline) EXIOBASE build, quality-gate it, and
+    confirm the CGE calibrates and replicates its benchmark to machine precision — proving the
+    model works on real balanced data, not only the toy."""
+    import tempfile
+
+    from cge.data.build import build_test
+    from cge.data.sam import build_sam
+    from cge.data.store import DataStore
+
+    store = DataStore(tempfile.mkdtemp())
+    build_test(store=store)
+    bid = next(b for b in store.build_ids() if b != "exiobase-test")
+    io = store.load(bid)["IOSystem"]
+    sam, report, sectors = build_sam(io)
+    if not report.passed:
+        return False, "SAM quality gate failed on the real build", None, None
+    cal = calibrate(sam, sectors=sectors, factors=["CAP", "LAB"])
+    sol = solve(lambda z: M.residuals(cal, z), M.initial_guess(cal) * 1.05, prefer="scipy")
+    ns = len(sectors)
+    st = M.derive_state(cal, sol.x[:ns], sol.x[ns:])
+    err = float(np.max(np.abs(st.X - cal.X0)))
+    return err < 1e-6, f"real-SAM benchmark replication error = {err:.2e}", err, 1e-6
