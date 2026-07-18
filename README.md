@@ -5,7 +5,10 @@ production volume of good X under a carbon price?"*, extensible to nature-relate
 via ecosystem-service dependencies (ENCORE), with a web GUI for data inspection, data
 quality, model builds, and model runs.
 
-See [`roadmap.md`](roadmap.md) for the full plan, [`docs/adr/`](docs/adr/) for design
+> **New here? Start with [`docs/overview.md`](docs/overview.md)** — the executive summary of
+> what the platform does, how the components fit together, and where everything is documented.
+
+See also [`roadmap.md`](roadmap.md) for the full plan, [`docs/adr/`](docs/adr/) for design
 decisions, and [`docs/documentation-standard.md`](docs/documentation-standard.md) for the
 rule that every engine/module ships an **equation-level model doc with citations** (worked
 example: [`docs/models/io-price-model.md`](docs/models/io-price-model.md)).
