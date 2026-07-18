@@ -171,6 +171,16 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 
 ### Phase 5 — Engine 3: simple static CGE (6–12 wk) ⚠ the hard part
 
+> **Detailed plan: [`docs/phase-5-plan.md`](docs/phase-5-plan.md)** — solver-first sequencing,
+> equation-level model structure, SAM balancing with an audit trail, the standard CGE
+> correctness test battery (replication / homogeneity / Walras) plus cross-engine consistency
+> checks, and honest scope. The outline below is the summary; the plan is the spec.
+
+**5.0 Solver & environment (2–4 d) — do first.** pyomo needs a nonlinear solver (IPOPT). It is
+not currently installed; the plan chooses IPOPT (via `idaes` binary) with a pure-Python scipy
+fallback so CI stays solver-independent on the 2-sector toy. A solver abstraction records the
+solver + termination status; a non-optimal solve raises (never returns numbers).
+
 **5.1 SAM construction (2–4 wk)**
 - Map EXIOBASE flows into SAM accounts: activities, commodities, factors (labour, capital), representative household, government, savings/investment, rest-of-world — at the small build's aggregation (~30–50 sectors; start with **one region + RoW**, multi-region after the pilot works).
 - Fill EXIOBASE's thin spots (taxes less subsidies, margins, income flows) with documented assumptions; balance with RAS or cross-entropy; emit a SAM-specific `QualityReport` (imbalance before/after, adjustment magnitudes).
