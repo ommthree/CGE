@@ -59,4 +59,15 @@ def run_scenario(
         raise ValueError(f"Data source {data_source!r} is missing required objects: {missing}")
 
     result = engine.run(data=data, shocks=list(scenario.shocks), years=scenario.years)
-    return result.validate_schema()
+    result = result.validate_schema()
+
+    # Macro-aggregate accounting (roadmap Phase 4b, PE tier): roll the per-good price/volume
+    # responses up into GVA/GDP/deflator (nominal + real). Engine-agnostic post-step so every
+    # price-bearing engine (present and future) gains the aggregates; a no-op for engines that
+    # emit no price response or that already provide them natively (the CGE, later).
+    io = data.get("IOSystem")
+    if io is not None:
+        from cge.accounting import augment_with_macro_aggregates
+
+        result = augment_with_macro_aggregates(result, io)
+    return result

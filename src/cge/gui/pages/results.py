@@ -70,6 +70,27 @@ def render() -> None:
         ]
         st.dataframe(env[show], width="stretch", hide_index=True)
 
+    # -- macro aggregates (Phase 4b) ------------------------------------------
+    if rv.has_macro(result):
+        st.subheader("Macroeconomic aggregates")
+        st.caption(
+            "GDP and value added rolled up from the per-good responses (indicative PE tier). "
+            "**Nominal** includes the price effect; **real** deflates it out by the region's GDP "
+            "deflator (inflation). A price-only run (Engine 1) shows inflation with ~0 real GDP "
+            "change; a volume run (Engine 2) shows real GDP falling. Shown as percent."
+        )
+        gdp = rv.macro_gdp_table(result).copy()
+        for c in ("GDP Δ (nominal)", "GDP Δ (real)", "deflator (inflation)"):
+            if c in gdp.columns:
+                gdp[c] = (gdp[c] * 100).round(2)
+        st.dataframe(gdp, width="stretch", hide_index=True)
+        with st.expander("Value added by sector (nominal & real)", expanded=False):
+            gva = rv.macro_gva_table(result).copy()
+            for c in ("GVA Δ (nominal)", "GVA Δ (real)"):
+                if c in gva.columns:
+                    gva[c] = (gva[c] * 100).round(2)
+            st.dataframe(gva, width="stretch", hide_index=True)
+
     # -- decomposition waterfall ----------------------------------------------
     pairs = rv.goods_with_decomposition(result)
     if pairs:

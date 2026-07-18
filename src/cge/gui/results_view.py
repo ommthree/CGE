@@ -99,3 +99,46 @@ def volume_envelope(result: ResultSet) -> pd.DataFrame:
     if "central" in wide.columns:
         wide = wide.sort_values("central")  # biggest fall (most negative) first
     return wide.reset_index(drop=True)
+
+
+# Economy-wide, region-level rows (GDP, deflator) carry this sentinel sector.
+_ECONOMY_SECTOR = "__economy__"
+
+
+def has_macro(result: ResultSet) -> bool:
+    return (result.data["variable"] == "gdp_change").any()
+
+
+def macro_gdp_table(result: ResultSet) -> pd.DataFrame:
+    """Per region (central band): nominal & real GDP change and the deflator (inflation)."""
+    df = result.data
+    econ = df[(df["sector"] == _ECONOMY_SECTOR) & (df["scenario"] == "central")]
+    wide = econ.pivot_table(index=["region", "year"], columns="variable", values="value")
+    keep = [c for c in ("gdp_change", "gdp_change_real", "deflator") if c in wide.columns]
+    wide = wide[keep].reset_index()
+    return wide.rename(
+        columns={
+            "gdp_change": "GDP Δ (nominal)",
+            "gdp_change_real": "GDP Δ (real)",
+            "deflator": "deflator (inflation)",
+        }
+    )
+
+
+def macro_gva_table(result: ResultSet) -> pd.DataFrame:
+    """Per sector×region (central band): nominal & real GVA change, sorted by real (worst first)."""
+    df = result.data
+    sel = (
+        df["variable"].isin(["gva_change", "gva_change_real"])
+        & (df["sector"] != _ECONOMY_SECTOR)
+        & (df["scenario"] == "central")
+    )
+    wide = df[sel].pivot_table(
+        index=["region", "sector", "year"], columns="variable", values="value"
+    )
+    keep = [c for c in ("gva_change", "gva_change_real") if c in wide.columns]
+    wide = wide[keep].reset_index()
+    wide = wide.rename(columns={"gva_change": "GVA Δ (nominal)", "gva_change_real": "GVA Δ (real)"})
+    if "GVA Δ (real)" in wide.columns:
+        wide = wide.sort_values("GVA Δ (real)")
+    return wide.reset_index(drop=True)

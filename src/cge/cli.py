@@ -38,6 +38,28 @@ def _cmd_run(args: argparse.Namespace) -> int:
     print(f"Scenario hash: {result.manifest.scenario_hash}")
     print("Assumptions:")
     print(json.dumps(result.manifest.assumptions, indent=2))
+    # Macro headline (Phase 4b): GDP change + deflator per region, if the run carries them.
+    gdp = df[(df["variable"] == "gdp_change") & (df["scenario"] == "central")]
+    if not gdp.empty:
+        print("\nMacro aggregates (central band):")
+        econ = df[df["sector"] == "__economy__"]
+        for (region, year), _g in gdp.groupby(["region", "year"]):
+
+            def _v(var, region=region, year=year):
+                s = econ[
+                    (econ["variable"] == var)
+                    & (econ["region"] == region)
+                    & (econ["year"] == year)
+                    & (econ["scenario"] == "central")
+                ]["value"]
+                return float(s.iloc[0]) if not s.empty else float("nan")
+
+            print(
+                f"  {region} {year}: GDP {_v('gdp_change') * 100:+.2f}% nominal / "
+                f"{_v('gdp_change_real') * 100:+.2f}% real  ·  "
+                f"deflator {_v('deflator') * 100:+.2f}%"
+            )
+
     print("\nResults (head):")
     print(df.head(12).to_string(index=False))
     return 0

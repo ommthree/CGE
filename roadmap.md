@@ -170,7 +170,7 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 **Risks:** elasticity gaps for many sectors — be explicit about defaults and tag them; resist inventing precision.
 **Depends on:** P2 (elasticity gathering can start any time). **Unblocks:** volume answers; elasticity library feeds P5.
 
-### Phase 4b — Macroeconomic aggregates: GVA, GDP, deflators; real vs nominal (1–2 wk PE tier; native in P5)
+### Phase 4b — Macroeconomic aggregates: GVA, GDP, deflators; real vs nominal (1–2 wk PE tier; native in P5) — PE tier ✅ IMPLEMENTED
 
 > **What the user asked for:** per time-step, **gross value added (GVA) per sector/country**,
 > **GDP (and its growth) per country**, and — if possible — **interest rates and inflation**, so
@@ -198,8 +198,8 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 
 | # | Task | Effort |
 |---|---|---|
-| 4b.1 | **GVA/GDP accounting layer (PE tier).** From an engine run, compute ΔGVA per sector/region (base-year value-added share × the price/volume responses) and ΔGDP per region (Σ sectoral GVA), per time-step; add `gva_change` / `gdp_change` result variables and a per-region rollup. Indicative (inherits the PE caveats); clearly labelled as such | 3–5 d |
-| 4b.2 | **Deflators & real-vs-nominal (PE tier).** Value-added-weighted aggregate price index per region (an indicative GDP deflator); expose every value as both **nominal** and **real** (nominal deflated by the index) in the `ResultSet` and GUI, with the deflator itself reported and provenance-tagged | 2–3 d |
+| 4b.1 | ✅ **GVA/GDP accounting layer (PE tier).** `cge.accounting` computes ΔGVA per sector/region (base-year value-added share × price/volume responses) and ΔGDP per region (VA-weighted), per time-step; adds `gva_change` / `gdp_change` result variables; applied engine-agnostically in the runner. Value added is derived from the IO identity, not a separate table. | done |
+| 4b.2 | ✅ **Deflators & real-vs-nominal (PE tier).** Value-added-weighted GDP deflator per region; every aggregate emitted as both **nominal** and **real** (deflated by the index) in the `ResultSet` and GUI, provenance-tagged; `macro` validation suite + model doc (`docs/models/macro-aggregates.md`). | done |
 | 4b.3 | **GVA/GDP/CPI as native CGE outputs (GE tier, folds into P5).** In the CGE these are model variables, not post-hoc arithmetic: factor income → GVA, CPI/GDP-deflator as the numéraire, real vs nominal exact. Report the **capital rental rate** as the honest "interest-rate-like" factor price. Cross-check the P5 aggregates against the 4b.1/4b.2 PE estimates (should be same-sign, GE typically smaller) | folded into P5.2/5.3 |
 | 4b.4 | **GDP growth over time.** A path of GDP/GVA per region across the scenario's time-steps; a *growth-rate* series needs the recursive-dynamic wrapper (**7.1**) for capital/labour/productivity updating between years — static runs give a level per year, dynamics give genuine growth | with 7.1 |
 | 4b.5 | **Optional interest-rate bolt-on (illustrative).** A documented reduced-form mapping (Taylor-rule-style) from the model's inflation + output-gap to a nominal policy rate, behind a clearly-labelled "illustrative macro-financial overlay" flag — off by default, never a headline | 3–5 d, optional |

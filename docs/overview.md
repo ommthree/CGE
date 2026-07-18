@@ -100,18 +100,21 @@ elasticity database, so the default set is assembled, ranged, and flags where it
 a default.
 → [`docs/models/partial-equilibrium.md`](models/partial-equilibrium.md) (equation-level).
 
-### Macroeconomic aggregates — *GVA, GDP, deflators; real vs nominal (planned, Phase 4b)*
+### Macroeconomic aggregates — *GVA, GDP, deflators; real vs nominal (PE tier implemented, Phase 4b)*
 On top of the per-good price/volume answers, the platform rolls results up to the aggregates a
 macro reader expects, **per time-step and country**: **gross value added (GVA) per sector**,
 **GDP per country**, and an aggregate **price deflator** — with every figure available in both
-**nominal** and **real** terms (real = nominal deflated by the index). These come in two tiers: an
-*indicative* tier computed from the IO engines' responses (labelled indicative, like the volume
-answer), and an *exact* tier native to the CGE (GVA/GDP/CPI as model variables, the CPI as
-numéraire). **GDP growth** over time needs the recursive-dynamic wrapper (Phase 7.1). One honest
-limit: **interest rates** — the CGE yields a *capital rental rate* (real return to capital), but a
-*monetary* interest rate needs a macro-financial closure the core lacks, so it is an optional,
-clearly-illustrative overlay, never a headline.
-→ Roadmap [Phase 4b](../roadmap.md).
+**nominal** and **real** terms (real = nominal deflated by the index). Every run now carries these
+(the `cge.accounting` layer, applied automatically). They come in two tiers: an *indicative* PE
+tier computed from the IO engines' responses (**implemented** — labelled indicative, like the
+volume answer), and an *exact* tier native to the CGE (GVA/GDP/CPI as model variables, the CPI as
+numéraire — with Phase 5). A price-only run shows inflation with ~0 real GDP change; a volume run
+shows real GDP falling under a carbon price. **GDP growth** over time needs the recursive-dynamic
+wrapper (Phase 7.1). One honest limit: **interest rates** — the CGE yields a *capital rental rate*
+(real return to capital), but a *monetary* interest rate needs a macro-financial closure the core
+lacks, so it is an optional, clearly-illustrative overlay, never a headline.
+→ [`docs/models/macro-aggregates.md`](models/macro-aggregates.md) (equation-level) · roadmap
+[Phase 4b](../roadmap.md).
 
 ### Engine 3 — static CGE — *the general-equilibrium answer (planned)*
 A small static computable general equilibrium model: nested-CES production, Armington trade, a
@@ -239,7 +242,8 @@ cge validate                                           # model-validation suite
 - [`user-guide.md`](user-guide.md) — hands-on walkthrough from the simplest toy run to every feature.
 - [`roadmap.md`](../roadmap.md) — the full plan, effort, dependencies, feasibility.
 - **Model docs** (equation-level): [data layer](models/data-layer.md) ·
-  [Engine 1 price](models/io-price-model.md) · [Engine 2 volume](models/partial-equilibrium.md).
+  [Engine 1 price](models/io-price-model.md) · [Engine 2 volume](models/partial-equilibrium.md) ·
+  [macro aggregates (GVA/GDP/deflators)](models/macro-aggregates.md).
 - **Phase status**: [0](phase-0-status.md) · [1](phase-1-status.md) · [2](phase-2-status.md) ·
   [3](phase-3-status.md) · [4](phase-4-status.md) · [5 plan](phase-5-plan.md).
 - **Feature plans**: [energy prices & temperature back-solve](energy-and-temperature-plan.md).

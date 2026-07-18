@@ -29,8 +29,9 @@ All satisfied:
 - Every result carries `elasticity_used` per good and a manifest count of goods using the
   default elasticity; Engine 1's price caveats are carried into the manifest too.
 - Model doc `docs/models/partial-equilibrium.md` matches the code.
-- 121 offline tests pass (4 live-network tests skipped offline); `partial_eq` validation suite
-  (6 checks) and the full standing suite (23 checks) pass; lint + format clean.
+- The offline test suite passes (live-network tests skipped offline); the `partial_eq` validation
+  suite (6 checks) and the full standing suite pass; lint + format clean. (Run `cge validate` and
+  `pytest` for current totals — they grow as later phases add suites, e.g. Phase 4b's `macro`.)
 
 ## Design
 

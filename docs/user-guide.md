@@ -120,6 +120,26 @@ the assumptions block says so. Use them for screening and cross-checking, not as
 **Key idea:** you did not change engines by editing code — the scenario's `engine:` field selected
 `partial_eq`, and the GUI/CLI pick it up purely from the engine registry.
 
+### Macro aggregates come for free
+
+Every run — Engine 1 or Engine 2 — now also carries **macroeconomic aggregates**, added
+automatically: `gva_change` per sector, `gdp_change` per country, and a `deflator` (inflation),
+each in **nominal** and **real** terms (real = nominal deflated by the index). Region-level rows use
+the sentinel sector `__economy__`. Look for them in the results table, e.g. filter for
+`variable == gdp_change`.
+
+Read them like this:
+- On the **Engine 1** run (Step 1), nominal GDP change equals the deflator and **real GDP change is
+  ~0** — a price-only model produces inflation but says nothing about real quantities. That is
+  correct, not a bug.
+- On the **Engine 2** run, **real GDP falls** under the carbon price (volumes drop by more, in real
+  terms, than the price index rises), with a low/central/high band from the elasticity uncertainty.
+
+This is the *indicative* tier (arithmetic on the engine outputs); the CGE will produce these as exact
+equilibrium variables. One honest limit built into the labelling: there is **no monetary interest
+rate** here — that needs a macro-financial closure the current engines don't have.
+See [`docs/models/macro-aggregates.md`](models/macro-aggregates.md).
+
 ---
 
 ## Step 4 — Energy prices (and combining shocks)
@@ -229,7 +249,8 @@ Walk the pages left to right — they mirror this guide:
 - **Build** — trigger a `--test` (or live) build from the browser.
 - **Run scenario** — pick a data source (`toy` or a build), pick an engine, set a carbon price and
   region coverage, and run. The engine list and its capabilities are rendered from the registry.
-- **Results** — the headline price table, the volume envelope (when Engine 2 ran), the supply-chain
+- **Results** — the headline price table, the volume envelope (when Engine 2 ran), the
+  **macroeconomic aggregates** (GDP/GVA/deflator, nominal and real), the supply-chain
   **decomposition waterfall**, the full assumptions block, and **exports** (CSV, or Parquet with the
   run manifest embedded so a downloaded result stays traceable to its inputs).
 
