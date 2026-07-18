@@ -35,7 +35,7 @@ Each model engine consumes the same harmonised data objects and emits results in
 The modularity lives in five **contracts** — versioned schemas that modules talk through instead of importing each other. These are defined in Phase 0 and are the most leverage-per-hour work in the project:
 
 1. **Harmonised data objects.** `IOSystem`, `SAM`, `SatelliteAccount`, `ElasticitySet`, `ConcordanceMap` — every data source (EXIOBASE now; FIGARO/ICIO/successors later) is an *adapter* that maps raw downloads into these objects. Engines never see raw source formats, so a second data source is a new adapter, not a refactor. Sector/region classifications are explicit metadata on every object, with concordances as first-class data.
-2. **Typed shock vocabulary.** Scenarios are declarative files (YAML) composed of typed shocks: `CarbonPrice`, `ProductivityShock`, `DemandShift`, `TradeCost`, `NatureStress`, … each optionally a *time path*. Engines declare which shock types they understand; static engines take year-slices of a path. This is the key seam: the nature module, NGFS reader, and damage module all *emit shocks* in this vocabulary rather than talking to engines directly — so any future stress type (litigation risk, pandemic, tariff war) is a new shock class plus zero engine changes.
+2. **Typed shock vocabulary.** Scenarios are declarative files (YAML) composed of typed shocks: `CarbonPrice`, `EnergyPrice`, `ProductivityShock`, `DemandShift`, `TradeCost`, `NatureStress`, … each optionally a *time path*. Engines declare which shock types they understand; static engines take year-slices of a path. This is the key seam: the nature module, NGFS reader, and damage module all *emit shocks* in this vocabulary rather than talking to engines directly — so any future stress type (litigation risk, pandemic, tariff war) is a new shock class plus zero engine changes. (`EnergyPrice` — an exogenous per-country, per-carrier energy-cost change — is a planned near-term addition; it enters the cost vector exactly like a carbon cost and composes with it. See `docs/energy-and-temperature-plan.md`.)
 3. **Engine protocol.** An engine declares its required inputs, supported shock types, and capabilities (`prices`, `volumes`, `general_equilibrium`, `dynamic`), registered in a plugin registry. The GUI renders run pages from this metadata — adding an engine adds a GUI option with no GUI code.
 4. **Result schema.** All engines emit a common `ResultSet` (variable × sector × region × year, long format, parquet) with full provenance: data version, engine version, scenario hash, assumption dump. Comparison across engines/scenarios/data-sources is then a query, not a feature.
 5. **Module slots for the pathway stack.** Climate (`emissions → temperature`) and damages (`temperature → shocks`) are interfaces with one implementation each (FaIR; DICE-style damage function) — swappable, and omittable.
@@ -225,10 +225,11 @@ A true process IAM (GCAM/REMIND-class) is a multi-year team effort; the achievab
 | 7.1 | **Recursive-dynamic wrapper.** Solve any `general_equilibrium` engine year-by-year to 2050, updating capital (savings/investment → next-year capital stock with depreciation), labour (exogenous demographics), and productivity (exogenous trend) between static solves. No perfect foresight — dynamics are bookkeeping between solves, not a new solution concept | 4–8 wk |
 | 7.2 | **NGFS scenario reader.** Adapter: open NGFS database (IIASA) → shock paths in the standard vocabulary (carbon price path, GDP/population trajectories per region) for Net Zero 2050 / Delayed Transition / Current Policies etc. Transition intelligence is inherited from the process IAMs that built the scenarios; our model adds sector/supply-chain resolution | 1–2 wk |
 | 7.3 | **Climate module (FaIR).** One-way coupling behind the climate slot: model emissions in → temperature path out, reported alongside economic results | 1–2 wk |
-| 7.4 | **Damage feedback (optional, handle with care).** Temperature → damage function → productivity shocks fed back as standard shocks. Implement only with published functions (DICE, Burke–Hsiang–Miguel), labelled as scenario illustrations, with the choice surfaced as a first-class assumption in the GUI | 1–2 wk plumbing |
+| 7.3b | **Temperature-target back-solve.** Given a temperature (or carbon-budget) target, invert the forward chain (carbon price → emissions → FaIR → temperature) to find the **carbon-price path** that hits it, then run forward for the sector impacts. A 1-D root-find per period (the chain is monotone), wrapping 7.1 + 7.3; reports the implied price path + resulting temperature, and flags infeasible targets rather than returning garbage. This is the credible, target-driven "IAM-ish" mode. See `docs/energy-and-temperature-plan.md`. | 1–2 wk |
+| 7.4 | **Damage feedback (optional, handle with care).** Temperature → damage function → productivity shocks fed back as standard shocks. **Distinct from 7.3b:** 7.3b uses only emissions→temperature (well-established); 7.4 adds temperature→economy through a damage function (the most contested object in climate economics — order-of-magnitude disagreement). Implement only with published functions (DICE, Burke–Hsiang–Miguel), labelled as scenario illustrations, with the choice surfaced as a first-class assumption in the GUI | 1–2 wk plumbing |
 | 7.5 | **Ongoing hardening.** Second data source (FIGARO/ICIO) as a new adapter to test data sensitivity; more households/regions; scenario library + cross-run comparison in the GUI; job queue if runs get heavy; API layer if others need programmatic access | ongoing |
 
-**DoD (7.1–7.3):** pick an NGFS scenario in the GUI → the recursive-dynamic engine produces a 2020→2050 path of sector prices/volumes per region, with an associated temperature path, all provenance-tagged.
+**DoD (7.1–7.3b):** pick an NGFS scenario OR a temperature target in the GUI → the recursive-dynamic engine produces a 2020→2050 path of sector prices/volumes per region, with the associated (or target-hitting) carbon-price and temperature paths, all provenance-tagged.
 **Known limits even when complete:** no endogenous technological learning; energy as CES aggregates, not discrete technologies; no land-use module. The model traces the sectoral consequences of pathways others generate; it does not generate novel pathways. Say so in the docs.
 **Depends on:** P5 for GE-mode dynamics (7.2 and 7.3 can be built earlier against Engines 1–2).
 
@@ -255,6 +256,23 @@ P0 ─▶ P1 ─▶ P2 ─▶ P3 (GUI v1)
 | Full incl. P7 pathway stack | 6–12 months | NGFS-driven dynamic pathways to 2050 with temperature reporting, multi-source data, scenario library |
 
 Sequencing note: P3, P4, and P6a all deliver standalone value and can be reordered to taste. If forced to choose a minimal useful product, **P0→P1→P2→P3→P4→P6a** (cost + volumes + nature exposure, no CGE) is the highest value-per-week path and defers the hardest work.
+
+### Planned scenario-input extensions (detail in `docs/energy-and-temperature-plan.md`)
+
+Two requested capabilities that fit the existing seams rather than adding new phases:
+
+- **Country-level energy prices (near-term, low risk).** An optional `EnergyPrice` shock — a
+  per-country, per-carrier (coal / oil-gas / electricity) energy-cost change, applied *in
+  addition to* a carbon price. It enters the cost vector exactly like a carbon cost and
+  propagates through the same Leontief inverse, so it reuses Engine 1/2 machinery (a new shock
+  class + cost-assembly branch, ~3–5 d); richer in the CGE, where it triggers KL-E-M
+  substitution. Fits Phases 2/4/5 as an incremental feature; blocks nothing.
+- **Temperature-target back-solving (Phase 7).** Given a temperature (or carbon-budget) target,
+  invert the forward chain to find the **carbon-price path** that hits it, then run forward for
+  the sector impacts — the credible, target-driven "IAM-ish" mode. Added as roadmap task **7.3b**
+  above; needs the Phase 7 climate module (FaIR) + recursive dynamics. Distinct from — and much
+  more defensible than — temperature→economy *damage* feedback (7.4), which stays optional and
+  illustrative for scientific reasons (damage-function disagreement).
 
 ---
 

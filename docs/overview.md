@@ -115,8 +115,21 @@ This is the nature-risk extension the platform was specifically designed to reac
 
 ### Pathway stack — *"a CGE that speaks IAM" (planned, Phase 7)*
 Recursive-dynamic runs to 2050 driven by exogenous **NGFS** scenarios, with one-way **FaIR**
-climate coupling (emissions → temperature). Not a process IAM — it consumes pathways others
-generate and adds sector/supply-chain resolution. → Roadmap [Phase 7](../roadmap.md).
+climate coupling (emissions → temperature). Includes a **temperature-target back-solve**: fix a
+target (e.g. ≤ 1.75°C by 2050) and invert the forward chain to find the **carbon-price path**
+that hits it, then run forward for the sector impacts — the credible, target-driven "IAM-ish"
+mode. Not a process IAM — it consumes pathways others generate and adds sector/supply-chain
+resolution. → Roadmap [Phase 7](../roadmap.md), detail in
+[`docs/energy-and-temperature-plan.md`](energy-and-temperature-plan.md).
+
+### Planned scenario inputs — *energy prices & temperature targets*
+Two requested extensions that slot into the existing shock/module seams (no new engines):
+- **Country-level energy prices** — an optional per-country, per-carrier energy-cost change
+  applied *on top of* a carbon price; near-term, low-risk, reuses the same supply-chain
+  propagation.
+- **Temperature-target back-solving** — the Phase 7 feature above.
+
+→ [`docs/energy-and-temperature-plan.md`](energy-and-temperature-plan.md).
 
 ### Web GUI — *making it usable*
 A Streamlit app: browse data builds, **explore any build's matrices like a spreadsheet**, check
@@ -190,6 +203,7 @@ cge validate                                           # model-validation suite
   [Engine 1 price](models/io-price-model.md) · [Engine 2 volume](models/partial-equilibrium.md).
 - **Phase status**: [0](phase-0-status.md) · [1](phase-1-status.md) · [2](phase-2-status.md) ·
   [3](phase-3-status.md) · [4](phase-4-status.md) · [5 plan](phase-5-plan.md).
+- **Feature plans**: [energy prices & temperature back-solve](energy-and-temperature-plan.md).
 - **How we work**: [documentation standard](documentation-standard.md) ·
   [validation](validation.md) · [GUI](gui.md) · [ADRs](adr/) · [references](references.md).
 - **Review history**: [remediation record](review-2026-07-remediation.md).
