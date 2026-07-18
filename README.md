@@ -70,6 +70,11 @@ cge validate --strict
 > The core install is intentionally light (pydantic, pandas, numpy, pyyaml). The heavier
 > scientific deps are optional extras pulled in by the phase that needs them:
 > `.[data]` (pymrio/duckdb), `.[cge]` (pyomo/scipy), `.[gui]` (streamlit).
+>
+> The CGE solver (Phase 5) uses **IPOPT via pyomo** for real runs when its binary is present
+> (install once with `idaes get-extensions`, or a conda-forge `ipopt`), and falls back to a
+> pure-Python **scipy** solver otherwise — so the engine and its tests run anywhere without a
+> solver binary. `cge validate` gates IPOPT-only checks on availability.
 
 ## Layout
 
