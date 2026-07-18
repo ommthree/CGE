@@ -27,7 +27,7 @@ from cge.contracts.provenance import RunManifest, data_source_id, input_identity
 from cge.contracts.results import ResultSet
 from cge.contracts.shocks import CarbonPrice, EnergyPrice, Shock
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 # Assumptions from io-price-model.md §3 — printed on every result (GUI credibility). Kept in
 # sync with the model doc; the doc references this dict as the source of truth (not a
@@ -250,37 +250,30 @@ def carbon_cost_vector(
     return cost, descs
 
 
-def energy_cost_vector(
+def energy_price_pins(
     shocks: list[EnergyPrice], labels: list[str], year: int
-) -> tuple[np.ndarray, list[str]]:
-    """Dimensionless direct cost share per product from energy-carrier **output-price** changes.
+) -> tuple[dict[int, float], list[str]]:
+    """Exogenous price pins for energy-carrier **output-price** changes (review P2).
 
-    Interpretation (1): a carrier's output price rises by ``change`` (fractional), so the direct
-    cost share placed on that carrier's own products is exactly ``change`` (a +30% output price is
-    a +0.30 direct cost share on the carrier), restricted to the shock's coverage regions. This
-    is *already* dimensionless — no unit scaling — because it is a fractional price change, not a
-    €/tonne quantity. The Leontief solve then propagates it to every good in proportion to how
-    much of the carrier that good uses (directly and upstream), exactly as for the carbon cost.
+    Interpretation (1): a carrier's output price rises by exactly ``change``. This is an **exogenous
+    boundary condition** — the carrier's own Δp is pinned to ``change`` — so the carrier does NOT
+    inherit extra pass-through from its own inputs (the earlier cost-wedge form gave +35.9% for a
+    +30% request because the carrier used its own output). Downstream users still pick up the
+    carrier's higher price through the Leontief solve. Returns ``{label_index: Δp}`` for the pinned
+    carrier products (restricted to coverage) plus a human description.
 
-    Each shock contributes independently and the contributions are summed, so multiple carriers
-    (and multiple carbon prices) compose additively (the price system is linear).
+    If two shocks pin the same product to different values, the later one wins with a recorded note
+    (a scenario should not do this); same-value duplicates are harmless.
     """
-    cost = np.zeros(len(labels))
+    pins: dict[int, float] = {}
     descs: list[str] = []
     for s in shocks:
-        # Mask = carrier's sector AND the shock's region coverage. applies_to already ANDs the
-        # shock's own coverage_sectors; we additionally require the label's sector == carrier so
-        # the price lands only on the carrier's products.
-        mask = np.array(
-            [
-                1.0 if (lab.split(":", 1)[1] == s.carrier and s.applies_to(*_rs(lab))) else 0.0
-                for lab in labels
-            ]
-        )
-        change = s.change_at(year)  # fractional carrier output-price change
-        cost += change * mask  # direct cost share = the fractional change on the carrier itself
-        descs.append(f"{change:+.0%} output price on {s.carrier}")
-    return cost, descs
+        change = s.change_at(year)
+        for i, lab in enumerate(labels):
+            if lab.split(":", 1)[1] == s.carrier and s.applies_to(*_rs(lab)):
+                pins[i] = change  # pin this carrier product's Δp exogenously
+        descs.append(f"{change:+.0%} output price (pinned) on {s.carrier}")
+    return pins, descs
 
 
 def _rs(label: str) -> tuple[str, str]:
@@ -320,32 +313,67 @@ def _assert_productive(A: np.ndarray) -> None:
 
 
 def price_change(
-    A: np.ndarray, carbon_cost: np.ndarray, *, check_productive: bool = True
+    A: np.ndarray,
+    carbon_cost: np.ndarray,
+    *,
+    check_productive: bool = True,
+    pinned: dict[int, float] | None = None,
 ) -> np.ndarray:
     """Solve (I − Aᵀ) Δp = c for Δp — equation (5), as a linear solve.
 
     ``carbon_cost`` is the dimensionless direct cost share per product. With ``check_productive``
     (default), asserts A is admissible (non-negative and productive) first — see
     ``_assert_productive``. Callers that already checked pass ``check_productive=False``.
+
+    ``pinned`` (index → Δp value) fixes those products' price changes **exogenously** (a boundary
+    condition), solving only the free products' zero-profit conditions given the pinned prices.
+    This is how an energy-carrier *output-price* change works: the carrier's price rises by exactly
+    the requested amount, and that propagates to downstream users — the carrier does NOT inherit
+    extra pass-through from its own inputs (review P2). With no pins this is the plain solve.
     """
     if check_productive:
         _assert_productive(A)
     n = A.shape[0]
-    M = np.eye(n) - A.T
+    if not pinned:
+        M = np.eye(n) - A.T
+        try:
+            return np.linalg.solve(M, carbon_cost)
+        except np.linalg.LinAlgError as exc:  # singular ⇒ ρ(A) = 1 exactly
+            raise ValueError("(I − Aᵀ) is singular; economy not productive (ρ(A) = 1)") from exc
+
+    # Pinned-price solve. For free i:
+    #   Δp_i − Σ_{j free} A_ji Δp_j = c_i + Σ_{j pinned} A_ji Δp_pin_j.
+    free = np.array([i for i in range(n) if i not in pinned], dtype=int)
+    dp = np.zeros(n)
+    for i, v in pinned.items():
+        dp[i] = v
+    AT = A.T
+    rhs = carbon_cost[free] + AT[np.ix_(free, list(pinned))] @ np.array([pinned[j] for j in pinned])
+    M_free = np.eye(len(free)) - AT[np.ix_(free, free)]
     try:
-        return np.linalg.solve(M, carbon_cost)
-    except np.linalg.LinAlgError as exc:  # singular ⇒ ρ(A) = 1 exactly
-        raise ValueError("(I − Aᵀ) is singular; economy not productive (ρ(A) = 1)") from exc
+        dp[free] = np.linalg.solve(M_free, rhs)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("pinned-price system is singular; economy not productive") from exc
+    return dp
 
 
 def decompose(
-    A: np.ndarray, carbon_cost: np.ndarray, tiers: int = 3, *, check_productive: bool = True
+    A: np.ndarray,
+    carbon_cost: np.ndarray,
+    tiers: int = 3,
+    *,
+    check_productive: bool = True,
+    pinned: dict[int, float] | None = None,
 ) -> dict[str, np.ndarray]:
     """Neumann-series decomposition (equation 6): direct term plus ``tiers`` upstream tiers,
     and the residual tail. Returns per-label vectors; they sum to the full Δp.
 
     These are *aggregate tier contributions*, not enumerated supply-chain paths — full
     structural path analysis (path-level enumeration) is a separate, heavier method.
+
+    With ``pinned`` energy-price boundary conditions, the carbon cost is decomposed into tiers as
+    usual and the additional effect of the pins is reported as a separate ``energy_price`` part, so
+    all parts still sum to the full (pinned) Δp.
     """
     if check_productive:
         _assert_productive(A)
@@ -358,8 +386,13 @@ def decompose(
         term = AT @ term
         out[f"upstream_tier_{t}"] = term.copy()
         cumulative = cumulative + term
-    full = price_change(A, carbon_cost, check_productive=False)  # already checked by caller
-    out["upstream_residual"] = full - cumulative  # everything beyond the truncation
+    carbon_full = price_change(A, carbon_cost, check_productive=False)
+    out["upstream_residual"] = carbon_full - cumulative  # beyond the truncation (carbon only)
+    if pinned:
+        # The energy-price effect is the difference between the full pinned solve and the pure
+        # carbon-cost solve — an explicit part so the decomposition still sums to the full Δp.
+        full = price_change(A, carbon_cost, check_productive=False, pinned=pinned)
+        out["energy_price"] = full - carbon_full
     return out
 
 
@@ -392,16 +425,19 @@ class IOPriceEngine:
                 f"yet implemented — see the model doc)."
             )
 
-        # The 1e-6 cost-share scaling is valid ONLY for a million-EUR base in EUR with exact
-        # t/MEUR (or tCO2e/MEUR) intensities. Check exactly — a '/MEUR' suffix is not enough
-        # ('kg/MEUR' would be 1000× wrong); missing units are rejected too.
-        _assert_units(io, sat)
-
         A = io.A.to_numpy(dtype=float)
         _assert_productive(A)  # per-run precondition; check once, then skip in the year loop
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
         energy_shocks = [s for s in shocks if isinstance(s, EnergyPrice)]
+
+        # The 1e-6 cost-share scaling is valid ONLY for a million-EUR base in EUR with exact
+        # t/MEUR (or tCO2e/MEUR) intensities. Check exactly — a '/MEUR' suffix is not enough
+        # ('kg/MEUR' would be 1000× wrong); missing units are rejected too. Only needed when a
+        # CARBON price is priced: an energy-only run is dimensionless (a price pin), so it must not
+        # require emission-unit metadata (review P2).
+        if carbon_shocks:
+            _assert_units(io, sat)
 
         # revenue_recycling has no meaning in a pure cost-push price model (no household /
         # government budget). Reject it rather than silently ignoring a declared control.
@@ -424,13 +460,13 @@ class IOPriceEngine:
         for year in years:
             # carbon_cost_vector rejects negative per-shock intensities before aggregation.
             carbon_cost, carbon_desc = carbon_cost_vector(carbon_shocks, sat, labels, year)
-            # Energy-carrier output-price change → its own direct cost share, composed additively
-            # (the price system is linear; independent cost shocks add before the Leontief solve).
-            energy_cost, energy_desc = energy_cost_vector(energy_shocks, labels, year)
-            total_cost = carbon_cost + energy_cost
+            # Energy-carrier output-price change → an exogenous price PIN on the carrier (not a
+            # cost wedge), so the carrier's Δp equals the request exactly (review P2). Carbon cost
+            # and downstream energy pass-through still compose in the same linear solve.
+            pins, energy_desc = energy_price_pins(energy_shocks, labels, year)
             contributions_by_year[year] = carbon_desc + energy_desc
-            dp = price_change(A, total_cost, check_productive=False)
-            parts = decompose(A, total_cost, tiers=3, check_productive=False)
+            dp = price_change(A, carbon_cost, check_productive=False, pinned=pins or None)
+            parts = decompose(A, carbon_cost, tiers=3, check_productive=False, pinned=pins or None)
             for i, label in enumerate(labels):
                 region, sector = label.split(":", 1)
                 records.append(_rec("price_change", sector, region, year, dp[i]))

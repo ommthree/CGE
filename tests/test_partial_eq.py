@@ -321,6 +321,23 @@ def test_manifest_distinguishes_satellite_generations():
     assert sat1["content_hash"] != sat2["content_hash"]  # doubled emissions → different hash
 
 
+def test_manifest_sensitive_to_final_demand():
+    """Review P1: final demand sets the baseline y0 that drives the volume response, so a changed
+    final demand must move the IO input's content hash (it fingerprints A AND final demand)."""
+    base = _two_sector_network()
+    other = _two_sector_network()
+    io = other["IOSystem"]
+    fd = io.final_demand.copy()
+    fd.iloc[1, 0] *= 1.5  # change final demand for the final good
+    other["IOSystem"] = io.model_copy(update={"final_demand": fd})
+    shocks = [CarbonPrice(price=100.0)]
+    m1 = PartialEqEngine().run(data=base, shocks=shocks, years=[2020]).manifest
+    m2 = PartialEqEngine().run(data=other, shocks=shocks, years=[2020]).manifest
+    io1 = next(i for i in m1.assumptions["inputs"] if i["name"] == "IOSystem")
+    io2 = next(i for i in m2.assumptions["inputs"] if i["name"] == "IOSystem")
+    assert io1["content_hash"] != io2["content_hash"]  # changed final demand → different hash
+
+
 def test_energy_price_drives_volume_response():
     """An EnergyPrice flows through Engine 1's prices into the volume response: a carrier price
     rise reduces production volumes, with no positive central responses."""

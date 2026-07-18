@@ -108,10 +108,11 @@ class EnergyPrice(Shock):
     """An exogenous change in an energy carrier's **output price** (fractional).
 
     Interpretation (1) of the energy-price feature (see docs/energy-and-temperature-plan.md):
-    the carrier (coal / oil-gas / electricity) becomes ``change`` more expensive to buy, and that
-    cost propagates to every good in proportion to how much of the carrier it uses — directly and
-    upstream — via the same Leontief pass-through as a carbon cost. It composes **additively**
-    with a ``CarbonPrice`` (independent cost shocks add before the Leontief solve).
+    the carrier (coal / oil-gas / electricity) becomes ``change`` more expensive to buy. The
+    carrier's own price change is **pinned exogenously** to ``change`` (a boundary condition, so a
+    +30% request gives exactly +30% on the carrier, not more), and that higher price propagates to
+    every downstream good in proportion to how much of the carrier it uses. It composes with a
+    ``CarbonPrice`` in the same linear price solve.
 
     ``carrier`` names a coarse energy sector; the engine maps it to the build's sector labels.
     ``coverage_regions`` (from the base ``Shock``) restricts the carrier's price rise to given

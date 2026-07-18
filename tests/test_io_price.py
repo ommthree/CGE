@@ -6,7 +6,7 @@ import pytest
 
 from cge.contracts.engine import registry
 from cge.contracts.shocks import CarbonPrice, EnergyPrice, NatureStress
-from cge.engines.io_price.engine import decompose, energy_cost_vector, price_change
+from cge.engines.io_price.engine import decompose, energy_price_pins, price_change
 from cge.runner import run_scenario
 from cge.scenarios.loader import Scenario
 from cge.validation import toy_economy
@@ -237,14 +237,13 @@ def _price_series(result):
     return d[d["variable"] == "price_change"].set_index(["region", "sector"])["value"].sort_index()
 
 
-def test_energy_price_raises_carrier_and_energy_users():
-    """A carrier output-price rise lands on the carrier itself and propagates to energy users;
-    energy-intensive sectors move more than others (the whole point of the feature)."""
+def test_energy_price_pins_carrier_exactly_and_propagates():
+    """A carrier output-price rise pins the carrier's own Δp to EXACTLY the change (a boundary
+    condition, review P2), and propagates to energy users; energy-intensive sectors move more."""
     io, sat = toy_economy()
     dp = _price_series(_run_shocks(io, sat, [EnergyPrice(carrier="energy", change=0.5)]))
-    # The energy sector itself rises by AT LEAST the +50% direct change (plus its own upstream).
     for region in ("A", "B"):
-        assert dp.loc[(region, "energy")] >= 0.5 - 1e-9
+        assert dp.loc[(region, "energy")] == pytest.approx(0.5)  # EXACT, not +0.5 plus own upstream
         # manufacturing uses more energy than agriculture in the toy economy → larger price rise.
         assert dp.loc[(region, "manufacturing")] > dp.loc[(region, "agriculture")] > 0.0
 
@@ -257,16 +256,20 @@ def test_energy_price_linear_in_change():
     assert np.allclose(d2.to_numpy(), 2.0 * d1.to_numpy(), atol=1e-12)
 
 
-def test_carbon_and_energy_compose_additively():
-    """A scenario with both a CarbonPrice and an EnergyPrice equals the sum of the two run
-    separately — independent cost shocks add before the Leontief solve (as for multi-gas)."""
+def test_carbon_and_energy_combine_with_pinned_carrier():
+    """A combined CarbonPrice + EnergyPrice run pins the carrier's price to the energy change (a
+    boundary condition wins over the carbon cost on the carrier), while non-carrier sectors reflect
+    BOTH the carbon cost and the propagated pinned energy price. The carrier is not additive
+    (that was the cost-wedge bug); free sectors are higher than under carbon alone."""
     io, sat = toy_economy()
     carbon = [CarbonPrice(price=100.0)]
     energy = [EnergyPrice(carrier="energy", change=0.3)]
     c = _price_series(_run_shocks(io, sat, carbon))
-    e = _price_series(_run_shocks(io, sat, energy))
     both = _price_series(_run_shocks(io, sat, carbon + energy))
-    assert np.allclose(both.to_numpy(), (c + e).to_numpy(), atol=1e-12)
+    # The carrier is pinned to exactly 0.3, regardless of the carbon price.
+    assert both.loc[("A", "energy")] == pytest.approx(0.3)
+    # A non-carrier sector reflects both effects → strictly above the carbon-only response.
+    assert both.loc[("A", "manufacturing")] > c.loc[("A", "manufacturing")]
 
 
 def test_energy_price_coverage_restricts_direct_hit():
@@ -276,7 +279,7 @@ def test_energy_price_coverage_restricts_direct_hit():
     dp = _price_series(
         _run_shocks(io, sat, [EnergyPrice(carrier="energy", change=0.5, coverage_regions=["A"])])
     )
-    assert dp.loc[("A", "energy")] >= 0.5 - 1e-9  # direct hit
+    assert dp.loc[("A", "energy")] == pytest.approx(0.5)  # pinned in the covered region
     assert dp.loc[("B", "energy")] < dp.loc[("A", "energy")]  # only indirect in B
 
 
@@ -287,15 +290,14 @@ def test_unknown_carrier_rejected():
         _run_shocks(io, sat, [EnergyPrice(carrier="not_a_sector", change=0.5)])
 
 
-def test_energy_cost_vector_is_direct_share_on_carrier():
-    """Unit-level: the direct energy cost share equals the fractional change on exactly the
-    carrier's labels and zero elsewhere (before Leontief propagation)."""
+def test_energy_price_pins_are_on_carrier_labels_only():
+    """Unit-level: the price pins target exactly the carrier's labels, set to the change value."""
     io, _ = toy_economy()
     labels = list(io.A.columns)
-    cost, _desc = energy_cost_vector([EnergyPrice(carrier="energy", change=0.3)], labels, 2020)
-    for lab, c in zip(labels, cost, strict=True):
-        expected = 0.3 if lab.split(":", 1)[1] == "energy" else 0.0
-        assert c == pytest.approx(expected)
+    pins, _desc = energy_price_pins([EnergyPrice(carrier="energy", change=0.3)], labels, 2020)
+    energy_idx = {i for i, lab in enumerate(labels) if lab.split(":", 1)[1] == "energy"}
+    assert set(pins) == energy_idx
+    assert all(v == pytest.approx(0.3) for v in pins.values())
 
 
 def test_energy_price_time_path():
@@ -363,7 +365,7 @@ def test_nan_path_rejected():
 def test_engine_version_is_current():
     from cge.engines.io_price.engine import IOPriceEngine
 
-    assert IOPriceEngine().meta.version == "0.5.0"
+    assert IOPriceEngine().meta.version == "0.6.0"
 
 
 def test_gas_without_gwp_factor_rejected():

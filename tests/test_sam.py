@@ -90,9 +90,14 @@ def test_engine_runs_on_real_build_via_runner(small_build_io):
     rev = d[(d["variable"] == "carbon_revenue")]["value"].iloc[0]
     assert rev > 0
     assert res.manifest.assumptions["recycling_mode"] in ("lump_sum", "labour_tax_cut")
-    # The carbon price changes the sectoral price structure (a non-trivial GE response).
+    # A non-zero GE response (the pymrio test fixture's emission intensities are small, so the
+    # magnitude is tiny — but with the correct 1e-6 M→currency scaling it is finite and non-zero,
+    # not the ~1e6-too-large blowup the units bug produced).
     prices = d[d["variable"] == "price_change"]["value"]
-    assert prices.abs().max() > 1e-4
+    assert 0 < prices.abs().max() < 1.0
+    # Emissions provenance is recorded (satellite + effective cost-share), not just the SAM.
+    input_names = {i.get("name") for i in res.manifest.assumptions["inputs"]}
+    assert {"SAM", "EffectiveCarbonCostShare", "SatelliteAccount"} <= input_names
 
 
 def test_zero_shock_replicates_on_real_build(small_build_io):

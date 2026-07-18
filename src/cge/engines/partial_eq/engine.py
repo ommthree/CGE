@@ -52,7 +52,7 @@ from cge.engines.io_price.engine import (
     _df_fingerprint,
 )
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 # Classifications this engine can apply a demand set against by NAME (no formal concordance yet).
 # The default set is on 'coarse-sectors'; a built system's aggregated sectors are named
@@ -279,8 +279,11 @@ def _validate_demand_elasticities(eset: ElasticitySet, build_sector_name: str) -
 def _pe_inputs(io: IOSystem, sat, eset: ElasticitySet) -> list[dict]:
     """Reproducibility descriptors for every substantive input to a partial_eq run: the IO
     system, the satellite (prices come from Engine 1, which is driven by it), and the elasticity
-    set. Each carries a content hash so a change in any of them moves the manifest (review P1)."""
-    inputs = [input_identity("IOSystem", io.provenance, content=_df_fingerprint(io.A))]
+    set. Each carries a content hash so a change in any of them moves the manifest (review P1).
+    The IO fingerprint covers BOTH A and final demand — final demand sets the baseline y0 that
+    drives the volume response, so a changed final demand must move the manifest (review P1)."""
+    io_content = {"A": _df_fingerprint(io.A), "final_demand": _df_fingerprint(io.final_demand)}
+    inputs = [input_identity("IOSystem", io.provenance, content=io_content)]
     if sat is not None:
         inputs.append(
             input_identity("SatelliteAccount", sat.provenance, content=_df_fingerprint(sat.data))

@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 from cge.contracts.data_objects import IOSystem
+from cge.contracts.provenance import content_hash
 from cge.contracts.results import RESULT_COLUMNS, ResultSet
 
 # Sentinel 'sector' for economy-wide, region-level rows (GDP, deflator). Chosen so it cannot
@@ -152,10 +153,20 @@ def macro_records(result: ResultSet, io: IOSystem) -> list[dict]:
     return records
 
 
+# Version of the macro-accounting post-processor. Bumped when the index-number conventions or the
+# emitted variables change, so a result records which accounting logic produced its macro rows.
+MACRO_ACCOUNTING_VERSION = "0.2.0"
+
+
 def augment_with_macro_aggregates(result: ResultSet, io: IOSystem) -> ResultSet:
     """Return a new ``ResultSet`` with GVA/GDP/deflator (nominal + real) rows appended. A no-op
     (returns the input) when the result carries no price response. Idempotent-safe: it does not
-    re-add rows for variables already present."""
+    re-add rows for variables already present.
+
+    The post-processor stamps its own identity into the manifest (review P1): its version and a
+    content hash of the **effective value-added weights** (derived from the IO system incl. final
+    demand). So two runs with identical price rows but different final demand — which produce
+    different macro rows — no longer share an identical manifest."""
     existing = set(result.data["variable"].unique())
     macro_vars = {"gva_change", "gva_change_real", "gdp_change", "gdp_change_real", "deflator"}
     if macro_vars & existing:
@@ -163,6 +174,20 @@ def augment_with_macro_aggregates(result: ResultSet, io: IOSystem) -> ResultSet:
     recs = macro_records(result, io)
     if not recs:
         return result
+    va = base_year_value_added(io)
+    macro_stamp = {
+        "version": MACRO_ACCOUNTING_VERSION,
+        "index_numbers": (
+            "GDP deflator = value-added-weighted mean of sector price changes (a base-weighted / "
+            "Laspeyres price index on VA shares); real = nominal / (1+deflator); sector "
+            "gva_change_real deflates nominal GVA by the REGION deflator (a real-income measure, "
+            "NOT the sector's own production-volume change — use volume_change for that)"
+        ),
+        "value_added_weights_hash": content_hash({k: round(float(v), 10) for k, v in va.items()}),
+    }
+    manifest = result.manifest.model_copy(
+        update={"assumptions": {**result.manifest.assumptions, "macro_aggregates": macro_stamp}}
+    )
     add = pd.DataFrame.from_records(recs, columns=RESULT_COLUMNS)
     merged = pd.concat([result.data, add], ignore_index=True)
-    return ResultSet(data=merged, manifest=result.manifest).validate_schema()
+    return ResultSet(data=merged, manifest=manifest).validate_schema()

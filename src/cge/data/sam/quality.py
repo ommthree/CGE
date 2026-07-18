@@ -39,6 +39,7 @@ def sam_quality_report(
     household: str,
     capital_share: float,
     adjustment: pd.DataFrame | None = None,
+    value_added_clipped: float = 0.0,
 ) -> QualityReport:
     """Build the SAM ``QualityReport``. ``adjustment`` (raw − balanced) drives the adjustment-audit
     check when RAS moved cells; pass ``None`` when no balancing was needed."""
@@ -94,18 +95,32 @@ def sam_quality_report(
             )
         )
 
-    # 4. Negative cells (a SAM should be non-negative).
+    # 4. Negative cells: a SAM must be non-negative, because calibration reads shares/coefficients
+    # off the cells (a negative cell would produce an invalid share). Fatal (review: was a WARN).
     neg = int((matrix.to_numpy() < -1e-9).sum())
     report.add(
         QualityCheck(
             name="non_negative_cells",
-            severity=Severity.PASS if neg == 0 else Severity.WARN,
-            message=f"{neg} negative SAM cell(s)",
+            severity=Severity.PASS if neg == 0 else Severity.FAIL,
+            message=f"{neg} negative SAM cell(s) (calibration requires non-negative cells)",
             value=float(neg),
         )
     )
 
-    # 5. Assumptions recorded (informational PASS — the audit trail).
+    # 5. Negative value-added clip audit: how much negative derived VA was clipped to zero (a
+    # non-productive column in the source data). WARN if it moved a material share of VA, so the
+    # transformation is visible rather than hidden (review robustness note).
+    clip_frac = value_added_clipped / max(source_value_added, 1.0)
+    report.add(
+        QualityCheck(
+            name="value_added_clip",
+            severity=Severity.WARN if clip_frac > 1e-6 else Severity.PASS,
+            message=f"clipped {value_added_clipped:.4g} of negative value added ({clip_frac:.2%})",
+            value=clip_frac,
+        )
+    )
+
+    # 6. Assumptions recorded (informational PASS — the audit trail).
     report.add(
         QualityCheck(
             name="assumed_capital_share",

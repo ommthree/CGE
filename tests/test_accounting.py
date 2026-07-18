@@ -107,6 +107,31 @@ def test_augment_is_idempotent():
     assert len(again.data) == len(result.data)
 
 
+def test_macro_stamps_provenance_and_tracks_final_demand():
+    """Review P1: the macro post-processor records its own version + a hash of the value-added
+    weights, so two runs with the same prices but different final demand (⇒ different macro rows)
+    no longer share an identical manifest."""
+    # Build a NON-augmented engine result directly (the runner would already augment it).
+    from cge.contracts.shocks import CarbonPrice
+    from cge.engines.io_price.engine import IOPriceEngine
+
+    io, sat = toy_economy()
+    raw = IOPriceEngine().run(
+        data={"IOSystem": io, "SatelliteAccount": sat},
+        shocks=[CarbonPrice(price=100.0)],
+        years=[2020],
+    )
+    m1 = augment_with_macro_aggregates(raw, io).manifest
+    assert m1.assumptions["macro_aggregates"]["version"]  # version recorded
+    # Change final demand → different value-added weights → different macro provenance hash.
+    io2, _ = toy_economy()
+    io2.final_demand = io2.final_demand * 1.3
+    m2 = augment_with_macro_aggregates(raw, io2).manifest
+    h1 = m1.assumptions["macro_aggregates"]["value_added_weights_hash"]
+    h2 = m2.assumptions["macro_aggregates"]["value_added_weights_hash"]
+    assert h1 != h2
+
+
 def test_results_view_macro_helpers():
     """The GUI reshaping helpers expose the aggregates: a GDP table per region and a GVA table
     per sector, both with nominal and real columns."""

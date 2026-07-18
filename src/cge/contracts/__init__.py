@@ -22,7 +22,9 @@ Provenance/config live alongside in provenance.py.
 # 0.2.1: additive — Provenance.generation (per-save id) and per-input identity/content-hash
 # records in run manifests (review: additive changes bump the patch).
 # 0.2.2: additive — EnergyPrice shock (carrier output-price change) added to the vocabulary.
-CONTRACTS_VERSION = "0.2.2"
+# 0.2.3: EnergyPrice semantics corrected — the carrier price is now an exogenous pin (a +30%
+# request gives exactly +30% on the carrier), not a cost wedge that inherited its own pass-through.
+CONTRACTS_VERSION = "0.2.3"
 
 from cge.contracts.data_objects import (  # noqa: E402
     SAM,

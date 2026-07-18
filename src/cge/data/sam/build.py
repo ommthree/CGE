@@ -50,6 +50,7 @@ class RawSAM:
     source_gross_output: float
     source_final_demand: float
     source_value_added: float
+    value_added_clipped: float  # total negative value added clipped to zero (audit)
 
 
 def _gross_output(io: IOSystem) -> tuple[np.ndarray, list[str]]:
@@ -97,8 +98,9 @@ def build_raw_sam(io: IOSystem, *, capital_share: float = DEFAULT_CAPITAL_SHARE)
             Zagg[i, j] += Z[a, b]  # supply of sector i to sector j
 
     # Value added per sector = output − intermediate purchases (column sum of Z into j).
-    VAagg = Xagg - Zagg.sum(axis=0)
-    VAagg = np.clip(VAagg, 0.0, None)  # guard tiny negatives from rounding
+    VAagg_raw = Xagg - Zagg.sum(axis=0)
+    VAagg = np.clip(VAagg_raw, 0.0, None)  # guard negatives (recorded below for the audit)
+    va_clip = float(np.sum(np.abs(np.minimum(VAagg_raw, 0.0))))  # total negative VA clipped
 
     # Assemble the SAM (row = receipts, col = payments).
     accounts = sectors + FACTORS + [HOUSEHOLD]
@@ -138,7 +140,10 @@ def build_raw_sam(io: IOSystem, *, capital_share: float = DEFAULT_CAPITAL_SHARE)
         capital_share=capital_share,
         source_gross_output=float(Xagg.sum()),
         source_final_demand=float(FDagg.sum()),
-        source_value_added=float(VAagg.sum()),
+        # Record the *pre-clip* value added as the source aggregate, so the quality audit sees the
+        # true transformation size rather than the already-clipped total (review robustness note).
+        source_value_added=float(VAagg_raw.sum()),
+        value_added_clipped=va_clip,
     )
 
 
@@ -174,5 +179,6 @@ def build_sam(
         household=HOUSEHOLD,
         capital_share=capital_share,
         adjustment=adjustment,
+        value_added_clipped=raw.value_added_clipped,
     )
     return raw.sam, report, raw.sectors

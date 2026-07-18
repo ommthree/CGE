@@ -76,6 +76,19 @@ def calibrate(sam: SAM, *, sectors: list[str], factors: list[str]) -> Calibrated
     Z0, F0, FD0 = Z0 / scale, F0 / scale, FD0 / scale
     X0 = Z0.sum(axis=0) + F0.sum(axis=0)  # output = Σ intermediate cost + Σ value added
 
+    # Reject degenerate benchmarks before dividing by them (review robustness): a zero-output
+    # sector, a sector with no value added (β/av undefined), or non-positive final demand would
+    # otherwise produce NaN/inf shares.
+    if float(X0.min()) <= 0:
+        bad = [s for s, x in zip(sectors, X0, strict=True) if x <= 0]
+        raise ValueError(f"SAM has zero/negative gross output for sectors {bad}; cannot calibrate")
+    VA0_check = F0.sum(axis=0)
+    if float(VA0_check.min()) <= 0:
+        bad = [s for s, v in zip(sectors, VA0_check, strict=True) if v <= 0]
+        raise ValueError(f"SAM has zero value added for sectors {bad}; Cobb-Douglas VA undefined")
+    if float(FD0.min()) < 0 or float(FD0.sum()) <= 0:
+        raise ValueError("SAM household final demand must be non-negative with a positive total")
+
     # Leontief intermediate coefficients: input j per unit output i.
     ax = Z0 / X0[None, :]
     # Value added per unit output (Leontief VA requirement): VA0[i]/X0[i]. With unit VA cost 1 at

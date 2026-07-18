@@ -109,8 +109,10 @@ def _solve_scipy(
     z0 = np.log(np.maximum(x0 - lower, 1e-12))
     res = least_squares(_f, z0, method="lm", xtol=1e-14, ftol=1e-14, gtol=1e-14, max_nfev=10000)
     x = lower + np.exp(res.x)
-    status = "converged" if res.success else f"scipy:{res.status}"
-    return Solution(x=x, backend="scipy", status=status, residual_norm=float("nan"))
+    status = "converged" if res.success else f"scipy:status={res.status}"
+    # Record the actual residual norm here (not NaN); ``solve`` re-verifies it against ``tol``.
+    resid_norm = float(np.max(np.abs(residual(x)))) if x.size else 0.0
+    return Solution(x=x, backend="scipy", status=status, residual_norm=resid_norm)
 
 
 def _solve_ipopt(
