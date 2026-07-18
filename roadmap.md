@@ -209,7 +209,19 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 **Risks:** the PE-tier GVA/GDP are indicative and will move under GE substitution — label them exactly as Engine 2's volumes are labelled; **do not let the interest-rate overlay be read as a real forecast** — it is the item most likely to be over-interpreted, so it is opt-in and caveated.
 **Depends on:** P4 (needs the volume response for real GVA) for the full PE tier; the deflator alone needs only P1/P2. **Unblocks:** real/nominal reporting everywhere; feeds the P5 credibility cross-checks and the P7 dynamic GDP-growth paths.
 
-### Phase 5 — Engine 3: simple static CGE (6–12 wk) ⚠ the hard part
+### Phase 5 — Engine 3: simple static CGE (6–12 wk) ⚠ the hard part — 🔶 PILOT IMPLEMENTED (5.0 + 5.2a)
+
+> **Progress:** the **solver gate (5.0)** and the **correctness-first 2-sector pilot (5.2a)** are
+> built and green. `cge.engines.cge_static` calibrates to a hand-checkable balanced SAM and passes
+> the standard CGE battery — **benchmark replication** (to machine precision), **homogeneity**, and
+> **Walras' law** — plus theory-consistent carbon-price responses (dirty output falls, dirty price
+> rises, real GDP falls). Solver abstraction: IPOPT via pyomo when present, scipy fallback so CI
+> needs no binary; a non-optimal solve raises. Model doc: `docs/models/cge-static.md`.
+>
+> **Remaining for the full phase:** a real balanced **EXIOBASE SAM** (5.1b, the rabbit hole),
+> **Armington/CET** open economy, **multiple regions**, **revenue recycling** + the carbon-price
+> experiment (5.3), and the GE tier of the macro aggregates (native GVA/GDP/CPI + capital rental
+> rate). The pilot is the provable core those build on.
 
 > **Detailed plan: [`docs/phase-5-plan.md`](docs/phase-5-plan.md)** — solver-first sequencing,
 > equation-level model structure, SAM balancing with an audit trail, the standard CGE

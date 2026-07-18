@@ -116,13 +116,17 @@ lacks, so it is an optional, clearly-illustrative overlay, never a headline.
 → [`docs/models/macro-aggregates.md`](models/macro-aggregates.md) (equation-level) · roadmap
 [Phase 4b](../roadmap.md).
 
-### Engine 3 — static CGE — *the general-equilibrium answer (planned)*
-A small static computable general equilibrium model: nested-CES production, Armington trade, a
-household and government with **carbon-tax revenue recycling** — the thing Engines 1–2
-structurally cannot do. "Toy but honest": validated to replicate its benchmark and satisfy the
-standard homogeneity/Walras tests, and to *bracket* Engines 1–2. The hardest phase; the risks
-are data (SAM balancing) and the solver, not the code.
-→ **Detailed plan:** [`docs/phase-5-plan.md`](phase-5-plan.md).
+### Engine 3 — static CGE — *the general-equilibrium answer (pilot implemented)*
+A small static computable general equilibrium model: Leontief intermediates, Cobb-Douglas value
+added and household demand, factor markets, CPI numéraire — the general-equilibrium feedback and
+input substitution Engines 1–2 structurally cannot do. The **correctness-first pilot is built**:
+it calibrates to a hand-checkable balanced SAM and passes the standard CGE battery — **benchmark
+replication** (to machine precision), **homogeneity**, and **Walras' law** — with theory-consistent
+carbon-price responses (dirty output falls, dirty price rises relative to clean, real GDP falls).
+"Toy but honest": *precise about structure, indicative about magnitudes*. Still to come (the harder
+half): a real EXIOBASE SAM, Armington trade, multiple regions, and **carbon-tax revenue recycling**.
+→ [`docs/models/cge-static.md`](models/cge-static.md) (equation-level) · **plan:**
+[`docs/phase-5-plan.md`](phase-5-plan.md).
 
 ### Nature extension (ENCORE) — *the ecosystem-service answer (planned)*
 Maps sectors to their **dependencies on ecosystem services** (pollination, water, …) via the
@@ -243,6 +247,7 @@ cge validate                                           # model-validation suite
 - [`roadmap.md`](../roadmap.md) — the full plan, effort, dependencies, feasibility.
 - **Model docs** (equation-level): [data layer](models/data-layer.md) ·
   [Engine 1 price](models/io-price-model.md) · [Engine 2 volume](models/partial-equilibrium.md) ·
+  [Engine 3 static CGE](models/cge-static.md) ·
   [macro aggregates (GVA/GDP/deflators)](models/macro-aggregates.md).
 - **Phase status**: [0](phase-0-status.md) · [1](phase-1-status.md) · [2](phase-2-status.md) ·
   [3](phase-3-status.md) · [4](phase-4-status.md) · [5 plan](phase-5-plan.md).
