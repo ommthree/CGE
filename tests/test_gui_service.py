@@ -50,6 +50,16 @@ def test_engines_listed(tmp_path):
     assert "io_price" in names
 
 
+def test_service_sectors_for_toy_and_build(tmp_path):
+    """The energy-carrier picker on the Run page needs distinct sectors for 'toy' and a build."""
+    svc = _service(tmp_path)
+    toy_sectors = svc.sectors("toy")
+    assert "energy" in toy_sectors  # the toy fixture's energy carrier
+    build_sectors = svc.sectors(svc.build_ids()[0])
+    # sector labels, not region:sector composites
+    assert build_sectors and all(":" not in s for s in build_sectors)
+
+
 # -- results_view -------------------------------------------------------------
 def _toy_result():
     from cge.runner import run_scenario

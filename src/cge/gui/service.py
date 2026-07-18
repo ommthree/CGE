@@ -74,6 +74,14 @@ class GuiService:
         io = self.store.load(build_id)["IOSystem"]
         return list(io.A.columns)
 
+    def sectors(self, data_source: str) -> list[str]:
+        """Distinct sector labels for a data source ('toy' or a build id) — used to populate the
+        energy-carrier picker on the Run page. Works for the toy fixture as well as store builds."""
+        from cge.runner import load_data
+
+        io = load_data(data_source, store=self.store)["IOSystem"]
+        return sorted({lab.split(":", 1)[1] for lab in io.A.columns})
+
     # -- quality ---------------------------------------------------------------
     def quality(self, build_id: str):
         return self.store.load_quality(build_id)

@@ -247,16 +247,15 @@ Walk the pages left to right — they mirror this guide:
   satellite emissions. This is the "look at the data like an Excel sheet" view.
 - **Quality** — the quality report per build, colour-coded by severity.
 - **Build** — trigger a `--test` (or live) build from the browser.
-- **Run scenario** — pick a data source (`toy` or a build), pick an engine, set a carbon price and
-  region coverage, and run. The engine list and its capabilities are rendered from the registry.
+- **Run scenario** — pick a data source (`toy` or a build), pick an engine, set a carbon price,
+  add any number of **energy-carrier price** shocks (carrier + % change + region coverage), and
+  run. The carbon and energy shocks are composed into one scenario, exactly as in Step 4. The
+  engine list, its capabilities, and which shock controls appear are all rendered from the registry
+  metadata — so this page covers everything the engines support.
 - **Results** — the headline price table, the volume envelope (when Engine 2 ran), the
   **macroeconomic aggregates** (GDP/GVA/deflator, nominal and real), the supply-chain
   **decomposition waterfall**, the full assumptions block, and **exports** (CSV, or Parquet with the
   run manifest embedded so a downloaded result stays traceable to its inputs).
-
-> Note: the GUI Run page currently builds **carbon-price** scenarios. For **energy-price** or
-> **combined** scenarios, use a YAML file with `cge run` as in Step 4 (a GUI control for energy
-> prices is a small planned addition).
 
 ---
 

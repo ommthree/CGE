@@ -1,8 +1,8 @@
 # Web GUI (Phase 3)
 
 A Streamlit app for the everyday workflow: see what data exists, browse it like a
-spreadsheet, check data quality, build datasets, run carbon-price scenarios, and explore
-results — without touching the CLI.
+spreadsheet, check data quality, build datasets, run carbon-price and energy-price scenarios,
+and explore results — without touching the CLI.
 
 ## Launch
 
@@ -21,7 +21,7 @@ Then open the local URL Streamlit prints (default http://localhost:8501).
 | **Data explorer** | Spreadsheet-style grid over any build's A-matrix / final demand / satellite intensities. Filter rows & columns by label, scroll, export the slice to CSV. | 3.2b |
 | **Data quality** | The stored `QualityReport` per build, incl. pipeline consistency/plausibility checks, worst issues first. | 3.3 |
 | **Build data** | Trigger an offline test build or a live EXIOBASE build; streams the job log live (background subprocess so the UI never freezes). | 3.4 |
-| **Run scenario** | Pick data + engine + carbon price (+ region coverage), run in-process. Engine picker is driven by registry metadata, so new engines appear with no page changes. | 3.5 |
+| **Run scenario** | Pick data + engine + a carbon price and/or any number of energy-carrier price shocks (carrier + % change + region coverage), composed into one scenario and run in-process. Both the engine picker and which shock controls appear are driven by registry metadata (`supported_shocks`), so new engines/shocks appear with no page changes. | 3.5 |
 | **Results** | Headline Δprice table, supply-chain decomposition waterfall per good, the run's assumptions, CSV/Parquet export. | 3.6 |
 
 ## Architecture
