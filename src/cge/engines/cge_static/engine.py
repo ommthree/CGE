@@ -31,7 +31,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor the single institution as a sector.
@@ -43,10 +43,15 @@ ASSUMPTIONS = {
         "demand; fixed factor endowments; CPI numéraire"
     ),
     "scope": (
-        "single region, one representative household, `none` revenue recycling; Armington trade / "
-        "multi-region / recycling are later sub-phases (5.1b/5.3)"
+        "single region, one representative household; revenue recycling supported "
+        "(none/lump_sum/labour_tax_cut, the last two equivalent with one household); "
+        "Armington trade / multi-region are later sub-phases"
     ),
     "carbon_price": "per-unit emissions cost wedge τ·e[i] in the zero-profit condition",
+    "revenue_recycling": (
+        "carbon revenue R = Σ τ·e[i]·X[i]; none = revenue leaves the economy; "
+        "lump_sum/labour_tax_cut = returned to the household (offsets the welfare loss)"
+    ),
     "closure": "savings-less pilot; fixed factor supply; numéraire = consumer price index (CPI=1)",
     "solver_rule": "non-optimal solve raises (well-posedness); backend + status recorded",
     "interpretation": (
@@ -95,16 +100,29 @@ class CGEStaticEngine:
         cal = calibrate(sam, sectors=sectors, factors=factors)
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
-        recycling = {s.revenue_recycling for s in carbon_shocks} - {"none"}
-        if recycling:
+        # One government ⇒ one recycling rule; a scenario cannot mix modes.
+        modes = {s.revenue_recycling for s in carbon_shocks} or {"none"}
+        if len(modes) > 1:
             raise ValueError(
-                f"cge_static pilot supports only `none` recycling; got {sorted(recycling)} "
-                f"(lump_sum / labour_tax_cut land in sub-phase 5.3)."
+                f"cge_static needs a single revenue_recycling mode across carbon shocks; "
+                f"got {sorted(modes)}."
             )
+        recycling = modes.pop()
+        emissions_priced = bool(np.any(e != 0.0)) and any(
+            s.price_at(y) > 0 for s in carbon_shocks for y in years
+        )
+        # A closed CGE cannot destroy carbon revenue (it breaks Walras' law). When a positive
+        # carbon price would raise revenue but the scenario left recycling at the default `none`,
+        # default to `lump_sum` (the standard closed-economy choice) and record it, rather than
+        # solve a non-closing model. Engine 1 gives the pure price-side / no-recycling view.
+        recycling_defaulted = False
+        if recycling == "none" and emissions_priced:
+            recycling = "lump_sum"
+            recycling_defaulted = True
 
         # Benchmark solve (zero shock) — the replication point, and the base for % changes.
         ns = len(sectors)
-        base_sol = _solve(cal, carbon_cost=np.zeros(ns))
+        base_sol = _solve(cal, carbon_cost=np.zeros(ns), recycling="none")
         base = M.derive_state(cal, base_sol.x[:ns], base_sol.x[ns:])
 
         records: list[dict] = []
@@ -112,9 +130,9 @@ class CGEStaticEngine:
         for year in years:
             tau = sum(s.price_at(year) for s in carbon_shocks)  # €/tCO2e (pilot: sum of shocks)
             cc = tau * e
-            sol = _solve(cal, carbon_cost=cc)
+            sol = _solve(cal, carbon_cost=cc, recycling=recycling)
             backends.add(sol.backend)
-            st = M.derive_state(cal, sol.x[:ns], sol.x[ns:])
+            st = M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling=recycling)
             _emit(records, cal, base, st, year)
 
         manifest = RunManifest.build(
@@ -126,6 +144,8 @@ class CGEStaticEngine:
                 **ASSUMPTIONS,
                 "sectors": sectors,
                 "factors": factors,
+                "recycling_mode": recycling,
+                "recycling_defaulted_from_none": recycling_defaulted,
                 "solver_backends": sorted(backends),
                 "emissions_priced": bool(np.any(e != 0.0)),
                 "benchmark_gdp_normalised": cal.gdp0,
@@ -206,9 +226,9 @@ def _infer_sectors(sam: SAM, factors: list[str]) -> list[str]:
     return [a for a in non_factor if a not in institutions]
 
 
-def _solve(cal, *, carbon_cost):
+def _solve(cal, *, carbon_cost, recycling="none"):
     return solve(
-        lambda z: M.residuals(cal, z, carbon_cost=carbon_cost),
+        lambda z: M.residuals(cal, z, carbon_cost=carbon_cost, recycling=recycling),
         M.initial_guess(cal),
         prefer=None,
     )
@@ -229,6 +249,10 @@ def _emit(records, cal, base, st, year: int) -> None:
     records.append(_rec("gdp_change_real", "__economy__", year, real_gdp / cal.gdp0 - 1.0))
     records.append(_rec("gdp_change", "__economy__", year, nom_gdp / cal.gdp0 - 1.0))
     records.append(_rec("deflator", "__economy__", year, deflator))
+    # Welfare: change in real household consumption (Σ FD at benchmark prices) — the pilot's
+    # equivalent-variation proxy. Carbon revenue as a share of benchmark GDP (a GE headline).
+    records.append(_rec("welfare_change", "__economy__", year, st.FD.sum() / base.FD.sum() - 1.0))
+    records.append(_rec("carbon_revenue", "__economy__", year, st.carbon_revenue / cal.gdp0))
 
 
 def _rec(variable: str, sector: str, year: int, value: float) -> dict:

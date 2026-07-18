@@ -12,15 +12,20 @@
 #   cge data                                            # copy the small build id
 #   cge run --scenario examples/carbon_price_cge.yaml --data <small_build_id>
 #
-name: "Carbon price €50/t — general equilibrium (CGE)"
+name: "Carbon price €50/t — general equilibrium (CGE), revenue recycled"
 description: >
   A €50/tCO2 carbon price solved in general equilibrium: the SAM is built from the data build and
-  the model re-solves with input substitution and factor markets clearing. Reports GE price and
-  volume changes, factor prices, and real GDP. Pilot model (single region, no revenue recycling
-  yet) — indicative magnitudes; cross-checks Engines 1-2 (brackets prices, same-sign volumes).
+  the model re-solves with input substitution and factor markets clearing. The carbon revenue is
+  recycled to the household (lump_sum), so the result shows the revenue-recycling effect and the
+  reallocation from dirty to clean sectors — not just a smaller economy. Reports GE price/volume
+  changes, factor prices, real GDP, welfare and carbon revenue. Pilot model (single region);
+  indicative magnitudes; cross-checks Engines 1-2. A closed CGE cannot destroy revenue, so leaving
+  revenue_recycling at the default 'none' auto-defaults to lump_sum (use Engine 1 for a pure
+  price-side view).
 engine: cge_static
 years: [2020]
 shocks:
   - type: carbon_price
     price: 50.0
     gases: [CO2]
+    revenue_recycling: lump_sum   # none | lump_sum | labour_tax_cut

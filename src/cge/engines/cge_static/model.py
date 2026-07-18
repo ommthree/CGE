@@ -41,7 +41,9 @@ class ModelState:
     X: np.ndarray  # gross output [i]
     F: np.ndarray  # factor demand [f, i]
     FD: np.ndarray  # household final demand [i]
-    income: float  # household income
+    income: float  # household income (incl. any recycled carbon revenue)
+    carbon_revenue: float  # τ·Σ e[i]·X[i] collected by government
+    factor_income: float  # Σ_f w[f]·FF[f] (pre-transfer)
 
 
 def _va_unit_cost(cal: CalibratedModel, w: np.ndarray) -> np.ndarray:
@@ -52,23 +54,69 @@ def _va_unit_cost(cal: CalibratedModel, w: np.ndarray) -> np.ndarray:
     return (1.0 / cal.av) * np.prod(np.power(ratio, beta), axis=0)
 
 
-def derive_state(cal: CalibratedModel, p: np.ndarray, w: np.ndarray) -> ModelState:
+def derive_state(
+    cal: CalibratedModel,
+    p: np.ndarray,
+    w: np.ndarray,
+    *,
+    carbon_cost: np.ndarray | None = None,
+    recycling: str = "none",
+) -> ModelState:
     """Close the model at equilibrium prices (p, w): compute VA cost, outputs, demands and income.
 
-    The carbon tax does not appear here — it is a cost wedge in the zero-profit *price* condition
-    (``residuals``), so by the time we have equilibrium prices the tax is already reflected in
-    them; quantities follow from prices alone."""
+    **Revenue recycling.** The carbon tax collects ``R = Σ_i cc[i]·X[i]`` (cc = τ·e is the per-unit
+    emissions cost). In a **closed** economy the revenue must circulate — money cannot vanish, or
+    the circular flow (and Walras' law) does not close. So the household receives R:
+    - ``lump_sum`` — government returns R to the household as a lump-sum transfer; income = factor
+      income + R.
+    - ``labour_tax_cut`` — revenue rebates a labour tax. In this **single-household** pilot the
+      household owns both factors, so a labour rebate and a lump-sum transfer give the *same*
+      aggregate household income and hence the same real allocation; the two modes are therefore
+      equivalent here. They diverge only once the model has heterogeneous households (a labour vs
+      capital household) or a distortionary labour-tax wedge to cut — the "double-dividend" channel
+      — a documented follow-up.
+    - ``none`` — revenue is NOT returned. This does not close a closed economy (the leaked value
+      breaks Walras' law); the engine rejects it and points the user to Engine 1 for the pure
+      price-side view, or to a recycling mode for a proper GE run.
+
+    Because R depends on X which depends on income which depends on R, the fixed point is solved in
+    closed form: with FD = γ·I/p and X = (I−ax)⁻¹·FD, R = I·(cc·(I−ax)⁻¹·(γ/p)), so
+    I = factor_income / (1 − k) where k = cc·(I−ax)⁻¹·(γ/p) is the marginal-revenue coefficient."""
     ns = len(cal.sectors)
+    cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pv = _va_unit_cost(cal, w)
-    income = float(np.dot(w, cal.endowment))
-    FD = cal.gamma * income / p  # Cobb-Douglas household demand
-    # Goods market: X = ax·X + FD  ⇒  X = (I − ax)⁻¹ FD. ax is [input j, output i]; the intermediate
-    # demand for good i is Σ_j ax[i,j]·X[j], so the Leontief operator uses ax directly.
-    X = np.linalg.solve(np.eye(ns) - cal.ax, FD)
+    factor_income = float(np.dot(w, cal.endowment))
+
+    leontief = np.linalg.inv(np.eye(ns) - cal.ax)  # (I − ax)⁻¹, small and dense
+    demand_per_income = cal.gamma / p  # FD = I · demand_per_income
+    # Carbon revenue is returned to the household (closed economy: it must circulate). k = extra
+    # revenue generated per unit of household income; 0 when there are no emissions/tax. ``none``
+    # is rejected by the engine (it does not close), so any mode reaching here recycles.
+    recycles = recycling != "none"
+    k = float(cc @ (leontief @ demand_per_income)) if recycles else 0.0
+    if k >= 1.0:
+        # Runaway recycling (revenue ≥ income) — the closed economy is ill-posed here; refuse
+        # rather than divide through a non-positive denominator.
+        raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
+    income = factor_income / (1.0 - k)
+
+    FD = income * demand_per_income  # Cobb-Douglas household demand
+    X = leontief @ FD  # goods-market clearing
+    carbon_revenue = float(cc @ X)
     # Factor demand (Shephard on the value-added cost va_share·pv·X, split by CD share β).
     va_cost = cal.va_share * pv * X  # [i] total VA payment per sector
     F = cal.beta * va_cost[None, :] / w[:, None]  # [f,i]
-    return ModelState(p=p, w=w, pv=pv, X=X, F=F, FD=FD, income=income)
+    return ModelState(
+        p=p,
+        w=w,
+        pv=pv,
+        X=X,
+        F=F,
+        FD=FD,
+        income=income,
+        carbon_revenue=carbon_revenue,
+        factor_income=factor_income,
+    )
 
 
 def residuals(
@@ -76,6 +124,7 @@ def residuals(
     z: np.ndarray,
     *,
     carbon_cost: np.ndarray | None = None,
+    recycling: str = "none",
     drop_factor: int = 0,
 ) -> np.ndarray:
     """Equilibrium residual vector F(z) for z = [p (ns), w (nf)].
@@ -86,6 +135,8 @@ def residuals(
       (dropped by Walras' law);
     - 1 numéraire: Σ_i γ[i]·p[i] − 1 = 0 (fix the CPI).
 
+    ``recycling`` selects how carbon revenue is returned to the household (see ``derive_state``).
+
     ``z`` accepts an object-dtype array (pyomo vars) so the same residual builds the IPOPT model;
     it uses only +, −, ×, ÷ and np.dot-free elementwise algebra where that matters.
     """
@@ -95,7 +146,13 @@ def residuals(
     w = z[ns : ns + nf]
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
 
-    state = derive_state(cal, np.asarray(p, dtype=float), np.asarray(w, dtype=float))
+    state = derive_state(
+        cal,
+        np.asarray(p, dtype=float),
+        np.asarray(w, dtype=float),
+        carbon_cost=cc,
+        recycling=recycling,
+    )
 
     res = []
     # Zero-profit: p[i] = Σ_j ax[j,i]·p[j] + va_share[i]·pv[i] + carbon cost.

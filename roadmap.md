@@ -209,7 +209,7 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 **Risks:** the PE-tier GVA/GDP are indicative and will move under GE substitution — label them exactly as Engine 2's volumes are labelled; **do not let the interest-rate overlay be read as a real forecast** — it is the item most likely to be over-interpreted, so it is opt-in and caveated.
 **Depends on:** P4 (needs the volume response for real GVA) for the full PE tier; the deflator alone needs only P1/P2. **Unblocks:** real/nominal reporting everywhere; feeds the P5 credibility cross-checks and the P7 dynamic GDP-growth paths.
 
-### Phase 5 — Engine 3: simple static CGE (6–12 wk) ⚠ the hard part — 🔶 PILOT ON REAL DATA (5.0 + 5.1 + 5.2a)
+### Phase 5 — Engine 3: simple static CGE (6–12 wk) ⚠ the hard part — 🔶 PILOT + RECYCLING ON REAL DATA (5.0 + 5.1 + 5.2a + 5.3 recycling)
 
 > **Progress:** the **solver gate (5.0)**, **SAM construction & balancing (5.1)**, and the
 > **correctness-first pilot (5.2a)** are built and green. `cge.engines.cge_static` calibrates to a
@@ -222,10 +222,18 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 > is rejected. Solver: IPOPT via pyomo when present, scipy fallback so CI needs no binary; a
 > non-optimal solve raises. Model doc: `docs/models/cge-static.md`.
 >
-> **Remaining for the full phase:** **Armington/CET** open economy, **multiple regions**,
-> **revenue recycling** + the carbon-price experiment (5.3), and the GE tier of the macro
-> aggregates (native GVA/GDP/CPI + capital rental
-> rate). The pilot is the provable core those build on.
+> **Revenue recycling (5.3) is in:** the carbon tax collects revenue R=Σ τ·e[i]·X[i] and recycles
+> it to the household (lump_sum / labour_tax_cut). The model demonstrates the **revenue-recycling
+> effect** (recycling offsets the welfare loss) and **sectoral reallocation** from dirty to clean —
+> the headline GE features Engines 1–2 cannot show — with Walras holding under the recycled tax. A
+> closed economy cannot destroy revenue, so a `none`-recycling positive carbon price defaults to
+> lump_sum (recorded) and points to Engine 1 for the pure price-side view. Emits `welfare_change`,
+> `carbon_revenue`, and per-factor price changes.
+>
+> **Remaining for the full phase:** **Armington/CET** open economy, **multiple regions**, the
+> carbon-price sensitivity experiment across elasticity bands, and the GE tier of the macro
+> aggregates (native per-sector GVA + capital rental rate). The pilot is the provable core those
+> build on.
 
 > **Detailed plan: [`docs/phase-5-plan.md`](docs/phase-5-plan.md)** — solver-first sequencing,
 > equation-level model structure, SAM balancing with an audit trail, the standard CGE
@@ -247,11 +255,11 @@ solver + termination status; a non-optimal solve raises (never returns numbers).
 - Pilot single-region model first; extend to multi-region only once the pilot passes 5.3's tests.
 - **DoD:** model solves from the SAM; equation/variable count documented; closures switchable by config.
 
-**5.3 Calibration & credibility tests (2–4 wk)**
-- Benchmark replication: with zero shocks the model reproduces the base-year SAM to machine precision (the standard CGE correctness test).
-- Homogeneity (doubling all prices changes nothing real) and Walras' law (one market clears residually) checks in CI.
-- Elasticity sensitivity sweeps; comparison of carbon-price responses vs Engines 1–2 (prices should bracket, volumes should be same-sign) and vs published CGE carbon-price results for similar economies.
-- **DoD:** replication + homogeneity + Walras tests green in CI; a short model-description document (equations, closures, elasticities and their sources) exists — this is what CGE-literate reviewers will ask for.
+**5.3 Calibration & credibility tests (2–4 wk) — ✅ correctness battery + revenue recycling done; sensitivity sweeps pending**
+- ✅ Benchmark replication (zero shock reproduces the SAM to machine precision), ✅ homogeneity, ✅ Walras' law — in CI (toy + real EXIOBASE SAM).
+- ✅ **Revenue recycling** (lump_sum / labour_tax_cut): the carbon tax collects R and recycles it; validated **revenue-recycling effect** (recycling offsets the welfare loss) and **sectoral reallocation** (dirty→clean), with Walras holding under the recycled tax. Emits welfare, carbon revenue, factor prices.
+- ✅ Cross-engine sign consistency with Engine 2 (dirty sector contracts, same sign). Elasticity sensitivity sweeps + published-CGE literature bracket are the remaining credibility work (needs non-unitary substitution elasticities, a later enhancement).
+- **DoD (met for the pilot):** replication + homogeneity + Walras + recycling-effect tests green in CI; equation-level model doc (`docs/models/cge-static.md`) exists with closures, recycling, and sources.
 
 **Decisions forced:** nesting structure; closure defaults; single- vs multi-region sequencing (recommendation above); how much tax detail to fabricate vs omit.
 **Risks:** SAM balancing is a known rabbit hole — timebox it and document rather than perfect; IPOPT convergence (mitigate: good starting values = benchmark data, gradual shock ramping); results sensitive to elasticities (mitigate: sweeps + Engine 2 cross-check, keep "toy but honest" framing).

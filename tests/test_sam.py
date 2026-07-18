@@ -86,9 +86,13 @@ def test_engine_runs_on_real_build_via_runner(small_build_io):
     # SAM quality surfaced in the manifest, and emissions were priced from the satellite.
     assert res.manifest.assumptions["sam_quality"]["worst"] == "pass"
     assert res.manifest.assumptions["emissions_priced"] is True
-    # A carbon price cuts real GDP.
-    gdp = d[(d["variable"] == "gdp_change_real")]["value"].iloc[0]
-    assert gdp < 0
+    # Carbon revenue is collected and recycling defaulted to a closed-economy mode.
+    rev = d[(d["variable"] == "carbon_revenue")]["value"].iloc[0]
+    assert rev > 0
+    assert res.manifest.assumptions["recycling_mode"] in ("lump_sum", "labour_tax_cut")
+    # The carbon price changes the sectoral price structure (a non-trivial GE response).
+    prices = d[d["variable"] == "price_change"]["value"]
+    assert prices.abs().max() > 1e-4
 
 
 def test_zero_shock_replicates_on_real_build(small_build_io):

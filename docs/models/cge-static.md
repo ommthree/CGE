@@ -1,7 +1,7 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.1.0)
-- **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model; sub-phase 5.3 pending)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.2.0)
+- **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling)
 - **Capabilities:** general_equilibrium, prices, volumes
 - **Status:** implemented as the **correctness-first pilot** that now runs on **real EXIOBASE
   data**. The model calibrates to a hand-checkable 2-sector SAM *and* to a SAM built from an
@@ -20,11 +20,15 @@ re-allocates; the model reports the new equilibrium relative to the benchmark.
 
 **In scope (pilot):** a closed, single-region economy with N sectors (activity = commodity),
 Leontief intermediates, Cobb-Douglas value added (capital + labour) and household demand, fixed
-factor endowments, CPI numéraire, and a carbon price as a per-unit emissions cost wedge.
+factor endowments, CPI numéraire, a carbon price as a per-unit emissions cost wedge, and
+**carbon-revenue recycling** (lump-sum / labour-tax-cut) — the headline general-equilibrium feature
+Engines 1–2 cannot provide.
 
-**Not yet modelled:** Armington imports / CET exports (open economy), multiple regions, government
-revenue recycling, savings/investment dynamics, non-unitary substitution elasticities in the
-value-added nest. These are the documented next sub-phases; the pilot is the provable core.
+**Not yet modelled:** Armington imports / CET exports (open economy), multiple regions,
+savings/investment dynamics, heterogeneous households, non-unitary substitution elasticities in the
+value-added nest, and a distortionary labour-tax wedge (so the "double-dividend" channel that would
+distinguish labour-tax-cut from lump-sum recycling). These are the documented next sub-phases; the
+pilot is the provable core.
 
 ## 2. Notation
 
@@ -69,11 +73,16 @@ av_i = \prod_f \beta_{fi}^{-\beta_{fi}} \ \Rightarrow\ pv_i = 1 \text{ at } w=1.
 **Zero-profit / price** (unit cost = price):
 $$ p_i = \sum_j ax_{ji}\,p_j + va_i\,pv_i + \tau e_i. \tag{2} $$
 
-**Household** — income from factor endowments, Cobb-Douglas demand:
-$$ I = \sum_f w_f FF_f, \qquad FD_i = \gamma_i \frac{I}{p_i}. \tag{3} $$
+**Household** — income from factor endowments **plus recycled carbon revenue** $R$, Cobb-Douglas
+demand:
+$$ I = \sum_f w_f FF_f + R, \qquad R = \sum_i \tau e_i X_i, \qquad FD_i = \gamma_i \frac{I}{p_i}. \tag{3} $$
 
 **Goods market clearing** (output meets intermediate + final demand):
 $$ X_i = \sum_j ax_{ij} X_j + FD_i \ \Rightarrow\ X = (I - ax)^{-1} FD. \tag{4} $$
+
+Since $R$ depends on $X$ which depends on $I$ which depends on $R$, the fixed point is solved in
+closed form: with $FD = I\,(\gamma/p)$ and $X=(I-ax)^{-1}FD$, we get $R = I\,k$ where
+$k = (\tau e)^{\top}(I-ax)^{-1}(\gamma/p)$, so $I = \big(\sum_f w_f FF_f\big)/(1-k)$.
 
 **Factor demand** (Shephard's lemma on the value-added cost) and **market clearing**:
 $$ F_{fi} = \beta_{fi}\,\frac{va_i\,pv_i\,X_i}{w_f},\qquad \sum_i F_{fi} = FF_f. \tag{5} $$
@@ -82,6 +91,29 @@ $$ F_{fi} = \beta_{fi}\,\frac{va_i\,pv_i\,X_i}{w_f},\qquad \sum_i F_{fi} = FF_f.
 zero-profit conditions (2), $|F|-1$ factor-clearing conditions (5) — **one is dropped by Walras'
 law** — and 1 numéraire equation $\sum_i \gamma_i p_i = 1$. Equations = unknowns, so the system is
 square. The dropped factor market is confirmed to clear at the solution (the Walras check).
+
+### 4a. Revenue recycling
+
+The carbon tax collects $R=\sum_i \tau e_i X_i$. **In a closed economy the revenue must
+circulate** — money cannot vanish, or the circular flow (and Walras' law) does not close. So the
+household receives $R$ (equation 3):
+
+- **`lump_sum`** — $R$ is returned as a lump-sum transfer.
+- **`labour_tax_cut`** — $R$ rebates a labour tax. In this **single-household** pilot the household
+  owns both factors, so a labour rebate and a lump-sum transfer give the *same* aggregate income
+  and hence the same real allocation; the modes are equivalent here. They diverge only with
+  heterogeneous households or a distortionary labour-tax wedge (the double-dividend channel) — a
+  documented follow-up.
+- **`none`** — revenue *not* returned. This does **not** close the economy (the dropped factor
+  market fails to clear — Walras' law breaks by exactly the leaked revenue), so the engine rejects
+  it: it defaults a positive-carbon-price `none` scenario to `lump_sum` (recorded in the manifest as
+  `recycling_defaulted_from_none`) and points the user to Engine 1 for the pure price-side view.
+
+**The revenue-recycling effect** (a validated result): a carbon price *without* recycling reduces
+real household consumption; returning the revenue offsets it. With full recycling the aggregate
+economy is roughly preserved but output **reallocates** from the dirty sector to the clean one — the
+substitution signal, which Engines 1–2 cannot show. Reported outputs include `welfare_change` (real
+consumption index), `carbon_revenue`, and per-factor `factor_price_change`.
 
 ## 5. Calibration
 
@@ -144,8 +176,10 @@ battery, §7 of the phase-5 plan):
 | `benchmark_replication` | zero shock ⇒ model reproduces the SAM to machine precision (**the** CGE correctness test) |
 | `homogeneity_degree_zero` | scaling nominal size leaves prices unchanged, reals scale (no money illusion) |
 | `walras_law` | the dropped factor market clears residually at the solution |
-| `carbon_price_direction` | a carbon price contracts the dirty sector's output and cuts real GDP |
+| `walras_holds_under_carbon_price_with_recycling` | under a recycled carbon price the dropped factor market still clears (a pure-loss `none` would not) |
+| `carbon_price_reallocates_dirty_to_clean` | with recycling, output shifts from the dirty sector to the clean one |
 | `carbon_price_raises_dirty_relative_price` | the dirty good's price rises relative to the clean good's |
+| `revenue_recycling_offsets_welfare_loss` | lump-sum recycling restores real consumption a pure wedge destroys (the revenue-recycling effect) |
 | `replicates_on_real_exiobase_sam` | the CGE calibrates on a SAM built from a real EXIOBASE build and replicates its benchmark to machine precision (the 5.1b gate) |
 
 Plus solver checks (known-answer, non-convergence raises, IPOPT gated) and engine tests

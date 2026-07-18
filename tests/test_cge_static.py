@@ -27,15 +27,15 @@ def _cal():
     return calibrate(toy_sam(), sectors=_SECTORS, factors=_FACTORS)
 
 
-def _solve(cal, carbon_cost=None, drop_factor=0):
+def _solve(cal, carbon_cost=None, drop_factor=0, recycling="lump_sum"):
     cc = np.zeros(len(cal.sectors)) if carbon_cost is None else carbon_cost
     sol = solve(
-        lambda z: M.residuals(cal, z, carbon_cost=cc, drop_factor=drop_factor),
+        lambda z: M.residuals(cal, z, carbon_cost=cc, recycling=recycling, drop_factor=drop_factor),
         M.initial_guess(cal),
         prefer="scipy",
     )
     ns = len(cal.sectors)
-    return sol, M.derive_state(cal, sol.x[:ns], sol.x[ns:])
+    return sol, M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling=recycling)
 
 
 # -- SAM ----------------------------------------------------------------------
@@ -107,13 +107,15 @@ def test_walras_law():
 
 
 # -- economic behaviour -------------------------------------------------------
-def test_carbon_price_contracts_dirty_sector():
+def test_carbon_price_reallocates_dirty_to_clean():
+    """With recycling, a carbon price shifts output from the dirty to the clean sector (rather than
+    shrinking the economy): dirty output falls, clean output rises, dirty relative price rises."""
     cal = _cal()
     _b, base = _solve(cal)
     _s, st = _solve(cal, carbon_cost=0.2 * _EMISSIONS)
     assert st.X[0] < base.X[0]  # dirty BRD output falls
+    assert st.X[1] > base.X[1]  # clean MIL output rises (the reallocation)
     assert st.p[0] / st.p[1] > base.p[0] / base.p[1]  # dirty price rises relative to clean
-    assert st.FD.sum() < base.FD.sum()  # real GDP falls
 
 
 def test_larger_carbon_price_larger_response():
@@ -153,21 +155,69 @@ def test_engine_carbon_price_emits_ge_outputs():
     assert res.manifest.assumptions["emissions_priced"] is True
 
 
-def test_engine_cross_check_signs_with_engine2_intuition():
-    """Cross-engine consistency: the CGE's carbon-price volume changes are the same sign
-    (negative) as the partial-equilibrium intuition — both say a carbon price cuts output."""
+def test_engine_cross_check_dirty_sector_falls():
+    """Cross-engine consistency: the CGE's dirty-sector volume change is negative, the same sign
+    as the partial-equilibrium intuition (a carbon price cuts the emitting sector's output). With
+    recycling the clean sector may rise — the GE reallocation Engine 2 cannot show."""
     eng = registry.get("cge_static")
     data = {"SAM": toy_sam(), "emission_intensity": {"BRD": 2.0, "MIL": 0.5}}
     res = eng.run(data=data, shocks=[CarbonPrice(price=0.15)], years=[2020])
-    vol = res.data[res.data["variable"] == "volume_change"]["value"]
-    assert (vol < 0).all()  # every sector's volume falls, same sign as Engine 2
+    d = res.data
+    brd = d[(d["variable"] == "volume_change") & (d["sector"] == "BRD")]["value"].iloc[0]
+    assert brd < 0  # the dirty sector contracts, same sign as Engine 2
 
 
-def test_engine_rejects_revenue_recycling():
+def _welfare_engine(eng, mode):
+    data = {"SAM": toy_sam(), "emission_intensity": {"BRD": 2.0, "MIL": 0.5}}
+    res = eng.run(data=data, shocks=[CarbonPrice(price=0.15, revenue_recycling=mode)], years=[2020])
+    d = res.data
+    w = float(d[d["variable"] == "welfare_change"]["value"].iloc[0])
+    return w, res.manifest.assumptions["recycling_mode"]
+
+
+def test_recycling_offsets_welfare_loss():
+    """The revenue-recycling effect: a pure carbon price wedge (`none`, at the model layer) reduces
+    real consumption; returning the revenue (lump_sum) offsets it. The headline GE feature."""
+    cal = _cal()
+    cc = 0.15 * _EMISSIONS
+    _b, base = _solve(cal, recycling="lump_sum")
+    # `none` at the MODEL layer (a pure loss — the engine auto-recycles for a closed run).
+    _n, none = _solve(cal, carbon_cost=cc, recycling="none")
+    _l, lump = _solve(cal, carbon_cost=cc, recycling="lump_sum")
+    w_none = none.FD.sum() / base.FD.sum() - 1.0
+    w_lump = lump.FD.sum() / base.FD.sum() - 1.0
+    assert w_none < -0.01  # carbon price hurts without recycling
+    assert w_lump > w_none  # recycling offsets the loss
+    assert abs(w_lump) < 1e-6  # lump-sum fully restores real consumption in this pilot
+    assert lump.carbon_revenue > 0
+
+
+def test_labour_tax_cut_equivalent_to_lump_sum_in_pilot():
+    """With one household, a labour rebate and a lump-sum transfer give the same real allocation
+    (documented pilot equivalence)."""
     eng = registry.get("cge_static")
-    with pytest.raises(ValueError, match="none"):
+    w_lump, _ = _welfare_engine(eng, "lump_sum")
+    w_lab, mode = _welfare_engine(eng, "labour_tax_cut")
+    assert np.isclose(w_lump, w_lab, atol=1e-9)
+    assert mode == "labour_tax_cut"
+
+
+def test_carbon_revenue_emitted():
+    eng = registry.get("cge_static")
+    data = {"SAM": toy_sam(), "emission_intensity": {"BRD": 2.0, "MIL": 0.5}}
+    res = eng.run(data=data, shocks=[CarbonPrice(price=0.1)], years=[2020])
+    rev = res.data[res.data["variable"] == "carbon_revenue"]["value"].iloc[0]
+    assert rev > 0  # a positive carbon price on emitting sectors raises revenue
+
+
+def test_engine_rejects_mixed_recycling_modes():
+    eng = registry.get("cge_static")
+    with pytest.raises(ValueError, match="single revenue_recycling"):
         eng.run(
             data={"SAM": toy_sam()},
-            shocks=[CarbonPrice(price=0.1, revenue_recycling="lump_sum")],
+            shocks=[
+                CarbonPrice(price=0.1, revenue_recycling="none"),
+                CarbonPrice(price=0.1, revenue_recycling="lump_sum"),
+            ],
             years=[2020],
         )

@@ -116,15 +116,16 @@ lacks, so it is an optional, clearly-illustrative overlay, never a headline.
 → [`docs/models/macro-aggregates.md`](models/macro-aggregates.md) (equation-level) · roadmap
 [Phase 4b](../roadmap.md).
 
-### Engine 3 — static CGE — *the general-equilibrium answer (pilot implemented)*
+### Engine 3 — static CGE — *the general-equilibrium answer (pilot + recycling, on real data)*
 A small static computable general equilibrium model: Leontief intermediates, Cobb-Douglas value
 added and household demand, factor markets, CPI numéraire — the general-equilibrium feedback and
-input substitution Engines 1–2 structurally cannot do. The **correctness-first pilot is built**:
-it calibrates to a hand-checkable balanced SAM and passes the standard CGE battery — **benchmark
-replication** (to machine precision), **homogeneity**, and **Walras' law** — with theory-consistent
-carbon-price responses (dirty output falls, dirty price rises relative to clean, real GDP falls).
-"Toy but honest": *precise about structure, indicative about magnitudes*. Still to come (the harder
-half): a real EXIOBASE SAM, Armington trade, multiple regions, and **carbon-tax revenue recycling**.
+input substitution Engines 1–2 structurally cannot do. It **calibrates to a balanced SAM built from
+a real EXIOBASE build** and passes the standard CGE battery — **benchmark replication** (to machine
+precision), **homogeneity**, and **Walras' law**. It does the thing that makes a CGE worth the
+trouble: **carbon-tax revenue recycling** (lump-sum / labour-tax-cut), showing the **revenue-
+recycling effect** (recycling offsets the welfare loss) and **sectoral reallocation** from dirty to
+clean — not just a shrinking economy. "Toy but honest": *precise about structure, indicative about
+magnitudes*. Still to come: Armington trade, multiple regions, elasticity sensitivity sweeps.
 → [`docs/models/cge-static.md`](models/cge-static.md) (equation-level) · **plan:**
 [`docs/phase-5-plan.md`](phase-5-plan.md).
 

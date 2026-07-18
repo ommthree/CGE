@@ -35,15 +35,15 @@ def _cal():
     return calibrate(toy_sam(), sectors=_SECTORS, factors=_FACTORS)
 
 
-def _solve(cal, carbon_cost=None, drop_factor=0):
+def _solve(cal, carbon_cost=None, drop_factor=0, recycling="lump_sum"):
     cc = np.zeros(len(cal.sectors)) if carbon_cost is None else carbon_cost
     sol = solve(
-        lambda z: M.residuals(cal, z, carbon_cost=cc, drop_factor=drop_factor),
+        lambda z: M.residuals(cal, z, carbon_cost=cc, recycling=recycling, drop_factor=drop_factor),
         M.initial_guess(cal),
         prefer="scipy",
     )
     ns = len(cal.sectors)
-    return sol, M.derive_state(cal, sol.x[:ns], sol.x[ns:])
+    return sol, M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling=recycling)
 
 
 @check(SUITE, "benchmark_replication")
@@ -98,17 +98,46 @@ def _walras():
     )
 
 
-@check(SUITE, "carbon_price_direction")
+@check(SUITE, "walras_holds_under_carbon_price_with_recycling")
+def _walras_recycled():
+    """Under a carbon price WITH revenue recycling, the dropped factor market still clears — the
+    revenue circulates so the closed economy remains balanced (a pure-loss `none` would not)."""
+    cal = _cal()
+    _sol, st = _solve(cal, carbon_cost=0.15 * _EMISSIONS, drop_factor=0, recycling="lump_sum")
+    excess = float(st.F[0, :].sum()) - cal.endowment[0]
+    return (
+        abs(excess) < 1e-6,
+        f"dropped-market excess under recycled carbon price = {excess:.2e}",
+        abs(excess),
+        1e-6,
+    )
+
+
+@check(SUITE, "revenue_recycling_offsets_welfare_loss")
+def _recycling_effect():
+    """The revenue-recycling effect: lump-sum recycling restores real household consumption that a
+    pure price wedge would destroy — the headline GE feature (Engines 1-2 cannot show it)."""
+    cal = _cal()
+    _b, base = _solve(cal)
+    _r, st = _solve(cal, carbon_cost=0.15 * _EMISSIONS, recycling="lump_sum")
+    welfare = st.FD.sum() / base.FD.sum() - 1.0
+    revenue = st.carbon_revenue
+    ok = revenue > 0 and welfare > -1e-6  # recycling ~fully offsets in the single-household pilot
+    return ok, f"carbon revenue={revenue:.4f}, recycled welfare change={welfare:+.4f}", None, None
+
+
+@check(SUITE, "carbon_price_reallocates_dirty_to_clean")
 def _carbon_direction():
-    """A carbon price makes the dirty sector's output fall and real GDP fall (the GE carbon-price
-    response Engines 1–2 approximate)."""
+    """With revenue recycling, a carbon price **reallocates** output from the dirty sector to the
+    clean one (rather than simply shrinking the economy) — the GE substitution signal. The dirty
+    sector's output falls and the clean sector's rises."""
     cal = _cal()
     _b, base = _solve(cal)
     _s, st = _solve(cal, carbon_cost=0.15 * _EMISSIONS)
     dirty_falls = st.X[0] < base.X[0] - 1e-9  # BRD, the dirty sector
-    real_gdp_falls = st.FD.sum() < base.FD.sum() - 1e-9
-    ok = dirty_falls and real_gdp_falls
-    return ok, f"dirty output falls={dirty_falls}, real GDP falls={real_gdp_falls}", None, None
+    clean_rises = st.X[1] > base.X[1] + 1e-9  # MIL, the clean sector
+    ok = dirty_falls and clean_rises
+    return ok, f"dirty output falls={dirty_falls}, clean output rises={clean_rises}", None, None
 
 
 @check(SUITE, "carbon_price_raises_dirty_relative_price")
