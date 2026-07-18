@@ -44,6 +44,23 @@ def render() -> None:
     table["change_%"] = (table["value"] * 100).round(3)
     st.dataframe(table, width="stretch", hide_index=True)
 
+    # -- volume response (Engine 2) --------------------------------------------
+    if rv.has_volume(result):
+        st.subheader("Volume change by good (with uncertainty band)")
+        st.caption(
+            "Δq/q = ε·Δp — fractional change in produced volume, shown as percent. "
+            "low/central/high span the demand-elasticity uncertainty (Engine 2 is "
+            "**indicative**, not precise). Negative = volume falls."
+        )
+        env = rv.volume_envelope(result).copy()
+        for b in ("low", "central", "high"):
+            if b in env.columns:
+                env[f"{b}_%"] = (env[b] * 100).round(2)
+        show = ["region", "sector", "year"] + [
+            f"{b}_%" for b in ("low", "central", "high") if f"{b}_%" in env.columns
+        ]
+        st.dataframe(env[show], width="stretch", hide_index=True)
+
     # -- decomposition waterfall ----------------------------------------------
     pairs = rv.goods_with_decomposition(result)
     if pairs:

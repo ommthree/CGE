@@ -12,22 +12,24 @@ example: [`docs/models/io-price-model.md`](docs/models/io-price-model.md)).
 
 ## Status
 
-**Phase 3 — Web GUI complete.** A Streamlit app ([`docs/gui.md`](docs/gui.md)) now covers the
-everyday workflow: browse data builds, explore any build's matrices like a spreadsheet, check
-data quality, build datasets, run carbon-price scenarios, and explore results with a
-supply-chain decomposition waterfall and assumptions printout. Built on the Phase 2 engine
-(Leontief carbon-cost price model), the Phase 1 data layer (live EXIOBASE + quality/consistency
-checks), and the Phase 0 contracts, with a standing model-validation suite
-([`docs/validation.md`](docs/validation.md)). Next: partial-equilibrium volume response (Phase 4).
+**Phase 4 — volume response complete.** The platform now answers both halves of the original
+question — the change in the **cost** of a good under a carbon price (Engine 1, Leontief price
+model, validated on live EXIOBASE) and the change in its **production volume** (Engine 2,
+partial-equilibrium demand response with a low/central/high uncertainty band). Built on the
+Phase 3 GUI, Phase 1 data layer (live EXIOBASE + quality/consistency checks), and Phase 0
+contracts, with a standing model-validation suite ([`docs/validation.md`](docs/validation.md)).
+Next: the simple static CGE (Phase 5). Volume magnitudes are indicative (elasticity-dependent);
+cost answers are validated. See [`docs/phase-4-status.md`](docs/phase-4-status.md).
 
 ```bash
-cge gui                                             # launch the web GUI
-cge build --test                                    # offline data build (no download)
-cge build --exiobase                                # live EXIOBASE build from Zenodo
-cge data                                            # list builds in the store
-cge quality <build_id>                              # build quality + consistency report
-cge run --scenario examples/carbon_price_io.yaml    # Engine 1: carbon-cost price impacts
-cge validate                                        # run the model-validation suite
+cge gui                                                # launch the web GUI
+cge build --test                                       # offline data build (no download)
+cge build --exiobase                                   # live EXIOBASE build from Zenodo
+cge data                                               # list builds in the store
+cge quality <build_id>                                 # build quality + consistency report
+cge run --scenario examples/carbon_price_io.yaml       # Engine 1: carbon-cost price impacts
+cge run --scenario examples/carbon_price_volume.yaml   # Engine 2: volume response (with bands)
+cge validate                                           # run the model-validation suite
 ```
 
 ## The five contracts

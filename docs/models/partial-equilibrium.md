@@ -3,8 +3,11 @@
 - **Implements:** `cge.engines.partial_eq` (`PartialEqEngine`, v0.1.0)
 - **Roadmap phase:** 4
 - **Capabilities:** prices, volumes
-- **Status:** implemented; validated on the toy economy and internal identities. Volume
-  magnitudes depend on assembled elasticities and are **indicative, not precise** (see §6).
+- **Status:** implemented (`PartialEqEngine` v0.1.0); validated on the toy economy and internal
+  identities (`partial_eq` validation suite: sign, proportionality, band ordering, price
+  pass-through, elasticity provenance). Volume magnitudes depend on assembled elasticities and
+  are **indicative, not precise** (see §6). The Armington nest (equation 2) is specified but
+  not yet implemented — v1 applies the own-price response (1) only.
 
 ## 1. Purpose & scope
 

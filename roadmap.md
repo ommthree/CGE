@@ -150,7 +150,13 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 **Risks:** GUI scope creep — hold every page to "table + one chart + export" until engines stabilise.
 **Depends on:** P1–P2. **Unblocks:** everyday usability; stakeholder demos.
 
-### Phase 4 — Engine 2: partial-equilibrium volume response (2–4 wk)
+### Phase 4 — Engine 2: partial-equilibrium volume response (2–4 wk) — ✅ IMPLEMENTED
+
+> **Done** (see `docs/phase-4-status.md`). Δq/q = ε·Δp on Engine-1 prices, with a
+> low/central/high elasticity band; functional default elasticity library; `partial_eq`
+> engine + validation suite; GUI picks it up via the registry. Volume magnitudes are
+> indicative (elasticity-dependent); the Armington nest and a curated elasticity set are
+> documented follow-ups.
 
 | # | Task | Effort |
 |---|---|---|

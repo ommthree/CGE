@@ -12,3 +12,4 @@ def test_validation_suite_all_pass():
     by_suite = summary.by_suite()
     assert "io_price" in by_suite and by_suite["io_price"][1] >= 8
     assert "data_layer" in by_suite and by_suite["data_layer"][1] >= 4
+    assert "partial_eq" in by_suite and by_suite["partial_eq"][1] >= 5

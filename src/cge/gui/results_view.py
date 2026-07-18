@@ -66,7 +66,12 @@ def goods_with_decomposition(result: ResultSet) -> list[tuple[str, str]]:
 
 
 def summary_stats(result: ResultSet, *, variable: str = "price_change") -> dict[str, float]:
-    vals = result.data.loc[result.data["variable"] == variable, "value"]
+    # For banded variables (volume_change), summarise the central band only.
+    df = result.data
+    sel = df["variable"] == variable
+    if "scenario" in df and (df.loc[sel, "scenario"] == "central").any():
+        sel &= df["scenario"] == "central"
+    vals = df.loc[sel, "value"]
     if vals.empty:
         return {}
     return {
@@ -75,3 +80,22 @@ def summary_stats(result: ResultSet, *, variable: str = "price_change") -> dict[
         "max": float(vals.max()),
         "min": float(vals.min()),
     }
+
+
+def has_volume(result: ResultSet) -> bool:
+    return (result.data["variable"] == "volume_change").any()
+
+
+def volume_envelope(result: ResultSet) -> pd.DataFrame:
+    """Per good: low/central/high volume change (the uncertainty band), sorted by central."""
+    df = result.data[result.data["variable"] == "volume_change"]
+    wide = df.pivot_table(
+        index=["region", "sector", "year"], columns="scenario", values="value"
+    ).reset_index()
+    cols = ["region", "sector", "year"] + [
+        b for b in ("low", "central", "high") if b in wide.columns
+    ]
+    wide = wide[cols]
+    if "central" in wide.columns:
+        wide = wide.sort_values("central")  # biggest fall (most negative) first
+    return wide.reset_index(drop=True)

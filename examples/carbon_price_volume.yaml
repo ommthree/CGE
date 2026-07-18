@@ -1,0 +1,17 @@
+# Engine 2 (partial_eq): volume response to a carbon price.
+# Runs Engine 1 for prices, then applies demand elasticities to estimate the change in
+# produced volume per good, with a low/central/high uncertainty band.
+# See docs/models/partial-equilibrium.md.
+#
+#   cge run --scenario examples/carbon_price_volume.yaml
+name: "Carbon price €100/t — volume response"
+description: >
+  A €100/tCO2 carbon price: prices via the Leontief model, then first-order demand response
+  Δq/q = ε·Δp. Volume magnitudes are INDICATIVE (elasticity-dependent), with an uncertainty
+  band — use for screening, cross-check with the CGE (Phase 5).
+engine: partial_eq
+years: [2020]
+shocks:
+  - type: carbon_price
+    price: 100.0
+    gases: [CO2]
