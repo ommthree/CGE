@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -38,6 +39,11 @@ from cge.contracts.quality import QualityReport
 from cge.data.metadata import BuildMeta
 
 DEFAULT_ROOT = Path("data_store")
+
+# Catalogue write retry (DuckDB rejects concurrent cross-process write connections).
+_CATALOGUE_RETRIES = 50
+_CATALOGUE_RETRY_DELAY = 0.1  # seconds
+_GLOBAL_LOCK_TIMEOUT = 30.0  # seconds to wait for the catalogue lock before giving up
 
 
 def _pid_alive(pid: int) -> bool:
@@ -74,6 +80,28 @@ def _acquire_lock(lock: Path) -> None:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     with os.fdopen(fd, "w") as f:
         f.write(str(os.getpid()))
+
+
+def _acquire_global_lock(lock: Path, timeout: float = _GLOBAL_LOCK_TIMEOUT) -> None:
+    """Blocking cross-process lock: WAIT (up to ``timeout``) for the lock, then hold it.
+
+    Unlike ``_acquire_lock`` (which refuses a concurrent writer), catalogue writes should
+    *serialise*, not fail — so this spins until the lock is free (reclaiming a stale one from a
+    dead holder), raising only if it cannot be acquired within the timeout."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w") as f:
+                f.write(str(os.getpid()))
+            return
+        except FileExistsError:
+            if not _lock_is_live(lock):
+                lock.unlink(missing_ok=True)  # stale; reclaim
+                continue
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"timed out waiting for catalogue lock {lock}") from None
+            time.sleep(0.05)
 
 
 def _meta_to_provenance(meta: BuildMeta) -> Provenance:
@@ -125,48 +153,76 @@ class DataStore:
             lock.unlink(missing_ok=True)
 
     # -- catalogue -------------------------------------------------------------
+    def _with_catalogue(self, fn):
+        """Run ``fn(con)`` on a fresh DuckDB connection, serialised by the global catalogue
+        lock and retried on DuckDB's cross-process file-lock error. All catalogue access
+        (init, upsert, read) goes through here so two processes never hold DuckDB's own
+        file lock at once (review: concurrent init/write collided)."""
+        cat_lock = self.catalogue_path.with_suffix(".lock")
+        _acquire_global_lock(cat_lock)
+        try:
+            last_err: Exception | None = None
+            for _ in range(_CATALOGUE_RETRIES):
+                try:
+                    con = duckdb.connect(str(self.catalogue_path))
+                    try:
+                        return fn(con)
+                    finally:
+                        con.close()
+                except duckdb.IOException as exc:  # another process holds DuckDB's file lock
+                    last_err = exc
+                    time.sleep(_CATALOGUE_RETRY_DELAY)
+            raise RuntimeError(f"catalogue access failed after retries: {last_err}")
+        finally:
+            cat_lock.unlink(missing_ok=True)
+
     def _init_catalogue(self) -> None:
-        con = duckdb.connect(str(self.catalogue_path))
-        con.execute(
-            """
-            CREATE TABLE IF NOT EXISTS builds (
-                build_id      VARCHAR PRIMARY KEY,
-                source        VARCHAR,
-                source_version VARCHAR,
-                reference_year INTEGER,
-                aggregation   VARCHAR,
-                n_labels      INTEGER,
-                quality_worst VARCHAR,
-                retrieved     VARCHAR
+        self._with_catalogue(
+            lambda con: con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS builds (
+                    build_id      VARCHAR PRIMARY KEY,
+                    source        VARCHAR,
+                    source_version VARCHAR,
+                    reference_year INTEGER,
+                    aggregation   VARCHAR,
+                    n_labels      INTEGER,
+                    quality_worst VARCHAR,
+                    retrieved     VARCHAR
+                )
+                """
             )
-            """
         )
-        con.close()
 
     def _catalogue_upsert(self, meta: BuildMeta, n_labels: int, quality_worst: str | None) -> None:
-        con = duckdb.connect(str(self.catalogue_path))
-        con.execute("DELETE FROM builds WHERE build_id = ?", [meta.build_id])
-        con.execute(
-            "INSERT INTO builds VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                meta.build_id,
-                meta.source,
-                meta.source_version,
-                meta.reference_year,
-                meta.aggregation,
-                n_labels,
-                quality_worst,
-                meta.retrieved,
-            ],
-        )
-        con.close()
+        """Upsert one build's catalogue row: DELETE + INSERT in a single transaction (so the
+        row is never briefly absent), serialised and retried via ``_with_catalogue``."""
+
+        def _do(con) -> None:
+            con.execute("BEGIN TRANSACTION")
+            con.execute("DELETE FROM builds WHERE build_id = ?", [meta.build_id])
+            con.execute(
+                "INSERT INTO builds VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    meta.build_id,
+                    meta.source,
+                    meta.source_version,
+                    meta.reference_year,
+                    meta.aggregation,
+                    n_labels,
+                    quality_worst,
+                    meta.retrieved,
+                ],
+            )
+            con.execute("COMMIT")
+
+        self._with_catalogue(_do)
 
     def catalogue(self) -> pd.DataFrame:
         """Return the build catalogue as a DataFrame (what the GUI lists)."""
-        con = duckdb.connect(str(self.catalogue_path))
-        df = con.execute("SELECT * FROM builds ORDER BY build_id").fetchdf()
-        con.close()
-        return df
+        return self._with_catalogue(
+            lambda con: con.execute("SELECT * FROM builds ORDER BY build_id").fetchdf()
+        )
 
     def build_ids(self) -> list[str]:
         # Recover any crashed-subprocess builds first, then exclude internal dot-dirs
@@ -238,15 +294,22 @@ class DataStore:
                 if had_existing:
                     backup.replace(final)  # restore the prior build
                 raise
+            # Commit the catalogue row BEFORE dropping the backup, and roll the filesystem back
+            # to the backup if the catalogue update fails — so files and catalogue never end up
+            # at different revisions (review). Held under the per-build lock throughout.
+            try:
+                self._catalogue_upsert(
+                    meta,
+                    n_labels=len(io.A.columns),
+                    quality_worst=(quality.worst.value if quality else None),
+                )
+            except Exception:
+                shutil.rmtree(final, ignore_errors=True)
+                if had_existing:
+                    backup.replace(final)  # restore the prior files to match the catalogue
+                raise
             if had_existing:
                 shutil.rmtree(backup, ignore_errors=True)
-            # Update the catalogue WHILE STILL HOLDING THE LOCK, so two writers can't leave
-            # catalogue metadata describing one revision while files are another (review).
-            self._catalogue_upsert(
-                meta,
-                n_labels=len(io.A.columns),
-                quality_worst=(quality.worst.value if quality else None),
-            )
         finally:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
@@ -255,12 +318,14 @@ class DataStore:
 
     # -- read ------------------------------------------------------------------
     def load_meta(self, build_id: str) -> BuildMeta:
+        self._recover_interrupted()  # a direct load must also self-heal a crashed swap (review)
         d = self.builds_dir / build_id
         return BuildMeta.model_validate_json((d / "meta.json").read_text())
 
     def load(self, build_id: str) -> dict:
         """Return harmonised data objects for a build, keyed by type name — the exact
         shape engines expect from the runner's ``data`` argument."""
+        self._recover_interrupted()  # self-heal before a direct load (GUI frames() calls here)
         d = self.builds_dir / build_id
         if not (d / "meta.json").exists():
             raise FileNotFoundError(f"No build {build_id!r} in {self.builds_dir}")
@@ -308,6 +373,7 @@ class DataStore:
         return out
 
     def load_quality(self, build_id: str) -> QualityReport | None:
+        self._recover_interrupted()
         p = self.builds_dir / build_id / "quality.json"
         return QualityReport.model_validate_json(p.read_text()) if p.exists() else None
 

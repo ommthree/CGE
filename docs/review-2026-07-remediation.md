@@ -155,6 +155,37 @@ usable and directionally sound (a curated concordance would sharpen sector-level
 
 ---
 
+## Sixth review round (fixed)
+
+A sixth review (post live-validation) found two highs plus mediums:
+
+- **Negative gas could still cancel inside a single multi-gas shock (high).** The round-5 fix
+  checked the *aggregated* per-shock vector, so a negative CO₂ inside a single `["CO2","CH4"]`
+  shock was hidden by a positive CH₄. Now **each gas row is checked before GWP aggregation**,
+  and the check honours coverage (an uncovered negative row can be excluded via coverage, as
+  the error suggests). Reproduced and now rejected.
+- **Catalogue not cross-process/transactional-safe (high).** Per-build locks didn't serialise
+  the shared DuckDB catalogue; concurrent saves collided on DuckDB's file lock and lost rows,
+  and there was no rollback if the catalogue update failed after the filesystem swap. Now:
+  **all** catalogue access (init/upsert/read) goes through a global catalogue lock + retry;
+  the upsert is a single DELETE+INSERT transaction; and the filesystem backup is retained
+  until the catalogue commit succeeds, rolling files back to the prior build on failure. A
+  4-process concurrent-write test confirms all rows land.
+
+Mediums fixed: recovery now runs on **direct** `load`/`load_meta`/`load_quality` (GUI
+`frames()` calls `load()` directly); the live-test fixture parses the year from the archive
+filename; the live checks are also registered as a **gated `exiobase_live` validation suite**
+(present in `cge validate` only when a real archive is set), matching the docs; the coarse map
+keywords now catch anthracite/coke/diesel/refinery/biogas (were in "other") and fold more
+economies to continents; `_region_row_labels` recognises aggregated `RoW_*` labels. Docs:
+column-sum condition corrected to *sufficient not necessary*; the Stadler-2018 citation
+qualified (it covers through 2011, not 2019); adapter docstring de-MEUR-hardcoded; the live
+gate honestly re-described as strong integration/sanity, **not** a published-multiplier
+benchmark (still outstanding). Engine version left at v0.4.0 — the gas fix tightens rejection
+of already-invalid input, not the numeric behaviour of valid runs.
+
+---
+
 ## Fourth review round (fixed)
 
 A fourth review confirmed round-3 and found two material residuals (both introduced by my

@@ -146,9 +146,10 @@ $\rho(\mathbf{A}) < 1$ [MillerBlair2009, §2.6]. The $\mathbf{A}\ge 0$ condition
 with negative entries the inverse can exist yet fail to be non-negative, so the
 "pass-through only adds cost" guarantee breaks (a positive tax could lower another good's
 price). The engine therefore asserts **both** $\mathbf{A}\ge 0$ (within a small tolerance for
-rounding) **and** $\rho(\mathbf{A})<1$ as preconditions. For a productive economy every
-column sum of $\mathbf{A}$ (input cost share) is $<1$, which gives $\rho(\mathbf{A})<1$ by the
-Perron–Frobenius bound.
+rounding) **and** $\rho(\mathbf{A})<1$ as preconditions. All column sums of $\mathbf{A}$ being
+$<1$ is a **sufficient** condition for $\rho(\mathbf{A})<1$ (by the Perron–Frobenius bound on
+the column-sum norm), not a necessary one — a productive economy can have some column sums
+$\ge 1$ while still satisfying $\rho(\mathbf{A})<1$, so the engine checks $\rho$ directly.
 
 > **Implementation note.** `price_change` computes $\rho(\mathbf{A})$ explicitly and raises
 > if $\ge 1$, rather than relying on the linear solve to fail. This matters: `np.linalg.solve`
@@ -222,16 +223,20 @@ CI). Validated on **EXIOBASE 3, 2019, pxp** (2026-07):
 - the adapter reproduces the full 9800×9800 MRIO and detects the real `satellite` extension;
 - global CO₂ from the adapter (intensity × output) equals pymrio's raw satellite total to
   `rtol 1e-6` — proving the kg→tonne conversion and `e = F/x` construction on real data;
-- that total is **30.0 Gt**, the expected EXIOBASE 2019 production-accounting magnitude
-  (global fossil CO₂ was ~35 Gt) [Stadler2018];
+- that total is **30.0 Gt**, the expected order of magnitude for global production-accounting
+  fossil CO₂ (global fossil CO₂ was ~35 Gt in 2019 per the Global Carbon Project);
 - a €100/t run on a coarse EUR build gives **fractional** price changes (not the ~$10^9$ a
-  units bug would give), with **coal the most carbon-exposed sector** across regions —
+  units bug would give), with **coal among the most carbon-exposed sectors** across regions —
   the qualitative known answer.
 
-This closes the validation gap flagged through the 2026-07 reviews. Remaining refinement:
-tighter sector-level comparison against *published* EXIOBASE footprint tables (vs the
-internal-consistency + magnitude checks here) and a curated sector concordance (the current
-default is a functional ~14-sector keyword grouping, not an analytically precise map).
+**Honest scope of this gate.** These are strong live *integration and sanity* checks — the
+adapter is compared to the same archive's raw accounts (reusing the unit helper), the total is
+checked against a broad plausibility band, and the engine's qualitative behaviour is verified.
+They are **not** an independent numerical comparison against a *published* EXIOBASE
+footprint/multiplier table, which is the roadmap's ultimate P2.4 requirement. ([Stadler2018]
+documents EXIOBASE through 2011, so it cannot substantiate a 2019 numerical benchmark.) That
+independent published comparison — plus a curated sector concordance (the current default is a
+functional keyword grouping, not analytically precise) — remains the outstanding refinement.
 
 ## 8. References
 

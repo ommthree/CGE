@@ -28,13 +28,22 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _year_from_archive(path: str) -> int:
+    """Parse the year from an EXIOBASE archive filename like 'IOT_2019_pxp.zip'."""
+    import re
+
+    m = re.search(r"IOT_(\d{4})_", Path(path).name)
+    return int(m.group(1)) if m else 0
+
+
 @pytest.fixture(scope="module")
 def adapted():
     from cge.data.adapters.exiobase import adapt_pymrio, parse_exiobase
 
+    year = _year_from_archive(ARCHIVE)
     pio = parse_exiobase(ARCHIVE)
     io, sats = adapt_pymrio(
-        pio, source="EXIOBASE", source_version="3-pxp-live", reference_year=2019
+        pio, source="EXIOBASE", source_version=f"3-pxp-{year}", reference_year=year
     )
     return pio, io, sats
 

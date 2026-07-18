@@ -138,23 +138,45 @@ def _validate_gases(gases: list[str]) -> None:
         )
 
 
-def _gas_intensity(sat: SatelliteAccount, labels: list[str], gases: list[str]) -> np.ndarray:
+def _gas_intensity(
+    sat: SatelliteAccount,
+    labels: list[str],
+    gases: list[str],
+    *,
+    coverage: np.ndarray | None = None,
+) -> np.ndarray:
     """CO2e intensity (tCO2e/M€) per label for exactly the requested ``gases``.
 
     Each named gas MUST be present as its own row (weighted by GWP-100), OR the request must
     be exactly the combined row ``["CO2e"]``. Malformed selections (empty, duplicate, or
-    CO2e-mixed-with-components) and unknown/partially-missing gases all RAISE rather than
-    silently misinterpreting (review).
+    CO2e-mixed-with-components) and unknown/partially-missing gases all RAISE.
+
+    **Each gas row is checked for negatives BEFORE GWP aggregation** — a negative row must not
+    be hidden by a positive one within a single multi-gas shock (review). The check is applied
+    only where the shock actually bites: if ``coverage`` (a 0/1 mask) is given, an uncovered
+    negative row is *not* rejected, so excluding it via coverage works as the error suggests.
     """
     _validate_gases(gases)
     available = set(sat.data.index)
+    mask = coverage if coverage is not None else np.ones(len(labels))
+
+    def _check_row_nonneg(name: str, row: np.ndarray) -> None:
+        covered = row[mask > 0]
+        if covered.size and float(np.min(covered)) < -NEG_INTENSITY_TOL:
+            raise ValueError(
+                f"gas {name!r} has negative emission intensities in covered products; io_price "
+                f"prices positive carbon cost only. Fix the satellite or exclude those products "
+                f"via coverage."
+            )
 
     if gases == [_CO2E_ROW]:
         if _CO2E_ROW not in available:
             raise ValueError(
                 f"Satellite {sat.name!r} has no {_CO2E_ROW} row; available: {sorted(available)}"
             )
-        return sat.data.loc[_CO2E_ROW].reindex(labels).to_numpy(dtype=float)
+        row = sat.data.loc[_CO2E_ROW].reindex(labels).to_numpy(dtype=float)
+        _check_row_nonneg(_CO2E_ROW, row)
+        return row
 
     missing_gases = [g for g in gases if g not in available]
     if missing_gases:
@@ -172,8 +194,9 @@ def _gas_intensity(sat: SatelliteAccount, labels: list[str], gases: list[str]) -
         )
     acc = np.zeros(len(labels))
     for g in gases:
-        weight = GWP100_AR5[g]  # per-gas rows are physical tonnes of that gas
-        acc += weight * sat.data.loc[g].reindex(labels).to_numpy(dtype=float)
+        row = sat.data.loc[g].reindex(labels).to_numpy(dtype=float)
+        _check_row_nonneg(g, row)  # per-gas, before aggregation
+        acc += GWP100_AR5[g] * row  # per-gas rows are physical tonnes of that gas
     return acc
 
 
@@ -202,15 +225,11 @@ def carbon_cost_vector(
     cost = np.zeros(len(labels))
     descs: list[str] = []
     for s in shocks:
-        intensity = _gas_intensity(sat, labels, s.gases)  # tCO2e/M€ (gases validated here)
-        # Reject negative intensities PER SHOCK, before aggregation: summing first would let a
-        # negative CO2 intensity cancel against a positive gas and evade the check (review).
-        if float(np.min(intensity)) < -NEG_INTENSITY_TOL:
-            raise ValueError(
-                f"gases {s.gases} include negative emission intensities; io_price prices "
-                f"positive carbon cost only. Fix the satellite or exclude those rows."
-            )
         mask = _coverage_mask(s, labels)
+        # Pass the coverage mask so each gas row is validated (per-gas, before GWP aggregation)
+        # only where the shock bites — a negative row cannot hide inside a multi-gas shock, and
+        # an uncovered negative row can be excluded via coverage as the error suggests (review).
+        intensity = _gas_intensity(sat, labels, s.gases, coverage=mask)
         price = s.price_at(year)  # €/tonne
         cost += price * intensity * mask * MEUR_TO_EUR
         descs.append(f"€{price:g}/t on {s.gases}")

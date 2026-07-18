@@ -138,16 +138,18 @@ def _ghg_satellite(
     gas_aliases: dict[str, str] | None = None,
     monetary_unit: str = "MEUR",
 ) -> SatelliteAccount | None:
-    """Build a GHG SatelliteAccount of **emission intensities in tonnes per M€ output**.
+    """Build a GHG SatelliteAccount of **emission intensities in tonnes per unit monetary output**.
 
     For each GHG (CO2, CH4, N2O) matching stressors' flows are unit-normalised to tonnes
     (via the extension's ``unit`` metadata), summed, and divided by gross output. A combined
     ``CO2e`` row is added via GWP-100 (AR5). Per-gas rows are kept so the engine can honour a
     scenario's ``gases`` selection. Returns None if no emission extension/stressors are found.
 
-    Units are **t/MEUR** (CO2e: **tCO2e/MEUR**). Because output is in M€, a carbon price in
-    €/t applied to these intensities must still be scaled by 1e-6 (M€→€) to yield a
-    dimensionless cost share — done in the engine, documented there.
+    Units are **t/<monetary_unit>** (CO2e: **tCO2e/<monetary_unit>**), where ``monetary_unit``
+    is the build's monetary unit — MEUR for real EXIOBASE, but the label follows the argument
+    (an MUSD build gets t/MUSD). A carbon price in €/t applied to these must still be scaled by
+    the monetary→base factor (1e-6 for M€→€) — done in the engine, which also verifies the
+    exact units before scaling.
 
     ``gas_aliases`` maps a substring of a stressor name to a gas symbol so the tiny pymrio
     test system (stressors ``emission_type1/2``) can stand in for real gases offline.

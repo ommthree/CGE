@@ -38,8 +38,10 @@ from cge.data.store import DataStore, default_store
 
 
 def _region_row_labels(io: IOSystem) -> list[str]:
-    """EXIOBASE rest-of-world region codes (start with 'W'); empty for the test system."""
-    return [r for r in io.regions.labels if r.upper().startswith("W")]
+    """Rest-of-world region labels — both raw EXIOBASE codes ('W*') and the aggregated
+    'RoW_*' blocks the coarse map produces (review: the latter were missed, so the small
+    build's RoW quality check was silently omitted)."""
+    return [r for r in io.regions.labels if r.upper().startswith("W") or r.startswith("RoW")]
 
 
 def build_from_pymrio(
@@ -195,9 +197,29 @@ def build_test(store: DataStore | None = None) -> dict[str, str]:
 # build is actually runnable under the engine's product cap; a curated 40-50 sector
 # concordance remains the documented follow-up (roadmap P1.6 / P5).
 _SECTOR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
-    ("energy_coal", ("coal", "lignite", "peat")),
-    ("energy_oil_gas", ("petroleum", "crude", "natural gas", "gas ", "gasoline", "fuel")),
-    ("electricity", ("electricity", "power", "steam")),
+    ("energy_coal", ("coal", "lignite", "peat", "anthracite", "coke", "coking")),
+    (
+        "energy_oil_gas",
+        (
+            "petroleum",
+            "crude",
+            "natural gas",
+            "gas ",
+            "gasoline",
+            "fuel",
+            "diesel",
+            "kerosene",
+            "naphtha",
+            "refinery",
+            "biogas",
+            "biofuel",
+            "ethanol",
+            "oil ",
+            "lubricant",
+            "bitumen",
+        ),
+    ),
+    ("electricity", ("electricity", "power", "steam", "nuclear", "hydro", "wind", "solar")),
     (
         "agriculture",
         (
@@ -314,6 +336,14 @@ def _coarse_sector(name: str) -> str:
     return "other"
 
 
+# Remaining EXIOBASE country codes folded to their continent (so RoW_Other isn't a grab-bag
+# of major economies like CA/KR/MX/AU/TW/ID/ZA — review).
+_ASIA = {"KR", "TW", "ID"}
+_AMERICA = {"CA", "MX"}
+_OCEANIA = {"AU"}
+_AFRICA = {"ZA"}
+
+
 def _coarse_region(code: str) -> str:
     c = str(code)
     if c in _KEY_REGIONS:
@@ -322,6 +352,12 @@ def _coarse_region(code: str) -> str:
         return _CONTINENT[c]
     if c in _EUROPE:
         return "RoW_Europe"
+    if c in _ASIA or c in _OCEANIA:
+        return "RoW_Asia"
+    if c in _AMERICA:
+        return "RoW_America"
+    if c in _AFRICA:
+        return "RoW_Africa"
     return "RoW_Other"
 
 

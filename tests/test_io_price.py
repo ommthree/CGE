@@ -330,6 +330,45 @@ def test_negative_gas_cannot_cancel_against_positive(tmp_path):
         carbon_cost_vector(shocks, sat, ["A:x"], 2020)
 
 
+def _ghg_two_gas(co2_vals, ch4_vals, labels):
+    import pandas as pd
+
+    from cge.contracts.data_objects import Provenance, SatelliteAccount
+
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-18"
+    )
+    return SatelliteAccount(
+        provenance=prov,
+        name="GHG",
+        units={"CO2": "t/MEUR", "CH4": "t/MEUR"},
+        data=pd.DataFrame(
+            {lab: [co2_vals[i], ch4_vals[i]] for i, lab in enumerate(labels)}, index=["CO2", "CH4"]
+        ),
+    )
+
+
+def test_single_multigas_shock_negative_gas_rejected():
+    """A negative CO2 inside a single gases=[CO2,CH4] shock must be rejected before GWP
+    aggregation — a positive CH4 must not hide it (review counterexample)."""
+    from cge.engines.io_price.engine import carbon_cost_vector
+
+    sat = _ghg_two_gas([-100.0], [10.0], ["A:x"])
+    with pytest.raises(ValueError, match="negative emission intensities"):
+        carbon_cost_vector([CarbonPrice(price=100.0, gases=["CO2", "CH4"])], sat, ["A:x"], 2020)
+
+
+def test_uncovered_negative_row_excluded_by_coverage():
+    """An uncovered negative row is NOT rejected — excluding it via coverage works (review)."""
+    from cge.engines.io_price.engine import carbon_cost_vector
+
+    sat = _ghg_two_gas([-100.0, 50.0], [0.0, 0.0], ["A:x", "B:y"])
+    cost, _ = carbon_cost_vector(
+        [CarbonPrice(price=100.0, gases=["CO2"], coverage_regions=["B"])], sat, ["A:x", "B:y"], 2020
+    )
+    assert cost[0] == 0.0 and cost[1] > 0.0  # A excluded, B priced
+
+
 def test_multi_year_manifest_records_each_year():
     """A time-path run records every year's contributions, not only the last (review)."""
     scenario = Scenario(

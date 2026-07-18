@@ -255,6 +255,105 @@ def test_store_recovers_build_from_backup_on_open(tmp_path):
     assert not (store.builds_dir / f".{bid}.lock").exists()  # stale lock cleaned
 
 
+def _concurrent_save_worker(root, bid):  # module-level so multiprocessing 'spawn' can import
+    from cge.data.adapters.exiobase import adapt_pymrio, load_exiobase_test
+    from cge.data.metadata import BuildMeta
+    from cge.data.store import DataStore
+
+    store = DataStore(root)
+    io, sats = adapt_pymrio(
+        load_exiobase_test(),
+        source="E",
+        source_version="v",
+        reference_year=2011,
+        gas_aliases={"emission_type1": "CO2"},
+    )
+    meta = BuildMeta(
+        build_id=bid,
+        source="E",
+        source_version="v",
+        reference_year=2011,
+        licence="x",
+        currency="USD",
+        monetary_unit="MUSD",
+        retrieved="2026-07-18",
+    )
+    store.save(meta=meta, io=io, satellites=sats)
+
+
+def test_concurrent_catalogue_writes_all_land(tmp_path):
+    """Four processes saving different builds must all end up in the catalogue — DuckDB's
+    cross-process file lock is handled by the global lock + retry (review)."""
+    import multiprocessing as mp
+
+    DataStore(tmp_path)  # init the catalogue table first
+    ctx = mp.get_context("spawn")
+    procs = [
+        ctx.Process(target=_concurrent_save_worker, args=(str(tmp_path), f"build{i}"))
+        for i in range(4)
+    ]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(timeout=120)
+    cat = DataStore(tmp_path).catalogue()
+    assert set(cat["build_id"]) == {f"build{i}" for i in range(4)}
+
+
+def test_catalogue_failure_rolls_back_filesystem(tmp_path):
+    """If the catalogue update fails after the filesystem swap, files roll back to the prior
+    build so files and catalogue never diverge (review)."""
+    from unittest import mock
+
+    import cge.data.store.store as store_mod
+
+    store = DataStore(tmp_path)
+    build_test(store=store)
+    bid = "exiobase-test"
+    v1_labels = store.load(bid)["IOSystem"].A.shape[0]
+
+    io, sats = adapt_pymrio(
+        load_exiobase_test(),
+        source="EXIOBASE-test",
+        source_version="test-v2",
+        reference_year=2011,
+        gas_aliases={"emission_type1": "CO2"},
+        currency="USD",
+        monetary_unit="MUSD",
+    )
+    meta = store.load_meta(bid).model_copy(update={"source_version": "test-v2"})
+
+    with (
+        mock.patch.object(store, "_catalogue_upsert", side_effect=RuntimeError("catalogue down")),
+        pytest.raises(RuntimeError, match="catalogue down"),
+    ):
+        store.save(meta=meta, io=io, satellites=sats)
+
+    # The prior build (v1) must still be present and loadable — not left at v2.
+    assert store.has(bid)
+    assert store.load(bid)["IOSystem"].A.shape[0] == v1_labels
+    assert store.load_meta(bid).source_version == "test"  # rolled back
+    _ = store_mod  # ensure import used
+
+
+def test_recovery_runs_on_direct_load(tmp_path):
+    """A stale-lock crash leaving the build in .bak must be recovered by a *direct* load()
+    (not only by construction/has) — GUI frames() calls load() directly (review)."""
+    import shutil
+
+    store = DataStore(tmp_path)
+    build_test(store=store)
+    bid = "exiobase-test"
+    final = store.builds_dir / bid
+    shutil.move(str(final), str(store.builds_dir / f".{bid}.bak"))
+    (store.builds_dir / f".{bid}.lock").write_text("999999")  # stale lock (dead pid)
+    assert not final.exists()
+
+    # Direct load on the SAME store instance must self-heal (recovery is not construction-only).
+    data = store.load(bid)
+    assert "IOSystem" in data
+
+
 def test_build_ids_excludes_internal_dirs(tmp_path):
     """.tmp staging and .bak backup dirs must not appear as builds (review)."""
     store = DataStore(tmp_path)

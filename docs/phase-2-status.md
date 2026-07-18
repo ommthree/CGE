@@ -21,7 +21,7 @@ decomposition.
 | 2.1 | Leontief price model: Δp = (I−Aᵀ)⁻¹·τ·e via linear solve; productivity guard | ✅ | `engines/io_price/engine.py` |
 | 2.2 | `CarbonPrice` scenario: level, gas/region/sector coverage; YAML round-trip | ✅ | contract `shocks.py` + `examples/carbon_price_io.yaml` |
 | 2.3 | Decomposition: direct + Neumann-series upstream tiers + residual (sums to Δp) | ✅ | `engine.py` (`decompose`) |
-| 2.4 | Validation: analytic + identity checks; assumptions in `RunManifest` | ✅ (live known-answer pending) | `validation/suites/io_price.py` |
+| 2.4 | Validation: analytic + identity checks; live EXIOBASE integration gate | ✅ (independent *published*-multiplier comparison still to come) | `validation/suites/io_price.py`, `tests/test_exiobase_known_answer.py` |
 
 ## Definition of done
 
@@ -58,11 +58,14 @@ The engine now checks ρ(A) explicitly (documented in the model doc's implementa
 ## What's genuine vs pending
 
 - **Genuine now:** correct Leontief pass-through, decomposition, coverage filtering, and
-  per-gas selection (a scenario's `gases`, default `["CO2"]`, priced against that gas's
-  intensity) — all validated against theory.
-- **Pending live data:** the known-answer check reproducing published EXIOBASE CO₂
-  multipliers within tolerance [Stadler2018] needs an `exiobase` build. It's specified in the
-  model doc §7 and the validation doc; add it to the `io_price` suite once real data is built.
+  per-gas selection — validated against theory **and against live EXIOBASE 3 (2019 pxp)**:
+  the adapter preserves the global CO₂ total (30.0 Gt), units come through correctly, and a
+  €100/t run gives fractional price changes with coal most exposed
+  (`tests/test_exiobase_known_answer.py`; also a gated `exiobase_live` validation suite).
+- **Still to come:** an *independent* comparison against a **published** EXIOBASE
+  footprint/multiplier table (the current live checks are strong integration/sanity gates,
+  not a published-number benchmark — [Stadler2018] only covers through 2011), and a curated
+  sector concordance (the coarse default is a functional keyword grouping).
 
 ## Notes for Phase 3 (GUI)
 
