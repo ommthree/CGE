@@ -38,6 +38,10 @@ class BuildMeta(BaseModel):
     monetary_unit: str = "MEUR"
     aggregation: str = Field(default="full", description="'full' or a named aggregation")
     retrieved: str = Field(description="ISO date the raw data was retrieved/derived")
+    # Durable per-save generation id. Written into both the build's meta.json AND the catalogue
+    # row, so crash recovery can compare them (the catalogue is authoritative) instead of
+    # inferring commit state from a filesystem-only marker (review P1). Set by the store on save.
+    generation: str | None = Field(default=None, description="per-save generation id (store-set)")
     notes: str = ""
 
     def derived(self, *, build_id: str, aggregation: str, notes: str = "") -> BuildMeta:

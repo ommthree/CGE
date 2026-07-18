@@ -133,6 +133,28 @@ class ElasticitySet(_DataObject):
     sources: dict[str, str] = Field(default_factory=dict, description="entry key -> citation")
     confidence: dict[str, Literal["high", "medium", "low", "default"]] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _values_valid(self) -> ElasticitySet:
+        """Reject economically-invalid or incomplete elasticities (review P2). Every value must
+        be finite and band-ordered (low ≤ central ≤ high) with per-value source + confidence;
+        **demand** elasticities must additionally be ≤ 0 (a price rise must not raise demand)."""
+        import math
+
+        for key, triple in self.values.items():
+            if len(triple) != 3 or not all(math.isfinite(v) for v in triple):
+                raise ValueError(f"elasticity {key!r} must be 3 finite values, got {triple}")
+            lo, ce, hi = triple
+            if not (lo <= ce <= hi):
+                raise ValueError(f"elasticity {key!r} bands not ordered low≤central≤high: {triple}")
+            if self.kind == "demand" and hi > 0:
+                raise ValueError(
+                    f"demand elasticity {key!r} has a positive value {hi}; demand elasticities "
+                    f"must be ≤ 0 (a price rise cannot raise demand)"
+                )
+            if key not in self.sources or key not in self.confidence:
+                raise ValueError(f"elasticity {key!r} is missing source or confidence metadata")
+        return self
+
 
 class ConcordanceMap(_DataObject):
     """A many-to-many, weighted map between two classifications.

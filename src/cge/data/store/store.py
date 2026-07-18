@@ -46,9 +46,6 @@ from cge.data.metadata import BuildMeta
 
 DEFAULT_ROOT = Path("data_store")
 
-# Sentinel written into a build dir while it is installed but not yet catalogue-committed.
-# Its presence after a crash tells recovery the files are uncommitted (see _recover_interrupted).
-UNCOMMITTED_MARKER = ".uncommitted"
 
 # Catalogue write retry (DuckDB rejects concurrent cross-process write connections).
 _CATALOGUE_RETRIES = 50
@@ -150,15 +147,17 @@ class DataStore:
         """Recover from a save hard-killed mid-swap, WITHOUT touching another writer's active
         work. A build is only recovered/cleaned if its writer lock is *stale* (no live holder).
 
-        Recovery is driven by a **commit marker** (``UNCOMMITTED_MARKER`` inside the build dir),
-        removed only after the catalogue commit succeeds, so recovery can tell an *installed but
-        uncommitted* build from a fully-committed one:
+        Recovery is driven by a **durable generation id** recorded in *both* the build's
+        ``meta.json`` and the catalogue row (review P1). The catalogue is authoritative: a build
+        on disk is "committed" iff its generation matches the catalogue's recorded generation.
+        There is no filesystem-only marker and hence no window where a committed build looks
+        uncommitted.
 
-        - ``final`` present WITH the marker ⇒ crash between swap and catalogue commit; the files
-          are uncommitted (catalogue still describes the old build), so discard them and restore
-          the ``.bak`` if present (the previous version unconditionally kept ``final`` and
-          deleted the valid backup — review).
-        - ``final`` present WITHOUT the marker ⇒ committed; drop any stale ``.bak``.
+        For each stale-locked build:
+        - ``final`` present and its generation == the catalogue's ⇒ committed; drop any ``.bak``.
+        - ``final`` present but generation ≠ catalogue's (or catalogue has no row) ⇒ the swap
+          happened before the catalogue commit; the on-disk files are uncommitted. Restore the
+          ``.bak`` (the last committed state) if present, else remove the uncommitted files.
         - only ``.bak`` (no ``final``) ⇒ crash before the swap; restore it.
 
         Live staging/backups (lock held by a running process) are left untouched."""
@@ -168,22 +167,34 @@ class DataStore:
                 continue  # a writer is active on this build; hands off
             final = self.builds_dir / build_id
             bak = self.builds_dir / f".{build_id}.bak"
-            final_uncommitted = final.exists() and (final / UNCOMMITTED_MARKER).exists()
+            committed_gen = self._committed_generation(build_id)
 
-            if final_uncommitted:
-                # Swap happened, catalogue never committed → the on-disk 'final' is not the
-                # committed build. Discard it and restore the backup (the last committed state).
-                shutil.rmtree(final, ignore_errors=True)
-                if bak.exists():
-                    bak.replace(final)
-            elif final.exists():
-                shutil.rmtree(bak, ignore_errors=True)  # committed; backup is stale
+            if final.exists():
+                final_gen = self._read_generation(final)
+                if committed_gen is not None and final_gen == committed_gen:
+                    shutil.rmtree(bak, ignore_errors=True)  # committed; backup is stale
+                else:
+                    # Files present but NOT the committed generation → uncommitted swap.
+                    shutil.rmtree(final, ignore_errors=True)
+                    if bak.exists():
+                        bak.replace(final)  # restore last committed files
             elif bak.exists():
                 bak.replace(final)  # crash before the swap; restore the prior build
 
             for tmp in self.builds_dir.glob(f".{build_id}.*.tmp"):
                 shutil.rmtree(tmp, ignore_errors=True)
             lock.unlink(missing_ok=True)
+
+    @staticmethod
+    def _read_generation(build_dir: Path) -> str | None:
+        """The generation id recorded in a build dir's meta.json (None if absent/unreadable)."""
+        meta_path = build_dir / "meta.json"
+        if not meta_path.exists():
+            return None
+        try:
+            return json.loads(meta_path.read_text()).get("generation")
+        except (OSError, ValueError):
+            return None
 
     # -- catalogue -------------------------------------------------------------
     def _with_catalogue(self, fn):
@@ -207,8 +218,8 @@ class DataStore:
             raise RuntimeError(f"catalogue access failed after retries: {last_err}")
 
     def _init_catalogue(self) -> None:
-        self._with_catalogue(
-            lambda con: con.execute(
+        def _do(con) -> None:
+            con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS builds (
                     build_id      VARCHAR PRIMARY KEY,
@@ -218,21 +229,41 @@ class DataStore:
                     aggregation   VARCHAR,
                     n_labels      INTEGER,
                     quality_worst VARCHAR,
-                    retrieved     VARCHAR
+                    retrieved     VARCHAR,
+                    generation    VARCHAR
                 )
                 """
             )
-        )
+            # Migrate a pre-generation catalogue: add the column if an older table lacks it, so
+            # an existing store upgrades in place instead of raising a column-count mismatch.
+            # (DuckDB's PRAGMA table_info returns the column NAME at index 1, not 0.)
+            cols = {r[1] for r in con.execute("PRAGMA table_info('builds')").fetchall()}
+            if "generation" not in cols:
+                con.execute("ALTER TABLE builds ADD COLUMN generation VARCHAR")
+
+        self._with_catalogue(_do)
+
+    def _committed_generation(self, build_id: str) -> str | None:
+        """The generation id the catalogue currently records for a build (the authoritative
+        committed state), or None if the build has no catalogue row."""
+
+        def _do(con):
+            r = con.execute(
+                "SELECT generation FROM builds WHERE build_id = ?", [build_id]
+            ).fetchone()
+            return r[0] if r else None
+
+        return self._with_catalogue(_do)
 
     def _catalogue_upsert(self, meta: BuildMeta, n_labels: int, quality_worst: str | None) -> None:
-        """Upsert one build's catalogue row: DELETE + INSERT in a single transaction (so the
-        row is never briefly absent), serialised and retried via ``_with_catalogue``."""
+        """Upsert one build's catalogue row (incl. its generation id): DELETE + INSERT in a
+        single transaction (row never briefly absent), serialised via ``_with_catalogue``."""
 
         def _do(con) -> None:
             con.execute("BEGIN TRANSACTION")
             con.execute("DELETE FROM builds WHERE build_id = ?", [meta.build_id])
             con.execute(
-                "INSERT INTO builds VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO builds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     meta.build_id,
                     meta.source,
@@ -242,6 +273,7 @@ class DataStore:
                     n_labels,
                     quality_worst,
                     meta.retrieved,
+                    meta.generation,
                 ],
             )
             con.execute("COMMIT")
@@ -294,11 +326,16 @@ class DataStore:
         staging = self.builds_dir / f".{meta.build_id}.{uuid.uuid4().hex}.tmp"
         lock = self.builds_dir / f".{meta.build_id}.lock"
 
+        # Stamp a fresh generation id into the meta. It is written into the build's meta.json AND
+        # the catalogue row; recovery compares the two (the catalogue is authoritative) instead
+        # of inferring commit state from a filesystem marker (review P1). A previously-set
+        # generation on the caller's meta is overwritten — each physical save is a new generation.
+        meta = meta.model_copy(update={"generation": uuid.uuid4().hex})
+
         # Serialise writers to this build: fail fast if another live writer holds the lock.
         _acquire_lock(lock)
         try:
-            # Inside the try so a mkdir failure still releases the lock (review: it was before
-            # the try, so a failed mkdir permanently leaked the lock).
+            # Inside the try so a mkdir failure still releases the lock (review).
             staging.mkdir(parents=True)
             (staging / "meta.json").write_text(meta.model_dump_json(indent=2))
             io.A.astype("float32").to_parquet(staging / "A.parquet")
@@ -312,10 +349,6 @@ class DataStore:
                 )
             if quality is not None:
                 (staging / "quality.json").write_text(quality.model_dump_json(indent=2))
-            # Mark staging UNCOMMITTED; the marker is removed only after the catalogue commits.
-            # If a crash leaves 'final' with this marker, recovery knows the files are not the
-            # committed build and restores the backup instead of keeping them (review).
-            (staging / UNCOMMITTED_MARKER).write_text(meta.build_id)
 
             had_existing = final.exists()
             if had_existing:
@@ -328,9 +361,16 @@ class DataStore:
                 if had_existing:
                     backup.replace(final)  # restore the prior build
                 raise
-            # Commit the catalogue BEFORE clearing the marker / dropping the backup. Roll the
-            # filesystem back to the backup if the catalogue update fails, so files and catalogue
-            # never end up at different revisions (review). Held under the per-build lock.
+            # Commit the catalogue (which records this generation) BEFORE dropping the backup.
+            # Roll the filesystem back to the backup if the catalogue update fails, so files and
+            # catalogue never diverge (review). Held under the per-build lock throughout.
+            #
+            # After a successful commit, the build's generation (in its meta.json) MATCHES the
+            # catalogue's generation — that equality is the durable "committed" signal recovery
+            # uses. The backup can be dropped in any order after commit: a crash before the drop
+            # leaves a committed 'final' (generations match) + a stale backup, which recovery
+            # discards harmlessly. There is no window where a committed build is mistaken for
+            # uncommitted, because the signal is the catalogue↔meta match, not a mutable marker.
             try:
                 self._catalogue_upsert(
                     meta,
@@ -342,11 +382,7 @@ class DataStore:
                 if had_existing:
                     backup.replace(final)  # restore the prior files to match the catalogue
                 raise
-            # Catalogue committed → clear the marker (now 'final' is the committed build), then
-            # drop the backup. Order matters: marker cleared before backup removal so a crash
-            # here leaves a committed 'final' + stale backup, which recovery drops harmlessly.
-            (final / UNCOMMITTED_MARKER).unlink(missing_ok=True)
-            if had_existing:
+            if had_existing and backup.exists():
                 shutil.rmtree(backup, ignore_errors=True)
         finally:
             if staging.exists():

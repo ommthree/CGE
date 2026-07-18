@@ -93,18 +93,14 @@ def build_from_pymrio(
     written = {"full": build_id}
 
     if make_small and small_sector_map and small_region_map:
-        # Hash the actual maps so a changed concordance yields a different build id/aggregation
-        # (old and new small builds must be distinguishable in results — review). The default
-        # 'custom' id keeps the stable '-small' name (used by the offline test fixture); a named
-        # concordance (e.g. the EXIOBASE coarse map) encodes its version + content hash.
-        if concordance_id == "custom":
-            agg_name, small_id = "small", f"{build_id}-small"
-        else:
-            cmap_hash = content_hash(
-                {"conc": concordance_id, "sec": small_sector_map, "reg": small_region_map}
-            )[:8]
-            agg_name = f"{concordance_id}-{cmap_hash}"
-            small_id = f"{build_id}-{agg_name}"
+        # ALWAYS hash the actual maps (including the default 'custom' id) so a changed
+        # concordance yields a different build id/aggregation — a caller changing a custom map
+        # must not silently overwrite a numerically different build under the same id (review).
+        cmap_hash = content_hash(
+            {"conc": concordance_id, "sec": small_sector_map, "reg": small_region_map}
+        )[:8]
+        agg_name = f"{concordance_id}-{cmap_hash}"
+        small_id = f"{build_id}-{agg_name}"
         sector_cmap = one_to_one(
             small_sector_map,
             from_classification=io.sectors.name,
@@ -209,7 +205,7 @@ def build_test(store: DataStore | None = None) -> dict[str, str]:
 # Version of the default coarse concordance. Bump when the sector/region maps change so old
 # and new small builds are distinguishable (review: changing the maps silently reused the same
 # build id and manifest, despite different numbers).
-DEFAULT_CONCORDANCE_VERSION = "coarse-v2"
+DEFAULT_CONCORDANCE_VERSION = "coarse-v3"
 
 # Coarse sector grouping by keyword: maps each EXIOBASE product to one of ~14 broad sectors.
 # Ordered most-specific-first (first match wins). This is a functional default so a real
@@ -221,11 +217,16 @@ _SECTOR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
     #   'oil seeds' → agriculture (not oil/gas); 'nuclear fuel' → electricity (not 'fuel');
     #   'electricity … petroleum' → electricity; motor-'fuel' retail → trade; biogasification
     #   waste treatment → waste (not 'biogas').
+    # Exceptions catch specific products before the broad energy keywords capture them. Ordered
+    # most-specific-first. Review named several substring collisions now handled here:
+    #   'Other Hydrocarbons' must NOT hit 'hydro' (energy, not electricity);
+    #   'Manure (biogas treatment)' must NOT hit 'biogas' (waste, not oil/gas);
+    #   animal/grain foods (pigs, poultry, milk, rice) were falling into 'other'.
     ("agriculture", ("oil seed", "seed")),
+    ("water_waste", ("manure", "waste", "sewage", "sanitation", "biogasification")),
     ("electricity", ("nuclear", "electricity", "power generation")),
-    ("water_waste", ("waste", "sewage", "sanitation", "gasification of waste", "biogasification")),
     ("trade", ("retail", "wholesale", "trade")),
-    ("energy_coal", ("coal", "lignite", "peat", "anthracite", "coke", "coking")),
+    ("energy_coal", ("coal", "lignite", "peat", "anthracite", "coke", "coking", "patent fuel")),
     (
         "energy_oil_gas",
         (
@@ -245,9 +246,11 @@ _SECTOR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "lubricant",
             "bitumen",
             "fuel oil",
+            "hydrocarbon",
         ),
     ),
-    ("electricity", ("power", "steam", "hydro", "wind", "solar")),
+    # 'hydroelectric'/'hydro power' only — NOT 'hydro' alone (it matches 'Hydrocarbons').
+    ("electricity", ("power", "steam", "hydroelectric", "hydro power", "wind", "solar")),
     (
         "agriculture",
         (
@@ -271,6 +274,17 @@ _SECTOR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "food",
             "beverage",
             "tobacco",
+            # animal & grain products the review found falling into 'other':
+            "pig",
+            "poultry",
+            "cattle",
+            "milk",
+            "rice",
+            "grain",
+            "livestock",
+            "fish",
+            "vegetable",
+            "grape",
         ),
     ),
     ("mining", ("mining", "ore", "quarry", "extraction", "metal ores")),

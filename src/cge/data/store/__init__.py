@@ -6,6 +6,6 @@ runner can enumerate "what data we have" without loading it. This is the concret
 for ``runner.load_data`` (which was a toy-only stub after Phase 0).
 """
 
-from cge.data.store.store import UNCOMMITTED_MARKER, DataStore, default_store
+from cge.data.store.store import DataStore, default_store
 
-__all__ = ["DataStore", "default_store", "UNCOMMITTED_MARKER"]
+__all__ = ["DataStore", "default_store"]

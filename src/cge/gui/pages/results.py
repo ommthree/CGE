@@ -25,11 +25,18 @@ def render() -> None:
         f"data `{result.manifest.data_source}`  ·  hash `{result.manifest.scenario_hash}`"
     )
 
-    st.info(
-        "Δprice is a **fractional** change in the unit price index (baseline = 1), shown as a "
-        "**percent**. E.g. +6.0% means the good's price rises 6%. Cost impact only — no volume "
-        "effect (see the Run page's engine notes)."
-    )
+    if rv.has_volume(result):
+        st.info(
+            "Δprice is a **fractional** change in the unit price index (baseline = 1), shown as "
+            "a **percent** (e.g. +6.0% = a 6% price rise). This engine also estimates the "
+            "**production-volume** response below (indicative — elasticity-dependent)."
+        )
+    else:
+        st.info(
+            "Δprice is a **fractional** change in the unit price index (baseline = 1), shown as "
+            "a **percent** (e.g. +6.0% = a 6% price rise). **Cost impact only** — this engine "
+            "models no volume response (use the partial-equilibrium engine for volumes)."
+        )
     stats = rv.summary_stats(result)
     if stats:
         c1, c2, c3, c4 = st.columns(4)

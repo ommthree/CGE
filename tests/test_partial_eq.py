@@ -1,10 +1,24 @@
-"""Unit tests for Engine 2 (partial_eq): first-order volume response Δq/q = ε·Δp."""
+"""Unit tests for Engine 2 (partial_eq): production-volume response.
+
+Production follows the Leontief quantity model x=(I−A)⁻¹y: elasticities move final demand
+(finite-change (1+Δp)^ε−1), which propagates to gross-output (production) volume. These tests
+pin the *correct* semantics (review found the old ε·Δp-per-good version wasn't production
+volume and could go below −100%)."""
 
 import numpy as np
+import pandas as pd
 import pytest
 
+from cge.contracts.data_objects import (
+    Classification,
+    ElasticitySet,
+    IOSystem,
+    Provenance,
+    SatelliteAccount,
+)
 from cge.contracts.engine import registry
 from cge.contracts.shocks import CarbonPrice, NatureStress
+from cge.engines.partial_eq.engine import PartialEqEngine, _finite_demand_response
 from cge.runner import run_scenario
 from cge.scenarios.loader import Scenario
 
@@ -14,16 +28,84 @@ def _run(price=100.0, engine="partial_eq"):
     return run_scenario(sc, data_source="toy")
 
 
+def _prov():
+    return Provenance(
+        source="t", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-18"
+    )
+
+
+def _two_sector_network(eps=-1.0):
+    """fin (final good) uses 0.5 of up per unit; final demand only for fin; only fin emits."""
+    prov = _prov()
+    A = pd.DataFrame([[0.0, 0.5], [0.0, 0.0]], index=["R:up", "R:fin"], columns=["R:up", "R:fin"])
+    fd = pd.DataFrame({"final_demand": [0.0, 100.0]}, index=["R:up", "R:fin"])
+    io = IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=["up", "fin"]),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=A,
+        final_demand=fd,
+        unit="MEUR",
+        currency="EUR",
+    )
+    sat = SatelliteAccount(
+        provenance=prov,
+        name="GHG",
+        units={"CO2": "t/MEUR", "CO2e": "tCO2e/MEUR"},
+        data=pd.DataFrame({"R:up": [0.0, 0.0], "R:fin": [1000.0, 1000.0]}, index=["CO2", "CO2e"]),
+    )
+    eset = ElasticitySet(
+        provenance=prov,
+        kind="demand",
+        classification="s",
+        values={"up": (eps, eps, eps), "fin": (eps, eps, eps)},
+        sources={"up": "t", "fin": "t"},
+        confidence={"up": "high", "fin": "high"},
+    )
+    return {"IOSystem": io, "SatelliteAccount": sat, "ElasticitySet": eset}
+
+
 def test_engine_registered_with_volume_capability():
     assert "partial_eq" in registry.names()
     caps = [c.value for c in registry.get("partial_eq").meta.capabilities]
     assert "volumes" in caps and "prices" in caps
 
 
+def test_production_propagates_upstream():
+    """THE key fix: a fall in final-good demand pulls its upstream supplier's PRODUCTION down
+    too (via the Leontief inverse). The old engine reported the upstream good at 0%."""
+    data = _two_sector_network(eps=-1.0)
+    df = PartialEqEngine().run(data=data, shocks=[CarbonPrice(price=100.0)], years=[2020]).data
+    vol = df[(df["variable"] == "volume_change") & (df["scenario"] == "central")]
+    by = {r.sector: r.value for r in vol.itertuples()}
+    # fin's price rose 10% → demand (1.1)^-1-1 = -9.09%; up supplies fin so its output falls too.
+    assert np.isclose(by["fin"], (1.1) ** -1 - 1, atol=1e-9)
+    assert by["up"] < -0.01  # NOT zero — this is the whole point
+    assert np.isclose(by["up"], by["fin"], atol=1e-9)  # 1:1 here (up used only by fin)
+
+
+def test_large_price_stays_above_minus_100pct():
+    """Finite-change form keeps demand response > −100% even at live-scale price changes
+    (review: linear ε·Δp gave an impossible −142% on real data)."""
+    dp = np.array([2.369])  # the live +236.9% price change
+    r = _finite_demand_response(dp, np.array([-0.6]))
+    assert -1.0 < r[0] < 0.0
+    # and via the engine end to end, no volume below −100%
+    df = _run(price=500.0).data
+    vol = df[df["variable"] == "volume_change"]["value"]
+    assert (vol > -1.0).all()
+
+
+def test_volume_and_final_demand_variables_present():
+    df = _run().data
+    for v in ("price_change", "final_demand_change", "volume_change", "elasticity_used"):
+        assert (df["variable"] == v).any(), v
+
+
 def test_volume_sign_negative():
     df = _run().data
     vol = df[(df["variable"] == "volume_change") & (df["scenario"] == "central")]["value"]
-    assert (vol <= 1e-12).all()  # a carbon price reduces volumes
+    assert (vol <= 1e-9).all()  # a carbon price reduces production volumes
 
 
 def test_zero_shock_zero_volume():
@@ -32,21 +114,12 @@ def test_zero_shock_zero_volume():
     assert np.allclose(vol, 0.0)
 
 
-def test_proportional_to_price():
-    def central(df):
-        v = df[(df["variable"] == "volume_change") & (df["scenario"] == "central")]
-        return v.set_index(["region", "sector"])["value"]
-
-    v1, v2 = central(_run(100.0).data), central(_run(200.0).data)
-    assert np.allclose(v2.to_numpy(), 2.0 * v1.to_numpy(), atol=1e-9)
-
-
 def test_bands_bracket_central():
     df = _run().data
     vol = df[df["variable"] == "volume_change"]
-    for _, g in vol.groupby(["region", "sector"]):
+    for _key, g in vol.groupby(["region", "sector"]):
         by = {r.scenario: r.value for r in g.itertuples()}
-        assert by["low"] <= by["central"] <= by["high"] <= 1e-12
+        assert by["low"] <= by["central"] <= by["high"] <= 1e-9
 
 
 def test_prices_passed_through_from_engine1():
@@ -62,27 +135,97 @@ def test_prices_passed_through_from_engine1():
     assert np.allclose(pe.to_numpy(), io.to_numpy(), atol=1e-12)
 
 
-def test_default_elasticity_flagged():
-    result = _run()
-    # toy 'energy'/'manufacturing' aren't coarse keys → default used and counted.
-    assert result.manifest.assumptions["n_goods_using_default_elasticity"] >= 1
+def test_manifest_sensitive_to_elasticity_values():
+    """Two elasticity sets with identical provenance but different values must produce
+    different manifests (review: manifests were identical → not reproducible)."""
+    base = _two_sector_network(eps=-0.5)
+    other = _two_sector_network(eps=-1.5)
+    m1 = PartialEqEngine().run(data=base, shocks=[CarbonPrice(price=100.0)], years=[2020]).manifest
+    m2 = PartialEqEngine().run(data=other, shocks=[CarbonPrice(price=100.0)], years=[2020]).manifest
+    h1 = m1.assumptions["elasticity_set"]["content_hash"]
+    h2 = m2.assumptions["elasticity_set"]["content_hash"]
+    assert h1 != h2  # different values → different content hash
 
 
-def test_matches_analytic_elasticity():
-    """Δq/q equals ε·Δp with ε the elasticity actually used for that good."""
-    from cge.data.elasticities import default_demand_set
-    from cge.engines.partial_eq.engine import _elasticity_for
+def test_manifest_carries_per_good_elasticity_provenance():
+    data = _two_sector_network(eps=-0.5)
+    m = PartialEqEngine().run(data=data, shocks=[CarbonPrice(price=100.0)], years=[2020]).manifest
+    per_good = m.assumptions["elasticity_per_good"]
+    assert set(per_good) == {"up", "fin"}
+    assert (
+        "source" in per_good["up"]
+        and "confidence" in per_good["up"]
+        and "default" in per_good["up"]
+    )
 
-    df = _run().data
-    eset = default_demand_set()
-    for r in df[(df["variable"] == "volume_change") & (df["scenario"] == "central")].itertuples():
-        dp = df[
-            (df["variable"] == "price_change")
-            & (df["region"] == r.region)
-            & (df["sector"] == r.sector)
-        ]["value"].iloc[0]
-        (_, ce, _), _ = _elasticity_for(r.sector, eset)
-        assert np.isclose(r.value, ce * dp, atol=1e-12)
+
+def test_default_flag_counts_distinct_sectors_not_observations():
+    """n_sectors_using_default counts distinct SECTORS, not year×region observations (review:
+    it grew 2/4/6 with more years/regions for the same goods)."""
+    m1 = run_scenario(
+        Scenario(name="a", engine="partial_eq", years=[2020], shocks=[CarbonPrice(price=100.0)]),
+        data_source="toy",
+    ).manifest
+    m2 = run_scenario(
+        Scenario(
+            name="b", engine="partial_eq", years=[2020, 2030], shocks=[CarbonPrice(price=100.0)]
+        ),
+        data_source="toy",
+    ).manifest
+    # Same toy sectors, different #years → the default-sector COUNT must be identical.
+    assert m1.assumptions["n_sectors_using_default"] == m2.assumptions["n_sectors_using_default"]
+
+
+def test_rejects_positive_demand_elasticity():
+    """Positive demand elasticity is rejected at ElasticitySet construction (contract-level)."""
+    with pytest.raises(ValueError, match="positive"):
+        ElasticitySet(
+            provenance=_prov(),
+            kind="demand",
+            classification="s",
+            values={"fin": (0.1, 0.2, 0.3)},  # positive → invalid
+            sources={"fin": "t"},
+            confidence={"fin": "high"},
+        )
+
+
+def test_rejects_unordered_bands():
+    with pytest.raises(ValueError, match="not ordered"):
+        ElasticitySet(
+            provenance=_prov(),
+            kind="demand",
+            classification="s",
+            values={"fin": (-0.2, -0.5, -0.1)},  # central < low
+            sources={"fin": "t"},
+            confidence={"fin": "high"},
+        )
+
+
+def test_rejects_missing_metadata():
+    with pytest.raises(ValueError, match="missing source"):
+        ElasticitySet(
+            provenance=_prov(),
+            kind="demand",
+            classification="s",
+            values={"fin": (-1.0, -1.0, -1.0)},
+            sources={},
+            confidence={},  # no source/confidence
+        )
+
+
+def test_engine_rejects_wrong_kind_elasticity_set():
+    """A non-demand ElasticitySet is rejected by the engine (kind check)."""
+    data = _two_sector_network()
+    data["ElasticitySet"] = ElasticitySet(
+        provenance=_prov(),
+        kind="armington",
+        classification="s",
+        values={"up": (0.5, 1.0, 1.5), "fin": (0.5, 1.0, 1.5)},
+        sources={"up": "t", "fin": "t"},
+        confidence={"up": "high", "fin": "high"},
+    )
+    with pytest.raises(ValueError, match="demand ElasticitySet"):
+        PartialEqEngine().run(data=data, shocks=[CarbonPrice(price=100.0)], years=[2020])
 
 
 def test_rejects_unsupported_shock():

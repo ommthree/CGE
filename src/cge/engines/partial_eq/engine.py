@@ -1,60 +1,94 @@
-"""Engine 2 — partial-equilibrium volume response.
+"""Engine 2 — partial-equilibrium production-volume response.
 
-Implements ``docs/models/partial-equilibrium.md``: Δq/q = ε·Δp per good (equation 1),
-evaluated across low/central/high demand-elasticity bands so the volume answer carries an
-uncertainty envelope. Prices Δp come from Engine 1 (reused, not reimplemented), so this engine
-adds only the demand response.
+Implements ``docs/models/partial-equilibrium.md``. A carbon price raises prices (Engine 1);
+demand elasticities turn those price changes into **final-demand** changes; those propagate
+through the Leontief quantity system to **gross-output (production) volume** changes:
 
-Emitted result variables (long-format ``ResultSet``):
-- ``price_change`` — passed through from Engine 1 (band ``central``);
-- ``volume_change`` — Δq/q per good, one row per band (``low``/``central``/``high``);
-- ``elasticity_used`` — the ε applied (band ``central``), for provenance.
+    Δy_i/y_i = (1 + Δp_i)^{ε_i} − 1          finite-change constant-elasticity demand response
+    x = (I − A)^{-1} y                        production follows demand (Leontief quantity model)
+    Δx = (I − A)^{-1} Δy   ⇒   report Δx/x    gross-output (production) volume change
+
+The finite-change form (not the linear ε·Δp) keeps the response bounded and physically valid
+even for the large price changes real carbon-price runs produce (review: linear ε·Δp gave an
+impossible −142% on live data). Production propagation means a fall in final demand for a
+downstream good pulls its upstream suppliers' output down too — the thing a per-good own-demand
+response misses (review: that is the core "not actually production volume" defect).
+
+Evaluated across low/central/high demand-elasticity bands → an uncertainty envelope. Prices
+come from Engine 1 (single source of truth). Own-price demand only; the Armington
+domestic/import substitution nest is specified in the model doc but **not implemented** (v1).
+
+Emitted variables (long-format ``ResultSet``):
+- ``price_change`` — from Engine 1 (band ``central``);
+- ``final_demand_change`` — Δy/y per good, per band (the direct demand response);
+- ``volume_change`` — Δx/x per good, per band (**production**, via Leontief propagation);
+- ``elasticity_used`` — the ε applied (band ``central``).
+Per-good elasticity source/confidence/default-status and a content hash of the elasticity
+values go into the manifest (per-parameter provenance).
 """
 
 from __future__ import annotations
 
+import numpy as np
+
 from cge.contracts.data_objects import ElasticitySet, IOSystem
 from cge.contracts.engine import Capability, EngineMeta, registry
-from cge.contracts.provenance import RunManifest
+from cge.contracts.provenance import RunManifest, content_hash
 from cge.contracts.results import ResultSet
 from cge.contracts.shocks import Shock
 from cge.data.elasticities import DEFAULT_DEMAND_ELASTICITY, default_demand_set
 from cge.engines.io_price.engine import ASSUMPTIONS as IO_ASSUMPTIONS
-from cge.engines.io_price.engine import IOPriceEngine
+from cge.engines.io_price.engine import IOPriceEngine, _assert_productive
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 ASSUMPTIONS = {
-    "model": "first-order partial-equilibrium demand response Δq/q = ε·Δp on Engine-1 prices",
-    "scope": "own-price demand only; no income effect, no factor markets, no GE feedback",
+    "model": (
+        "partial-equilibrium production volume: finite-change demand response "
+        "Δy/y=(1+Δp)^ε−1, propagated through Leontief x=(I−A)⁻¹y to give Δx/x (production)"
+    ),
+    "scope": "own-price demand only; NO Armington substitution (v1); no income effect, no GE",
     "prices_from": "Engine 1 (io_price), taken as exogenous",
     "uncertainty": "low/central/high demand-elasticity bands → volume envelope",
-    "elasticity_default": (
-        f"goods without an assembled elasticity use {DEFAULT_DEMAND_ELASTICITY} (tagged 'default')"
-    ),
+    "finite_change": "(1+Δp)^ε−1 used (not linear ε·Δp) so responses stay bounded > −100%",
     "interpretation": (
-        "INDICATIVE volume response, not precise: magnitudes depend on assembled elasticities "
-        "(no clean open database). Use for screening/stress; cross-check with the CGE (Phase 5)."
+        "INDICATIVE production-volume response, not precise: magnitudes depend on assembled "
+        "elasticities (no clean open database). Screening/stress use; cross-check with the CGE."
     ),
-    "reference": "Armington (1969) for the optional substitution nest; demand theory for (1)",
+    "reference": "Leontief quantity model x=(I−A)⁻¹y [MillerBlair2009]; demand theory for Δy/y",
 }
 
 
-def _elasticity_for(sector: str, eset: ElasticitySet) -> tuple[tuple[float, float, float], str]:
-    """Return ((low, central, high), confidence) for a sector, falling back to the tagged
-    default. The default's presence is why the engine can always run and always flags it."""
+def _elasticity_row(sector: str, eset: ElasticitySet):
+    """Return (low, central, high, source, confidence, is_default) for a sector."""
     if sector in eset.values:
-        return eset.values[sector], eset.confidence.get(sector, "medium")
-    return DEFAULT_DEMAND_ELASTICITY, "default"
+        lo, ce, hi = eset.values[sector]
+        return (
+            lo,
+            ce,
+            hi,
+            eset.sources.get(sector, "unspecified"),
+            eset.confidence.get(sector, "medium"),
+            False,
+        )
+    lo, ce, hi = DEFAULT_DEMAND_ELASTICITY
+    return lo, ce, hi, "default (no assembled value)", "default", True
+
+
+def _finite_demand_response(dp: np.ndarray, eps: np.ndarray) -> np.ndarray:
+    """Δy/y = (1+Δp)^ε − 1, the finite-change constant-elasticity form. Bounded below by −1
+    (a price rise cannot destroy more than 100% of demand), unlike linear ε·Δp."""
+    # (1+Δp) is a price ratio ≥ 0 for any Δp ≥ −1; carbon-price Δp ≥ 0, so this is safe.
+    return np.power(1.0 + dp, eps) - 1.0
 
 
 class PartialEqEngine:
-    """Partial-equilibrium volume response. Satisfies the ``Engine`` protocol."""
+    """Partial-equilibrium production-volume response. Satisfies the ``Engine`` protocol."""
 
     meta = EngineMeta(
         name="partial_eq",
         version=VERSION,
-        description="Partial-equilibrium volume response: Δq/q = ε·Δp with an uncertainty band.",
+        description="Partial-equilibrium production volume: demand response via Leontief.",
         capabilities=[Capability.PRICES, Capability.VOLUMES],
         supported_shocks=["carbon_price"],
         required_data=["IOSystem", "SatelliteAccount"],
@@ -62,30 +96,54 @@ class PartialEqEngine:
 
     def run(self, *, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
         io: IOSystem = data["IOSystem"]
+        labels = list(io.A.columns)
+        A = io.A.to_numpy(dtype=float)
+        _assert_productive(A)  # Leontief inverse must exist (same precondition as Engine 1)
+        leontief = np.linalg.inv(np.eye(A.shape[0]) - A)
 
-        # 1. Prices from Engine 1 (single source of truth; reuse, don't reimplement).
-        price_result = IOPriceEngine().run(data=data, shocks=shocks, years=years)
-        pdf = price_result.data
-        prices = pdf[pdf["variable"] == "price_change"]
+        # Baseline final demand y and baseline gross output x = (I−A)⁻¹ y.
+        y0 = io.final_demand.sum(axis=1).reindex(labels).fillna(0.0).to_numpy(dtype=float)
+        x0 = leontief @ y0
 
-        # 2. Demand elasticities. An explicit ElasticitySet in ``data`` wins; else the default.
+        # Prices from Engine 1 (single source of truth). Keyed by (year, region, sector).
+        price_df = IOPriceEngine().run(data=data, shocks=shocks, years=years).data
+        prices = price_df[price_df["variable"] == "price_change"]
+
+        # Demand elasticities: explicit set in ``data`` wins; else the default. Validated below.
         eset: ElasticitySet = data.get("ElasticitySet") or default_demand_set()
-        if eset.kind != "demand":
-            raise ValueError(f"partial_eq needs a demand ElasticitySet, got kind={eset.kind!r}")
+        _validate_demand_elasticities(eset)
 
-        records = []
-        n_default = 0
-        for row in prices.itertuples():
-            sector, region, year, dp = row.sector, row.region, row.year, float(row.value)
-            (lo, ce, hi), conf = _elasticity_for(sector, eset)
-            if conf == "default":
-                n_default += 1
-            # 3. Δq/q = ε·Δp per band. Pass the price through, emit the elasticity used, and a
-            # volume-change row per band.
-            records.append(_rec("price_change", sector, region, year, "central", dp))
-            records.append(_rec("elasticity_used", sector, region, year, "central", ce))
-            for band, eps in (("low", lo), ("central", ce), ("high", hi)):
-                records.append(_rec("volume_change", sector, region, year, band, eps * dp))
+        # Resolve per-label elasticity rows + provenance once.
+        rows = {lab: _elasticity_row(lab.split(":", 1)[1], eset) for lab in labels}
+        default_goods = sorted(lab for lab, r in rows.items() if r[5])
+
+        records: list[dict] = []
+        for year in sorted(prices["year"].unique()):
+            pyr = prices[prices["year"] == year]
+            dp = {f"{r.region}:{r.sector}": float(r.value) for r in pyr.itertuples()}
+            dp_vec = np.array([dp.get(lab, 0.0) for lab in labels])
+
+            for band, idx in (("low", 0), ("central", 1), ("high", 2)):
+                eps_vec = np.array([rows[lab][idx] for lab in labels])
+                dy_frac = _finite_demand_response(dp_vec, eps_vec)  # Δy/y per good
+                y_new = y0 * (1.0 + dy_frac)
+                x_new = leontief @ y_new  # production follows the new demand
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    dx_frac = np.where(x0 != 0, (x_new - x0) / x0, 0.0)  # Δx/x (production)
+
+                for i, lab in enumerate(labels):
+                    region, sector = lab.split(":", 1)
+                    records.append(
+                        _rec("final_demand_change", sector, region, year, band, dy_frac[i])
+                    )
+                    records.append(_rec("volume_change", sector, region, year, band, dx_frac[i]))
+                    if band == "central":
+                        records.append(
+                            _rec("price_change", sector, region, year, "central", dp_vec[i])
+                        )
+                        records.append(
+                            _rec("elasticity_used", sector, region, year, "central", rows[lab][1])
+                        )
 
         manifest = RunManifest.build(
             engine_name=self.meta.name,
@@ -95,15 +153,44 @@ class PartialEqEngine:
             scenario={"shocks": [s.model_dump(mode="json") for s in shocks], "years": years},
             assumptions={
                 **ASSUMPTIONS,
-                # Carry Engine 1's assumptions too — its prices are the input, so its caveats apply.
                 "price_model": IO_ASSUMPTIONS["model"],
                 "price_interpretation": IO_ASSUMPTIONS["interpretation"],
-                "elasticity_source": f"{eset.provenance.source} {eset.provenance.source_version}",
-                "n_goods_using_default_elasticity": n_default,
+                # Full elasticity provenance so results are reproducible from the manifest.
+                "elasticity_set": {
+                    "source": eset.provenance.source,
+                    "source_version": eset.provenance.source_version,
+                    "classification": eset.classification,
+                    # Canonical content hash: two different tables → different manifests.
+                    "content_hash": content_hash(
+                        {k: list(v) for k, v in sorted(eset.values.items())}
+                    ),
+                },
+                # Per-good elasticity used, its source, confidence, and whether it is the default.
+                "elasticity_per_good": {
+                    lab.split(":", 1)[1]: {
+                        "central": rows[lab][1],
+                        "source": rows[lab][3],
+                        "confidence": rows[lab][4],
+                        "default": rows[lab][5],
+                    }
+                    for lab in labels
+                    # one entry per distinct sector (labels repeat sectors across regions)
+                    if lab == next(x for x in labels if x.split(":", 1)[1] == lab.split(":", 1)[1])
+                },
+                "goods_using_default_elasticity": [g.split(":", 1)[1] for g in default_goods],
+                "n_sectors_using_default": len({g.split(":", 1)[1] for g in default_goods}),
                 "data_build_id": io.provenance.build_id,
             },
         )
         return ResultSet.from_records(records, manifest)
+
+
+def _validate_demand_elasticities(eset: ElasticitySet) -> None:
+    """The engine needs a *demand* set. Value-level checks (finite, band-ordered, ≤0 for
+    demand, per-value metadata) are enforced at ElasticitySet construction (contract, review
+    P2); here we only check the kind is right for this engine."""
+    if eset.kind != "demand":
+        raise ValueError(f"partial_eq needs a demand ElasticitySet, got kind={eset.kind!r}")
 
 
 def _rec(variable: str, sector: str, region: str, year: int, scenario: str, value: float) -> dict:

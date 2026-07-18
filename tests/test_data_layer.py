@@ -5,6 +5,8 @@ EXIOBASE path shares the same adapter/aggregate/quality/store code, so exercisin
 covers the pipeline logic; only the download itself is untested offline (by design).
 """
 
+import json
+
 import numpy as np
 import pytest
 
@@ -337,32 +339,60 @@ def test_catalogue_failure_rolls_back_filesystem(tmp_path):
 
 
 def test_recovery_discards_uncommitted_final_restores_backup(tmp_path):
-    """Crash between the filesystem swap and the catalogue commit: recovery must discard the
-    uncommitted 'final' and restore the valid backup, not keep the uncommitted files (review
-    high). Detected via the UNCOMMITTED_MARKER left inside 'final'."""
+    """Crash BEFORE the catalogue commit: 'final' holds files whose generation does NOT match
+    the catalogue → recovery must discard them and restore the backup (review P1)."""
     import shutil
-
-    from cge.data.store import UNCOMMITTED_MARKER
 
     store = DataStore(tmp_path)
     build_test(store=store)
     bid = "exiobase-test"
-    v1 = store.load_meta(bid).source_version
+    committed_gen = store._committed_generation(bid)  # the v1 generation in the catalogue
     final = store.builds_dir / bid
     bak = store.builds_dir / f".{bid}.bak"
 
-    # Simulate the crash window: v1 → .bak, 'final' holds pretend-v2 WITH the marker, stale lock.
+    # v1 → .bak; 'final' holds pretend-v2 with a DIFFERENT generation the catalogue never saw.
     shutil.copytree(final, bak)
-    (final / UNCOMMITTED_MARKER).write_text(bid)
-    (final / "meta.json").write_text(
-        (final / "meta.json").read_text().replace(f'"{v1}"', '"v2-uncommitted"')
-    )
+    m = json.loads((final / "meta.json").read_text())
+    m["generation"] = "uncommitted-v2-gen"
+    m["source_version"] = "v2-uncommitted"
+    (final / "meta.json").write_text(json.dumps(m))
     (store.builds_dir / f".{bid}.lock").write_text("999999")  # stale lock (dead pid)
+    assert m["generation"] != committed_gen
 
     recovered = DataStore(tmp_path).load_meta(bid)
-    assert recovered.source_version == v1  # backup restored, uncommitted v2 discarded
-    assert not (final / UNCOMMITTED_MARKER).exists()
+    assert recovered.generation == committed_gen  # backup (committed v1) restored
+    assert recovered.source_version != "v2-uncommitted"
     assert not bak.exists()
+
+
+def test_recovery_keeps_committed_final_after_post_commit_crash(tmp_path):
+    """Crash AFTER the catalogue commit but before the backup was dropped: 'final's generation
+    MATCHES the catalogue, so recovery must KEEP it and drop the stale backup — NOT roll back
+    to v1 (review P1: the inverse post-commit window)."""
+    import json as _json
+    import shutil
+
+    store = DataStore(tmp_path)
+    build_test(store=store)
+    bid = "exiobase-test"
+    final = store.builds_dir / bid
+    bak = store.builds_dir / f".{bid}.bak"
+
+    # The current 'final' is committed (its generation == catalogue's). Simulate a leftover
+    # backup from a prior generation, plus a stale lock — as if the process died right after
+    # the catalogue commit but before dropping the backup.
+    committed_gen = store._committed_generation(bid)
+    assert store._read_generation(final) == committed_gen
+    shutil.copytree(final, bak)  # a stale backup (older files) left around
+    old = _json.loads((bak / "meta.json").read_text())
+    old["source_version"] = "v1-old"
+    (bak / "meta.json").write_text(_json.dumps(old))
+    (store.builds_dir / f".{bid}.lock").write_text("999999")  # stale lock
+
+    recovered = DataStore(tmp_path).load_meta(bid)
+    assert recovered.generation == committed_gen  # committed files KEPT, not rolled back
+    assert recovered.source_version != "v1-old"
+    assert not bak.exists()  # stale backup dropped
 
 
 def test_concordance_change_yields_distinct_build_id(tmp_path):
@@ -393,7 +423,36 @@ def test_concordance_change_yields_distinct_build_id(tmp_path):
     id_a = _build("conc-a")
     id_b = _build("conc-b")
     assert id_a != id_b
-    assert "conc-a" in id_a and "conc-b" in id_b
+
+
+def test_custom_maps_with_different_contents_yield_distinct_ids(tmp_path):
+    """Even under the DEFAULT concordance_id ('custom'), two different maps must produce
+    different build ids — a caller changing a custom map must not silently overwrite a
+    numerically different build under the same id (review P2)."""
+    from cge.data.build import build_from_pymrio
+
+    def _build(subdir, sector_group):
+        store = DataStore(tmp_path / subdir)
+        sectors = list(load_exiobase_test().get_sectors())
+        regions = list(load_exiobase_test().get_regions())
+        return build_from_pymrio(
+            load_exiobase_test(),
+            source="E",
+            source_version="v",
+            reference_year=2011,
+            build_id="b",
+            store=store,
+            make_small=True,
+            small_sector_map={s: sector_group(i) for i, s in enumerate(sectors)},
+            small_region_map={r: "y" for r in regions},
+            gas_aliases={"emission_type1": "CO2"},
+            currency="USD",
+            monetary_unit="MUSD",
+        )["small"]  # default concordance_id="custom"
+
+    id_1 = _build("m1", lambda i: ["a", "b"][i % 2])  # 2 sector groups
+    id_2 = _build("m2", lambda i: ["a", "b", "c"][i % 3])  # 3 sector groups — different map
+    assert id_1 != id_2
 
 
 def test_recovery_runs_on_direct_load(tmp_path):
@@ -462,7 +521,7 @@ def test_store_to_engine_seam_eur_build(tmp_path):
     from cge.scenarios.loader import Scenario
 
     store = DataStore(tmp_path)
-    build_from_pymrio(
+    written = build_from_pymrio(
         load_exiobase_test(),
         source="EXIOBASE-test-eur",
         source_version="test",
@@ -486,7 +545,7 @@ def test_store_to_engine_seam_eur_build(tmp_path):
         sc = Scenario(
             name="seam", engine="io_price", years=[2020], shocks=[CarbonPrice(price=100.0)]
         )
-        result = run_scenario(sc, data_source="eur-build-small", store=store)
+        result = run_scenario(sc, data_source=written["small"], store=store)
         assert (result.data["variable"] == "price_change").any()
     finally:
         monkey.undo()
