@@ -24,10 +24,11 @@ correctness and consistency along the pipeline, and stores builds for engines to
 - `cge build --exiobase` (live) or `cge build --test` (offline) builds full + small into the
   store; `cge data` lists them; `cge quality <build_id>` shows the report.
 - Every build carries a stored `QualityReport` including the pipeline consistency checks.
-- 22 tests pass; lint + format clean.
-- **Remaining for a real build:** the published-number reproduction checks (global CO₂ total
-  and a few country footprints vs [Stadler2018]) require the live download — run them against
-  an `exiobase` build. The check *code* and tolerances are specified in the data-layer doc.
+- Offline test suite + validation pass; lint + format clean. (Test counts grow each review
+  round — see current `pytest` output rather than a fixed number.)
+- **Live EXIOBASE now exercised:** `tests/test_exiobase_known_answer.py` builds from a real
+  archive and checks the adapter preserves the global CO₂ total and plausible magnitude. An
+  *independent published-footprint* comparison remains the outstanding refinement.
 
 ## Data correctness & consistency (addresses the "checks at all points" requirement)
 

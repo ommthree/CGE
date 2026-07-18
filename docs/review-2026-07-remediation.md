@@ -241,3 +241,38 @@ restores the store→engine seam** the round-4 change had dropped; engine bumped
 semantics (a breaking change bumps the minor while major is 0). The PID-lockfile protocol has
 small theoretical races (create/write, stale reclaim) — noted; an OS-backed file lock is a
 possible future hardening.
+
+---
+
+## Seventh review round (fixed)
+
+One high plus mediums:
+
+- **Hard-kill between swap and catalogue commit could keep uncommitted files and delete the
+  valid backup (high).** With `final` installed but the catalogue not yet committed, both
+  `final` (uncommitted) and `.bak` (valid) existed; recovery kept `final` and deleted `.bak`,
+  leaving files at v2 but catalogue at v1. Fixed with a **commit marker** (`.uncommitted`
+  written into the build dir, removed only after the catalogue commits): recovery sees the
+  marker and restores the backup, discarding the uncommitted files. Tested with the exact
+  crash-window sequence.
+
+Mediums fixed:
+- **Global lock race** — replaced the PID-file lock (create-then-write window) with an
+  **OS-backed `fcntl.flock`** (atomic; auto-released on death).
+- **Aggregation changed build identity silently** — `build_from_pymrio` takes a
+  `concordance_id`; a named concordance encodes its **version + content hash** in the small
+  build id and `aggregation` field (which flow into provenance and the run manifest). Default
+  coarse map bumped to `coarse-v2`.
+- **Keyword false positives** — added high-priority exceptions so oil-seeds→agriculture,
+  nuclear-fuel→electricity, motor-fuel-retail→trade, biogasification-waste→waste; removed the
+  over-broad `fuel`/`oil ` keywords. (Still a keyword heuristic, documented as such.)
+- **Live provenance** — the `exiobase_live` suite and standalone fixture parse the archive
+  year (no hardcoded 2019); the live **end-to-end engine** check is now in `cge validate`.
+
+Docs de-staled: phase-1/phase-2 status and data-layer.md no longer say live checks are
+pending; "coal most exposed" → "coal among the most exposed"; roadmap "upper bound" softened
+and "structural paths" corrected to Neumann-tier aggregates.
+
+Remaining genuinely open (documented, not defects): an **independent published-footprint**
+comparison; a **curated sector concordance**; sparse full-MRIO; content-hashed full-build ids;
+EXIOBASE 3.9.x.

@@ -111,9 +111,12 @@ float32 parquet storage and doing analysis on the small build by default.
 quality-report content; structural guard rejects NaN / non-productive systems; cross-stage
 conservation checks reach the stored report; store round-trip; runner loads a build id.
 
-Live-data known-answer checks (global CO₂ total and a few published country footprints vs
-[Stadler2018]) are the remaining item requiring the actual download — the roadmap P1 DoD;
-run against a real build.
+Live-data known-answer checks now exist (`tests/test_exiobase_known_answer.py` + the gated
+`exiobase_live` validation suite), run against a real EXIOBASE archive: the adapter reproduces
+the full 9800×9800 MRIO, preserves the global CO₂ total (verified against pymrio's raw
+accounts), and the total is a plausible magnitude. These are strong integration/sanity gates;
+an *independent* comparison against a **published** EXIOBASE footprint table (vs the internal
+consistency + magnitude checks here) remains the outstanding refinement.
 
 ## 8. References
 

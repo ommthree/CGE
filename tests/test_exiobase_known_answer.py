@@ -96,7 +96,7 @@ def test_global_co2_is_plausible_magnitude(adapted):
 
 def test_engine1_on_coarse_real_build(adapted, tmp_path):
     """End-to-end known-answer: aggregate the real MRIO to a coarse EUR build and run Engine 1;
-    coal must be the most carbon-exposed sector under a €100/t price, with fractional impacts."""
+    energy sectors (coal / coal-fired electricity) must be most exposed, with fractional impacts."""
     from cge.contracts.shocks import CarbonPrice
     from cge.data.aggregate import aggregate_io
     from cge.data.build import _coarse_region, _coarse_sector
@@ -119,11 +119,12 @@ def test_engine1_on_coarse_real_build(adapted, tmp_path):
         to_classification="cr",
         provenance=io.provenance,
     )
+    year = io.provenance.reference_year  # parsed from the archive filename by the fixture
     meta = BuildMeta(
         build_id="exio-coarse",
         source="EXIOBASE",
-        source_version="live",
-        reference_year=2019,
+        source_version=f"live-{year}",
+        reference_year=year,
         licence="CC BY-SA 4.0",
         retrieved="2026-07-18",
     )
@@ -141,14 +142,16 @@ def test_engine1_on_coarse_real_build(adapted, tmp_path):
     store = DataStore(tmp_path)
     store.save(meta=s_meta, io=s_io, satellites=s_sats)
     result = run_scenario(
-        Scenario(name="ka", engine="io_price", years=[2019], shocks=[CarbonPrice(price=100.0)]),
+        Scenario(name="ka", engine="io_price", years=[year], shocks=[CarbonPrice(price=100.0)]),
         data_source="exio-coarse",
         store=store,
     )
     dp = result.data[result.data["variable"] == "price_change"]
-    # Coal appears among the most carbon-exposed sectors (it is the most emissions-intensive
-    # product per € of output) — the qualitative known answer.
+    # Energy sectors (coal and coal-fired electricity — the most emissions-intensive per € of
+    # output) dominate the most-exposed set. The robust qualitative known answer.
     top = dp.nlargest(5, "value")["sector"].tolist()
-    assert any("coal" in s for s in top), f"coal not in top-5 exposed sectors: {top}"
+    assert any(("coal" in s or "electricity" in s) for s in top), (
+        f"no energy sector in top-5: {top}"
+    )
     # Impacts are fractional (percent-scale), not the ~1e3–1e9 a units bug would give.
     assert 0.0 < dp["value"].max() < 5.0

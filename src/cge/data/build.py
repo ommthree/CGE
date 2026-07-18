@@ -18,6 +18,7 @@ from pathlib import Path
 import pymrio
 
 from cge.contracts.data_objects import IOSystem
+from cge.contracts.provenance import content_hash
 from cge.contracts.quality import Severity
 from cge.data.adapters.exiobase import (
     adapt_pymrio,
@@ -55,6 +56,7 @@ def build_from_pymrio(
     make_small: bool = True,
     small_sector_map: dict[str, str] | None = None,
     small_region_map: dict[str, str] | None = None,
+    concordance_id: str = "custom",
     gas_aliases: dict[str, str] | None = None,
     currency: str = "EUR",
     monetary_unit: str = "MEUR",
@@ -91,7 +93,18 @@ def build_from_pymrio(
     written = {"full": build_id}
 
     if make_small and small_sector_map and small_region_map:
-        small_id = f"{build_id}-small"
+        # Hash the actual maps so a changed concordance yields a different build id/aggregation
+        # (old and new small builds must be distinguishable in results — review). The default
+        # 'custom' id keeps the stable '-small' name (used by the offline test fixture); a named
+        # concordance (e.g. the EXIOBASE coarse map) encodes its version + content hash.
+        if concordance_id == "custom":
+            agg_name, small_id = "small", f"{build_id}-small"
+        else:
+            cmap_hash = content_hash(
+                {"conc": concordance_id, "sec": small_sector_map, "reg": small_region_map}
+            )[:8]
+            agg_name = f"{concordance_id}-{cmap_hash}"
+            small_id = f"{build_id}-{agg_name}"
         sector_cmap = one_to_one(
             small_sector_map,
             from_classification=io.sectors.name,
@@ -111,7 +124,7 @@ def build_from_pymrio(
             region_cmap=region_cmap,
             meta=meta,
             new_build_id=small_id,
-            aggregation_name="small",
+            aggregation_name=agg_name,
         )
         # Consistency gate 2: the aggregate must be structurally sound AND conserve the
         # fine build's totals — a wrong aggregation is fatal, not merely low quality.
@@ -159,6 +172,7 @@ def build_exiobase(
         make_small=make_small,
         small_sector_map=sec_map,
         small_region_map=reg_map,
+        concordance_id=DEFAULT_CONCORDANCE_VERSION,
     )
 
 
@@ -192,11 +206,25 @@ def build_test(store: DataStore | None = None) -> dict[str, str]:
     )
 
 
+# Version of the default coarse concordance. Bump when the sector/region maps change so old
+# and new small builds are distinguishable (review: changing the maps silently reused the same
+# build id and manifest, despite different numbers).
+DEFAULT_CONCORDANCE_VERSION = "coarse-v2"
+
 # Coarse sector grouping by keyword: maps each EXIOBASE product to one of ~14 broad sectors.
 # Ordered most-specific-first (first match wins). This is a functional default so a real
 # build is actually runnable under the engine's product cap; a curated 40-50 sector
 # concordance remains the documented follow-up (roadmap P1.6 / P5).
 _SECTOR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    # Exceptions FIRST (first match wins), so specific products aren't captured by the broad
+    # energy keywords below (review named these false positives):
+    #   'oil seeds' → agriculture (not oil/gas); 'nuclear fuel' → electricity (not 'fuel');
+    #   'electricity … petroleum' → electricity; motor-'fuel' retail → trade; biogasification
+    #   waste treatment → waste (not 'biogas').
+    ("agriculture", ("oil seed", "seed")),
+    ("electricity", ("nuclear", "electricity", "power generation")),
+    ("water_waste", ("waste", "sewage", "sanitation", "gasification of waste", "biogasification")),
+    ("trade", ("retail", "wholesale", "trade")),
     ("energy_coal", ("coal", "lignite", "peat", "anthracite", "coke", "coking")),
     (
         "energy_oil_gas",
@@ -206,7 +234,6 @@ _SECTOR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "natural gas",
             "gas ",
             "gasoline",
-            "fuel",
             "diesel",
             "kerosene",
             "naphtha",
@@ -214,12 +241,13 @@ _SECTOR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "biogas",
             "biofuel",
             "ethanol",
-            "oil ",
+            "motor spirit",
             "lubricant",
             "bitumen",
+            "fuel oil",
         ),
     ),
-    ("electricity", ("electricity", "power", "steam", "nuclear", "hydro", "wind", "solar")),
+    ("electricity", ("power", "steam", "hydro", "wind", "solar")),
     (
         "agriculture",
         (

@@ -6,7 +6,7 @@
 - **Status:** implemented and validated — on the toy economy (internal identities +
   hand-derived known answer) **and against live EXIOBASE 3 (2019 pxp)**: the adapter
   preserves EXIOBASE's global CO₂ total (30.0 Gt), units come through correctly, and a
-  €100/t run gives fractional price changes with coal most exposed (see §7). Engine is
+  €100/t run gives fractional price changes with energy sectors most exposed (see §7). Engine is
   dense-only / small-build (sparse full-MRIO not implemented). Remaining refinement is a
   tighter published-footprint comparison and a curated sector concordance.
 

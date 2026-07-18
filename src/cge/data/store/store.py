@@ -24,10 +24,16 @@ import os
 import shutil
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import duckdb
 import pandas as pd
+
+try:
+    import fcntl  # POSIX advisory file locks
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
 
 from cge.contracts.data_objects import (
     Classification,
@@ -39,6 +45,10 @@ from cge.contracts.quality import QualityReport
 from cge.data.metadata import BuildMeta
 
 DEFAULT_ROOT = Path("data_store")
+
+# Sentinel written into a build dir while it is installed but not yet catalogue-committed.
+# Its presence after a crash tells recovery the files are uncommitted (see _recover_interrupted).
+UNCOMMITTED_MARKER = ".uncommitted"
 
 # Catalogue write retry (DuckDB rejects concurrent cross-process write connections).
 _CATALOGUE_RETRIES = 50
@@ -82,26 +92,36 @@ def _acquire_lock(lock: Path) -> None:
         f.write(str(os.getpid()))
 
 
-def _acquire_global_lock(lock: Path, timeout: float = _GLOBAL_LOCK_TIMEOUT) -> None:
-    """Blocking cross-process lock: WAIT (up to ``timeout``) for the lock, then hold it.
+@contextmanager
+def _global_lock(lock: Path, timeout: float = _GLOBAL_LOCK_TIMEOUT):
+    """OS-backed exclusive cross-process lock via ``fcntl.flock`` (advisory).
 
-    Unlike ``_acquire_lock`` (which refuses a concurrent writer), catalogue writes should
-    *serialise*, not fail — so this spins until the lock is free (reclaiming a stale one from a
-    dead holder), raising only if it cannot be acquired within the timeout."""
-    deadline = time.monotonic() + timeout
-    while True:
+    Unlike the PID-file per-build lock, this is **atomic** — there is no create-then-write
+    window where another process mistakes an empty file for a stale lock (review). The OS
+    releases the lock automatically if the holder dies, so no stale-reclamation is needed.
+    Blocks (polling non-blocking flock) up to ``timeout`` so catalogue writers *serialise*
+    rather than fail. On platforms without ``fcntl`` (Windows), falls back to no-op — the
+    per-connection retry in ``_with_catalogue`` still handles DuckDB contention."""
+    if fcntl is None:  # non-POSIX; rely on the DuckDB retry loop
+        yield
+        return
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR)
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"timed out waiting for catalogue lock {lock}") from None
+                time.sleep(0.02)
         try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w") as f:
-                f.write(str(os.getpid()))
-            return
-        except FileExistsError:
-            if not _lock_is_live(lock):
-                lock.unlink(missing_ok=True)  # stale; reclaim
-                continue
-            if time.monotonic() > deadline:
-                raise TimeoutError(f"timed out waiting for catalogue lock {lock}") from None
-            time.sleep(0.05)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _meta_to_provenance(meta: BuildMeta) -> Provenance:
@@ -128,26 +148,39 @@ class DataStore:
 
     def _recover_interrupted(self) -> None:
         """Recover from a save hard-killed mid-swap, WITHOUT touching another writer's active
-        work. A build is only recovered/cleaned if its writer lock is *stale* (no live holder):
+        work. A build is only recovered/cleaned if its writer lock is *stale* (no live holder).
 
-        - a ``.bak`` with no canonical build ⇒ crash after old→bak, before staging→final;
-          restore it.
-        - staging (``.tmp``) and stale locks from a dead writer ⇒ remove.
+        Recovery is driven by a **commit marker** (``UNCOMMITTED_MARKER`` inside the build dir),
+        removed only after the catalogue commit succeeds, so recovery can tell an *installed but
+        uncommitted* build from a fully-committed one:
 
-        Live staging/backups (lock held by a running process) are left untouched — the earlier
-        version unconditionally deleted every ``.tmp``, which removed a concurrent writer's
-        live staging (review)."""
+        - ``final`` present WITH the marker ⇒ crash between swap and catalogue commit; the files
+          are uncommitted (catalogue still describes the old build), so discard them and restore
+          the ``.bak`` if present (the previous version unconditionally kept ``final`` and
+          deleted the valid backup — review).
+        - ``final`` present WITHOUT the marker ⇒ committed; drop any stale ``.bak``.
+        - only ``.bak`` (no ``final``) ⇒ crash before the swap; restore it.
+
+        Live staging/backups (lock held by a running process) are left untouched."""
         for lock in self.builds_dir.glob(".*.lock"):
             build_id = lock.name[1:-5]  # strip leading '.' and trailing '.lock'
             if _lock_is_live(lock):
                 continue  # a writer is active on this build; hands off
-            # Stale lock: finish/clean its interrupted swap, then remove its artefacts.
             final = self.builds_dir / build_id
             bak = self.builds_dir / f".{build_id}.bak"
-            if bak.exists() and not final.exists():
-                bak.replace(final)
+            final_uncommitted = final.exists() and (final / UNCOMMITTED_MARKER).exists()
+
+            if final_uncommitted:
+                # Swap happened, catalogue never committed → the on-disk 'final' is not the
+                # committed build. Discard it and restore the backup (the last committed state).
+                shutil.rmtree(final, ignore_errors=True)
+                if bak.exists():
+                    bak.replace(final)
+            elif final.exists():
+                shutil.rmtree(bak, ignore_errors=True)  # committed; backup is stale
             elif bak.exists():
-                shutil.rmtree(bak, ignore_errors=True)
+                bak.replace(final)  # crash before the swap; restore the prior build
+
             for tmp in self.builds_dir.glob(f".{build_id}.*.tmp"):
                 shutil.rmtree(tmp, ignore_errors=True)
             lock.unlink(missing_ok=True)
@@ -159,8 +192,7 @@ class DataStore:
         (init, upsert, read) goes through here so two processes never hold DuckDB's own
         file lock at once (review: concurrent init/write collided)."""
         cat_lock = self.catalogue_path.with_suffix(".lock")
-        _acquire_global_lock(cat_lock)
-        try:
+        with _global_lock(cat_lock):
             last_err: Exception | None = None
             for _ in range(_CATALOGUE_RETRIES):
                 try:
@@ -173,8 +205,6 @@ class DataStore:
                     last_err = exc
                     time.sleep(_CATALOGUE_RETRY_DELAY)
             raise RuntimeError(f"catalogue access failed after retries: {last_err}")
-        finally:
-            cat_lock.unlink(missing_ok=True)
 
     def _init_catalogue(self) -> None:
         self._with_catalogue(
@@ -282,6 +312,10 @@ class DataStore:
                 )
             if quality is not None:
                 (staging / "quality.json").write_text(quality.model_dump_json(indent=2))
+            # Mark staging UNCOMMITTED; the marker is removed only after the catalogue commits.
+            # If a crash leaves 'final' with this marker, recovery knows the files are not the
+            # committed build and restores the backup instead of keeping them (review).
+            (staging / UNCOMMITTED_MARKER).write_text(meta.build_id)
 
             had_existing = final.exists()
             if had_existing:
@@ -294,9 +328,9 @@ class DataStore:
                 if had_existing:
                     backup.replace(final)  # restore the prior build
                 raise
-            # Commit the catalogue row BEFORE dropping the backup, and roll the filesystem back
-            # to the backup if the catalogue update fails — so files and catalogue never end up
-            # at different revisions (review). Held under the per-build lock throughout.
+            # Commit the catalogue BEFORE clearing the marker / dropping the backup. Roll the
+            # filesystem back to the backup if the catalogue update fails, so files and catalogue
+            # never end up at different revisions (review). Held under the per-build lock.
             try:
                 self._catalogue_upsert(
                     meta,
@@ -308,6 +342,10 @@ class DataStore:
                 if had_existing:
                     backup.replace(final)  # restore the prior files to match the catalogue
                 raise
+            # Catalogue committed → clear the marker (now 'final' is the committed build), then
+            # drop the backup. Order matters: marker cleared before backup removal so a crash
+            # here leaves a committed 'final' + stale backup, which recovery drops harmlessly.
+            (final / UNCOMMITTED_MARKER).unlink(missing_ok=True)
             if had_existing:
                 shutil.rmtree(backup, ignore_errors=True)
         finally:

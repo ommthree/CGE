@@ -126,11 +126,11 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 |---|---|---|
 | 2.1 | Leontief price model: carbon cost per sector from emissions intensity × carbon price; full pass-through via (I−Aᵀ)⁻¹; scope options (scope 1 only; optionally include purchased electricity/energy explicitly) | 2–3 d |
 | 2.2 | Scenario schema v1: `CarbonPrice` shock — level, gas coverage, region coverage, sector exemptions; YAML round-trip | 1–2 d |
-| 2.3 | Result decomposition: direct vs upstream contribution per good; top contributing supply-chain paths (structural path analysis, first 2–3 tiers) | 2–3 d |
+| 2.3 | Result decomposition: direct vs upstream contribution per good, as **Neumann-series tier aggregates** (direct + first 2–3 upstream tiers + residual, summing to Δp). Note: these are aggregate tier contributions, **not** enumerated structural paths — full structural path analysis is a separate heavier method, not implemented. | 2–3 d |
 | 2.4 | Validation: analytic tests on the toy economy; known-answer tests against published EXIOBASE carbon multipliers/footprints; assumption dump wired into `ResultSet` | 1–2 d |
 
 **DoD:** CLI run of "€100/tCO₂, EU ETS-like coverage" returns Δprice for every good in every region with decomposition, in seconds on the small build; tests green; **model doc `docs/models/io-price-model.md` matches the implementation** (already drafted to equation level as the standard's worked example).
-**Stated assumptions (documented in every result):** fixed technology, full cost pass-through, no substitution, no demand response — an upper bound on cost impact, no volume effects.
+**Stated assumptions (documented in every result):** fixed technology, full cost pass-through, no substitution, no demand response, no volume effects. Because substitution would let firms avoid part of the cost, this tends to **over-state** the cost impact relative to a model with substitution — but it is not a proven upper bound over every model (supply/factor-market effects can push either way).
 **Depends on:** P1. **Unblocks:** GUI v1 with real content; baseline for Engines 2–3; propagation machinery reused by P6.
 
 ### Phase 3 — GUI v1 (2–3 wk)

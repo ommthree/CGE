@@ -9,7 +9,7 @@ decomposition.
 > [`review-2026-07-remediation.md`](review-2026-07-remediation.md). **Now validated on live
 > EXIOBASE 3 (2019 pxp):** the adapter reproduces the full 9800×9800 MRIO and its global CO₂
 > total (30.0 Gt, the expected magnitude), units come through correctly, and a €100/t run on a
-> coarse EUR build gives fractional price changes with coal most exposed. See
+> coarse EUR build gives fractional price changes with energy sectors (coal, coal-fired electricity) most exposed. See
 > `tests/test_exiobase_known_answer.py`. The engine is dense/small-build-only. Remaining
 > refinement: a tighter published-footprint comparison and a curated sector concordance (the
 > default is a functional ~14-sector keyword grouping).
@@ -36,8 +36,9 @@ decomposition.
 - Unit tests + the validation suite pass; lint + format clean. (Counts grow with each
   review round — see the current `pytest`/`cge validate` output rather than a fixed number.)
 - Model doc `docs/models/io-price-model.md` matches the code (manifest assumptions restate
-  the engine's `ASSUMPTIONS`); status is "implemented; validated on toy + identities, **not**
-  against live EXIOBASE" (see `review-2026-07-remediation.md`).
+  the engine's `ASSUMPTIONS`); status is "implemented; validated on toy + identities **and a
+  live EXIOBASE integration gate**; an independent *published*-multiplier comparison is still
+  to come" (see `review-2026-07-remediation.md`).
 
 ## Validation suite (addresses the "comprehensive validation tests + script" request)
 
@@ -60,7 +61,7 @@ The engine now checks ρ(A) explicitly (documented in the model doc's implementa
 - **Genuine now:** correct Leontief pass-through, decomposition, coverage filtering, and
   per-gas selection — validated against theory **and against live EXIOBASE 3 (2019 pxp)**:
   the adapter preserves the global CO₂ total (30.0 Gt), units come through correctly, and a
-  €100/t run gives fractional price changes with coal most exposed
+  €100/t run gives fractional price changes with energy sectors (coal, coal-fired electricity) most exposed
   (`tests/test_exiobase_known_answer.py`; also a gated `exiobase_live` validation suite).
 - **Still to come:** an *independent* comparison against a **published** EXIOBASE
   footprint/multiplier table (the current live checks are strong integration/sanity gates,
