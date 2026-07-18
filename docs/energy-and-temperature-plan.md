@@ -21,6 +21,11 @@ An energy-price change is *another cost vector* `c` — a proportional cost incr
 carriers' output — that adds to the carbon term and propagates identically. The whole
 propagation machinery is reused; the only new code is assembling the energy cost vector.
 
+This is standard IO price-side pass-through of a cost shock [MillerBlair2009, §2.4]; the broader
+economics of how energy-price shocks propagate is surveyed by Kilian [Kilian2008]. Cost-push
+pass-through gives an *upper bound* on the price effect (as for the carbon price) — the CGE
+relaxes it with substitution.
+
 ### Design
 - **New shock type `EnergyPrice`** in the shock vocabulary (contract 2), e.g.:
   ```yaml
@@ -88,12 +93,21 @@ This is the **credible, buildable** version of "make it IAM-ish": the model trac
 consequences of a target, using a standard climate emulator for the emissions→temperature link.
 It is *not* the contested damage-feedback problem (see the caveat at the end).
 
+**How this relates to competing methodologies.** Full process-based IAMs — GCAM [GCAM], REMIND
+[REMIND], MESSAGE — solve for cost-optimal transition pathways with explicit energy systems and
+(often) intertemporal optimisation. This platform deliberately does **not** do that; it consumes
+the pathways such models produce (via NGFS [NGFS]) and adds sector/supply-chain resolution.
+Target-driven back-solving is the *inverse* of what those IAMs do internally, but done as a
+light outer loop on our forward model rather than a full optimisation — a standard trade-off in
+financial-sector "IAM-based" tools. The carbon-budget form of the target rests on the well-
+established near-linearity of warming in cumulative CO₂ [MatthewsCarbonBudget; IPCC_AR6_WG3].
+
 ### The forward chain to invert
 1. **Carbon price → emissions.** The engines already produce sectoral outputs under a carbon
    price; emissions follow from output × emission intensity. (Engine 2's volume response makes
    this behavioural — a higher price lowers dirty output, lowering emissions. The CGE makes it
    general-equilibrium with substitution.)
-2. **Emissions → temperature.** Via **FaIR** (`Leach2021`) — an open, IPCC-used reduced-form
+2. **Emissions → temperature.** Via **FaIR** [Leach2021] — an open, IPCC-used reduced-form
    climate emulator — behind the existing **climate module slot** (contract 5, already defined:
    `ClimateModule: emissions → temperature`). This is the one-way coupling already planned for
    Phase 7.3.
@@ -149,10 +163,11 @@ This back-solves the **price to hit a target**. It does **not** feed temperature
 economy through a damage function (temperature → productivity loss → GDP). That
 (Interpretation B) is genuinely harder — and hard for *scientific*, not engineering, reasons:
 damage functions are the most contested object in climate economics, with order-of-magnitude
-disagreement for the same warming. It stays where the roadmap already put it: an **optional,
-clearly-labelled-illustrative** extension (Phase 7.4) using published damage functions (DICE,
-Burke–Hsiang–Miguel), never a headline result. Interpretation A needs none of that — it only
-uses the emissions→temperature direction, which is well-established.
+disagreement for the same warming (contrast DICE's process form [Nordhaus2017] with the
+econometric estimates of Burke, Hsiang & Miguel [Burke2015] — they differ substantially). It
+stays where the roadmap already put it: an **optional, clearly-labelled-illustrative** extension
+(Phase 7.4) using those published functions, never a headline result. Interpretation A needs
+none of that — it only uses the emissions→temperature direction, which is well-established.
 
 ---
 

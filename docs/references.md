@@ -57,3 +57,45 @@ reports are citable for applied choices.
 - **[Burke2015]** Burke, M., Hsiang, S.M. & Miguel, E. (2015). Global non-linear effect of
   temperature on economic production. *Nature*, 527, 235–239. — Econometric damage
   estimates, alternative to DICE (P7.4).
+- **[MatthewsCarbonBudget]** Matthews, H.D. et al. (2009). The proportionality of global
+  warming to cumulative carbon emissions. *Nature*, 459, 829–832. — The near-linear
+  temperature ↔ cumulative-CO₂ relationship that makes the temperature-target back-solve a
+  well-behaved 1-D inversion (see energy-and-temperature-plan.md).
+- **[IPCC_AR6_WG3]** IPCC (2022). *Climate Change 2022: Mitigation of Climate Change* (AR6
+  WG3). — Reference for carbon-budget / temperature-target framings and the scenario families.
+
+## Energy prices & pass-through
+
+- **[Kilian2008]** Kilian, L. (2008). The economic effects of energy price shocks. *Journal of
+  Economic Literature*, 46(4), 871–909. — Survey of how energy-price shocks propagate through
+  an economy; motivates the `EnergyPrice` shock (energy-and-temperature-plan.md, Feature 1).
+- **[HasenzahlDietzenbacher]** Standard IO price-side pass-through of cost shocks (Ghosh /
+  Leontief price models) is covered in [MillerBlair2009] §2.4 and §12 — the same machinery the
+  `EnergyPrice` shock reuses. (Cite Miller & Blair for the method.)
+
+## Competing methodologies & model families (context, not dependencies)
+
+Where this platform sits relative to established approaches. Cited so the docs are honest about
+what is being approximated and by whom.
+
+- **[GTAP]** Aguiar, A. et al. (2019). The GTAP Data Base version 10. *Journal of Global
+  Economic Analysis*, 4(1). — The standard multi-region CGE database + framework. **Licensed,
+  not open** — the reason this project builds its SAM from EXIOBASE instead (roadmap P5). The
+  precision benchmark a solo CGE will not match.
+- **[GCAM]** Calvin, K. et al. (2019). GCAM v5.1: representing the linkages between energy,
+  water, land, climate, and economic systems. *Geoscientific Model Development*, 12(2). — A
+  process-based integrated assessment model (explicit energy system, land use). The kind of
+  "real IAM" this project deliberately does *not* attempt; instead it consumes such models'
+  pathways (via NGFS) and adds sector resolution.
+- **[REMIND]** Baumstark, L. et al. (2021). REMIND2.1: transformation and innovation dynamics
+  of the energy-economic system. *Geoscientific Model Development*, 14(10). — Another
+  process-based IAM with intertemporal optimisation; contrast with this project's
+  recursive-dynamic, no-perfect-foresight approach (roadmap P7.1).
+- **[DICE]** Nordhaus, W. (2017), see [Nordhaus2017] — a *cost–benefit* IAM: aggregate economy
+  + damage function, no sectoral resolution. Contrast: this project has sector detail but (for
+  Interpretation A) no damage feedback. DICE is the reference for the optional P7.4 damage path.
+- **[E3ME]** Cambridge Econometrics. *E3ME technical manual.* — A large econometric/IO
+  macro-econometric model used in EU policy analysis; a "non-equilibrium" alternative to CGE.
+  Named as a methodological neighbour to the IO engines here.
+- **[NGFS]** (see above) — the scenario set most financial-sector "IAM-based" tools consume, as
+  this project does. The point of comparison for the temperature back-solve's implied price paths.

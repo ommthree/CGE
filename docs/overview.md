@@ -140,7 +140,29 @@ automatically via the registry.
 
 ---
 
-## 4. How we keep it trustworthy
+## 4. Where this sits — related work & competing methodologies
+
+Being explicit about what is being approximated, and by whom, is part of being honest. Full
+citations in [`docs/references.md`](references.md).
+
+| Family | Examples | Relation to this platform |
+|---|---|---|
+| **Environmentally-extended IO** | Leontief price model [MillerBlair2009], EXIOBASE [Stadler2018] | **What Engines 1–2 are.** The most transparent, parameter-free cost accounting; the foundation here. |
+| **Multi-region CGE** | GTAP [GTAP], and CGE textbook models [Hosoe2010] | **What Engine 3 (planned) is a small, open version of.** GTAP is the precision benchmark — but its database is *licensed, not open*, which is why we build the SAM from EXIOBASE and stay "toy but honest." |
+| **Process-based IAMs** | GCAM [GCAM], REMIND [REMIND], MESSAGE | **Deliberately not attempted.** These have explicit energy systems and land use and take teams years. We *consume their pathways* (via NGFS) and add sector/supply-chain resolution — the standard financial-sector pattern. |
+| **Cost–benefit IAMs** | DICE [Nordhaus2017] | Aggregate economy + damage function, no sectoral detail. We have the opposite trade-off (sector detail, no damage feedback in the credible mode); DICE is the reference for the *optional* damage path (P7.4). |
+| **Macro-econometric / IO** | E3ME [E3ME] | A non-equilibrium neighbour to the IO engines; named for context. |
+| **Nature-risk (finance)** | ENCORE [ENCORE], DNB "Indebted to nature" [vanToor2020] | **What Phase 6 builds on** — the exposure-scoring approach several central banks use, adapted rather than reinvented. |
+
+**The honest positioning:** this platform is closest in spirit to the **environmentally-extended
+IO / small-CGE + exogenous-pathway** tools that central banks and financial institutions use for
+first-pass carbon-price and nature-exposure stress testing — *not* the process-IAM or
+GTAP-precision-CGE end of the spectrum. It trades precision for transparency, openness, and
+extensibility.
+
+---
+
+## 5. How we keep it trustworthy
 
 Three cross-cutting disciplines, applied at the same bar to every component:
 
@@ -165,7 +187,7 @@ the CGE and nature extensions are planned.**
 
 ---
 
-## 5. Where things stand
+## 6. Where things stand
 
 | Phase | What it delivers | Status |
 |---|---|---|
@@ -184,7 +206,7 @@ version of the original ask (cost + volume, on real data, with a GUI), and the h
 
 ---
 
-## 6. Try it
+## 7. Try it
 
 ```bash
 pip install -e ".[dev,data,gui]"
