@@ -94,25 +94,42 @@ def solve(
     return Solution(x=sol.x, backend=backend, status=sol.status, residual_norm=resid)
 
 
+# Deterministic start-point multipliers for the multi-start fallback. The first is the exact given
+# start (so a benchmark solve replicates immediately); the rest are small perturbations that rescue
+# a shocked solve whose exact-benchmark start sits on a boundary (e.g. the recycling k≈1 ridge) —
+# the LM path can stall there even though a valid equilibrium exists nearby (review P2). Kept small
+# and fixed so the solve stays reproducible.
+_START_MULTIPLIERS = (1.0, 1.03, 0.97, 1.1, 0.9)
+
+
 def _solve_scipy(
     residual: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, lower: np.ndarray, tol: float
 ) -> Solution:
     """Root-find with scipy. Solves the system in log-space for the positivity-bounded variables
     so the iterate cannot cross zero (a common CGE failure mode), via a least-squares solve that
-    is robust for a square system. ``z = log(x − lower)`` keeps x > lower for any real z."""
+    is robust for a square system. ``z = log(x − lower)`` keeps x > lower for any real z.
+
+    Uses a small **deterministic multi-start**: the exact ``x0`` first (benchmark solves replicate
+    at once), then a few fixed perturbations if that start does not reach ``tol`` — so a shocked
+    solve whose benchmark start stalls on a boundary still finds the nearby equilibrium."""
     from scipy.optimize import least_squares
 
     def _f(z: np.ndarray) -> np.ndarray:
         x = lower + np.exp(z)
         return residual(x)
 
-    z0 = np.log(np.maximum(x0 - lower, 1e-12))
-    res = least_squares(_f, z0, method="lm", xtol=1e-14, ftol=1e-14, gtol=1e-14, max_nfev=10000)
-    x = lower + np.exp(res.x)
-    status = "converged" if res.success else f"scipy:status={res.status}"
-    # Record the actual residual norm here (not NaN); ``solve`` re-verifies it against ``tol``.
-    resid_norm = float(np.max(np.abs(residual(x)))) if x.size else 0.0
-    return Solution(x=x, backend="scipy", status=status, residual_norm=resid_norm)
+    best_x, best_norm, best_status = None, np.inf, "scipy:no-start"
+    for mult in _START_MULTIPLIERS:
+        z0 = np.log(np.maximum(x0 * mult - lower, 1e-12))
+        res = least_squares(_f, z0, method="lm", xtol=1e-14, ftol=1e-14, gtol=1e-14, max_nfev=10000)
+        x = lower + np.exp(res.x)
+        norm = float(np.max(np.abs(residual(x)))) if x.size else 0.0
+        if norm < best_norm:
+            best_x, best_norm = x, norm
+            best_status = "converged" if res.success else f"scipy:status={res.status}"
+        if best_norm < tol:
+            break  # good enough; ``solve`` re-verifies against tol anyway
+    return Solution(x=best_x, backend="scipy", status=best_status, residual_norm=best_norm)
 
 
 def _solve_ipopt(

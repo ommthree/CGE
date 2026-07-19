@@ -180,9 +180,14 @@ def calibrate_open(
         # ratio_dm is inf for a non-traded good; inf/(1+inf)=nan there, masked to 1.0 by np.where.
         arm_share_d = np.where(M0 > 0, ratio_dm / (1.0 + ratio_dm), 1.0)
     arm_share_m = 1.0 - arm_share_d
+    # Safe base for the import term: a non-traded good has M0=0, and with σ<1 (ρ<0) the unused
+    # np.where branch would still evaluate 0**ρ = inf and emit a divide-by-zero warning (review P3:
+    # structural zeros must be warning-free). Use 1.0 there; the arm_share_m=0 factor zeroes it, and
+    # the whole term is discarded by the outer np.where for M0=0 anyway.
+    M0_safe = np.where(M0 > 0, M0, 1.0)
     arm_scale = np.where(
         M0 > 0,
-        Q0 / np.power(arm_share_d * D0**rho + arm_share_m * M0**rho, 1.0 / rho),
+        Q0 / np.power(arm_share_d * D0**rho + arm_share_m * M0_safe**rho, 1.0 / rho),
         Q0 / D0,
     )
 

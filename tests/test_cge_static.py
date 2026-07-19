@@ -542,6 +542,42 @@ def test_closed_manifest_records_va_elast():
     assert a1.manifest.assumptions != a2.manifest.assumptions
 
 
+def test_closed_manifest_nest_description_reflects_calibrated_nest():
+    """P2 (round 2): the manifest describes the nest that was actually calibrated — CES for a
+    non-unitary va_elast, Cobb-Douglas for σ=1 — not a hardcoded 'Cobb-Douglas'."""
+    eng = registry.get("cge_static")
+    sam = _asymmetric_sam()
+    ces = eng.run(data={"SAM": sam, "va_elast": 0.5}, shocks=[], years=[2020]).manifest.assumptions
+    cd = eng.run(data={"SAM": sam}, shocks=[], years=[2020]).manifest.assumptions
+    assert "CES" in ces["value_added_nest"] and "CES" in ces["model"]
+    assert "Cobb-Douglas" in cd["value_added_nest"]
+    assert "double" not in ces["value_added_nest"].lower()  # no double-dividend overclaim
+
+
+def test_closed_replication_gate_rejects_unsupported_topology():
+    """P1 (round 2): a balanced closed SAM with an offsetting household↔sector loop passes the
+    structural validators but does not replicate; the post-calibration gate rejects it."""
+    eng = registry.get("cge_static")
+    sam = toy_sam()
+    sam.matrix.loc["BRD", "HOH"] += 10.0
+    sam.matrix.loc["HOH", "BRD"] += 10.0
+    assert is_balanced(sam.matrix, tol=1e-9)
+    with pytest.raises(ValueError, match="does not replicate"):
+        eng.run(data={"SAM": sam}, shocks=[CarbonPrice(price=0.0)], years=[2020])
+
+
+def test_closed_recycling_solver_survives_benchmark_start_on_k_ridge():
+    """P2 (round 2): a closed shocked solve whose benchmark start has k≈1 still converges to the
+    valid equilibrium — the smooth clamp + multi-start rescue it instead of the guard aborting."""
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": toy_sam(), "carbon_cost_share": {"BRD": 1.4, "MIL": 0.35}},
+        shocks=[CarbonPrice(price=1.0)],
+        years=[2020],
+    )
+    assert res.manifest.assumptions["solver_max_residual_norm"] < 1e-9
+
+
 def test_open_ces_va_replicates():
     """The open model's CES value-added nest also replicates the benchmark for σ ≠ 1."""
     from cge.data.sam import toy_open_sam

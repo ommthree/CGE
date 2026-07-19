@@ -295,25 +295,25 @@ def _ces_va_replication():
     return err < 1e-6, f"CES (σ=0.6) benchmark replication error = {err:.2e}", err, 1e-6
 
 
-@check(SUITE, "open_nonzero_foreign_savings_rejected")
-def _open_nonzero_sf_rejected():
-    """The open pilot's closure (income = factor income + recycled revenue) only replicates a
-    balanced current account, so a SAM with non-zero foreign savings is **rejected at calibration**
-    rather than silently returning a non-replicating benchmark (2026-07 review P1). A proper
-    ROW-transfer closure is a documented follow-up."""
+def _balanced_nonzero_sf_sam():
+    """A **genuinely balanced** open SAM with a non-zero current account (review round-2 P2: the old
+    fixture omitted the ROW capital transfer, so it was actually unbalanced). Imports (40) exceed
+    exports (30) ⇒ Sf = 10; the ROW account balances via a **ROW→HOH capital transfer of 10** (the
+    net capital inflow that finances the trade deficit). The household spends that inflow, so its
+    budget also balances. This is the exact balanced-Sf≠0 case the pilot must reject at calibration
+    (its income identity does not yet carry the ROW transfer)."""
     from datetime import date
 
     import pandas as pd
 
     from cge.contracts.data_objects import SAM, Provenance
-    from cge.engines.cge_static.calibrate_open import calibrate_open
 
-    # A minimal open SAM with imports (40) > exports (30) ⇒ Sf = 10 ≠ 0, balanced overall.
     accts = ["a_BRD", "a_MIL", "c_BRD", "c_MIL", "CAP", "LAB", "HOH", "ROW"]
-    exp = {"BRD": 20.0, "MIL": 10.0}
-    imp = {"BRD": 22.0, "MIL": 18.0}
+    exp = {"BRD": 20.0, "MIL": 10.0}  # Σ = 30
+    imp = {"BRD": 22.0, "MIL": 18.0}  # Σ = 40  ⇒ Sf = 10
     dom = {"BRD": 80.0, "MIL": 110.0}
     inter = {("c_MIL", "a_BRD"): 24.0, ("c_BRD", "a_MIL"): 15.0}
+    transfer = imp["BRD"] + imp["MIL"] - exp["BRD"] - exp["MIL"]  # ROW → HOH capital inflow = 10
     m = pd.DataFrame(0.0, index=accts, columns=accts)
     for s in ("BRD", "MIL"):
         m.loc[f"a_{s}", f"c_{s}"] = dom[s]
@@ -324,6 +324,7 @@ def _open_nonzero_sf_rejected():
     for s in ("BRD", "MIL"):
         va = dom[s] + exp[s] - sum(m.loc[c, f"a_{s}"] for c in ("c_BRD", "c_MIL"))
         m.loc["CAP", f"a_{s}"] = m.loc["LAB", f"a_{s}"] = va / 2.0
+    m.loc["HOH", "ROW"] = transfer  # ROW pays HOH the net capital inflow (balances the ROW account)
     for s in ("BRD", "MIL"):
         m.loc[f"c_{s}", "HOH"] = m[f"c_{s}"].sum() - m.loc[f"c_{s}"].sum()
     m.loc["HOH", "CAP"] = m.loc["CAP", ["a_BRD", "a_MIL"]].sum()
@@ -334,12 +335,75 @@ def _open_nonzero_sf_rejected():
         licence="n/a",
         reference_year=0,
         retrieved=date.today().isoformat(),
-        notes="non-zero-Sf open SAM",
+        notes="balanced non-zero-Sf open SAM",
     )
-    sam = SAM(provenance=prov, accounts=accts, matrix=m)
+    return SAM(provenance=prov, accounts=accts, matrix=m)
+
+
+@check(SUITE, "open_nonzero_foreign_savings_rejected")
+def _open_nonzero_sf_rejected():
+    """The open pilot's closure (income = factor income + recycled revenue) only replicates a
+    balanced current account, so a **genuinely balanced** SAM with non-zero foreign savings is
+    **rejected at calibration** rather than silently returning a non-replicating benchmark (2026-07
+    review P1). A proper ROW-transfer closure is a documented follow-up."""
+    from cge.data.sam.balance import is_balanced
+    from cge.engines.cge_static.calibrate_open import calibrate_open
+
+    sam = _balanced_nonzero_sf_sam()
+    if not is_balanced(sam.matrix, tol=1e-9):
+        return False, "fixture SAM is not actually balanced", None, None
     try:
         calibrate_open(sam, sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
         return False, "non-zero foreign savings was NOT rejected", None, None
     except ValueError as e:
         ok = "balanced current account" in str(e)
-        return ok, f"rejected as expected: {str(e)[:60]}", None, None
+        return ok, f"balanced Sf≠0 SAM rejected as expected: {str(e)[:50]}", None, None
+
+
+@check(SUITE, "open_homogeneity")
+def _open_homogeneity():
+    """Scaling factor endowments by κ scales all real quantities by κ and leaves prices + the
+    exchange rate unchanged — the open model has no money illusion (standard CGE property)."""
+    from dataclasses import replace
+
+    cal = _open_cal()
+    _s, st = _open_solve(cal)
+    cal_k = replace(cal, endowment=cal.endowment * 1.5)
+    _sk, st_k = _open_solve(cal_k)
+    price_err = float(np.max(np.abs(_sk.x - _s.x)))  # prices + er unchanged
+    scale_err = float(np.max(np.abs(st_k.Z - 1.5 * st.Z)))  # output scales by κ
+    err = max(price_err, scale_err)
+    return err < 1e-6, f"open homogeneity error = {err:.2e}", err, 1e-6
+
+
+@check(SUITE, "open_walras_and_trade_balance")
+def _open_walras():
+    """Walras' law + trade balance at the open equilibrium under a carbon shock: the dropped factor
+    market clears (though its equation was omitted by Walras), and the value trade balance closes
+    (Σ pm·M = Σ pe·E at zero foreign savings). If either failed, the 'square system + one dropped
+    market' construction would be unsound."""
+    cal = _open_cal()
+    _s, st = _open_solve(cal, carbon_cost=0.15 * _OPEN_EMISSIONS)
+    # The dropped factor (index 0) must still clear at the solution.
+    dropped_gap = float(abs(st.F[0, :].sum() - cal.endowment[0]))
+    pm = st.er * np.ones(len(cal.sectors))
+    trade_gap = float(abs(pm @ st.M - pm @ st.E - st.er * cal.foreign_savings))
+    err = max(dropped_gap, trade_gap)
+    return (
+        err < 1e-7,
+        f"dropped-factor gap={dropped_gap:.2e}, trade-balance gap={trade_gap:.2e}",
+        err,
+        1e-7,
+    )
+
+
+@check(SUITE, "open_income_identity")
+def _open_income_identity():
+    """The household budget identity holds exactly at the open equilibrium: income = factor income
+    + recycled carbon revenue (review round-1 P2 fixed the closed-form; this pins it in the standing
+    suite under a carbon shock)."""
+    cal = _open_cal()
+    _s, st = _open_solve(cal, carbon_cost=0.15 * _OPEN_EMISSIONS)
+    factor_income = float(np.dot(st.w, cal.endowment))
+    gap = float(abs(st.income - (factor_income + st.carbon_revenue)))
+    return gap < 1e-9, f"open income-identity gap = {gap:.2e}", gap, 1e-9

@@ -40,6 +40,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from cge.engines.cge_static.calibrate_open import OpenCalibratedModel
+from cge.engines.cge_static.model import _safe_denom
 
 
 @dataclass(frozen=True)
@@ -128,8 +129,17 @@ def derive_open_state(
     *,
     carbon_cost: np.ndarray | None = None,
     recycling: str = "lump_sum",
+    strict: bool = False,
 ) -> OpenModelState:
-    """Close the open model at prices (pd, pq, w, er): derive all quantities by CES/CET duals."""
+    """Close the open model at prices (pd, pq, w, er): derive all quantities by CES/CET duals.
+
+    ``strict`` controls the recycling k≥1 guard. During solver iteration (``strict=False``) a
+    trial price vector may momentarily give k≥1 even when a valid equilibrium (k<1) exists
+    elsewhere; raising there would make the residual function discontinuously unavailable and can
+    abort a solve that starts at benchmark prices (review P2). So in non-strict mode we **clamp**
+    the income multiplier to a large-but-finite value (steering the solver away smoothly) instead
+    of raising. On the **final accepted equilibrium** the engine calls with ``strict=True``, which
+    raises if k≥1 — so a genuinely infeasible equilibrium is still refused, never returned."""
     ns = len(cal.sectors)
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pm = er * np.ones(ns)  # world import price 1
@@ -146,22 +156,28 @@ def derive_open_state(
     if recycling != "none" and np.any(cc != 0.0):
         _, z_unit, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq)
         k = float(cc @ z_unit)
-        if k >= 1.0 - 1e-12:
+        if strict and k >= 1.0 - 1e-12:
             raise ValueError(
-                f"open recycling fixed point diverges: carbon revenue ≥ income (k={k:.6g} ≥ 1); "
-                "the recycled transfer would exceed factor income. Lower the carbon price."
+                f"open recycling fixed point diverges: carbon revenue ≥ income (k={k:.6g} ≥ 1) "
+                "at the equilibrium; the recycled transfer would exceed factor income. Lower the "
+                "carbon price."
             )
-        income = factor_income / (1.0 - k)
+        # Non-strict: a smooth positive floor on (1−k) keeps income finite and the residual
+        # C¹-continuous with a restoring gradient when a trial point has k≥1 (review P2); it is the
+        # identity for a real equilibrium (1−k well above the floor).
+        income = factor_income / _safe_denom(1.0 - k)
     else:
         income = factor_income
     FD = cal.gamma * income / pq
     Q, Z, D, E, M = _quantities(cal, pd, pq, pm, pe, pz, FD)
     carbon_revenue = float(cc @ Z)
     # Independent check of the income identity we just solved (cheap; catches any regression in the
-    # linearity assumption above).
-    resid = income - (factor_income + (carbon_revenue if recycling != "none" else 0.0))
-    if abs(resid) > 1e-9 * max(1.0, abs(income)):  # pragma: no cover - guards the closed form
-        raise ValueError(f"open income identity not satisfied (residual {resid:.3e}).")
+    # linearity assumption above). Only in strict mode — the non-strict clamp deliberately violates
+    # the identity to steer the solver, so checking it there would defeat the smooth-penalty design.
+    if strict:
+        resid = income - (factor_income + (carbon_revenue if recycling != "none" else 0.0))
+        if abs(resid) > 1e-9 * max(1.0, abs(income)):  # pragma: no cover - guards the closed form
+            raise ValueError(f"open income identity not satisfied (residual {resid:.3e}).")
     # Factor demand (Shephard on VA cost).
     va_cost = cal.va_share * pv * Z
     F = _factor_demand(cal, w, pv, va_cost)

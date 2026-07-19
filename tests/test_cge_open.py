@@ -163,14 +163,21 @@ def test_armington_sensitivity_sweep_bands():
     import leakage for the dirty sector (the leakage channel is elasticity-sensitive)."""
     from cge.engines.cge_static.engine import armington_sensitivity_sweep
 
-    sw = armington_sensitivity_sweep(
+    res = armington_sensitivity_sweep(
         {"SAM": toy_open_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
         [CarbonPrice(price=0.1)],
         elasticities=(1.5, 2.0, 4.0),
     )
+    sw = res.bands
     assert set(sw.columns) == {"sector", "variable", "low", "central", "high"}
     brd_imp = sw[(sw["sector"] == "BRD") & (sw["variable"] == "import_change")].iloc[0]
     assert brd_imp["high"] > brd_imp["central"] > brd_imp["low"] > 0  # more elastic → more leakage
+    # Provenance is complete (review P2): exact elasticities, version, scenario hash, SAM identity,
+    # and each band's full manifest are retained, so an exported sweep is identifiable.
+    assert res.elasticities == (1.5, 2.0, 4.0)
+    assert res.swept_parameter == "armington_elast"
+    assert res.engine_version and res.scenario_hash and res.sam_identity
+    assert set(res.manifests) == {"low", "central", "high"}
 
 
 def test_armington_elasticity_one_rejected():
@@ -185,12 +192,14 @@ def test_armington_elasticity_one_rejected():
 
 
 def _build_open_sam(exports: dict, imports: dict, domestic: dict) -> SAM:
-    """Assemble a balanced 2-sector open SAM from trade/production dicts (test helper).
+    """Assemble a fully-balanced 2-sector open SAM from trade/production dicts (test helper).
 
     ``exports``/``imports``/``domestic`` are per-sector money flows; value added is the residual of
     activity output over intermediate purchases, split 50/50, and household final demand is the
-    residual of each commodity's supply over its intermediate use — so the matrix balances by
-    construction for any inputs whose aggregate trade balances."""
+    residual of each commodity's supply over its intermediate use. When aggregate imports ≠ exports
+    (a non-zero current account), the ROW account is balanced by a **ROW→HOH capital transfer**
+    equal to the net capital inflow (Σ imports − Σ exports) — so the matrix balances for *any* trade
+    inputs, including Sf ≠ 0, and the household spends that inflow."""
     accounts = ["a_BRD", "a_MIL", "c_BRD", "c_MIL", "CAP", "LAB", "HOH", "ROW"]
     inter = {("c_MIL", "a_BRD"): 24.0, ("c_BRD", "a_MIL"): 15.0}
     m = pd.DataFrame(0.0, index=accounts, columns=accounts)
@@ -206,6 +215,8 @@ def _build_open_sam(exports: dict, imports: dict, domestic: dict) -> SAM:
         va = output - ii
         m.loc["CAP", f"a_{s}"] = va / 2.0
         m.loc["LAB", f"a_{s}"] = va / 2.0
+    # Net capital inflow that finances a trade deficit (0 when trade is balanced): ROW → HOH.
+    m.loc["HOH", "ROW"] = sum(imports.values()) - sum(exports.values())
     for s in _SECTORS:
         m.loc[f"c_{s}", "HOH"] = m[f"c_{s}"].sum() - m.loc[f"c_{s}"].sum()
     m.loc["HOH", "CAP"] = m.loc["CAP", ["a_BRD", "a_MIL"]].sum()
@@ -257,15 +268,64 @@ def test_open_zero_export_sector_runs():
     assert not res.data["value"].isna().any()
 
 
+def test_open_replication_gate_rejects_unsupported_topology():
+    """P1 (round 2): a balanced SAM with flows outside the implemented topology (an offsetting
+    household↔commodity loop) passes the structural validators but does NOT replicate; the
+    post-calibration replication gate rejects it rather than reporting changes vs a wrong base."""
+    sam = toy_open_sam()
+    sam.matrix.loc["c_BRD", "HOH"] += 10.0
+    sam.matrix.loc["HOH", "c_BRD"] += 10.0
+    assert is_balanced(sam.matrix, tol=1e-9)  # still balanced — passes the structural gate
+    eng = registry.get("cge_static")
+    with pytest.raises(ValueError, match="does not replicate"):
+        eng.run(data={"SAM": sam}, shocks=[CarbonPrice(price=0.0)], years=[2020])
+
+
+def test_open_sam_fingerprint_is_label_sensitive():
+    """P1 (round 2): the SAM fingerprint depends on account labels, not just the numeric block, so
+    two economies with permuted axes but an identical value array get distinct run identities."""
+    from cge.engines.cge_static.engine import _sam_fingerprint
+
+    s1 = toy_open_sam()
+    acc = list(s1.accounts)
+    rotated = acc[1:] + acc[:1]
+    m2 = pd.DataFrame(
+        s1.matrix.to_numpy(), index=rotated, columns=rotated
+    )  # same array, new labels
+    s2 = SAM(provenance=s1.provenance, accounts=acc, matrix=m2)
+    assert _sam_fingerprint(s1) != _sam_fingerprint(s2)
+
+
 def test_open_nonzero_foreign_savings_rejected():
-    """P1: the pilot requires a balanced current account (income identity omits the ROW flow)."""
+    """P1: the pilot requires a balanced current account (income identity omits the ROW flow). The
+    fixture is a GENUINELY balanced SAM with Sf ≠ 0 — imports 40 > exports 30, with a ROW→HOH
+    capital transfer of 10 closing the ROW account (round-2 P2: the earlier fixture was described as
+    balanced but omitted that transfer, so it was actually unbalanced)."""
     sam = _build_open_sam(
         exports={"BRD": 20.0, "MIL": 10.0},
-        imports={"BRD": 22.0, "MIL": 18.0},  # imports 40 > exports 30 → Sf = 10 ≠ 0
+        imports={"BRD": 22.0, "MIL": 18.0},  # Σ imports 40 > Σ exports 30 → Sf = 10 ≠ 0
         domestic={"BRD": 80.0, "MIL": 110.0},
     )
+    assert is_balanced(sam.matrix, tol=1e-9)  # the SAM really is balanced
     with pytest.raises(ValueError, match="balanced current account"):
         calibrate_open(sam, sectors=_SECTORS, factors=_FACTORS)
+
+
+def test_open_zero_import_sector_arm_below_one_warning_free():
+    """P3: a non-importing sector with arm_elast < 1 (ρ < 0) calibrates without a divide-by-zero
+    warning — the unused import term in arm_scale no longer evaluates 0**ρ."""
+    import warnings
+
+    sam = _build_open_sam(
+        exports={"BRD": 15.0, "MIL": 15.0},
+        imports={"BRD": 0.0, "MIL": 30.0},  # BRD imports nothing; aggregate trade balanced
+        domestic={"BRD": 80.0, "MIL": 110.0},
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        cal = calibrate_open(sam, sectors=_SECTORS, factors=_FACTORS, arm_elast=0.5)
+    assert cal.arm_share_m[0] == 0.0  # BRD is non-traded on the import side
+    assert np.all(np.isfinite(cal.arm_scale))
 
 
 def test_open_manifest_distinguishes_carbon_shares_and_elasticities():
@@ -311,8 +371,12 @@ def test_open_recycling_income_identity_holds():
 
 
 def test_open_recycling_diverges_when_revenue_exceeds_income():
-    """P2: a carbon cost so large that revenue ≥ income is rejected (k ≥ 1), not returned."""
+    """P2: a carbon cost so large that revenue ≥ income at the EQUILIBRIUM is rejected (k ≥ 1) in
+    strict mode; in non-strict (solver-exploratory) mode it returns a finite clamped state instead
+    of raising, so the residual function stays continuous (review round-2 P2)."""
     cal = _cal()
+    cc = np.array([1.5, 0.375])
+    # strict=True (final accepted equilibrium) → refuse.
     with pytest.raises(ValueError, match="k="):
         MO.derive_open_state(
             cal,
@@ -320,9 +384,31 @@ def test_open_recycling_diverges_when_revenue_exceeds_income():
             np.ones(2),
             np.ones(2),
             1.0,
-            carbon_cost=np.array([1.5, 0.375]),
+            carbon_cost=cc,
             recycling="lump_sum",
+            strict=True,
         )
+    # strict=False (exploratory) → finite state, no exception (keeps the solve continuous).
+    st = MO.derive_open_state(
+        cal, np.ones(2), np.ones(2), np.ones(2), 1.0, carbon_cost=cc, recycling="lump_sum"
+    )
+    assert np.all(np.isfinite(st.Z))
+
+
+def test_open_recycling_solver_survives_benchmark_start_on_k_ridge():
+    """P2 (round 2): a shocked solve whose benchmark start sits on the k≈1 ridge still converges to
+    the valid equilibrium (k<1) — the non-strict clamp + multi-start rescue it, not the guard
+    aborting the solve at its initial point."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    # cc=[1.4,0.35]: k≈1.006 at the benchmark start but ≈0.80 at the equilibrium (per the review).
+    res = eng.run(
+        data={"SAM": toy_open_sam(), "carbon_cost_share": {"BRD": 1.4, "MIL": 0.35}},
+        shocks=[CarbonPrice(price=1.0)],
+        years=[2020],
+    )
+    assert res.manifest.assumptions["solver_max_residual_norm"] < 1e-9
 
 
 def test_open_residual_system_is_square():

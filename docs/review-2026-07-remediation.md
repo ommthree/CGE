@@ -371,3 +371,61 @@ safeguards were bypassed on the new open path. Engine `cge_static` bumped **0.3.
 **Verification:** 229 pytest passed / 5 skipped (18 new regression tests); `cge validate` 44/44;
 ruff check + format clean. **Remaining (deferred, larger effort):** true multi-region with bilateral
 trade, a non-zero-foreign-savings ROW closure, and a live-EXIOBASE open-SAM build.
+
+---
+
+# Independent review (2026-07, open-economy round 2) — remediation
+
+A third review (of HEAD `5184a91`) confirmed the round-1 open-economy fixes held and found seven
+further defects, all reproduced. Two P1s concerned *arbitrary supplied SAMs* (not the toy), which is
+why the reviewer would not yet call such runs safe. All fixed; still engine `cge_static` 0.4.0
+(bug/robustness fixes, no new model surface).
+
+## P1 (fixed)
+
+- **A balanced SAM could pass validation without belonging to the implemented model.** The
+  validators check axes/balance/finiteness/names but not the economic topology, so a balanced SAM
+  with an unsupported flow (an offsetting household↔commodity loop) was accepted and reported a
+  zero-shock result of exactly zero by comparing a non-replicating base with itself. Added a
+  **universal post-calibration replication gate** (open + closed): derive the state at benchmark
+  prices and assert every calibrated quantity ($X/FD/F$ closed; $Z/D/E/M/Q/FD/F$ open) matches to
+  $10^{-6}$, else refuse the run.
+- **SAM fingerprints ignored axis labels.** The fingerprint stored `accounts` + the flattened array
+  but not the matrix's row/column order, so relabelling both axes (a different economy, since
+  calibration reads by label) gave an identical hash and manifest. Now **canonicalised by account
+  label** with the ordered labels included.
+
+## P2 (fixed)
+
+- **The recycling guard could abort the solver at its initial point.** The closed-form income
+  correction raised on `k ≥ 1` at *any* trial price vector, but the engine starts shocked solves at
+  benchmark prices where `k` can momentarily exceed 1 even though a valid equilibrium (`k < 1`)
+  exists — the review reproduced this at cc=[1.4, 0.35] (benchmark k=1.006, equilibrium k=0.801).
+  Now the guard raises only in **strict mode (the accepted equilibrium)**; during solver iteration a
+  **smooth positive floor** on the denominator `(1−k)` keeps income finite and the residual
+  C¹-continuous, and the solver uses a small **deterministic multi-start** so a benchmark start on
+  the k-ridge still finds the equilibrium. A genuinely infeasible equilibrium is still refused.
+- **Manifest misdescribed CES + overclaimed the double dividend + a false default flag.** The nest
+  description is now derived from the calibrated `va_elast` (CES vs Cobb-Douglas), the
+  double-dividend claim is removed (the model has no distortionary labour-tax wedge;
+  `labour_tax_cut` ≡ `lump_sum` with one household), and `recycling_defaulted_from_none` is true only
+  when a positive-revenue scenario actually defaulted from `none`.
+- **Sweep provenance was incomplete.** `armington_sensitivity_sweep` now returns a
+  `SweepResult` carrying the tidy `bands` DataFrame **plus** the exact elasticities, swept parameter,
+  engine version, scenario hash, SAM identity, and each band's full manifest — so an exported sweep
+  is identifiable.
+- **The standing suite did not substantiate the "passes the full battery" claim for the open model.**
+  Added open **homogeneity**, **Walras + trade-balance** under a carbon shock, and **income-identity**
+  checks to `cge validate`, and replaced the non-zero-foreign-savings fixture with a **genuinely
+  balanced** Sf≠0 SAM (adding the ROW→HOH capital transfer the old one omitted). Suite: 44 → 47.
+
+## P3 (fixed)
+
+- Zero-**import** sector with `arm_elast < 1` no longer emits a divide-by-zero from `arm_scale`
+  (the unused `np.where` branch used a safe base); roadmap 5.3 header no longer says sweeps are
+  pending; remaining CES↔double-dividend associations removed from roadmap + model doc; the
+  non-zero-Sf regression fixture is now genuinely balanced (with a matching description).
+
+**Verification:** 236 pytest passed / 5 skipped; `cge validate` 47/47; ruff check + format clean.
+**Remaining (deferred, larger effort):** true multi-region with bilateral trade, a
+non-zero-foreign-savings ROW closure, and a live-EXIOBASE open-SAM build.

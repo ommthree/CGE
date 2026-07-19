@@ -82,6 +82,20 @@ def _factor_demand(cal: CalibratedModel, w: np.ndarray, pv: np.ndarray, va_cost:
     return F
 
 
+# Smooth positive floor on the recycling denominator (1−k). Identity for x ≫ δ, asymptotes to δ as
+# x → −∞, C¹-continuous everywhere — so an exploratory trial point with k ≥ 1 yields a finite income
+# and a residual with a restoring gradient (never a flat plateau or a raised exception). δ is small
+# enough not to perturb any real equilibrium (which has 1−k well above it) beyond solver tolerance.
+_DENOM_FLOOR = 1e-6
+
+
+def _safe_denom(x: float) -> float:
+    """max(x, δ) smoothed: δ·(1 + softplus((x−δ)/δ)) with softplus(t)=log(1+e^t)."""
+    t = (x - _DENOM_FLOOR) / _DENOM_FLOOR
+    softplus = np.log1p(np.exp(-abs(t))) + max(t, 0.0)  # numerically-stable log(1+e^t)
+    return _DENOM_FLOOR * (1.0 + softplus)
+
+
 def derive_state(
     cal: CalibratedModel,
     p: np.ndarray,
@@ -89,6 +103,7 @@ def derive_state(
     *,
     carbon_cost: np.ndarray | None = None,
     recycling: str = "none",
+    strict: bool = False,
 ) -> ModelState:
     """Close the model at equilibrium prices (p, w): compute VA cost, outputs, demands and income.
 
@@ -122,11 +137,17 @@ def derive_state(
     # is rejected by the engine (it does not close), so any mode reaching here recycles.
     recycles = recycling != "none"
     k = float(cc @ (leontief @ demand_per_income)) if recycles else 0.0
-    if k >= 1.0:
-        # Runaway recycling (revenue ≥ income) — the closed economy is ill-posed here; refuse
-        # rather than divide through a non-positive denominator.
+    if strict and k >= 1.0 - 1e-12:
+        # Runaway recycling (revenue ≥ income) AT THE ACCEPTED EQUILIBRIUM — the closed economy is
+        # ill-posed here; refuse rather than return numbers (review P2).
         raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
-    income = factor_income / (1.0 - k)
+    # A trial price vector during the solve can hit k≥1 even when a valid equilibrium (k<1) exists
+    # elsewhere; raising there makes the residual discontinuously unavailable and can abort a solve
+    # that starts at benchmark prices (review P2). So in non-strict (exploratory) mode we use a
+    # SMOOTH floor on the denominator (1−k): it is the identity for 1−k ≥ δ and asymptotes to δ as
+    # 1−k → −∞, keeping income finite and the residual C¹-continuous with a gradient that steers the
+    # solver back toward the feasible region — not a flat plateau.
+    income = factor_income / _safe_denom(1.0 - k)
 
     FD = income * demand_per_income  # Cobb-Douglas household demand
     X = leontief @ FD  # goods-market clearing

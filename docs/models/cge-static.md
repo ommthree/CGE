@@ -92,9 +92,12 @@ $$ pv_i = \frac{1}{av_i}\Big[\textstyle\sum_f \delta_{fi}^{\,\sigma}\, w_f^{\,1-
 \tag{1'} $$
 with the CES share $\delta_{fi}$ and scale $av_i$ calibrated so $pv_i=1$ and $F_{fi}=F^0_{fi}$ at the
 benchmark ($w=1$). A **non-unitary** $\sigma_{va}$ lets firms substitute between capital and labour
-as the carbon price shifts relative factor prices — the channel behind factor-substitution and
-double-dividend analysis. `va_elast` must be finite and strictly positive (scalar or one value per
-sector). The same nest is used in the open model (§8).
+as the carbon price shifts relative factor prices (factor substitution). Note this is *not* a
+double-dividend model: there is no distortionary labour-tax wedge, and with one household
+`labour_tax_cut` recycling is allocation-equivalent to `lump_sum` — the double-dividend channel
+needs heterogeneous households or a labour-tax distortion (a documented follow-up; see §3.1/§9).
+`va_elast` must be finite and strictly positive (scalar or one value per sector). The same nest is
+used in the open model (§8).
 
 **Zero-profit / price** (unit cost = price):
 $$ p_i = \sum_j ax_{ji}\,p_j + va_i\,pv_i + \tau e_i. \tag{2} $$
@@ -160,6 +163,14 @@ At the benchmark all prices are 1, so parameters read straight off the balanced 
 $\beta_{fi} = F^0_{fi}/VA^0_i$; $av_i = \prod_f \beta_{fi}^{-\beta_{fi}}$;
 $\gamma_i = FD^0_i / \sum_k FD^0_k$; $FF_f = \sum_i F^0_{fi}$. By construction the **zero-profit
 identity** $\sum_j ax_{ji} + va_i = 1$ holds exactly, which is why the benchmark replicates.
+
+**Universal replication gate.** A balanced SAM can nonetheless carry flows *outside* the implemented
+topology (e.g. an offsetting household↔commodity loop), which the structural validators accept but
+the model cannot reproduce — every reported change would then be measured against a wrong benchmark.
+So after calibration the engine derives the state at benchmark prices and **asserts every calibrated
+quantity is reproduced** ($X/FD/F$ closed; $Z/D/E/M/Q/FD/F$ open) to $10^{-6}$, refusing the run
+otherwise. The run manifest's SAM fingerprint is **canonicalised by account label** so two economies
+with permuted axes but an identical numeric block get distinct identities.
 
 **Scale normalisation.** All benchmark levels are divided by benchmark GDP before calibration, so
 magnitudes are $O(1)$. A CGE is homogeneous of degree zero, so the level scale is arbitrary and

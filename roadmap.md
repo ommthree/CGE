@@ -233,9 +233,11 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 >
 > **Now complete for the single-region economy:** the **Armington/CET open economy** (imports and
 > exports respond to relative prices; a carbon price causes textbook carbon leakage), a **CES
-> value-added nest** (non-unitary factor substitution → factor-substitution / double-dividend
-> analysis), and **Armington elasticity sensitivity sweeps** (low/central/high envelopes). All
-> replicate their benchmark to machine precision and pass the standard CGE battery.
+> value-added nest** (non-unitary factor substitution — capital/labour substitution as relative
+> factor prices move; NB *not* a double-dividend model — that needs a distortionary labour-tax
+> wedge / heterogeneous households, a follow-up), and **Armington elasticity sensitivity sweeps**
+> (low/central/high envelopes). All replicate their benchmark to machine precision and pass the
+> standard CGE battery.
 >
 > **Remaining (a genuinely larger effort, deferred):** true **multiple regions** with bilateral
 > trade between build regions (the current open model is single-region + rest-of-world); the GE
@@ -262,7 +264,7 @@ solver + termination status; a non-optimal solve raises (never returns numbers).
 - Pilot single-region model first; extend to multi-region only once the pilot passes 5.3's tests.
 - **DoD:** model solves from the SAM; equation/variable count documented; closures switchable by config.
 
-**5.3 Calibration & credibility tests (2–4 wk) — ✅ correctness battery + revenue recycling done; sensitivity sweeps pending**
+**5.3 Calibration & credibility tests (2–4 wk) — ✅ correctness battery + revenue recycling + elasticity sensitivity sweeps done**
 - ✅ Benchmark replication (zero shock reproduces the SAM to machine precision), ✅ homogeneity, ✅ Walras' law — in CI (toy + real EXIOBASE SAM).
 - ✅ **Revenue recycling** (lump_sum / labour_tax_cut): the carbon tax collects R and recycles it; validated **revenue-recycling effect** (recycling offsets the welfare loss) and **sectoral reallocation** (dirty→clean), with Walras holding under the recycled tax. Emits welfare, carbon revenue, factor prices.
 - ✅ Cross-engine sign consistency with Engine 2 (dirty sector contracts, same sign). Elasticity sensitivity sweeps + published-CGE literature bracket are the remaining credibility work (needs non-unitary substitution elasticities, a later enhancement).

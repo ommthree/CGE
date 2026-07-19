@@ -47,8 +47,8 @@ _DEFAULT_FACTORS = ("CAP", "LAB")
 
 ASSUMPTIONS = {
     "model": (
-        "static CGE pilot: Leontief intermediates + Cobb-Douglas value added and household "
-        "demand; fixed factor endowments; CPI numéraire"
+        "static CGE pilot: Leontief intermediates + CES/Cobb-Douglas value added and "
+        "Cobb-Douglas household demand; fixed factor endowments; CPI numéraire"
     ),
     "scope": (
         "single region, one representative household; revenue recycling supported "
@@ -75,12 +75,24 @@ ASSUMPTIONS = {
     ),
     "interpretation": (
         "GENERAL-EQUILIBRIUM price and volume response with factor-market feedback and input "
-        "substitution via the CD value-added nest — the mechanism Engines 1-2 cannot capture. "
+        "substitution via the value-added nest — the mechanism Engines 1-2 cannot capture. "
         "Indicative magnitudes (pilot calibration); brackets Engine 1 prices, same-sign Engine 2 "
         "volumes."
     ),
     "reference": "Hosoe, Gasawa & Hashimoto (2010), Textbook of CGE Modeling [Hosoe2010]",
 }
+
+
+def _va_nest_description(va_elast: np.ndarray) -> str:
+    """Describe the value-added nest that was actually calibrated (review P2: the manifest said
+    'Cobb-Douglas' even for a CES run). σ_va = 1 everywhere ⇒ Cobb-Douglas; otherwise CES."""
+    if np.all(np.abs(np.asarray(va_elast) - 1.0) < 1e-12):
+        return "Cobb-Douglas value added (σ_va = 1)"
+    return (
+        "CES value added (non-unitary σ_va ⇒ capital/labour substitution as relative factor "
+        "prices move; the values are in the 'va_elast' key)"
+    )
+
 
 # Assumptions for the OPEN-economy variant. It shares the solver rule and reference but has a
 # genuinely different model (Armington/CET, separate activity/commodity accounts, CES value added,
@@ -110,7 +122,11 @@ OPEN_ASSUMPTIONS = {
     ),
     "value_added": (
         "CES value-added nest with per-sector substitution elasticity σ_va (σ_va=1 ⇒ "
-        "Cobb-Douglas); non-unitary σ_va enables factor-substitution / double-dividend analysis"
+        "Cobb-Douglas); non-unitary σ_va enables capital/labour substitution. NOTE: this is NOT a "
+        "double-dividend model — there is no distortionary labour-tax wedge, and with one "
+        "household labour_tax_cut recycling is allocation-equivalent to lump_sum (the "
+        "double-dividend channel needs heterogeneous households or a labour-tax distortion — a "
+        "documented follow-up)"
     ),
     "interpretation": (
         "GENERAL-EQUILIBRIUM open-economy price and volume response with factor-market feedback, "
@@ -229,6 +245,12 @@ class CGEStaticEngine:
         # Benchmark solve (zero shock) — the replication point, and the base for % changes.
         base_sol = _solve(cal, carbon_cost=np.zeros(ns), recycling="none")
         base = M.derive_state(cal, base_sol.x[:ns], base_sol.x[ns:])
+        # Universal post-calibration replication gate (review P1): a balanced SAM can pass the
+        # structural validators yet not conform to the implemented model (e.g. an unsupported
+        # household↔commodity loop), in which case the benchmark does not reproduce the SAM and
+        # every % change is silently measured against a wrong base. Assert the benchmark state
+        # reproduces the calibrated quantities, or refuse the run.
+        _assert_closed_replicates(cal, base, base_sol.x)
 
         records: list[dict] = []
         backends: set[str] = {base_sol.backend}
@@ -240,7 +262,11 @@ class CGEStaticEngine:
             backends.add(sol.backend)
             statuses.add(sol.status)
             resid_max = max(resid_max, sol.residual_norm)
-            st = M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling=recycling)
+            # strict=True: the recycling k<1 feasibility guard applies to the accepted equilibrium
+            # only; residual evaluations inside _solve ran non-strict to keep the solve continuous.
+            st = M.derive_state(
+                cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling=recycling, strict=True
+            )
             _emit(records, cal, base, st, year)
 
         # Emissions provenance: the effective aligned cost-share vector per year + the satellite
@@ -257,8 +283,10 @@ class CGEStaticEngine:
                 "sectors": sectors,
                 "factors": factors,
                 # VA elasticity materially changes results, so it belongs in the manifest — two runs
-                # differing only in va_elast must have different assumptions (review P1).
+                # differing only in va_elast must have different assumptions (review P1). The nest
+                # description reflects the CALIBRATED nest, not a hardcoded 'Cobb-Douglas' (P2).
                 "va_elast": [round(float(v), 12) for v in cal.va_elast.tolist()],
+                "value_added_nest": _va_nest_description(cal.va_elast),
                 "recycling_mode": recycling,
                 "recycling_defaulted_from_none": recycling_defaulted,
                 "solver_backends": sorted(backends),
@@ -571,11 +599,71 @@ def _rec(variable: str, sector: str, year: int, value: float) -> dict:
 
 
 def _sam_fingerprint(sam: SAM) -> dict:
-    m = sam.matrix
+    """Content fingerprint of a SAM for the manifest. **Canonicalised by account label** so the
+    identity depends on the *economics*, not the axis order (review P1: the old fingerprint stored
+    only ``accounts`` + the raw flattened array, so two matrices whose numeric block was identical
+    but whose axes were permuted — different economies, since calibration reads cells by label —
+    collided to the same hash). We reindex the matrix to the sorted account order and record that
+    ordering alongside the values, so relabelling either axis changes the fingerprint."""
+    order = sorted(sam.accounts)
+    m = sam.matrix.reindex(index=order, columns=order)
     return {
         "accounts": list(sam.accounts),
+        "canonical_order": order,
         "values": [round(float(v), 10) for v in m.to_numpy(dtype=float).ravel().tolist()],
     }
+
+
+_REPLICATION_TOL = 1e-6
+
+
+def _assert_closed_replicates(cal, base, x0: np.ndarray) -> None:
+    """Assert the benchmark solve reproduces the closed model's calibrated quantities (review P1).
+
+    A SAM that passes the structural validators but carries flows outside the implemented topology
+    (Leontief intermediates + CD/CES VA + a single CD household) will *not* replicate: the derived
+    benchmark output/final-demand/factor demand drift from the calibrated ``X0/FD0/F0``. Because
+    every reported change is relative to this base, a non-replicating base silently corrupts every
+    result — so we refuse the run rather than report changes against a wrong benchmark."""
+    checks = {
+        "prices": (x0, np.ones_like(x0)),
+        "output X": (base.X, cal.X0),
+        "final demand FD": (base.FD, cal.FD0),
+        "factor demand F": (base.F, cal.F0),
+    }
+    _raise_if_not_replicating(checks, "closed")
+
+
+def _assert_open_replicates(cal, base, x0: np.ndarray) -> None:
+    """Assert the benchmark solve reproduces the OPEN model's calibrated quantities (review P1).
+    Same rationale as the closed gate, over the open benchmark set (Z/D/E/M/Q/FD/F) and unit
+    prices/exchange rate."""
+    checks = {
+        "prices+er": (x0, np.ones_like(x0)),
+        "output Z": (base.Z, cal.Z0),
+        "domestic D": (base.D, cal.D0),
+        "exports E": (base.E, cal.E0),
+        "imports M": (base.M, cal.M0),
+        "composite Q": (base.Q, cal.Q0),
+        "final demand FD": (base.FD, cal.FD0),
+        "factor demand F": (base.F, cal.F0),
+    }
+    _raise_if_not_replicating(checks, "open")
+
+
+def _raise_if_not_replicating(checks: dict, variant: str) -> None:
+    worst_name, worst_err = None, 0.0
+    for name, (got, want) in checks.items():
+        err = float(np.max(np.abs(np.asarray(got, dtype=float) - np.asarray(want, dtype=float))))
+        if err > worst_err:
+            worst_name, worst_err = name, err
+    if worst_err > _REPLICATION_TOL:
+        raise ValueError(
+            f"{variant} CGE benchmark does not replicate the SAM (worst: {worst_name} error "
+            f"{worst_err:.2e} > {_REPLICATION_TOL:.0e}). The SAM is balanced but carries flows "
+            f"outside the implemented model topology, so every reported change would be measured "
+            f"against a wrong benchmark. Reject the run rather than return corrupted results."
+        )
 
 
 def _validate_open_sam(sam: SAM, sectors: list[str], factors: list[str]) -> None:
@@ -653,10 +741,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     modes = {s.revenue_recycling for s in carbon_shocks} or {"none"}
     if len(modes) > 1:
         raise ValueError(f"cge_static needs a single recycling mode; got {sorted(modes)}.")
-    recycling = modes.pop()
-    recycling_defaulted = recycling == "none"
-    if recycling == "none":
-        recycling = "lump_sum"  # the open economy also circulates carbon revenue to the household
+    requested_recycling = modes.pop()
 
     share = _carbon_cost_share(data, sectors)
     positive_price = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
@@ -665,6 +750,15 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             "a positive carbon price on the open-economy CGE requires a 'carbon_cost_share'."
         )
     share = share if share is not None else np.zeros(ns)
+
+    # Only a scenario that actually generates carbon revenue can be "defaulted from none": a
+    # no-shock (or zero-share) run circulates no revenue, so recording defaulted=True there would
+    # misdescribe it (review P2). Emissions are priced iff a positive price meets a non-zero share.
+    emissions_priced = bool(positive_price and np.any(share != 0.0))
+    recycling = requested_recycling
+    recycling_defaulted = requested_recycling == "none" and emissions_priced
+    if recycling == "none":
+        recycling = "lump_sum"  # the open economy also circulates carbon revenue to the household
 
     cal = calibrate_open(
         sam,
@@ -681,6 +775,8 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             MO.initial_guess(cal),
             prefer="scipy",
         )
+        # strict=True: enforce the recycling k<1 feasibility guard on the ACCEPTED equilibrium
+        # (the residual evaluations inside solve() ran non-strict so the solve stays continuous).
         st = MO.derive_open_state(
             cal,
             sol.x[:ns],
@@ -689,10 +785,14 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             float(sol.x[-1]),
             carbon_cost=cc,
             recycling=recycling,
+            strict=True,
         )
         return sol, st
 
     _bsol, base = _solve_year(np.zeros(ns))
+    # Universal post-calibration replication gate (review P1): refuse a balanced-but-unsupported SAM
+    # whose benchmark does not reproduce the calibrated quantities (see _assert_open_replicates).
+    _assert_open_replicates(cal, base, _bsol.x)
     records: list[dict] = []
     resid_max = _bsol.residual_norm
     backends: set[str] = {_bsol.backend}
@@ -738,11 +838,12 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             "armington_elasticity": [round(float(v), 12) for v in cal.arm_elast.tolist()],
             "cet_elasticity": [round(float(v), 12) for v in cal.cet_elast.tolist()],
             "va_elast": [round(float(v), 12) for v in cal.va_elast.tolist()],
+            "value_added_nest": _va_nest_description(cal.va_elast),
             "solver_backends": sorted(backends),
             "solver_statuses": sorted(statuses),
             "solver_max_residual_norm": resid_max,
             "foreign_savings": float(cal.foreign_savings),
-            "emissions_priced": bool(np.any(share != 0.0) and positive_price),
+            "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
             "inputs": [
                 input_identity("SAM", sam.provenance, content=_sam_fingerprint(sam)),
@@ -781,19 +882,36 @@ def _ratio(x: float, x0: float) -> float:
     return float(x / x0 - 1.0) if x0 > 0 else 0.0
 
 
+@dataclass(frozen=True)
+class SweepResult:
+    """A provenance-complete Armington elasticity sweep (review P2: the bare DataFrame discarded
+    everything needed to identify the sweep once exported). ``bands`` is the tidy envelope
+    DataFrame (``sector, variable, low, central, high``); the rest pins the exact inputs so an
+    exported sweep is reproducible and cannot be confused with any other ordered triple."""
+
+    bands: object  # pandas.DataFrame — the low/central/high envelope
+    elasticities: tuple[float, float, float]  # the exact (low, central, high) values swept
+    swept_parameter: str  # which parameter was varied (here 'armington_elast')
+    year: int
+    engine_version: str
+    scenario_hash: str  # hash of the shocks + year (shared across bands)
+    sam_identity: dict  # canonical SAM fingerprint (shared across bands)
+    manifests: dict  # {'low'|'central'|'high': the full RunManifest of that band's run}
+
+
 def armington_sensitivity_sweep(
     data: dict,
     shocks: list[Shock],
     year: int = 2020,
     *,
     elasticities: tuple[float, float, float] = (1.5, 2.0, 4.0),
-):
+) -> SweepResult:
     """Run the open-economy CGE across low/central/high **Armington** elasticities and return a
-    tidy DataFrame of the response **envelope** (Phase 5.3 sensitivity sweep). Volume responses are
-    elasticity-sensitive, so — as with Engine 2's demand bands — the band is a first-class output.
-
-    Returns columns ``sector, variable, low, central, high`` for the per-sector volume/import/export
-    responses (the leakage channel is the most elasticity-sensitive). Requires an open SAM."""
+    provenance-complete :class:`SweepResult` (Phase 5.3 sensitivity sweep). Volume responses are
+    elasticity-sensitive, so — as with Engine 2's demand bands — the band is a first-class output,
+    and (review P2) it carries the exact elasticity values, the engine version, the scenario hash,
+    the SAM identity, and each band's full manifest, so nothing is lost on export. ``.bands`` is the
+    tidy envelope DataFrame (``sector, variable, low, central, high``). Requires an open SAM."""
     import pandas as pd
 
     sam = data.get("SAM")
@@ -810,16 +928,29 @@ def armington_sensitivity_sweep(
         )
     bands = {"low": lo, "central": ce, "high": hi}
     per_band: dict[str, pd.Series] = {}
+    manifests: dict = {}
     for band, elast in bands.items():
         res = CGEStaticEngine().run(
             data={**data, "armington_elast": elast}, shocks=shocks, years=[year]
         )
+        manifests[band] = res.manifest
         d = res.data
         d = d[d["variable"].isin(("volume_change", "import_change", "export_change"))]
         per_band[band] = d.set_index(["sector", "variable"])["value"]
 
-    out = pd.DataFrame(per_band).reset_index()
-    return out.sort_values(["variable", "sector"]).reset_index(drop=True)
+    out = pd.DataFrame(per_band).reset_index().sort_values(["variable", "sector"])
+    out = out.reset_index(drop=True)
+    central = manifests["central"]
+    return SweepResult(
+        bands=out,
+        elasticities=(lo, ce, hi),
+        swept_parameter="armington_elast",
+        year=year,
+        engine_version=CGEStaticEngine.meta.version,
+        scenario_hash=central.scenario_hash,
+        sam_identity=_sam_fingerprint(sam),
+        manifests=manifests,
+    )
 
 
 registry.register(CGEStaticEngine())
