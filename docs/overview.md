@@ -38,7 +38,7 @@ institutions actually use.
 │  Data layer         │   │  Engines (pluggable)    │   │  Scenario layer  │
 │  live EXIOBASE →    │──▶│  1. IO price (cost)     │◀──│  typed shocks:   │
 │  harmonised objects,│   │  2. partial-eq (volume) │   │  carbon price,   │
-│  quality, aggregation│  │  3. CGE (planned)       │   │  nature stress … │
+│  quality, aggregation│  │  3. CGE (pilot)         │   │  nature stress … │
 │  (parquet + DuckDB) │   │  + nature/ENCORE (plan) │   └──────────────────┘
 └─────────────────────┘   └───────────┬─────────────┘
                           ┌───────────▼─────────────┐
@@ -172,7 +172,7 @@ citations in [`docs/references.md`](references.md).
 | Family | Examples | Relation to this platform |
 |---|---|---|
 | **Environmentally-extended IO** | Leontief price model [MillerBlair2009], EXIOBASE [Stadler2018] | **What Engines 1–2 are.** The most transparent, parameter-free cost accounting; the foundation here. |
-| **Multi-region CGE** | GTAP [GTAP], and CGE textbook models [Hosoe2010] | **What Engine 3 (planned) is a small, open version of.** GTAP is the precision benchmark — but its database is *licensed, not open*, which is why we build the SAM from EXIOBASE and stay "toy but honest." |
+| **Multi-region CGE** | GTAP [GTAP], and CGE textbook models [Hosoe2010] | **What Engine 3 (single-region pilot built; multi-region ahead) is a small, open version of.** GTAP is the precision benchmark — but its database is *licensed, not open*, which is why we build the SAM from EXIOBASE and stay "toy but honest." |
 | **Process-based IAMs** | GCAM [GCAM], REMIND [REMIND], MESSAGE | **Deliberately not attempted.** These have explicit energy systems and land use and take teams years. We *consume their pathways* (via NGFS) and add sector/supply-chain resolution — the standard financial-sector pattern. |
 | **Cost–benefit IAMs** | DICE [Nordhaus2017] | Aggregate economy + damage function, no sectoral detail. We have the opposite trade-off (sector detail, no damage feedback in the credible mode); DICE is the reference for the *optional* damage path (P7.4). |
 | **Macro-econometric / IO** | E3ME [E3ME] | A non-equilibrium neighbour to the IO engines; named for context. |
@@ -207,7 +207,8 @@ The platform has been through **seven rounds of independent adversarial review**
 concurrency, crash-safety, validation edge cases), all remediated with the fixes and reasoning
 recorded → [`docs/review-2026-07-remediation.md`](review-2026-07-remediation.md). The honest
 current status: **cost answers are validated against live data; volume answers are indicative;
-the CGE and nature extensions are planned.**
+the CGE pilot (with revenue recycling) is implemented on EXIOBASE-shaped data; the open-economy
+CGE and nature extensions are the next work.**
 
 ---
 
@@ -225,9 +226,10 @@ the CGE and nature extensions are planned.**
 | 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | ⬜ [roadmap](../roadmap.md) |
 | 7 — Pathway stack | NGFS-driven dynamics + FaIR climate | ⬜ [roadmap](../roadmap.md) |
 
-Roughly **40% of the full build by effort** — but the completed half is the minimum viable
-version of the original ask (cost + volume, on real data, with a GUI), and the harder economics
-(CGE) is still ahead. Full plan and honest feasibility assessment: [`roadmap.md`](../roadmap.md).
+The completed work is the minimum viable version of the original ask (cost + volume + a
+general-equilibrium CGE pilot with revenue recycling, on real data, with a GUI). The remaining
+economics — the open-economy/multi-region CGE and the nature/pathway extensions — is still ahead.
+Full plan and honest feasibility assessment: [`roadmap.md`](../roadmap.md).
 
 ---
 

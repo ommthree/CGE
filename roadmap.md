@@ -35,7 +35,7 @@ Each model engine consumes the same harmonised data objects and emits results in
 The modularity lives in five **contracts** — versioned schemas that modules talk through instead of importing each other. These are defined in Phase 0 and are the most leverage-per-hour work in the project:
 
 1. **Harmonised data objects.** `IOSystem`, `SAM`, `SatelliteAccount`, `ElasticitySet`, `ConcordanceMap` — every data source (EXIOBASE now; FIGARO/ICIO/successors later) is an *adapter* that maps raw downloads into these objects. Engines never see raw source formats, so a second data source is a new adapter, not a refactor. Sector/region classifications are explicit metadata on every object, with concordances as first-class data.
-2. **Typed shock vocabulary.** Scenarios are declarative files (YAML) composed of typed shocks: `CarbonPrice`, `EnergyPrice`, `ProductivityShock`, `DemandShift`, `TradeCost`, `NatureStress`, … each optionally a *time path*. Engines declare which shock types they understand; static engines take year-slices of a path. This is the key seam: the nature module, NGFS reader, and damage module all *emit shocks* in this vocabulary rather than talking to engines directly — so any future stress type (litigation risk, pandemic, tariff war) is a new shock class plus zero engine changes. (`EnergyPrice` — an exogenous per-country, per-carrier energy-cost change — is a planned near-term addition; it enters the cost vector exactly like a carbon cost and composes with it. See `docs/energy-and-temperature-plan.md`.)
+2. **Typed shock vocabulary.** Scenarios are declarative files (YAML) composed of typed shocks: `CarbonPrice`, `EnergyPrice`, `ProductivityShock`, `DemandShift`, `TradeCost`, `NatureStress`, … each optionally a *time path*. Engines declare which shock types they understand; static engines take year-slices of a path. This is the key seam: the nature module, NGFS reader, and damage module all *emit shocks* in this vocabulary rather than talking to engines directly — so any future stress type (litigation risk, pandemic, tariff war) is a new shock class plus zero engine changes. (`EnergyPrice` — an exogenous per-country, per-carrier output-price change — is **implemented**: the carrier's price is pinned to the requested change (a boundary condition) and propagates downstream. See `docs/energy-and-temperature-plan.md`.)
 3. **Engine protocol.** An engine declares its required inputs, supported shock types, and capabilities (`prices`, `volumes`, `general_equilibrium`, `dynamic`), registered in a plugin registry. The GUI renders run pages from this metadata — adding an engine adds a GUI option with no GUI code.
 4. **Result schema.** All engines emit a common `ResultSet` (variable × sector × region × year, long format, parquet) with full provenance: data version, engine version, scenario hash, assumption dump. Comparison across engines/scenarios/data-sources is then a query, not a feature.
 5. **Module slots for the pathway stack.** Climate (`emissions → temperature`) and damages (`temperature → shocks`) are interfaces with one implementation each (FaIR; DICE-style damage function) — swappable, and omittable.
@@ -329,12 +329,12 @@ Sequencing note: P3, P4, and P6a all deliver standalone value and can be reorder
 
 Two requested capabilities that fit the existing seams rather than adding new phases:
 
-- **Country-level energy prices (near-term, low risk).** An optional `EnergyPrice` shock — a
-  per-country, per-carrier (coal / oil-gas / electricity) energy-cost change, applied *in
-  addition to* a carbon price. It enters the cost vector exactly like a carbon cost and
-  propagates through the same Leontief inverse, so it reuses Engine 1/2 machinery (a new shock
-  class + cost-assembly branch, ~3–5 d); richer in the CGE, where it triggers KL-E-M
-  substitution. Fits Phases 2/4/5 as an incremental feature; blocks nothing.
+- **Country-level energy prices (✅ implemented).** An optional `EnergyPrice` shock — a
+  per-country, per-carrier (coal / oil-gas / electricity) output-price change, applied *in
+  addition to* a carbon price. The carrier's own price is **pinned** to the requested change (an
+  exogenous boundary condition), and that price propagates downstream through the same Leontief
+  inverse (reusing Engine 1/2 machinery). Available in Engine 1/2 and the GUI; richer in the CGE
+  (Phase 5), where it would trigger KL-E-M substitution.
 - **Temperature-target back-solving (Phase 7).** Given a temperature (or carbon-budget) target,
   invert the forward chain to find the **carbon-price path** that hits it, then run forward for
   the sector impacts — the credible, target-driven "IAM-ish" mode. Added as roadmap task **7.3b**

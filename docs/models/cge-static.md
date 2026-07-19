@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.2.0)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.3.0)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling)
 - **Capabilities:** general_equilibrium, prices, volumes
 - **Status:** implemented as the **correctness-first pilot** with **revenue recycling**. The model

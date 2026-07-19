@@ -57,7 +57,10 @@ ASSUMPTIONS = {
         "lump_sum/labour_tax_cut = returned to the household (offsets the welfare loss)"
     ),
     "closure": "savings-less pilot; fixed factor supply; numéraire = consumer price index (CPI=1)",
-    "solver_rule": "non-optimal solve raises (well-posedness); backend + status recorded",
+    "solver_rule": (
+        "non-optimal solve raises (well-posedness); solver backend, termination status, and "
+        "max residual norm recorded in the manifest"
+    ),
     "interpretation": (
         "GENERAL-EQUILIBRIUM price and volume response with factor-market feedback and input "
         "substitution via the CD value-added nest — the mechanism Engines 1-2 cannot capture. "

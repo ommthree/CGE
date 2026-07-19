@@ -26,11 +26,15 @@ $ cge engines                  # should list io_price and partial_eq
 You should see something like:
 
 ```
-io_price v0.5.0 [prices] — Leontief cost-push pass-through: Δprice of every good under a carbon price and/or an energy-carrier output-price change.
+cge_static v0.3.0 [general_equilibrium, prices, volumes] — Static CGE pilot: GE price + volume response with factor-market feedback.
+    shocks: carbon_price
+io_price v0.6.0 [prices] — Leontief cost-push pass-through: Δprice of every good under a carbon price and/or an energy-carrier output-price change.
     shocks: carbon_price, energy_price
-partial_eq v0.3.0 [prices, volumes] — Partial-equilibrium production volume: demand response via Leontief.
+partial_eq v0.3.1 [prices, volumes] — Partial-equilibrium production volume: demand response via Leontief.
     shocks: carbon_price, energy_price
 ```
+
+(Exact versions move as fixes land; run `cge engines` for the current list.)
 
 If that prints, the install is good. Now confirm the model itself is sound:
 

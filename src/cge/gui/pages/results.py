@@ -26,7 +26,14 @@ def render() -> None:
     )
     is_cge = result.manifest.engine_name == "cge_static"
 
-    if rv.has_volume(result):
+    if rv.has_volume(result) and is_cge:
+        st.info(
+            "Δprice is a **fractional** change in the unit price index (baseline = 1), shown as "
+            "a **percent**. This is a **general-equilibrium** run: the volume response below comes "
+            "from the CGE (input substitution + factor markets), not a partial-equilibrium "
+            "elasticity model. Magnitudes are indicative (pilot calibration)."
+        )
+    elif rv.has_volume(result):
         st.info(
             "Δprice is a **fractional** change in the unit price index (baseline = 1), shown as "
             "a **percent** (e.g. +6.0% = a 6% price rise). This engine also estimates the "

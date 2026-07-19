@@ -1,6 +1,6 @@
 # Model description: Engine 1 — Leontief carbon-cost price model
 
-- **Implements:** `cge.engines.io_price` (`IOPriceEngine`, v0.4.0)
+- **Implements:** `cge.engines.io_price` (`IOPriceEngine`, v0.6.0)
 - **Roadmap phase:** 2
 - **Capabilities:** prices
 - **Status:** implemented and validated — on the toy economy (internal identities +
@@ -75,7 +75,7 @@ Emission intensities $\mathbf{e}$ come from the `SatelliteAccount`; $\mathbf{A}$
 > Leontief inverse, so a downstream good already bears its suppliers' emission costs. Adding
 > the buyer's *purchased-energy* emissions directly to its own cost vector would double-count
 > unless framed as a distinct scope-2 policy liability. Because that distinction is a
-> modelling decision not yet made, **no scope option exists in v0.4.0**; the engine prices
+> modelling decision not yet made, **no scope option exists in v0.6.0**; the engine prices
 > scope-1 emissions of the selected gases only.
 
 These assumptions are the single source of truth; the engine's `ASSUMPTIONS` dict (emitted
@@ -217,7 +217,7 @@ reimplementation a local change.
 - $\mathbf{A}$, $\mathbf{e}$: directly from EXIOBASE (Phase 1 data build); no free
   parameters.
 - $\tau$ (price and optional time path), `gases`, and sector/region coverage: from the
-  `CarbonPrice` scenario. There is **no scope option** in v0.4.0 (see the scope note in §3);
+  `CarbonPrice` scenario. There is **no scope option** in v0.6.0 (see the scope note in §3);
   the engine prices scope-1 emissions of the selected gases.
 
 There are no fitted parameters — a strength of this engine, and why its *cost* answers are
