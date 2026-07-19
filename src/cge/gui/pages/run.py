@@ -25,17 +25,29 @@ def render() -> None:
     svc = get_service()
 
     build_ids = svc.build_ids()
-    data_options = ["toy"] + build_ids
+    # 'toy' is the Engine 1/2 fixture; toy_cge* are the hand-checkable CGE SAMs (closed / open /
+    # multi-region) so the CGE variants run without a data build; the rest are store builds.
+    data_options = ["toy", "toy_cge", "toy_cge_open", "toy_cge_multi"] + build_ids
     data_source = st.selectbox(
-        "Data", data_options, help="'toy' is the built-in fixture; others are store builds."
+        "Data",
+        data_options,
+        help=(
+            "'toy' is the Engine 1/2 fixture. 'toy_cge' / 'toy_cge_open' / 'toy_cge_multi' are the "
+            "built-in CGE SAMs (closed, open economy, multi-region) — pick one with the cge_static "
+            "engine. Others are store builds."
+        ),
     )
 
     engines = svc.engines()
     names = [e.name for e in engines]
-    engine_name = st.selectbox(
-        "Engine", names, index=names.index("io_price") if "io_price" in names else 0
-    )
+    # A CGE toy SAM only runs on the cge_static engine — default to it so the picker is consistent
+    # with the chosen data (the user can still change it, but the CGE SAMs need cge_static).
+    default_engine = "cge_static" if data_source.startswith("toy_cge") else "io_price"
+    default_idx = names.index(default_engine) if default_engine in names else 0
+    engine_name = st.selectbox("Engine", names, index=default_idx)
     meta = svc.engine_meta(engine_name)
+    if data_source.startswith("toy_cge") and engine_name != "cge_static":
+        st.warning("The CGE toy SAMs run on the **cge_static** engine — select it above.")
 
     with st.expander("Engine capabilities", expanded=False):
         st.write(
@@ -48,12 +60,31 @@ def render() -> None:
             }
         )
 
-    # Region coverage options come from the build's labels (empty for the toy → text is clearer).
-    labels = svc.label_axis(data_source) if data_source != "toy" else []
+    is_cge_toy = data_source in ("toy_cge", "toy_cge_open", "toy_cge_multi")
+    # Region coverage options come from the build's labels (empty for the toys → text is clearer).
+    labels = svc.label_axis(data_source) if data_source not in ("toy",) and not is_cge_toy else []
     regions = sorted({lab.split(":", 1)[0] for lab in labels}) if labels else []
     year = st.number_input("Year", min_value=1995, max_value=2100, value=2020)
 
     shocks: list = []
+    data_overrides: dict = {}
+
+    # -- CGE options (elasticities) — only for the general-equilibrium engine ---------------------
+    if "general_equilibrium" in [c.value for c in meta.capabilities]:
+        with st.expander("CGE options (elasticities)", expanded=is_cge_toy):
+            st.caption(
+                "Value-added substitution (σ_va = 1 ⇒ Cobb-Douglas; ≠ 1 ⇒ CES factor substitution) "
+                "and, for the open / multi-region SAMs, the Armington (import) and CET (export) "
+                "trade elasticities. Higher trade elasticities ⇒ more carbon leakage."
+            )
+            va = st.slider("Value-added elasticity σ_va", 0.2, 3.0, 1.0, step=0.1)
+            if abs(va - 1.0) > 1e-9:
+                data_overrides["va_elast"] = va
+            if data_source in ("toy_cge_open", "toy_cge_multi"):
+                arm = st.slider("Armington (import) elasticity σ", 1.1, 6.0, 2.0, step=0.1)
+                cet = st.slider("CET (export) elasticity Ω", 1.1, 6.0, 2.0, step=0.1)
+                data_overrides["armington_elast"] = arm
+                data_overrides["cet_elast"] = cet
 
     # -- Carbon price ----------------------------------------------------------
     if "carbon_price" in meta.supported_shocks:
@@ -140,7 +171,9 @@ def render() -> None:
             shocks=shocks,
         )
         try:
-            result = svc.run(scenario, data_source=data_source)
+            result = svc.run(
+                scenario, data_source=data_source, data_overrides=data_overrides or None
+            )
         except Exception as exc:  # surface engine/data errors in the UI, don't crash
             st.error(f"Run failed: {exc}")
             return

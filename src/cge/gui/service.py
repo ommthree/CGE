@@ -94,14 +94,19 @@ class GuiService:
         return registry.get(name).meta
 
     # -- runs ------------------------------------------------------------------
-    def run(self, scenario: Scenario, *, data_source: str) -> ResultSet:
+    def run(
+        self, scenario: Scenario, *, data_source: str, data_overrides: dict | None = None
+    ) -> ResultSet:
         """Run a scenario in-process (fine for the small build; see roadmap P3 decisions).
 
         Passes this service's store so runs resolve builds from the same store the GUI
-        browses (not only the process-default store)."""
+        browses (not only the process-default store). ``data_overrides`` carries optional engine
+        parameters (e.g. the CGE elasticity controls)."""
         from cge.runner import run_scenario
 
-        return run_scenario(scenario, data_source=data_source, store=self.store)
+        return run_scenario(
+            scenario, data_source=data_source, store=self.store, data_overrides=data_overrides
+        )
 
     def start_build(self, *, test: bool = True, year: int = 2019) -> subprocess.Popen:
         """Kick off a data build as a background subprocess so a long download doesn't block
