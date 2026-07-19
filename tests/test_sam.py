@@ -74,6 +74,79 @@ def test_cge_calibrates_and_replicates_on_built_sam(small_build_io):
     assert np.allclose(st.X, cal.X0, rtol=1e-6)  # outputs replicate
 
 
+# -- open SAM from a real build (Phase 5 deferred: live-EXIOBASE open-SAM build) --------------
+def test_build_open_sam_balanced_and_quality_passes(small_build_io):
+    """An OPEN SAM built from the multi-region build (home region + rest-of-world) is balanced by
+    construction and passes the SAM quality gates, with a_<s>/c_<s>/ROW accounts."""
+    from cge.data.sam import build_open_sam
+
+    io, _store, _bid = small_build_io
+    sam, report, sectors = build_open_sam(io, home_region="A")
+    assert is_balanced(sam.matrix, tol=1e-6)
+    assert report.passed
+    assert "ROW" in sam.accounts
+    assert all(f"a_{s}" in sam.accounts and f"c_{s}" in sam.accounts for s in sectors)
+
+
+def test_open_cge_calibrates_and_replicates_on_built_open_sam(small_build_io):
+    """The open CGE calibrates on a SAM built from an EXIOBASE-shaped build and replicates its
+    benchmark to machine precision — the open analogue of the 5.1b gate, proving the
+    IOSystem→open-SAM→calibrate→solve pipeline works on structured multi-region data."""
+    from cge.data.sam import build_open_sam
+    from cge.engines.cge_static import model_open as MO
+    from cge.engines.cge_static.calibrate_open import calibrate_open
+
+    io, _store, _bid = small_build_io
+    sam, _report, sectors = build_open_sam(io, home_region="A")
+    cal = calibrate_open(sam, sectors=sectors, factors=["CAP", "LAB"])
+    ns = len(sectors)
+    sol = solve(
+        lambda z: MO.residuals(cal, z, recycling="lump_sum"),
+        MO.initial_guess(cal) * 1.03,
+        prefer="scipy",
+    )
+    st = MO.derive_open_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns : 2 * ns],
+        sol.x[2 * ns : 2 * ns + 2],
+        float(sol.x[-1]),
+        recycling="lump_sum",
+        strict=True,
+    )
+    assert sol.residual_norm < 1e-8
+    assert np.allclose(st.Z, cal.Z0, atol=1e-6)
+    assert np.allclose(st.M, cal.M0, atol=1e-6)
+    assert np.allclose(st.E, cal.E0, atol=1e-6)
+
+
+def test_engine_open_run_from_iosystem(small_build_io):
+    """The engine builds an open SAM from an IOSystem when open_home_region is set, dispatches to
+    the open path, and replicates on a zero shock (the full IOSystem→open-CGE wiring)."""
+    from cge.engines.cge_static.engine import CGEStaticEngine
+
+    io, store, bid = small_build_io
+    sat = store.load(bid)["SatelliteAccount"]
+    res = CGEStaticEngine().run(
+        data={"IOSystem": io, "SatelliteAccount": sat, "open_home_region": "A"},
+        shocks=[CarbonPrice(price=0.0)],
+        years=[2020],
+    )
+    assert res.data["value"].abs().max() < 1e-6  # zero-shock replication
+    assert "open economy" in res.manifest.assumptions["model_variant"]
+    assert res.manifest.assumptions["sam_quality"]["worst"] == "pass"
+    assert (res.data["variable"] == "import_change").any()
+
+
+def test_open_sam_unknown_home_region_rejected(small_build_io):
+    """An unknown home region is rejected (the home economy must be one of the build's regions)."""
+    from cge.data.sam import build_open_sam
+
+    io, _store, _bid = small_build_io
+    with pytest.raises(ValueError, match="not in build regions"):
+        build_open_sam(io, home_region="Z")
+
+
 def test_engine_runs_on_real_build_via_runner(small_build_io):
     from cge.runner import run_scenario
     from cge.scenarios.loader import Scenario

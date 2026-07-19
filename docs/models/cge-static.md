@@ -15,7 +15,10 @@
   additionally exhibits **carbon leakage** (`cge_static` validation suite).
   **Honest scope note:** the automated build/validation uses the **offline pymrio *test* MRIO**
   (an EXIOBASE-shaped fixture), *not* live EXIOBASE — the live-data suite currently exercises only
-  the adapter and Engine 1. A live-EXIOBASE CGE gate and a live open-SAM build are follow-ups.
+  the adapter and Engine 1. A live-EXIOBASE CGE gate is a follow-up. The open CGE also builds its
+  SAM from an EXIOBASE-shaped **IOSystem** (`build_open_sam`: a home region + rest-of-world, with
+  Armington import / CET export / ROW accounts derived from the MRIO's inter-regional blocks) and
+  replicates that built benchmark to machine precision — the `open_replicates_on_built_sam` gate.
   **True multiple regions** (bilateral trade between build regions — the open model is single
   region + RoW) and a **non-zero foreign-savings closure** (the pilot requires a balanced current
   account) are the remaining sub-phases; magnitudes are illustrative.

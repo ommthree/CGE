@@ -188,11 +188,14 @@ class CGEStaticEngine:
     )
 
     def run(self, *, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
-        # Open economy (Armington/CET) when the SAM carries a rest-of-world account; otherwise the
-        # closed pilot. The open path has its own calibration/model (activity+commodity accounts).
+        # Open economy (Armington/CET) when the SAM carries a rest-of-world account, or when an
+        # IOSystem build is supplied with an ``open_home_region`` (build an open SAM from it);
+        # otherwise the closed pilot. The open path has its own calibration/model.
         supplied_sam = data.get("SAM")
         if supplied_sam is not None and "ROW" in supplied_sam.accounts:
             return _run_open(self.meta, data, shocks, years)
+        if data.get("IOSystem") is not None and data.get("open_home_region") is not None:
+            return _run_open_from_io(self.meta, data, shocks, years)
 
         inp = _resolve_inputs(data)
         sam, sectors, factors = (
@@ -707,10 +710,77 @@ def _validate_open_sam(sam: SAM, sectors: list[str], factors: list[str]) -> None
         )
 
 
+def _run_open_from_io(meta, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
+    """Open-economy CGE on a **real build**: construct an open SAM (home region + rest-of-world)
+    from the supplied ``IOSystem`` via ``build_open_sam``, derive the per-sector carbon cost share
+    from the satellite the SAME way as Engine 1 (units/gases/coverage/1e-6 scaling, aggregated to
+    the home sectors), then delegate to ``_run_open`` with the built SAM + cost share injected.
+
+    ``data`` keys: ``IOSystem`` (+ ``SatelliteAccount``), ``open_home_region`` (which build region
+    is the home economy; the rest become ROW), optional ``capital_share``."""
+    from cge.data.sam import build_open_sam
+
+    io: IOSystem = data["IOSystem"]
+    sat = data.get("SatelliteAccount")
+    home = data["open_home_region"]
+    kwargs = {}
+    if "capital_share" in data:
+        kwargs["capital_share"] = data["capital_share"]
+    sam, quality, sectors = build_open_sam(io, home_region=home, **kwargs)
+    if quality.worst.value == "fail":
+        raise ValueError(
+            f"open SAM from {io.provenance.build_id} failed quality gates: {quality.summary()}"
+        )
+
+    # Per-sector carbon cost share from the satellite, restricted to the HOME region's labels and
+    # aggregated to sectors output-weighted (same construction as the closed IO path).
+    carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+    share = _open_carbon_share_from_io(io, sat, carbon_shocks, home, sectors, years)
+
+    inner = {k: v for k, v in data.items() if k not in ("IOSystem", "SatelliteAccount")}
+    inner["SAM"] = sam
+    if share is not None:
+        inner["carbon_cost_share"] = share
+    inner["_sam_quality"] = quality  # surfaced in the manifest by _run_open
+    return _run_open(meta, inner, shocks, years)
+
+
+def _open_carbon_share_from_io(io, sat, carbon_shocks, home, sectors, years):
+    """Per-sector dimensionless carbon cost share for the HOME region, or None if not priced.
+
+    Reuses Engine 1's ``carbon_cost_vector`` (units/gases/coverage/1e-6 scaling) on the home
+    region's labels, then aggregates to sectors output-weighted — the same recipe the closed path
+    uses, restricted to the home economy."""
+    positive = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
+    if not positive or sat is None:
+        return None
+    from cge.engines.io_price.engine import carbon_cost_vector
+
+    _assert_cge_units(io, sat)
+    labels = list(io.A.columns)
+    home_mask = [lb.split(":", 1)[0] == home for lb in labels]
+    cost, _descs = carbon_cost_vector(carbon_shocks, sat, labels, years[0])
+    A = io.A.to_numpy(dtype=float)
+    fd = io.final_demand.sum(axis=1).reindex(labels).fillna(0.0).to_numpy(dtype=float)
+    x = np.linalg.solve(np.eye(A.shape[0]) - A, fd)
+    s_index = {s: k for k, s in enumerate(sectors)}
+    num = np.zeros(len(sectors))
+    den = np.zeros(len(sectors))
+    for lb, c_i, xi, is_home in zip(labels, cost, x, home_mask, strict=True):
+        if not is_home:
+            continue
+        k = s_index[lb.split(":", 1)[1]]
+        num[k] += c_i * xi
+        den[k] += xi
+    cc = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
+    return {s: float(cc[i]) for i, s in enumerate(sectors)} if np.any(cc != 0.0) else None
+
+
 def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
     """Open-economy (Armington/CET) CGE run. The SAM has ``a_<s>``/``c_<s>`` activity/commodity
     accounts, factors, a household and a ``ROW`` account. Carbon cost is a supplied per-sector
-    dimensionless ``carbon_cost_share`` (an IOSystem→SAM open build is a follow-up)."""
+    dimensionless ``carbon_cost_share`` (either supplied directly, or built from an IOSystem by
+    ``_run_open_from_io``)."""
     from cge.engines.cge_static import model_open as MO
     from cge.engines.cge_static.calibrate_open import calibrate_open
 
@@ -846,6 +916,13 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             "foreign_savings": float(cal.foreign_savings),
             "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
+            # SAM credibility surface when the open SAM was built from an IOSystem (None when a SAM
+            # was supplied directly and validated separately).
+            "sam_quality": (
+                {"worst": _q.worst.value, "summary": _q.summary()}
+                if (_q := data.get("_sam_quality")) is not None
+                else "supplied directly (validated: aligned, finite, non-negative, balanced)"
+            ),
             "inputs": [
                 input_identity("SAM", sam.provenance, content=_sam_fingerprint(sam)),
                 *emissions_inputs,

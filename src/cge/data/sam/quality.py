@@ -40,10 +40,18 @@ def sam_quality_report(
     capital_share: float,
     adjustment: pd.DataFrame | None = None,
     value_added_clipped: float = 0.0,
+    open_economy: bool = False,
 ) -> QualityReport:
     """Build the SAM ``QualityReport``. ``adjustment`` (raw − balanced) drives the adjustment-audit
-    check when RAS moved cells; pass ``None`` when no balancing was needed."""
+    check when RAS moved cells; pass ``None`` when no balancing was needed. ``open_economy`` selects
+    the account naming for the aggregate-preservation reads: an open SAM uses ``a_<s>`` activity and
+    ``c_<s>`` commodity accounts (value added is paid by activities, final demand received by
+    commodities), a closed SAM uses plain sector accounts for both."""
     report = QualityReport(build_id=build_id)
+    # Account labels the aggregate-preservation checks read from (differ open vs closed).
+    va_cols = [f"a_{s}" for s in sectors] if open_economy else sectors
+    fd_rows = [f"c_{s}" for s in sectors] if open_economy else sectors
+    output_rows = [f"a_{s}" for s in sectors] if open_economy else sectors
 
     # 1. Balance identity (fatal): row sum = column sum per account.
     imb = imbalance(matrix)
@@ -59,10 +67,10 @@ def sam_quality_report(
     )
 
     # 2. Aggregate preservation: SAM reproduces source EXIOBASE aggregates.
-    sam_fd = float(matrix.loc[sectors, household].sum())
-    sam_va = float(matrix.loc[factors, sectors].to_numpy().sum())
-    # Gross output = intermediate sales + final demand (row totals of the sector accounts).
-    sam_x = float(matrix.loc[sectors, :].to_numpy().sum())
+    sam_fd = float(matrix.loc[fd_rows, household].sum())
+    sam_va = float(matrix.loc[factors, va_cols].to_numpy().sum())
+    # Gross output = intermediate sales + final demand (row totals of the output-side accounts).
+    sam_x = float(matrix.loc[output_rows, :].to_numpy().sum())
     for name, sam_val, src_val in (
         ("final_demand", sam_fd, source_final_demand),
         ("value_added", sam_va, source_value_added),

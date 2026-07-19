@@ -215,6 +215,48 @@ def _real_sam_replication():
     return err < 1e-6, f"real-SAM benchmark replication error = {err:.2e}", err, 1e-6
 
 
+@check(SUITE, "open_replicates_on_built_sam")
+def _open_real_sam_replication():
+    """The open analogue of the 5.1b gate: build an **open** SAM (home region + rest-of-world) from
+    an EXIOBASE-shaped build, quality-gate it, and confirm the open CGE calibrates and replicates
+    its benchmark to machine precision — proving the IOSystem→open-SAM→calibrate→solve pipeline
+    works on structured multi-region data (offline pymrio test MRIO, not live EXIOBASE)."""
+    import tempfile
+
+    from cge.data.build import build_test
+    from cge.data.sam import build_open_sam
+    from cge.data.store import DataStore
+    from cge.engines.cge_static import model_open as MO
+    from cge.engines.cge_static.calibrate_open import calibrate_open
+
+    store = DataStore(tempfile.mkdtemp())
+    build_test(store=store)
+    bid = next(b for b in store.build_ids() if b != "exiobase-test")
+    io = store.load(bid)["IOSystem"]
+    home = list(io.regions.labels)[0]
+    sam, report, sectors = build_open_sam(io, home_region=home)
+    if not report.passed:
+        return False, "open SAM quality gate failed on the built SAM", None, None
+    cal = calibrate_open(sam, sectors=sectors, factors=["CAP", "LAB"])
+    ns = len(sectors)
+    sol = solve(
+        lambda z: MO.residuals(cal, z, recycling="lump_sum"),
+        MO.initial_guess(cal) * 1.03,
+        prefer="scipy",
+    )
+    st = MO.derive_open_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns : 2 * ns],
+        sol.x[2 * ns : 2 * ns + 2],
+        float(sol.x[-1]),
+        recycling="lump_sum",
+        strict=True,
+    )
+    err = max(float(np.max(np.abs(st.Z - cal.Z0))), float(np.max(np.abs(st.M - cal.M0))))
+    return err < 1e-6, f"open real-SAM replication error = {err:.2e}", err, 1e-6
+
+
 # -- open economy (Armington/CET) ---------------------------------------------
 _OPEN_EMISSIONS = np.array([2.0, 0.5])
 
