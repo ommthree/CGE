@@ -64,8 +64,31 @@ def render() -> None:
             c_regions = st.multiselect(
                 "Carbon price — region coverage (empty = all)", regions, default=[], key="c_regions"
             )
+            # Gas selection: which GHGs the price applies to (must exist in the build's GHG
+            # account). Default CO2. 'CO2e' cannot be mixed with component gases.
+            gases = st.multiselect(
+                "Gases priced", ["CO2", "CH4", "N2O", "CO2e"], default=["CO2"], key="c_gases"
+            ) or ["CO2"]
+            # Revenue recycling — only meaningful for a general-equilibrium engine (the CGE); the
+            # cost-push engines (io_price/partial_eq) have no government budget and reject it.
+            recycling = "none"
+            if "general_equilibrium" in [c.value for c in meta.capabilities]:
+                recycling = st.selectbox(
+                    "Revenue recycling",
+                    ["lump_sum", "labour_tax_cut", "none"],
+                    help="How the carbon revenue is returned. A closed CGE cannot destroy it, so "
+                    "'none' auto-defaults to lump_sum; use Engine 1 for a pure price-side view.",
+                    key="c_recycling",
+                )
             if price > 0:
-                shocks.append(CarbonPrice(price=price, coverage_regions=c_regions))
+                shocks.append(
+                    CarbonPrice(
+                        price=price,
+                        gases=gases,
+                        coverage_regions=c_regions,
+                        revenue_recycling=recycling,
+                    )
+                )
     else:
         st.info(f"Engine {engine_name!r} does not support carbon-price shocks.")
 
@@ -73,8 +96,8 @@ def render() -> None:
     if "energy_price" in meta.supported_shocks:
         st.subheader("Energy-carrier prices")
         st.caption(
-            "A rise (or fall) in an energy carrier's **output price**, applied on top of the "
-            "carbon price. Each propagates through the supply chain and composes additively."
+            "A rise (or fall) in an energy carrier's **output price** — the carrier's price is "
+            "pinned to exactly this change and propagates downstream through the supply chain."
         )
         sectors = svc.sectors(data_source)
         # Order suggested carriers first, then the rest, so the common choice is at the top.

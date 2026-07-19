@@ -83,6 +83,15 @@ G^{\text{real}}_r = \frac{1+G^{\text{nom}}_r}{1+D_r}-1. \tag{5} $$
 Per-good real GVA change uses the same regional deflator:
 $g^{\text{real}}_i=(1+g^{\text{nom}}_i)/(1+D_{r(i)})-1$.
 
+**Index-number convention (be explicit — review P2).** The deflator $D_r$ (4) is a **value-added-
+weighted price index** on base-year VA shares (a Laspeyres-type price index), and "real" means
+nominal deflated by it. Two consequences to read correctly: (i) $G^{\text{real}}_r$ is a
+VA-share-weighted quantity index, not a base-price GDP recomputation — the two coincide only to
+first order; (ii) **sector `gva_change_real` deflates the sector's nominal GVA by the *regional*
+deflator**, so it is a *real-income* measure for that sector, **not** the sector's own
+production-volume change. For the latter, use `volume_change` (the engine's Δx/x). This convention
+and the macro-postprocessor version are recorded in the run manifest under `macro_aggregates`.
+
 **Reading the two engines.** With Engine 1 (prices only), $\Delta x_i=0$, so $G^{\text{nom}}_r=D_r$
 and $G^{\text{real}}_r=0$: a price-only model produces **inflation but no real GDP movement** — the
 honest statement that it says nothing about real quantities. With Engine 2, volumes fall, so

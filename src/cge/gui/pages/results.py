@@ -24,6 +24,7 @@ def render() -> None:
         f"Scenario: **{scenario.name}**  ·  engine `{result.manifest.engine_name}`  ·  "
         f"data `{result.manifest.data_source}`  ·  hash `{result.manifest.scenario_hash}`"
     )
+    is_cge = result.manifest.engine_name == "cge_static"
 
     if rv.has_volume(result):
         st.info(
@@ -51,16 +52,25 @@ def render() -> None:
     table["change_%"] = (table["value"] * 100).round(3)
     st.dataframe(table, width="stretch", hide_index=True)
 
-    # -- volume response (Engine 2) --------------------------------------------
+    # -- volume response -------------------------------------------------------
     if rv.has_volume(result):
-        st.subheader("Volume change by good (with uncertainty band)")
-        st.caption(
-            "Δx/x — fractional change in **production** (gross-output) volume, shown as percent. "
-            "A carbon price raises prices; the finite-change demand response Δy/y=(1+Δp)^ε−1 cuts "
-            "final demand; that propagates through the Leontief system x=(I−A)⁻¹y so upstream "
-            "suppliers fall too. low/central/high span the demand-elasticity uncertainty "
-            "(Engine 2 is **indicative**, not precise). Negative = volume falls."
-        )
+        st.subheader("Volume change by good")
+        if is_cge:
+            st.caption(
+                "Δx/x — the **general-equilibrium** change in each sector's output, from the CGE "
+                "(input substitution + factor markets clearing). With revenue recycling a carbon "
+                "price **reallocates** output from dirty to clean sectors rather than only "
+                "shrinking it. Indicative magnitudes (pilot calibration). Shown as percent."
+            )
+        else:
+            st.caption(
+                "Δx/x — fractional change in **production** (gross-output) volume, shown as "
+                "percent. A carbon price raises prices; the finite-change demand response "
+                "Δy/y=(1+Δp)^ε−1 cuts final demand; that propagates through the Leontief system "
+                "x=(I−A)⁻¹y so upstream suppliers fall too. low/central/high span the "
+                "demand-elasticity uncertainty (partial-equilibrium engine — **indicative**). "
+                "Negative = volume falls."
+            )
         env = rv.volume_envelope(result).copy()
         for b in ("low", "central", "high"):
             if b in env.columns:
@@ -70,15 +80,23 @@ def render() -> None:
         ]
         st.dataframe(env[show], width="stretch", hide_index=True)
 
-    # -- macro aggregates (Phase 4b) ------------------------------------------
+    # -- macro aggregates ------------------------------------------------------
     if rv.has_macro(result):
         st.subheader("Macroeconomic aggregates")
-        st.caption(
-            "GDP and value added rolled up from the per-good responses (indicative PE tier). "
-            "**Nominal** includes the price effect; **real** deflates it out by the region's GDP "
-            "deflator (inflation). A price-only run (Engine 1) shows inflation with ~0 real GDP "
-            "change; a volume run (Engine 2) shows real GDP falling. Shown as percent."
-        )
+        if is_cge:
+            st.caption(
+                "GDP, deflator and (if present) welfare are **native CGE equilibrium outputs** — "
+                "not a post-hoc roll-up. **Real** GDP deflates nominal by the exact Cobb-Douglas "
+                "consumer price index. Shown as percent."
+            )
+        else:
+            st.caption(
+                "GDP and value added rolled up from the per-good responses (**indicative PE "
+                "tier**, not a general-equilibrium result). **Nominal** includes the price effect; "
+                "**real** deflates it by the region's value-added-weighted GDP deflator. A "
+                "price-only run (Engine 1) shows inflation with ~0 real GDP; a volume run "
+                "(Engine 2) shows real GDP falling. Shown as percent."
+            )
         gdp = rv.macro_gdp_table(result).copy()
         for c in ("GDP Δ (nominal)", "GDP Δ (real)", "deflator (inflation)"):
             if c in gdp.columns:

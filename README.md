@@ -23,8 +23,12 @@ model, validated on live EXIOBASE) and the change in its **production volume** (
 partial-equilibrium demand response with a low/central/high uncertainty band). Built on the
 Phase 3 GUI, Phase 1 data layer (live EXIOBASE + quality/consistency checks), and Phase 0
 contracts, with a standing model-validation suite ([`docs/validation.md`](docs/validation.md)).
-Next: the simple static CGE (Phase 5). Volume magnitudes are indicative (elasticity-dependent);
-cost answers are validated. See [`docs/phase-4-status.md`](docs/phase-4-status.md).
+Also: **macro aggregates** (GVA/GDP/deflators, real vs nominal — Phase 4b) and a **static CGE**
+(Engine 3, Phase 5) with **carbon-tax revenue recycling** — a pilot that calibrates on an
+EXIOBASE-shaped SAM, passes the standard CGE battery (replication/homogeneity/Walras), and shows
+the revenue-recycling effect and dirty→clean reallocation (Armington/multi-region pending). Volume
+magnitudes are indicative; cost answers are validated. See
+[`docs/models/cge-static.md`](docs/models/cge-static.md).
 
 ```bash
 cge gui                                                # launch the web GUI
@@ -71,7 +75,9 @@ cge validate --strict
 > scientific deps are optional extras pulled in by the phase that needs them:
 > `.[data]` (pymrio/duckdb), `.[cge]` (pyomo/scipy), `.[gui]` (streamlit).
 >
-> The CGE solver (Phase 5) uses **IPOPT via pyomo** for real runs when its binary is present
+> The CGE (Phase 5) currently solves with a pure-Python **scipy** root-find (the model residual is
+> numeric-only, so IPOPT is not yet wired for it — a symbolic-residual follow-up). The solver
+> abstraction supports **IPOPT via pyomo** for symbolic problems when its binary is present
 > (install once with `idaes get-extensions`, or a conda-forge `ipopt`), and falls back to a
 > pure-Python **scipy** solver otherwise — so the engine and its tests run anywhere without a
 > solver binary. `cge validate` gates IPOPT-only checks on availability.

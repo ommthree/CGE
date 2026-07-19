@@ -1,8 +1,12 @@
 # Phase 5 plan — Engine 3: a simple static CGE
 
-**Status: PLAN ONLY — not started.** This is the design-and-test plan for the hardest phase.
-The guiding principle from the roadmap holds: **"toy but honest."** A small, static,
-single-region-first CGE that is *correct* and *transparent*, not a GTAP competitor. Its value
+**Status: PILOT IMPLEMENTED (5.0 + 5.1 + 5.2a + 5.3 recycling).** This is the original design-and-
+test plan; the correctness-first pilot it describes is now built — see
+[`docs/models/cge-static.md`](models/cge-static.md) for the equation-level implementation and honest
+scope (single region, EXIOBASE-shaped test data, scipy solver, recycling in; Armington / multi-
+region / live-EXIOBASE gate / elasticity sweeps pending). The guiding principle from the roadmap
+holds: **"toy but honest."** A small, static, single-region-first CGE that is *correct* and
+*transparent*, not a GTAP competitor. Its value
 is general-equilibrium price **and** volume answers with revenue recycling, and a cross-check
 on Engines 1–2 — not three-decimal precision.
 

@@ -175,22 +175,27 @@ $\ge 1$ while still satisfying $\rho(\mathbf{A})<1$, so the engine checks $\rho$
 
 ### 5a. Energy-carrier output-price changes (`EnergyPrice`)
 
-The engine also accepts an **energy-carrier output-price change** as an additional, optional cost
-shock (see `docs/energy-and-temperature-plan.md`, Feature 1). An `EnergyPrice` with carrier $k$
-and fractional change $\delta_k$ says "carrier $k$'s output price rises by $\delta_k$". Because a
-fractional output-price change *is* a direct cost share on the carrier's own products, its
-contribution to the cost vector is simply
+The engine also accepts an **energy-carrier output-price change** as an additional, optional shock
+(see `docs/energy-and-temperature-plan.md`, Feature 1). An `EnergyPrice` with carrier $k$ and
+fractional change $\delta_k$ says "carrier $k$'s output price rises by $\delta_k$". This is applied
+as an **exogenous price pin** — a boundary condition, not a cost wedge: the carrier's own price
+change is fixed to exactly $\delta_k$,
 
-$$ c^{\text{energy}}_i = \sum_{k} \delta_k \, \mathbb{1}[\,\text{sector}(i)=k\,]\,m^{(k)}_i, $$
+$$ \Delta p_i = \delta_k \quad\text{for } i \text{ a covered product of carrier } k, $$
 
-where $m^{(k)}$ is the shock's coverage mask (1 on covered regions, 0 elsewhere). This term is
-**already dimensionless** — no M€→€ scaling — because it is a price *ratio*, not a €/tonne
-quantity. It is added to the carbon cost vector and solved through the **same**
-$(\mathbf{I}-\mathbf{A}^{\!\top})^{-1}$, so it propagates to every good in proportion to how much
-of carrier $k$ that good uses, directly and upstream. Carbon and energy shocks therefore
-**compose additively** (the price system is linear; validated to machine precision by the
-`carbon_energy_additive` check). The carrier must be a real energy sector in the build (the
-engine rejects an unknown carrier rather than returning a silent zero-impact result).
+and the remaining (free) products' zero-profit conditions are solved *given* those pinned prices:
+
+$$ \Delta p_i - \sum_{j\ \text{free}} A_{ji}\,\Delta p_j
+   = c_i + \sum_{j\ \text{pinned}} A_{ji}\,\Delta p_j \quad (i\ \text{free}). $$
+
+A pin (not a cost share added to $c$) is used because a +30% *output-price* request must give the
+carrier exactly +30% — the earlier cost-wedge form gave +35.9%, since the carrier used its own
+output as an input and so inherited extra pass-through (review P2). Downstream users still pick up
+the carrier's higher price. Because the pin is dimensionless, an **energy-only** run needs no
+emission-unit metadata (the M€→€ unit check applies only when a carbon price is priced). In a
+combined carbon + energy run the carrier price is pinned to the energy change (the boundary
+condition wins on the carrier) while non-carrier sectors reflect both effects. The carrier must be
+a real energy sector in the build (an unknown carrier is rejected).
 
 Interpretation (1) — a rise in the carrier's *output price* — is implemented. Interpretation (2)
 — a rise in *every sector's energy-input cost*, scaled by each sector's energy purchase share —
@@ -238,8 +243,8 @@ Code-level unit tests live in `tests/test_io_price.py`. Current checks:
 | `units_plausible_magnitude` | €100/t on the toy gives $0<\Delta p<1$ (fractional), not the ~$10^3$–$10^9$ a missing unit conversion would give |
 | `gas_selection_distinct` | `gases=[CO2]` ≠ `gases=[CH4]`; combined is GWP-additive |
 | `time_path_varies_by_year` | a price path produces year-varying results |
-| `energy_price_direct_share_and_propagation` | `EnergyPrice` direct share is the fractional change on the carrier only; carrier price rises ≥ that change after propagation (§5a) |
-| `carbon_energy_additive` | carbon + energy = sum of the two run separately, to machine precision (linear price system) |
+| `energy_price_pins_carrier_exactly` | `EnergyPrice` pins the carrier's Δp to exactly the change (a boundary condition) and propagates downstream (§5a) |
+| `carbon_energy_pinned_carrier` | in a combined run the carrier price is pinned to the energy change; non-carrier sectors reflect both effects |
 | `engine_end_to_end` | runner → registered engine → schema-valid `ResultSet` + assumptions |
 
 Additional adversarial coverage in `tests/test_io_price.py`: negative-coefficient rejection,

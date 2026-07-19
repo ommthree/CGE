@@ -3,13 +3,15 @@
 - **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.2.0)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling)
 - **Capabilities:** general_equilibrium, prices, volumes
-- **Status:** implemented as the **correctness-first pilot** that now runs on **real EXIOBASE
-  data**. The model calibrates to a hand-checkable 2-sector SAM *and* to a SAM built from an
-  aggregated EXIOBASE build (§5a), and in both cases passes the standard CGE correctness battery
-  (benchmark replication, homogeneity, Walras) with theory-consistent carbon-price responses
-  (`cge_static` validation suite). It is deliberately **not** the full production model yet:
-  Armington trade, multiple regions, and revenue recycling (5.3) are the next sub-phases.
-  Magnitudes from the pilot are illustrative.
+- **Status:** implemented as the **correctness-first pilot** with **revenue recycling**. The model
+  calibrates to a hand-checkable 2-sector SAM *and* to a SAM built from an aggregated **EXIOBASE-
+  shaped** build (§5a), and in both cases passes the standard CGE correctness battery (benchmark
+  replication, homogeneity, Walras) plus the recycling-effect checks, with theory-consistent
+  carbon-price responses (`cge_static` validation suite).
+  **Honest scope note:** the automated build/validation uses the **offline pymrio *test* MRIO**
+  (an EXIOBASE-shaped fixture), *not* live EXIOBASE — the live-data suite currently exercises only
+  the adapter and Engine 1. A live-EXIOBASE CGE gate is a follow-up. Armington trade, multiple
+  regions, and elasticity sensitivity are the remaining sub-phases; magnitudes are illustrative.
 
 ## 1. Purpose & scope
 
@@ -57,9 +59,12 @@ pilot is the provable core.
    clear their markets.
 4. **CPI numéraire** — the consumer price index is fixed to 1, pinning the price level (the model
    is homogeneous of degree zero in nominal prices; only relative prices are determined).
-5. **Carbon price = a cost wedge** — $\tau e_i$ is added to sector $i$'s unit cost in the
-   zero-profit condition, reusing the Engine-1 emission intensities so units stay consistent. The
-   pilot uses `none` revenue recycling (the tax is a pure wedge).
+5. **Carbon price = a cost wedge** — a dimensionless per-sector carbon cost share $cc_i$ is added
+   to sector $i$'s unit cost in the zero-profit condition. On a real build $cc_i$ is built the
+   **same way as Engine 1** — via `carbon_cost_vector` (honouring the selected gases, coverage, and
+   the $10^{-6}$ M-currency→currency scaling that makes $\tau e_i$ dimensionless) — then aggregated
+   to sectors output-weighted. A currency-flexible unit gate requires the build to be
+   millions-denominated with matching satellite units. The revenue is recycled (§4a).
 
 ## 4. The model (equation level)
 
@@ -110,10 +115,13 @@ household receives $R$ (equation 3):
   `recycling_defaulted_from_none`) and points the user to Engine 1 for the pure price-side view.
 
 **The revenue-recycling effect** (a validated result): a carbon price *without* recycling reduces
-real household consumption; returning the revenue offsets it. With full recycling the aggregate
-economy is roughly preserved but output **reallocates** from the dirty sector to the clean one — the
-substitution signal, which Engines 1–2 cannot show. Reported outputs include `welfare_change` (real
-consumption index), `carbon_revenue`, and per-factor `factor_price_change`.
+household welfare; returning the revenue offsets it. With full recycling the aggregate economy is
+roughly preserved but output **reallocates** from the dirty sector to the clean one — the
+substitution signal, which Engines 1–2 cannot show. Reported outputs: `welfare_change` — the change
+in **Cobb-Douglas utility** $U=\prod_i FD_i^{\gamma_i}$ (the correct welfare measure for the CD
+household, equivalently real income deflated by the exact CD price index $\prod_i p_i^{\gamma_i}$);
+`carbon_revenue`; `gdp_change` / `gdp_change_real` (real deflated by the CD price index);
+`deflator`; and per-factor `factor_price_change` (incl. the capital rental rate).
 
 ## 5. Calibration
 
@@ -148,21 +156,36 @@ imbalance remains (thin data, fabricated cells) it is **RAS**-balanced [MillerBl
 the adjustment magnitude is recorded. The `cge.data.sam.quality` report checks: balance identity
 (fatal), **aggregate preservation** (the SAM reproduces the source EXIOBASE gross output / final
 demand / value added within $10^{-6}$), balancing-adjustment magnitude (WARN past 5%), negative
-cells, and the assumed capital share — so a run states how much the data was "helped". A SAM whose
-report **fails** is rejected; the engine will not calibrate on a bad SAM. The report's worst
+cells (**fatal** — calibration reads shares off the cells), the size of any negative-value-added
+clip (recorded pre-clip so the transformation is visible), and the assumed capital share. A SAM
+whose report **fails** is rejected; the engine will not calibrate on a bad SAM. The report's worst
 severity and summary are surfaced in the run manifest (`sam_quality`).
 
-**Emission intensities.** For a real build, per-sector emission intensity is the output-weighted
-mean of the regional intensities from the satellite CO₂ row — reusing the same emissions data as
-Engine 1, so the carbon-price wedge $\tau e_i$ is unit-consistent across engines.
+**A directly-supplied SAM** (the toy pilot path) is separately **validated** — account alignment,
+finite, non-negative, balanced — and rejected otherwise (it does not go through `build_sam`, so it
+must be checked on its own; review P1). Calibration additionally rejects zero-output sectors, zero
+value added, and invalid final-demand totals before dividing by them.
+
+**Emission cost.** For a real build the per-sector carbon cost share is built by Engine 1's
+`carbon_cost_vector` (gases, coverage, GWP, and the $10^{-6}$ scaling) on the multi-regional labels
+and aggregated to sectors output-weighted — so the carbon wedge is unit-consistent with Engine 1
+(review P0). The satellite identity and a content hash of the effective cost-share vector are
+recorded in the manifest, so a changed satellite, doubled emissions, or a different gas/coverage
+selection all move the result's identity (review P1).
 
 ## 6. Solver
 
-The equilibrium is a square nonlinear system $F(z)=0$ solved by `cge.engines.cge_static.solver`:
-**IPOPT via pyomo when its binary is present, else a pure-Python scipy root-find** (log-space, so
-positivity-bounded prices/quantities cannot cross zero). A non-converged solve **raises**
-(`SolveError`) — never returns non-equilibrium numbers — and the backend + termination status are
-recorded in the run manifest. CI runs on the scipy fallback so it needs no solver binary.
+The equilibrium is a square nonlinear system $F(z)=0$ solved by `cge.engines.cge_static.solver`
+via a **pure-Python scipy root-find** (log-space, so positivity-bounded prices/quantities cannot
+cross zero). A non-converged solve **raises** (`SolveError`) — never returns non-equilibrium numbers
+— and the solver backend, its termination status, and the residual norm are recorded in the run
+manifest (`solver_backends`, `solver_statuses`).
+
+**IPOPT is not yet enabled for the CGE.** The solver abstraction *can* use IPOPT (and does for a
+symbolic test program), but the CGE model residual is currently numeric-only (it evaluates the
+Leontief inverse and Cobb-Douglas cost functions with numpy), so it cannot build a symbolic Pyomo
+model. The engine therefore pins the scipy backend; a symbolic residual to enable IPOPT is a
+documented follow-up (review P1). scipy solves the small model well; CI needs no solver binary.
 
 ## 7. Validation
 
@@ -180,7 +203,7 @@ battery, §7 of the phase-5 plan):
 | `carbon_price_reallocates_dirty_to_clean` | with recycling, output shifts from the dirty sector to the clean one |
 | `carbon_price_raises_dirty_relative_price` | the dirty good's price rises relative to the clean good's |
 | `revenue_recycling_offsets_welfare_loss` | lump-sum recycling restores real consumption a pure wedge destroys (the revenue-recycling effect) |
-| `replicates_on_real_exiobase_sam` | the CGE calibrates on a SAM built from a real EXIOBASE build and replicates its benchmark to machine precision (the 5.1b gate) |
+| `replicates_on_built_sam` | the CGE calibrates on a SAM built from an EXIOBASE-shaped build (offline pymrio test MRIO, not live EXIOBASE) and replicates its benchmark to machine precision (the 5.1b gate) |
 
 Plus solver checks (known-answer, non-convergence raises, IPOPT gated) and engine tests
 (zero-shock replication, GE outputs emitted, cross-engine sign consistency with Engine 2, recycling

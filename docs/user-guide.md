@@ -3,10 +3,12 @@
 A guided tour from the simplest possible run to the full current feature set. Each step builds on
 the previous one. Follow it top to bottom the first time; afterwards it doubles as a reference.
 
-**What exists today:** two engines — **Engine 1 (`io_price`)**, carbon/energy **cost** pass-through,
-and **Engine 2 (`partial_eq`)**, production-**volume** response — plus a data layer (build, store,
-quality) and a web GUI. The CGE (Engine 3), nature (ENCORE), macro aggregates (GVA/GDP), and the
-pathway stack are planned (see [`roadmap.md`](../roadmap.md)); this guide covers what runs now.
+**What exists today:** three engines — **Engine 1 (`io_price`)**, carbon/energy **cost**
+pass-through; **Engine 2 (`partial_eq`)**, production-**volume** response; and **Engine 3
+(`cge_static`)**, a general-equilibrium **CGE pilot** with revenue recycling — plus **macro
+aggregates** (GVA/GDP/deflators, real vs nominal) on every run, a data layer (build, store,
+quality), and a web GUI. Nature (ENCORE) and the pathway stack are planned (see
+[`roadmap.md`](../roadmap.md)); this guide covers what runs now.
 
 > Conventions: shell commands are shown with a `$` prompt. Everything here works **offline** except
 > the live EXIOBASE build in Step 6. If `cge` is not on your PATH, use `python -m cge` instead, or

@@ -10,12 +10,14 @@ typed shock vocabulary and the module slots, see `docs/overview.md` §2).
 ## Feature 1 — Country-level energy prices as optional inputs (near-term; low risk) — ✅ IMPLEMENTED
 
 **Status: implemented** in Engine 1 (`io_price`) and available to Engine 2 (`partial_eq`) via the
-shared price step, and **exposed in the GUI Run page** (carbon + any number of energy-carrier price
-shocks, composed into one scenario). Interpretation (1) — a rise in the carrier's *output price* —
-is built; interpretation (2) is documented as available-if-needed but not implemented. See
-`docs/models/io-price-model.md` §5a for the equation-level method, `examples/energy_price_io.yaml`
-for a runnable scenario, and the `energy_price_direct_share_and_propagation` /
-`carbon_energy_additive` validation checks. Below is the design as built.
+shared price step, and **exposed in the GUI Run page**. Interpretation (1) — a rise in the carrier's
+*output price* — is built as an **exogenous price pin** (the carrier's Δp equals the request
+exactly; a +30% run gives +30% on the carrier, not the +35.9% an earlier cost-wedge form produced);
+downstream users still pick up the propagated price. Interpretation (2) is documented as
+available-if-needed but not implemented. See `docs/models/io-price-model.md` §5a for the
+equation-level method, `examples/energy_price_io.yaml` for a runnable scenario, and the
+`energy_price_pins_carrier_exactly` / `carbon_energy_pinned_carrier` validation checks. Below is the
+original design; note the cost-wedge framing there has been superseded by the price-pin form above.
 
 ### What it is
 An **exogenous energy-price change**, per country and energy carrier (coal / oil-gas /

@@ -1,8 +1,9 @@
 # Engine 1 (io_price): cost impact of an energy-carrier output-price change, optionally
-# combined with a carbon price. An EnergyPrice raises the carrier's output price by a fractional
-# amount and propagates it through the supply chain via the same Leontief pass-through as a
-# carbon cost; the two compose additively. See docs/models/io-price-model.md and
-# docs/energy-and-temperature-plan.md (Feature 1).
+# combined with a carbon price. An EnergyPrice PINS the carrier's own price change to exactly the
+# requested amount (an exogenous boundary condition), and that higher price propagates downstream
+# through the Leontief system. In a combined run the carrier is pinned to the energy change while
+# other sectors reflect both the carbon cost and the propagated energy price. See
+# docs/models/io-price-model.md §5a and docs/energy-and-temperature-plan.md (Feature 1).
 #
 #   cge run --scenario examples/energy_price_io.yaml
 #

@@ -220,7 +220,8 @@ the CGE and nature extensions are planned.**
 | 2 — Engine 1 (price) | carbon-cost pass-through, validated on live EXIOBASE | ✅ [status](phase-2-status.md) |
 | 3 — Web GUI | the six-page Streamlit app | ✅ [status](phase-3-status.md) |
 | 4 — Engine 2 (volume) | partial-equilibrium volume response with bands | ✅ [status](phase-4-status.md) |
-| 5 — Engine 3 (CGE) | general-equilibrium + revenue recycling | 📋 [plan](phase-5-plan.md) |
+| 4b — Macro aggregates | GVA/GDP/deflators, real vs nominal (PE tier) | ✅ [model doc](models/macro-aggregates.md) |
+| 5 — Engine 3 (CGE) | GE price+volume, **revenue recycling**, reallocation — pilot on EXIOBASE-shaped data (Armington/multi-region pending) | 🔶 [model doc](models/cge-static.md) |
 | 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | ⬜ [roadmap](../roadmap.md) |
 | 7 — Pathway stack | NGFS-driven dynamics + FaIR climate | ⬜ [roadmap](../roadmap.md) |
 

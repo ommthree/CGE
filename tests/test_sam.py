@@ -58,9 +58,10 @@ def test_capital_share_out_of_range_rejected(small_build_io):
         build_raw_sam(io, capital_share=1.5)
 
 
-def test_cge_calibrates_and_replicates_on_real_sam(small_build_io):
-    """THE 5.1b gate: the pilot CGE calibrates on the real EXIOBASE SAM and replicates its
-    benchmark to machine precision (proves the model works on real data, not just the toy)."""
+def test_cge_calibrates_and_replicates_on_built_sam(small_build_io):
+    """THE 5.1b gate: the pilot CGE calibrates on a SAM built from an EXIOBASE-shaped build (the
+    offline pymrio test MRIO, not live EXIOBASE) and replicates its benchmark to machine precision
+    (proves the SAM→calibrate→solve pipeline works on structured multi-region data)."""
     io, _store, _bid = small_build_io
     sam, _report, sectors = build_sam(io)
     cal = calibrate(sam, sectors=sectors, factors=["CAP", "LAB"])

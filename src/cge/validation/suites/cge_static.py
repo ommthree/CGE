@@ -157,11 +157,12 @@ def _relative_price():
     )
 
 
-@check(SUITE, "replicates_on_real_exiobase_sam")
+@check(SUITE, "replicates_on_built_sam")
 def _real_sam_replication():
-    """The 5.1b gate: build a SAM from a real (offline) EXIOBASE build, quality-gate it, and
-    confirm the CGE calibrates and replicates its benchmark to machine precision — proving the
-    model works on real balanced data, not only the toy."""
+    """The 5.1b gate: build a SAM from an EXIOBASE-shaped build (the offline pymrio **test** MRIO,
+    not live EXIOBASE — see the honest-status note), quality-gate it, and confirm the CGE
+    calibrates and replicates its benchmark to machine precision — proving the SAM→calibrate→solve
+    pipeline works on structured multi-region data, not only the hand-built toy."""
     import tempfile
 
     from cge.data.build import build_test
@@ -169,12 +170,12 @@ def _real_sam_replication():
     from cge.data.store import DataStore
 
     store = DataStore(tempfile.mkdtemp())
-    build_test(store=store)
+    build_test(store=store)  # offline pymrio test MRIO (NOT live EXIOBASE)
     bid = next(b for b in store.build_ids() if b != "exiobase-test")
     io = store.load(bid)["IOSystem"]
     sam, report, sectors = build_sam(io)
     if not report.passed:
-        return False, "SAM quality gate failed on the real build", None, None
+        return False, "SAM quality gate failed on the built SAM", None, None
     cal = calibrate(sam, sectors=sectors, factors=["CAP", "LAB"])
     sol = solve(lambda z: M.residuals(cal, z), M.initial_guess(cal) * 1.05, prefer="scipy")
     ns = len(sectors)

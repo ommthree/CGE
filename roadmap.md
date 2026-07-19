@@ -213,7 +213,8 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 
 > **Progress:** the **solver gate (5.0)**, **SAM construction & balancing (5.1)**, and the
 > **correctness-first pilot (5.2a)** are built and green. `cge.engines.cge_static` calibrates to a
-> hand-checkable balanced SAM **and to a SAM built from a real (aggregated) EXIOBASE build**, and in
+> hand-checkable balanced SAM **and to a SAM built from an aggregated EXIOBASE-shaped build** (the
+> offline pymrio test MRIO — *not* live EXIOBASE yet; a live CGE gate is a follow-up), and in
 > both cases passes the standard CGE battery — **benchmark replication** (to machine precision),
 > **homogeneity**, and **Walras' law** — plus theory-consistent carbon-price responses (dirty
 > output falls, dirty price rises, real GDP falls). SAM build (`cge.data.sam`): closed single-region
@@ -248,7 +249,7 @@ solver + termination status; a non-optimal solve raises (never returns numbers).
 **5.1 SAM construction (2–4 wk) — ✅ closed single-region done; open-economy accounts pending**
 - ✅ Map EXIOBASE flows into SAM accounts: sectors (activity=commodity, collapsed), factors (labour, capital), representative household — **single-region closed** economy (regions summed; the pilot is closed). Government / savings-investment / rest-of-world accounts land with the open-economy + recycling sub-phase (5.3). `cge.data.sam.build_sam`.
 - ✅ Value added derived from the IO identity and split capital/labour by a documented assumption; RAS balancer (`balance.py`) for the thin-data path; SAM-specific `QualityReport` (`quality.py`): balance, **aggregate preservation**, adjustment audit, negative-cell + assumed-share flags — surfaced in the run manifest, and a failing SAM is rejected.
-- **DoD (met for the closed single-region SAM):** balanced SAM reproducing EXIOBASE aggregates to 1e-6 with an audit trail; the CGE calibrates on it and replicates its benchmark to machine precision (`replicates_on_real_exiobase_sam` validation check).
+- **DoD (met for the closed single-region SAM):** balanced SAM reproducing source aggregates to 1e-6 with an audit trail; the CGE calibrates on it and replicates its benchmark to machine precision (`replicates_on_built_sam` validation check). Runs on the offline EXIOBASE-shaped test build; a live-EXIOBASE CGE gate is a follow-up.
 
 **5.2 Model core (2–4 wk)**
 - Static CGE in pyomo/IPOPT: nested CES production (KL–E–M nesting so carbon pricing can shift the energy nest), Armington imports / CET exports, household demand (Cobb-Douglas first, LES if needed), government with carbon-tax revenue and recycling options (lump-sum vs labour-tax cut), investment, standard closure choices (recommend: savings-driven, fixed trade balance, numéraire = CPI), square-model and degrees-of-freedom checks.
