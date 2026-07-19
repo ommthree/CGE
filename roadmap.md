@@ -235,8 +235,10 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 > exports respond to relative prices; a carbon price causes textbook carbon leakage), a **CES
 > value-added nest** (non-unitary factor substitution — capital/labour substitution as relative
 > factor prices move; NB *not* a double-dividend model — that needs a distortionary labour-tax
-> wedge / heterogeneous households, a follow-up), and **Armington elasticity sensitivity sweeps**
-> (low/central/high envelopes). All replicate their benchmark to machine precision and pass the
+> wedge / heterogeneous households, a follow-up), **Armington elasticity sensitivity sweeps**
+> (low/central/high envelopes), and a **non-zero-current-account closure** (foreign savings enter
+> household income as the ROW capital transfer er·Sf). All replicate their benchmark to machine
+> precision and pass the
 > standard CGE battery.
 >
 > **Remaining (a genuinely larger effort, deferred):** true **multiple regions** with bilateral

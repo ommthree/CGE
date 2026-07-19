@@ -147,12 +147,14 @@ def derive_open_state(
     pv = _va_unit_cost(cal, w)
     pz = _cet_price(cal, pd, pe)
 
-    # Household income = factor income + recycled carbon revenue. At fixed prices every quantity is
-    # LINEAR in income (FD = γ·I/pq, Q solves a linear system in FD, Z = ratio·Q), so the recycling
-    # fixed point I = factor_income + cc·Z(I) is linear and solves in closed form — no iteration, no
-    # silent non-convergence (review P2). Writing Z = I·z_unit with z_unit = Z evaluated at I=1:
-    #   I = factor_income + k·I,  k = cc·z_unit  ⇒  I = factor_income / (1 − k),  guarded k < 1.
+    # Household income = factor income + the net ROW capital transfer + recycled carbon revenue.
+    # Foreign savings Sf is a fixed foreign-currency inflow, so it enters income valued at the
+    # exchange rate (er·Sf) — this lets the model run a **non-zero current account** and still
+    # replicate. At fixed prices every quantity is LINEAR in income (FD = γ·I/pq, Q solves a linear
+    # system in FD, Z = ratio·Z), so the recycling fixed point solves in closed form: writing
+    # base = factor_income + er·Sf and Z = I·z_unit, I = base + k·I ⇒ I = base/(1−k), guarded k < 1.
     factor_income = float(np.dot(w, cal.endowment))
+    base_income = factor_income + er * cal.foreign_savings
     if recycling != "none" and np.any(cc != 0.0):
         _, z_unit, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq)
         k = float(cc @ z_unit)
@@ -165,9 +167,9 @@ def derive_open_state(
         # Non-strict: a smooth positive floor on (1−k) keeps income finite and the residual
         # C¹-continuous with a restoring gradient when a trial point has k≥1 (review P2); it is the
         # identity for a real equilibrium (1−k well above the floor).
-        income = factor_income / _safe_denom(1.0 - k)
+        income = base_income / _safe_denom(1.0 - k)
     else:
-        income = factor_income
+        income = base_income
     FD = cal.gamma * income / pq
     Q, Z, D, E, M = _quantities(cal, pd, pq, pm, pe, pz, FD)
     carbon_revenue = float(cc @ Z)
@@ -175,7 +177,7 @@ def derive_open_state(
     # linearity assumption above). Only in strict mode — the non-strict clamp deliberately violates
     # the identity to steer the solver, so checking it there would defeat the smooth-penalty design.
     if strict:
-        resid = income - (factor_income + (carbon_revenue if recycling != "none" else 0.0))
+        resid = income - (base_income + (carbon_revenue if recycling != "none" else 0.0))
         if abs(resid) > 1e-9 * max(1.0, abs(income)):  # pragma: no cover - guards the closed form
             raise ValueError(f"open income identity not satisfied (residual {resid:.3e}).")
     # Factor demand (Shephard on VA cost).

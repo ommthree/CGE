@@ -296,18 +296,37 @@ def test_open_sam_fingerprint_is_label_sensitive():
     assert _sam_fingerprint(s1) != _sam_fingerprint(s2)
 
 
-def test_open_nonzero_foreign_savings_rejected():
-    """P1: the pilot requires a balanced current account (income identity omits the ROW flow). The
-    fixture is a GENUINELY balanced SAM with Sf ≠ 0 — imports 40 > exports 30, with a ROW→HOH
-    capital transfer of 10 closing the ROW account (round-2 P2: the earlier fixture was described as
-    balanced but omitted that transfer, so it was actually unbalanced)."""
+def test_open_nonzero_foreign_savings_replicates():
+    """A GENUINELY balanced SAM with a **non-zero current account** (imports 40 > exports 30 ⇒
+    Sf = 10, with a ROW→HOH capital transfer of 10 closing the ROW account) calibrates and
+    replicates its benchmark to machine precision. Foreign savings enter household income as er·Sf
+    (Phase 5 deferred: the ROW closure lifts the earlier balanced-current-account restriction)."""
     sam = _build_open_sam(
         exports={"BRD": 20.0, "MIL": 10.0},
         imports={"BRD": 22.0, "MIL": 18.0},  # Σ imports 40 > Σ exports 30 → Sf = 10 ≠ 0
         domestic={"BRD": 80.0, "MIL": 110.0},
     )
-    assert is_balanced(sam.matrix, tol=1e-9)  # the SAM really is balanced
-    with pytest.raises(ValueError, match="balanced current account"):
+    assert is_balanced(sam.matrix, tol=1e-9)
+    cal = calibrate_open(sam, sectors=_SECTORS, factors=_FACTORS)
+    assert cal.foreign_savings > 0  # positive net capital inflow
+    sol, st = _solve(cal)
+    assert np.allclose(sol.x, 1.0, atol=1e-6)  # benchmark prices + er = 1
+    assert np.allclose(st.Z, cal.Z0, atol=1e-6)
+    assert np.allclose(st.M, cal.M0, atol=1e-6)
+    assert np.allclose(st.FD, cal.FD0, atol=1e-6)
+
+
+def test_open_row_transfer_must_match_net_trade():
+    """The SAM's ROW→household transfer must equal net foreign savings (Σimports−Σexports); a
+    mismatched ROW capital account is rejected rather than silently non-replicating."""
+    sam = _build_open_sam(
+        exports={"BRD": 20.0, "MIL": 10.0},
+        imports={"BRD": 22.0, "MIL": 18.0},
+        domestic={"BRD": 80.0, "MIL": 110.0},
+    )
+    sam.matrix.loc["HOH", "ROW"] += 5.0  # break the ROW capital-account balance
+    sam.matrix.loc["HOH", "CAP"] -= 5.0  # keep the matrix balanced overall
+    with pytest.raises(ValueError, match="ROW→household transfer"):
         calibrate_open(sam, sectors=_SECTORS, factors=_FACTORS)
 
 

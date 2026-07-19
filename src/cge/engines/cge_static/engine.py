@@ -14,8 +14,8 @@ economy, and an **open** economy (Armington imports + CET exports + a rest-of-wo
 value added, an endogenous exchange rate) selected automatically when the SAM carries a ``ROW``
 account. Both pass benchmark replication, homogeneity and Walras (the `cge_static` validation
 suite); the open variant additionally shows carbon leakage. **True multiple regions** (bilateral
-trade between build regions) and a **non-zero foreign-savings closure** are documented follow-ups;
-the open variant requires a balanced current account.
+trade between build regions) are a documented follow-up. A **non-zero current account** is supported
+(foreign savings enter household income as the ROW capital transfer er·Sf).
 
 Data contract (``data`` dict): either a ``SAM`` supplied directly (validated: aligned, finite,
 non-negative, balanced) with an optional per-sector dimensionless ``carbon_cost_share``, OR an
@@ -108,8 +108,9 @@ OPEN_ASSUMPTIONS = {
     ),
     "model_variant": (
         "open economy (Armington imports + CET exports) with a rest-of-world account; single "
-        "region + RoW (true multi-region is a follow-up); balanced current account required (zero "
-        "foreign savings — a non-zero-Sf closure is a documented follow-up)"
+        "region + RoW (true multi-region is a follow-up); a non-zero current account is supported "
+        "— foreign savings Sf = Σimports−Σexports is fixed at its benchmark level and enters "
+        "household income as er·Sf (the ROW capital transfer)"
     ),
     "scope": (
         "single region + rest-of-world, one representative household; revenue recycling to the "

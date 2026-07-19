@@ -279,12 +279,17 @@ algebraically inside the quantity block ($Q=(I-ax\,\mathrm{diag}(\text{ratio}))^
 $Z=\text{ratio}\cdot Q$), so the market clears by construction; adding it as a row would be
 tautological and overdetermine the system on paper. The system is therefore genuinely square.
 
-**Closure restriction (pilot).** The pilot **requires a balanced current account** ($\sum M=\sum E$,
-i.e. zero foreign savings): household income circulates only factor income + recycled carbon
-revenue, so a non-zero current account (which implies a net capital transfer with the rest of the
-world) is not yet represented in the income identity and is **rejected at calibration** rather than
-producing a non-replicating benchmark. A ROW-transfer / savings-investment closure is a documented
-follow-up.
+**Foreign-savings closure.** A **non-zero current account** is supported. Foreign savings
+$S_f = \sum M - \sum E$ (the net capital inflow financing a trade deficit) is **fixed at its
+benchmark level** — the standard small-open-economy closure — and the rest of the world runs a
+matching capital account, recorded in the SAM as a **ROW→household transfer** of $S_f$. That transfer
+enters household income valued at the exchange rate:
+$$ I = \sum_f w_f FF_f + er\cdot S_f + R, $$
+so the model replicates a non-zero-$S_f$ benchmark exactly. Calibration checks that the SAM's
+ROW→household transfer equals $\sum M - \sum E$ (rejecting a mis-specified ROW capital account). The
+trade-balance residual holds $S_f$ fixed: $\sum p^m_i M_i - \sum p^e_i E_i - er\cdot S_f = 0$. An
+*endogenous*-$S_f$ closure (a savings-investment account with domestic investment demand) is a
+documented follow-up.
 
 It **replicates its benchmark to machine precision** and produces the signature open-economy result:
 a carbon price on the dirty sector causes **carbon leakage** — its domestic output falls, its

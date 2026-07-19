@@ -340,24 +340,32 @@ def _balanced_nonzero_sf_sam():
     return SAM(provenance=prov, accounts=accts, matrix=m)
 
 
-@check(SUITE, "open_nonzero_foreign_savings_rejected")
-def _open_nonzero_sf_rejected():
-    """The open pilot's closure (income = factor income + recycled revenue) only replicates a
-    balanced current account, so a **genuinely balanced** SAM with non-zero foreign savings is
-    **rejected at calibration** rather than silently returning a non-replicating benchmark (2026-07
-    review P1). A proper ROW-transfer closure is a documented follow-up."""
+@check(SUITE, "open_nonzero_foreign_savings_replicates")
+def _open_nonzero_sf_replicates():
+    """A **genuinely balanced** open SAM with a non-zero current account (imports ≠ exports, closed
+    by a ROW→household capital transfer of Sf) calibrates and **replicates its benchmark to machine
+    precision**. Foreign savings enter household income as er·Sf, so the model runs a non-zero
+    current account exactly (Phase 5 deferred: the ROW closure that lifted the balanced-CA
+    restriction)."""
     from cge.data.sam.balance import is_balanced
     from cge.engines.cge_static.calibrate_open import calibrate_open
 
     sam = _balanced_nonzero_sf_sam()
     if not is_balanced(sam.matrix, tol=1e-9):
         return False, "fixture SAM is not actually balanced", None, None
-    try:
-        calibrate_open(sam, sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
-        return False, "non-zero foreign savings was NOT rejected", None, None
-    except ValueError as e:
-        ok = "balanced current account" in str(e)
-        return ok, f"balanced Sf≠0 SAM rejected as expected: {str(e)[:50]}", None, None
+    cal = calibrate_open(sam, sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
+    _s, st = _open_solve(cal)
+    err = max(
+        float(np.max(np.abs(st.Z - cal.Z0))),
+        float(np.max(np.abs(st.M - cal.M0))),
+        float(np.max(np.abs(st.FD - cal.FD0))),
+    )
+    return (
+        err < 1e-6 and cal.foreign_savings > 0,
+        f"non-zero-Sf (Sf={cal.foreign_savings:.4g}) replication error = {err:.2e}",
+        err,
+        1e-6,
+    )
 
 
 @check(SUITE, "open_homogeneity")
