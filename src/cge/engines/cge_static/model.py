@@ -12,9 +12,11 @@ Given a ``CalibratedModel`` and a shock, this builds the vector of equilibrium r
 - **Household:** Cobb-Douglas demand ``FD[i] = γ[i]·I/p[i]`` from income ``I = Σ_f w[f]·FF[f]``.
 - **Goods market:** ``X = (I − ax)⁻¹ FD`` (output meets intermediate + final demand).
 - **Factor market:** demand ``F[f,i] = β[f,i]·pv[i]·X[i]/w[f]``; clearing ``Σ_i F[f,i] = FF[f]``.
-- **Closure / numéraire:** the consumer price index is fixed to 1 (``Σ_i γ[i]·p[i] = 1``),
-  pinning the price level. By Walras' law one market clears residually, so the CPI equation
-  replaces one redundant factor-clearing equation — keeping the system square.
+- **Closure / numéraire:** the household's exact Cobb-Douglas price index (its cost of living) is
+  fixed to 1 (``Π_i p[i]^γ[i] = 1``), pinning the price level in CPI units. By Walras' law one
+  market clears residually, so this equation replaces one redundant factor-clearing equation —
+  keeping the system square. Because the CPI *is* the numéraire, there is no separate inflation
+  ("deflator") to report; real quantities and relative prices are the outputs.
 
 **Carbon price** enters as a per-unit cost on each sector's emissions (reusing the Engine-1
 emission intensities, so units stay consistent): it adds ``τ·e[i]`` to sector ``i``'s unit cost in
@@ -133,7 +135,9 @@ def residuals(
     - ns zero-profit conditions: p[i] − (Σ_j ax[j,i]·p[j] + pv[i] + τ·e[i]) = 0;
     - (nf − 1) factor-market clearing: Σ_i F[f,i] − FF[f] = 0 for all f except ``drop_factor``
       (dropped by Walras' law);
-    - 1 numéraire: Σ_i γ[i]·p[i] − 1 = 0 (fix the CPI).
+    - 1 numéraire: Π_i p[i]^γ[i] − 1 = 0 (fix the exact CD consumer price index — its own
+      cost-of-living index — so the deflator relative to it is 1 by construction, not an AM-GM
+      artifact of pinning the arithmetic Σγp while reporting the geometric Πp^γ; review P1).
 
     ``recycling`` selects how carbon revenue is returned to the household (see ``derive_state``).
 
@@ -164,8 +168,14 @@ def residuals(
         if f == drop_factor:
             continue
         res.append(float(state.F[f, :].sum()) - cal.endowment[f])
-    # Numéraire: CPI = Σ γ[i]·p[i] = 1.
-    res.append(sum(cal.gamma[i] * p[i] for i in range(ns)) - 1.0)
+    # Numéraire: the household's exact Cobb-Douglas price index (cost of living) Π_i p[i]^γ[i] = 1.
+    # Using the CD price index itself as numéraire keeps it CONSISTENT with the reported welfare
+    # and real-GDP deflation: the deflator relative to it is 1 by construction, not an AM-GM
+    # artifact of pinning the *arithmetic* Σγp=1 while measuring the *geometric* Πp^γ (review P1).
+    cpi = 1.0
+    for i in range(ns):
+        cpi = cpi * p[i] ** cal.gamma[i]
+    res.append(cpi - 1.0)
     return np.array(res, dtype=float if not _is_object(z) else object)
 
 

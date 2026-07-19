@@ -92,9 +92,10 @@ def render() -> None:
         st.subheader("Macroeconomic aggregates")
         if is_cge:
             st.caption(
-                "GDP, deflator and (if present) welfare are **native CGE equilibrium outputs** — "
-                "not a post-hoc roll-up. **Real** GDP deflates nominal by the exact Cobb-Douglas "
-                "consumer price index. Shown as percent."
+                "GDP and welfare are **native CGE equilibrium outputs** — not a post-hoc roll-up. "
+                "The household's CD consumer price index is the **numéraire**, so *real* GDP is in "
+                "CPI units and there is **no separate inflation/deflator** (a wage-numéraire "
+                "nominal figure is shown for reference). Shown as percent."
             )
         else:
             st.caption(
@@ -105,7 +106,12 @@ def render() -> None:
                 "(Engine 2) shows real GDP falling. Shown as percent."
             )
         gdp = rv.macro_gdp_table(result).copy()
-        for c in ("GDP Δ (nominal)", "GDP Δ (real)", "deflator (inflation)"):
+        for c in (
+            "GDP Δ (nominal)",
+            "GDP Δ (real)",
+            "GDP Δ (nominal, wage-numéraire)",
+            "deflator (inflation)",
+        ):
             if c in gdp.columns:
                 gdp[c] = (gdp[c] * 100).round(2)
         st.dataframe(gdp, width="stretch", hide_index=True)

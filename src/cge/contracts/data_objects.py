@@ -86,6 +86,30 @@ class IOSystem(_DataObject):
     final_demand: pd.DataFrame = Field(default_factory=pd.DataFrame)
     value_added: pd.DataFrame = Field(default_factory=pd.DataFrame)
 
+    @model_validator(mode="after")
+    def _payloads_aligned(self) -> IOSystem:
+        """When populated, the ``A`` matrix must be square with **identical, unique** row and
+        column labels, and ``final_demand`` must share that index. This makes label alignment a
+        contract invariant enforced at **every** entry path (not just the build pipeline), so a
+        permuted-axis matrix supplied directly to ``Engine.run()`` is rejected rather than silently
+        producing wrong results (review P2). Empty frames (the Phase-0 envelope) are exempt."""
+        a = self.A
+        if a.empty:
+            return self
+        if a.shape[0] != a.shape[1]:
+            raise ValueError(f"IOSystem.A must be square; got {a.shape}")
+        rows, cols = list(a.index), list(a.columns)
+        if len(set(cols)) != len(cols):
+            raise ValueError("IOSystem.A has duplicate column labels")
+        if rows != cols:
+            raise ValueError(
+                "IOSystem.A row and column labels must be identical and identically ordered "
+                "(a permuted axis silently changes results)"
+            )
+        if not self.final_demand.empty and list(self.final_demand.index) != cols:
+            raise ValueError("IOSystem.final_demand index is not aligned with A's labels")
+        return self
+
     @property
     def n(self) -> int:
         return len(self.sectors) * len(self.regions)

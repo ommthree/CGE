@@ -298,6 +298,24 @@ def _rs(label: str) -> tuple[str, str]:
 NEG_COEFF_TOL = 1e-9
 
 
+def assert_io_aligned(io: IOSystem) -> None:
+    """Boundary guard: the ``IOSystem``'s ``A`` must be square with identical row/column labels and
+    a final-demand index that matches, and the satellite (if used) must be column-aligned. The
+    IOSystem contract validates this at construction, but a caller can *mutate* ``io.A`` afterwards
+    (e.g. ``io.A = io.A.reindex(...)``), which bypasses the validator — a permuted axis then
+    silently changes results. Every engine calls this at its boundary so a direct ``Engine.run()``
+    is as safe as the build pipeline (review P2)."""
+    a = io.A
+    rows, cols = list(a.index), list(a.columns)
+    if a.shape[0] != a.shape[1] or rows != cols or len(set(cols)) != len(cols):
+        raise ValueError(
+            "IOSystem.A must be square with identical, unique, identically-ordered row/column "
+            "labels; a permuted or duplicated axis silently changes results."
+        )
+    if not io.final_demand.empty and list(io.final_demand.index) != cols:
+        raise ValueError("IOSystem.final_demand index is not aligned with A's labels")
+
+
 def _assert_productive(A: np.ndarray) -> None:
     """Raise unless A is *admissible* for the Leontief price model:
 
@@ -433,6 +451,11 @@ class IOPriceEngine:
                 f"build has {len(labels)}. Use a small/aggregated build (a sparse path is not "
                 f"yet implemented — see the model doc)."
             )
+
+        # Boundary guard: reject a permuted/misaligned A (a caller can mutate io.A after
+        # construction, bypassing the contract validator; review P2). After the size cap so a huge
+        # build is rejected by the cheaper check first.
+        assert_io_aligned(io)
 
         A = io.A.to_numpy(dtype=float)
         _assert_productive(A)  # per-run precondition; check once, then skip in the year loop

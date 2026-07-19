@@ -28,9 +28,10 @@ pass-through**. Answers: *"if a carbon price of $\tau$ per tonne (and/or a +$\de
 energy carrier's price) is imposed, how much more expensive does good $i$ become, once the cost
 increase in all of its direct and indirect inputs has propagated through?"*
 
-**In scope:** cost pass-through through the fixed IO technology; carbon-price and
-energy-carrier-price cost shocks (composed additively); decomposition into direct vs upstream
-contributions.
+**In scope:** cost pass-through through the fixed IO technology; a carbon price (additive across
+carbon shocks) and an energy-carrier output-price **pin** (a boundary condition — see §5a — which
+overrides the carrier's carbon-induced price rather than adding to it); decomposition into direct
+vs upstream contributions.
 
 **Explicitly not modelled:** no substitution between inputs (technology is fixed), no
 demand response, no change in production volumes, no factor-market effects. Because

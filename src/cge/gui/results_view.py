@@ -105,21 +105,28 @@ def volume_envelope(result: ResultSet) -> pd.DataFrame:
 _ECONOMY_SECTOR = "__economy__"
 
 
+_MACRO_GDP_VARS = ("gdp_change", "gdp_change_real", "gdp_change_nominal_wage", "deflator")
+
+
 def has_macro(result: ResultSet) -> bool:
-    return (result.data["variable"] == "gdp_change").any()
+    # Either the PE-tier roll-up (gdp_change) or the CGE's native real GDP (gdp_change_real).
+    return result.data["variable"].isin(("gdp_change", "gdp_change_real")).any()
 
 
 def macro_gdp_table(result: ResultSet) -> pd.DataFrame:
-    """Per region (central band): nominal & real GDP change and the deflator (inflation)."""
+    """Per region (central band): the GDP columns that are present. The PE tier reports nominal +
+    real + a deflator; the CGE reports real (CPI-numéraire) + a wage-numéraire nominal reference
+    and NO deflator (the CPI is its numéraire)."""
     df = result.data
     econ = df[(df["sector"] == _ECONOMY_SECTOR) & (df["scenario"] == "central")]
     wide = econ.pivot_table(index=["region", "year"], columns="variable", values="value")
-    keep = [c for c in ("gdp_change", "gdp_change_real", "deflator") if c in wide.columns]
+    keep = [c for c in _MACRO_GDP_VARS if c in wide.columns]
     wide = wide[keep].reset_index()
     return wide.rename(
         columns={
             "gdp_change": "GDP Δ (nominal)",
             "gdp_change_real": "GDP Δ (real)",
+            "gdp_change_nominal_wage": "GDP Δ (nominal, wage-numéraire)",
             "deflator": "deflator (inflation)",
         }
     )

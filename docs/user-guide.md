@@ -174,10 +174,12 @@ shocks:
     # path: {2025: 0.0, 2035: 0.30}  # optional time path
 ```
 
-Two shocks in one scenario **compose additively** — the combined result equals the two run
-separately, summed (a property the validation suite checks to machine precision). You can point the
-same scenario at Engine 2 (`engine: partial_eq`) to get the *volume* consequences of an energy-price
-rise.
+A carbon price and an energy price in one scenario do **not** simply add on the carrier: the energy
+shock **pins** the carrier's price to exactly the requested change (a boundary condition), which
+*overrides* the carbon-induced price on that carrier — so the combined carrier result is the pinned
+value, not carbon + energy. Non-carrier sectors reflect both effects. (Multiple *carbon* shocks do
+add.) You can point the same scenario at Engine 2 (`engine: partial_eq`) for the *volume*
+consequences.
 
 Try: set `change: -0.1` (cheaper energy) and watch prices fall; set an unknown `carrier:` and see the
 engine **reject** it rather than silently returning a zero-impact run.

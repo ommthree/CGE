@@ -50,6 +50,7 @@ from cge.engines.io_price.engine import (
     IOPriceEngine,
     _assert_productive,
     _df_fingerprint,
+    assert_io_aligned,
 )
 
 VERSION = "0.3.1"
@@ -151,6 +152,7 @@ class PartialEqEngine:
                 f"build has {len(labels)}. Use a small/aggregated build."
             )
 
+        assert_io_aligned(io)  # boundary guard: reject a permuted/misaligned A (review P2)
         A = io.A.to_numpy(dtype=float)
         _assert_productive(A)  # Leontief inverse must exist (same precondition as Engine 1)
         m = np.eye(A.shape[0]) - A  # (I − A); we solve against it rather than invert

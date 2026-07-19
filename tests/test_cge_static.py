@@ -175,21 +175,29 @@ def _welfare_engine(eng, mode):
     return w, res.manifest.assumptions["recycling_mode"]
 
 
-def test_recycling_offsets_welfare_loss():
-    """The revenue-recycling effect: a pure carbon price wedge (`none`, at the model layer) reduces
-    real consumption; returning the revenue (lump_sum) offsets it. The headline GE feature."""
+def test_recycling_welfare_claims_are_valid():
+    """What is actually established (review P2): (1) under a recycled carbon price the CD *utility*
+    change is small and negative (the distortion); (2) at those equilibrium prices, adding the
+    transfer raises utility vs not. This does NOT use the non-closing `none` equilibrium (which
+    violates Walras' law and is not a valid counterfactual)."""
     cal = _cal()
     cc = 0.15 * _EMISSIONS
     _b, base = _solve(cal, recycling="lump_sum")
-    # `none` at the MODEL layer (a pure loss — the engine auto-recycles for a closed run).
-    _n, none = _solve(cal, carbon_cost=cc, recycling="none")
     _l, lump = _solve(cal, carbon_cost=cc, recycling="lump_sum")
-    w_none = none.FD.sum() / base.FD.sum() - 1.0
-    w_lump = lump.FD.sum() / base.FD.sum() - 1.0
-    assert w_none < -0.01  # carbon price hurts without recycling
-    assert w_lump > w_none  # recycling offsets the loss
-    assert abs(w_lump) < 1e-6  # lump-sum fully restores real consumption in this pilot
+
+    def cd_u(state):
+        return float(np.prod(np.power(state.FD, cal.gamma)))
+
+    # (1) small negative CD-utility change under a recycled carbon price.
+    welfare = cd_u(lump) / cd_u(base) - 1.0
+    assert -0.05 < welfare < 0.0
     assert lump.carbon_revenue > 0
+    # (2) at the recycled prices, the transfer raises utility (income is larger by R).
+    factor_income = float(np.dot(lump.w, cal.endowment))
+    fd_no_transfer = cal.gamma * factor_income / lump.p
+    u_with = float(np.prod(np.power(lump.FD, cal.gamma)))
+    u_without = float(np.prod(np.power(fd_no_transfer, cal.gamma)))
+    assert u_with > u_without
 
 
 def test_labour_tax_cut_equivalent_to_lump_sum_in_pilot():
@@ -390,7 +398,7 @@ def test_supplied_sam_renamed_axis_gives_clean_error():
     m.index = idx
     m.columns = idx
     sam.matrix = m
-    with pytest.raises(ValueError, match="axes do not contain the accounts"):
+    with pytest.raises(ValueError, match="axes must equal the declared accounts"):
         registry.get("cge_static").run(
             data={"SAM": sam, "sectors": ["BRD", "MIL"]},
             shocks=[CarbonPrice(price=0.1)],
@@ -405,3 +413,53 @@ def test_solver_residual_norm_recorded():
     )
     rn = res.manifest.assumptions["solver_max_residual_norm"]
     assert isinstance(rn, float) and rn == rn and rn < 1e-6  # finite (not NaN), converged
+
+
+# -- third-round review: missing emissions, extra accounts, numeraire, IO alignment ----------
+def test_positive_carbon_price_requires_emissions_input():
+    """Review P1: a positive carbon price with no emissions input must be rejected, not silently
+    zero-impact."""
+    io, _sat = _eur_io_sat()
+    with pytest.raises(ValueError, match="requires a 'SatelliteAccount'"):
+        registry.get("cge_static").run(
+            data={"IOSystem": io}, shocks=[CarbonPrice(price=100.0)], years=[2020]
+        )
+    with pytest.raises(ValueError, match="requires a\n?.*carbon_cost_share"):
+        registry.get("cge_static").run(
+            data={"SAM": toy_sam()}, shocks=[CarbonPrice(price=100.0)], years=[2020]
+        )
+
+
+def test_zero_carbon_price_baseline_needs_no_emissions_input():
+    """A genuine zero-price baseline still runs without an emissions input (replication)."""
+    res = registry.get("cge_static").run(
+        data={"SAM": toy_sam()}, shocks=[CarbonPrice(price=0.0)], years=[2020]
+    )
+    assert res.data["value"].abs().max() < 1e-8
+
+
+def test_cge_reports_no_deflator():
+    """Review P1: the CPI is the numéraire, so there is no spurious (AM-GM-bound) deflator."""
+    res = registry.get("cge_static").run(
+        data={"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+        shocks=[CarbonPrice(price=0.15)],
+        years=[2020],
+    )
+    assert not (res.data["variable"] == "deflator").any()
+    assert (res.data["variable"] == "gdp_change_real").any()
+
+
+def test_supplied_sam_extra_account_rejected():
+    """Review P2: an extra balanced account (not in a required role) is rejected, not silently
+    ignored while the manifest claims the SAM is aligned."""
+    sam = toy_sam()
+    m = sam.matrix.copy()
+    m["EXTRA"] = 0.0
+    m.loc["EXTRA"] = 0.0  # extra all-zero (balanced) account
+    sam.matrix = m
+    with pytest.raises(ValueError, match="must equal the declared accounts"):
+        registry.get("cge_static").run(
+            data={"SAM": sam, "sectors": ["BRD", "MIL"]},
+            shocks=[CarbonPrice(price=0.1)],
+            years=[2020],
+        )

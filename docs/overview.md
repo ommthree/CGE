@@ -148,9 +148,11 @@ resolution. → Roadmap [Phase 7](../roadmap.md), detail in
 ### Scenario inputs — *energy prices & temperature targets*
 Two requested extensions that slot into the existing shock/module seams (no new engines):
 - **Country-level energy prices** — ✅ **implemented**. An optional per-country, per-carrier
-  energy output-price change (`EnergyPrice`) applied *on top of* a carbon price; it reuses the
-  same Leontief supply-chain propagation and composes additively with the carbon cost. See
-  `examples/energy_price_io.yaml` and io-price-model.md §5a.
+  energy output-price change (`EnergyPrice`) applied alongside a carbon price. The carrier's price
+  is **pinned** to the requested change (a boundary condition) and propagates downstream through the
+  same Leontief inverse; on the carrier it *overrides* the carbon-induced price (so a combined run
+  is not the sum of the standalone runs). See `examples/energy_price_io.yaml` and io-price-model.md
+  §5a.
 - **Temperature-target back-solving** — the Phase 7 feature above (planned).
 
 → [`docs/energy-and-temperature-plan.md`](energy-and-temperature-plan.md).

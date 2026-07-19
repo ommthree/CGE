@@ -4,7 +4,8 @@ Wraps the calibrated pilot CGE (``calibrate`` + ``model`` + ``solver``) behind t
 protocol, so the GUI/CLI pick it up via the registry with no changes. Given a benchmark ``SAM``,
 it calibrates the model to reproduce the base year exactly, applies a ``CarbonPrice`` as a
 per-unit emissions cost wedge, solves for the new equilibrium, and emits a ``ResultSet`` of price
-and volume changes plus GE-specific outputs (factor prices, GDP, deflator).
+and volume changes plus GE outputs (factor prices, real GDP, welfare, carbon revenue). The CPI is
+the numéraire, so there is no separate deflator/inflation output.
 
 **Pilot scope (single region, one household):** the model is the small, correctness-first pilot
 from `docs/phase-5-plan.md` §5.2a — Leontief intermediates, Cobb-Douglas value added and household
@@ -53,10 +54,17 @@ ASSUMPTIONS = {
     ),
     "carbon_price": "per-unit emissions cost wedge τ·e[i] in the zero-profit condition",
     "revenue_recycling": (
-        "carbon revenue R = Σ τ·e[i]·X[i]; none = revenue leaves the economy; "
-        "lump_sum/labour_tax_cut = returned to the household (offsets the welfare loss)"
+        "carbon revenue R = Σ τ·e[i]·X[i] is returned to the household (lump_sum/labour_tax_cut). "
+        "Established: CD welfare falls only slightly under a recycled carbon price, and at those "
+        "prices the transfer raises utility. NOT established: a full GE welfare comparison against "
+        "a valid no-recycling closure (the `none` mode does not close — it violates Walras' law — "
+        "so it is not a valid counterfactual; a government/external account is a follow-up)."
     ),
-    "closure": "savings-less pilot; fixed factor supply; numéraire = consumer price index (CPI=1)",
+    "closure": (
+        "savings-less pilot; fixed factor supply; numéraire = the exact Cobb-Douglas consumer "
+        "price index (Π p_i^γ_i = 1). The CPI is the unit of account, so no inflation/deflator is "
+        "reported; outputs are real quantities and relative (CPI-unit) prices."
+    ),
     "solver_rule": (
         "non-optimal solve raises (well-posedness); solver backend, termination status, and "
         "max residual norm recorded in the manifest"
@@ -141,6 +149,22 @@ class CGEStaticEngine:
                 f"got {sorted(modes)}."
             )
         recycling = modes.pop()
+
+        # A positive carbon price needs an emissions input, or it silently becomes a zero-impact
+        # run. Require the input whenever ANY year has a nonzero effective carbon price; tolerate a
+        # missing input only for a genuine zero-price baseline (review P1).
+        positive_price = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
+        if positive_price:
+            if inp.io is not None and inp.sat is None:
+                raise ValueError(
+                    "a positive carbon price on an IO-backed CGE run requires a 'SatelliteAccount' "
+                    "(emission intensities); none supplied — the run would be silently zero-impact."
+                )
+            if inp.io is None and inp.cost_share is None:
+                raise ValueError(
+                    "a positive carbon price on a supplied-SAM CGE run requires a "
+                    "'carbon_cost_share'; none supplied — the run would be silently zero-impact."
+                )
 
         # Per-year carbon cost share (dimensionless, gas/coverage/units handled like Engine 1).
         cc_by_year = {y: _carbon_cost_by_sector(inp, carbon_shocks, y) for y in years}
@@ -242,7 +266,9 @@ def _resolve_inputs(data: dict) -> _Inputs:
     if io is None:
         raise ValueError("cge_static needs a 'SAM' or an 'IOSystem' in data")
     from cge.data.sam import build_sam
+    from cge.engines.io_price.engine import assert_io_aligned
 
+    assert_io_aligned(io)  # boundary guard before the SAM is built from raw A (review P2)
     sam, quality, sectors = build_sam(io)
     if not quality.passed:
         failed = [c.name for c in quality.checks if c.severity.value == "fail"]
@@ -262,20 +288,21 @@ def _validate_supplied_sam(sam: SAM, sectors: list[str], factors: list[str]) -> 
     missing = [a for a in sectors + factors if a not in sam.accounts]
     if missing:
         raise ValueError(f"supplied SAM is missing named accounts: {missing}")
-    # Axis alignment: the matrix index/columns must be unique and contain every account the engine
-    # will index by (sectors, factors, and the household institution). Otherwise ``m.loc[...]``
-    # later raises a raw KeyError. Household = the accounts that are neither sector nor factor.
-    household = [a for a in sam.accounts if a not in sectors and a not in factors]
-    needed = set(sectors) | set(factors) | set(household)
+    # Axis alignment: the matrix index and columns must be unique and **equal** the declared
+    # accounts (review P2: containment is not enough — an extra balanced account passed the check,
+    # was silently ignored by calibration, yet the manifest called the SAM 'aligned'). A renamed
+    # axis would also raise a raw KeyError during calibration.
     idx, cols = list(m.index), list(m.columns)
     if len(set(idx)) != len(idx) or len(set(cols)) != len(cols):
         raise ValueError("supplied SAM matrix has duplicate row or column labels")
-    missing_axis = sorted(needed - (set(idx) & set(cols)))
-    if missing_axis:
+    accts = set(sam.accounts)
+    if set(idx) != accts or set(cols) != accts:
+        extra = sorted((set(idx) | set(cols)) - accts)
+        missing_axis = sorted(accts - (set(idx) & set(cols)))
         raise ValueError(
-            f"supplied SAM matrix axes do not contain the accounts {missing_axis}; the matrix "
-            f"index/columns must be aligned to the SAM accounts (a renamed axis would raise a raw "
-            f"KeyError during calibration)."
+            f"supplied SAM matrix axes must equal the declared accounts exactly; "
+            f"extra axis labels not in accounts: {extra}; accounts missing from an axis: "
+            f"{missing_axis}."
         )
     arr = m.to_numpy(dtype=float)
     if not np.isfinite(arr).all():
@@ -455,22 +482,27 @@ def _emit(records, cal, base, st, year: int) -> None:
         records.append(_rec("volume_change", sector, year, st.X[i] / base.X[i] - 1.0))
     for f_idx, factor in enumerate(cal.factors):
         records.append(_rec("factor_price_change", factor, year, st.w[f_idx] / base.w[f_idx] - 1.0))
-    # GDP (expenditure = Σ p_i·FD_i). Nominal change vs benchmark; real change deflates it by the
-    # **exact Cobb-Douglas consumer price index** P_cd = Π p_i^γ_i (the household's true cost of
-    # living), so real = nominal / P_cd. Reported ``deflator`` is that CD price index change
-    # (review P1/P2: the earlier arithmetic Σ γ·p numéraire and Paasche ratio were inconsistent
-    # with the CD household). ``gdp_change_real`` is thus the CD-deflated real expenditure change.
-    nom_gdp = float(np.dot(st.p, st.FD))
-    nom_gdp_base = float(np.dot(base.p, base.FD))
-    cpi = float(np.prod(np.power(st.p, cal.gamma)))  # exact CD price index (base = 1)
-    real_gdp = nom_gdp / cpi
-    real_gdp_base = nom_gdp_base  # base CPI = 1
-    records.append(_rec("gdp_change", "__economy__", year, nom_gdp / nom_gdp_base - 1.0))
+    # GDP. The **numéraire is the household's exact CD price index** P_cd = Π p_i^γ_i, pinned to 1
+    # (see model.residuals). So all prices are expressed in CPI units and there is **no separate
+    # deflator to report** — the CPI is fixed to 1 by definition, and a "deflator" derived from it
+    # would be a mechanical numéraire artifact, not inflation (review P1). We therefore report:
+    #   • gdp_change_real — the real (CPI-numéraire) change in GDP = Σ p·FD (prices in CPI units,
+    #     so this expenditure aggregate is already real);
+    #   • gdp_change_nominal_in_factor_units — the same aggregate valued with a factor price as the
+    #     unit of account, so a "money" magnitude is still available for readers who want one.
+    real_gdp = float(np.dot(st.p, st.FD))
+    real_gdp_base = float(np.dot(base.p, base.FD))
     records.append(_rec("gdp_change_real", "__economy__", year, real_gdp / real_gdp_base - 1.0))
-    records.append(_rec("deflator", "__economy__", year, cpi - 1.0))
+    # A factor-price-numéraire nominal GDP (unit of account = labour), for a "nominal" reference
+    # that is NOT mechanically tied to the CPI numéraire.
+    lab = cal.factors.index("LAB") if "LAB" in cal.factors else 0
+    nom_gdp = real_gdp / st.w[lab]
+    nom_gdp_base = real_gdp_base / base.w[lab]
+    records.append(
+        _rec("gdp_change_nominal_wage", "__economy__", year, nom_gdp / nom_gdp_base - 1.0)
+    )
     # Welfare: the change in Cobb-Douglas utility U = Π FD_i^γ_i (the correct welfare measure for a
-    # CD household — review P1: the earlier Σ FD sum is not utility). Equivalent to real income
-    # (nominal income deflated by the CD price index).
+    # CD household — review P1: the earlier Σ FD sum is not utility).
     u = float(np.prod(np.power(st.FD, cal.gamma)))
     u_base = float(np.prod(np.power(base.FD, cal.gamma)))
     records.append(_rec("welfare_change", "__economy__", year, u / u_base - 1.0))

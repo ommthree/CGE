@@ -94,8 +94,12 @@ $$ F_{fi} = \beta_{fi}\,\frac{va_i\,pv_i\,X_i}{w_f},\qquad \sum_i F_{fi} = FF_f.
 
 **Closure / square system.** Unknowns: $N$ prices $p$ + $|F|$ factor prices $w$. Equations: $N$
 zero-profit conditions (2), $|F|-1$ factor-clearing conditions (5) — **one is dropped by Walras'
-law** — and 1 numéraire equation $\sum_i \gamma_i p_i = 1$. Equations = unknowns, so the system is
-square. The dropped factor market is confirmed to clear at the solution (the Walras check).
+law** — and 1 numéraire equation $\prod_i p_i^{\gamma_i} = 1$ (the household's exact Cobb-Douglas
+price index = its cost of living, fixed to 1). Equations = unknowns, so the system is square. The
+dropped factor market is confirmed to clear at the solution (the Walras check). Because the CPI is
+the numéraire there is **no separate inflation/deflator output** — pinning the *arithmetic* index
+while reporting the *geometric* one would force a spurious non-positive "deflator" by AM-GM (review
+P1); the CPI-consistent numéraire avoids that. Outputs are real quantities and relative prices.
 
 ### 4a. Revenue recycling
 
@@ -114,14 +118,19 @@ household receives $R$ (equation 3):
   it: it defaults a positive-carbon-price `none` scenario to `lump_sum` (recorded in the manifest as
   `recycling_defaulted_from_none`) and points the user to Engine 1 for the pure price-side view.
 
-**The revenue-recycling effect** (a validated result): a carbon price *without* recycling reduces
-household welfare; returning the revenue offsets it. With full recycling the aggregate economy is
-roughly preserved but output **reallocates** from the dirty sector to the clean one — the
-substitution signal, which Engines 1–2 cannot show. Reported outputs: `welfare_change` — the change
-in **Cobb-Douglas utility** $U=\prod_i FD_i^{\gamma_i}$ (the correct welfare measure for the CD
-household, equivalently real income deflated by the exact CD price index $\prod_i p_i^{\gamma_i}$);
-`carbon_revenue`; `gdp_change` / `gdp_change_real` (real deflated by the CD price index);
-`deflator`; and per-factor `factor_price_change` (incl. the capital rental rate).
+**Revenue recycling — what is established, precisely.** Two results are validated: (i) under a
+recycled carbon price the household's **Cobb-Douglas utility** falls only slightly (the remaining
+loss is the relative-price distortion, since the revenue is returned); and (ii) *at the recycled
+equilibrium prices*, adding the transfer raises utility versus not adding it. What is **not** yet
+established is a full general-equilibrium welfare *comparison against a valid no-recycling closure*:
+the `none` mode does not close (it violates Walras' law — the revenue leaks), so it is not a valid
+counterfactual, and a proper one needs a government/external account (a documented follow-up). The
+substitution signal itself is clear: output **reallocates** from the dirty to the clean sector.
+Reported outputs: `welfare_change` — the change in CD utility $U=\prod_i FD_i^{\gamma_i}$ (the
+correct welfare measure for the CD household); `carbon_revenue`; `gdp_change_real` (real GDP in
+CPI-numéraire units) and `gdp_change_nominal_wage` (a wage-numéraire nominal reference — not tied
+to the CPI numéraire); and per-factor `factor_price_change` (incl. the capital rental rate). There
+is **no `deflator`** output (the CPI is the numéraire — see §4).
 
 ## 5. Calibration
 
@@ -202,7 +211,8 @@ battery, §7 of the phase-5 plan):
 | `walras_holds_under_carbon_price_with_recycling` | under a recycled carbon price the dropped factor market still clears (a pure-loss `none` would not) |
 | `carbon_price_reallocates_dirty_to_clean` | with recycling, output shifts from the dirty sector to the clean one |
 | `carbon_price_raises_dirty_relative_price` | the dirty good's price rises relative to the clean good's |
-| `revenue_recycling_offsets_welfare_loss` | lump-sum recycling restores real consumption a pure wedge destroys (the revenue-recycling effect) |
+| `recycled_carbon_price_welfare_is_small_and_negative` | under a recycled carbon price the CD utility change is small and negative (the distortion) |
+| `recycling_improves_welfare_over_no_recycling` | at the recycled prices, adding the transfer raises CD utility (a valid fixed-price comparison, not the non-closing `none` equilibrium) |
 | `replicates_on_built_sam` | the CGE calibrates on a SAM built from an EXIOBASE-shaped build (offline pymrio test MRIO, not live EXIOBASE) and replicates its benchmark to machine precision (the 5.1b gate) |
 
 Plus solver checks (known-answer, non-convergence raises, IPOPT gated) and engine tests

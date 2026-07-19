@@ -590,3 +590,39 @@ def test_scenario_year_list_validated():
     # a valid unsorted list is accepted and returned sorted
     sc = Scenario(name="y", engine="io_price", years=[2030, 2020], shocks=[CarbonPrice(price=1.0)])
     assert sc.years == [2020, 2030]
+
+
+def test_permuted_A_axis_rejected_at_engine_boundary():
+    """Review P2: a caller can mutate io.A after construction (bypassing the contract validator);
+    the engine boundary must still reject a permuted/misaligned A rather than silently changing
+    results."""
+    from cge.engines.io_price.engine import IOPriceEngine
+
+    io, sat = toy_economy()
+    io.A = io.A.reindex(index=list(io.A.index)[::-1])  # permute ROWS only
+    with pytest.raises(ValueError, match="identical, unique, identically-ordered"):
+        IOPriceEngine().run(
+            data={"IOSystem": io, "SatelliteAccount": sat},
+            shocks=[CarbonPrice(price=100.0)],
+            years=[2020],
+        )
+
+
+def test_io_contract_rejects_misaligned_A_at_construction():
+    """The IOSystem contract rejects a misaligned A at construction (every entry path)."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, IOSystem, Provenance
+
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-18"
+    )
+    with pytest.raises(ValueError, match="row and column labels must be identical"):
+        IOSystem(
+            provenance=prov,
+            sectors=Classification(name="s", kind="sector", labels=["a", "b"]),
+            regions=Classification(name="r", kind="region", labels=["R"]),
+            A=pd.DataFrame([[0.1, 0.2], [0.15, 0.1]], index=["R:b", "R:a"], columns=["R:a", "R:b"]),
+            unit="MEUR",
+            currency="EUR",
+        )

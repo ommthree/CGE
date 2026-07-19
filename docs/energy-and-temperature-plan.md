@@ -1,9 +1,10 @@
 # Plan — energy-price inputs & temperature-target back-solving
 
-**Status: PLAN ONLY — not started.** Two requested features, captured here so the design is not
-lost. One is a small near-term addition; the other is a well-shaped Phase 7 feature. Neither
-requires changes to the existing engines' internals — both slot into the contract seams (the
-typed shock vocabulary and the module slots, see `docs/overview.md` §2).
+**Status: Feature 1 (energy prices) IMPLEMENTED; Feature 2 (temperature-target back-solve) is a
+Phase-7 plan.** Two requested features. The energy-price input is built (see the Feature 1 section
+below for the as-built note); the temperature back-solve is a well-shaped Phase 7 feature. Both
+slot into the contract seams (the typed shock vocabulary and the module slots, see
+`docs/overview.md` §2) without changing the existing engines' internals.
 
 ---
 

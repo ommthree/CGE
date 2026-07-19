@@ -1,9 +1,9 @@
 # Model description: Engine 2 — partial-equilibrium volume response
 
-- **Implements:** `cge.engines.partial_eq` (`PartialEqEngine`, v0.3.0)
+- **Implements:** `cge.engines.partial_eq` (`PartialEqEngine`, v0.3.1)
 - **Roadmap phase:** 4
 - **Capabilities:** prices, volumes
-- **Status:** implemented (`PartialEqEngine` v0.3.0); validated on the toy economy and internal
+- **Status:** implemented (`PartialEqEngine` v0.3.1); validated on the toy economy and internal
   identities (`partial_eq` validation suite: volume sign, bounded > −100%, Leontief propagation,
   band ordering, price pass-through, elasticity provenance). Volume magnitudes depend on
   assembled elasticities and are **indicative, not precise** (see §6). The Armington nest
