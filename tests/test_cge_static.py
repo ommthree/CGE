@@ -522,6 +522,26 @@ def test_ces_elasticity_governs_factor_price_swing():
     assert swing_low > swing_high > 0  # lower elasticity → larger relative-price swing
 
 
+@pytest.mark.parametrize("bad", [-1.0, 0.0, np.array([0.8])])
+def test_closed_va_elast_validated(bad):
+    """P2: the closed model rejects non-positive and wrong-length VA elasticities (a length-1 vector
+    used to raise a raw IndexError; a negative value was silently used)."""
+    sam = _asymmetric_sam()
+    with pytest.raises(ValueError):
+        calibrate(sam, sectors=_SECTORS, factors=_FACTORS, va_elast=bad)
+
+
+def test_closed_manifest_records_va_elast():
+    """P1: va_elast is in the closed run's manifest — two runs differing only in it are
+    distinguishable (previously only incidental solver residuals told them apart)."""
+    eng = registry.get("cge_static")
+    data = {"SAM": _asymmetric_sam(), "carbon_cost_share": {"BRD": 0.1, "MIL": 0.02}}
+    a1 = eng.run(data={**data, "va_elast": 0.5}, shocks=[CarbonPrice(price=1.0)], years=[2020])
+    a2 = eng.run(data={**data, "va_elast": 2.0}, shocks=[CarbonPrice(price=1.0)], years=[2020])
+    assert a1.manifest.assumptions["va_elast"] == [0.5, 0.5]
+    assert a1.manifest.assumptions != a2.manifest.assumptions
+
+
 def test_open_ces_va_replicates():
     """The open model's CES value-added nest also replicates the benchmark for σ ≠ 1."""
     from cge.data.sam import toy_open_sam

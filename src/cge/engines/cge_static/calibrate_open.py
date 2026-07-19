@@ -30,6 +30,27 @@ DEFAULT_ARMINGTON_ELAST = 2.0  # σ: domestic↔import substitution
 DEFAULT_CET_ELAST = 2.0  # Ω: domestic↔export transformation
 
 
+def _elast_vector(elast: float | np.ndarray, ns: int, name: str) -> np.ndarray:
+    """Coerce an elasticity input to a finite, strictly-positive ``(ns,)`` vector.
+
+    Accepts a scalar (broadcast to every sector) or a length-``ns`` array **only** — a length-1
+    array is rejected rather than silently broadcast, and any non-positive/non-finite value raises
+    (an elasticity is a strictly positive substitution parameter). This is the single validation
+    point for VA, Armington and CET elasticities."""
+    a = np.asarray(elast, dtype=float)
+    if a.ndim == 0:
+        a = np.full(ns, float(a))
+    elif a.shape != (ns,):
+        raise ValueError(
+            f"{name} must be a scalar or a length-{ns} vector (one per sector); got {a.shape}."
+        )
+    if not np.all(np.isfinite(a)):
+        raise ValueError(f"{name} must be finite; got {a.tolist()}.")
+    if np.any(a <= 0.0):
+        raise ValueError(f"{name} must be strictly positive; got {a.tolist()}.")
+    return a
+
+
 @dataclass(frozen=True)
 class OpenCalibratedModel:
     """Benchmark parameters for the open static CGE. All benchmark prices = 1."""
@@ -124,9 +145,7 @@ def calibrate_open(
     va_share = VA0 / Z0
     ax = INT0 / Z0[None, :]
     beta = F0 / VA0[None, :]
-    sigma_va = (
-        np.full(ns, float(va_elast)) if np.isscalar(va_elast) else np.asarray(va_elast, float)
-    )
+    sigma_va = _elast_vector(va_elast, ns, "va_elast")
     with np.errstate(divide="ignore", invalid="ignore"):
         w_ces = np.where(F0 > 0, np.power(F0, 1.0 / sigma_va[None, :]), 0.0)
     va_ces_share = w_ces / w_ces.sum(axis=0)[None, :]
@@ -141,8 +160,8 @@ def calibrate_open(
     gamma = FD0 / FD0.sum()
     endowment = F0.sum(axis=1)
 
-    arm = np.full(ns, float(arm_elast)) if np.isscalar(arm_elast) else np.asarray(arm_elast, float)
-    cet = np.full(ns, float(cet_elast)) if np.isscalar(cet_elast) else np.asarray(cet_elast, float)
+    arm = _elast_vector(arm_elast, ns, "arm_elast")
+    cet = _elast_vector(cet_elast, ns, "cet_elast")
     # The Armington/CET aggregators use ρ=(σ−1)/σ and ^{1/ρ}, singular at σ=1 (the Cobb-Douglas
     # special case, not implemented for trade). Require σ ≠ 1 with a clear message.
     if np.any(np.abs(arm - 1.0) < 1e-9) or np.any(np.abs(cet - 1.0) < 1e-9):
@@ -158,7 +177,8 @@ def calibrate_open(
     rho = (arm - 1.0) / arm
     with np.errstate(divide="ignore", invalid="ignore"):
         ratio_dm = np.where(M0 > 0, np.power(D0 / np.where(M0 > 0, M0, 1.0), 1.0 / arm), np.inf)
-    arm_share_d = np.where(M0 > 0, ratio_dm / (1.0 + ratio_dm), 1.0)
+        # ratio_dm is inf for a non-traded good; inf/(1+inf)=nan there, masked to 1.0 by np.where.
+        arm_share_d = np.where(M0 > 0, ratio_dm / (1.0 + ratio_dm), 1.0)
     arm_share_m = 1.0 - arm_share_d
     arm_scale = np.where(
         M0 > 0,
@@ -172,7 +192,8 @@ def calibrate_open(
     kappa = (cet + 1.0) / cet
     with np.errstate(divide="ignore", invalid="ignore"):
         ratio_de = np.where(E0 > 0, np.power(D0 / np.where(E0 > 0, E0, 1.0), -1.0 / cet), np.inf)
-    cet_share_d = np.where(E0 > 0, ratio_de / (1.0 + ratio_de), 1.0)
+        # ratio_de is inf for a non-exporter; inf/(1+inf)=nan there, masked to 1.0 by np.where.
+        cet_share_d = np.where(E0 > 0, ratio_de / (1.0 + ratio_de), 1.0)
     cet_share_e = 1.0 - cet_share_d
     cet_scale = np.where(
         E0 > 0,
@@ -180,7 +201,21 @@ def calibrate_open(
         Z0 / D0,
     )
 
-    foreign_savings = float(M0.sum() - E0.sum())  # 0 for a balanced trade account
+    # Foreign savings Sf = Σ M − Σ E at benchmark. The pilot's closure fixes Sf at its benchmark
+    # level, but the household income identity circulates only factor income + carbon revenue — it
+    # does NOT yet carry the ROW transfer / investment flow that a non-zero current account implies.
+    # So a non-zero-Sf SAM would not replicate its benchmark (household absorption would be off by
+    # exactly the net capital inflow). Rather than return non-replicating numbers, restrict the
+    # pilot to a balanced current account and reject non-zero Sf with guidance (review P1). A proper
+    # ROW-institution / savings-investment closure is a documented follow-up.
+    foreign_savings = float(M0.sum() - E0.sum())
+    if abs(foreign_savings) > 1e-9 * max(1.0, float(M0.sum() + E0.sum())):
+        raise ValueError(
+            "open CGE pilot requires a balanced current account (Σ imports = Σ exports, i.e. zero "
+            f"foreign savings); got Sf={foreign_savings:.6g}. A non-zero foreign-savings closure "
+            "(ROW transfer / savings-investment account in household income) is a documented "
+            "follow-up — the current household income identity would not replicate the benchmark."
+        )
 
     return OpenCalibratedModel(
         sectors=list(sectors),

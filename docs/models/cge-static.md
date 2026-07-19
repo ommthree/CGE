@@ -1,17 +1,24 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.3.0)
-- **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.4.0)
+- **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
+  open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
-- **Status:** implemented as the **correctness-first pilot** with **revenue recycling**. The model
-  calibrates to a hand-checkable 2-sector SAM *and* to a SAM built from an aggregated **EXIOBASE-
-  shaped** build (§5a), and in both cases passes the standard CGE correctness battery (benchmark
-  replication, homogeneity, Walras) plus the recycling-effect checks, with theory-consistent
-  carbon-price responses (`cge_static` validation suite).
+- **Status:** implemented as the **correctness-first pilot** with **revenue recycling**, in two
+  variants sharing one engine: a **closed** single-region economy and an **open** economy
+  (Armington imports + CET exports + a rest-of-world account, CES value added, an endogenous
+  exchange rate), selected automatically when the SAM carries a `ROW` account (§8). The closed
+  model calibrates to a hand-checkable 2-sector SAM *and* to a SAM built from an aggregated
+  **EXIOBASE-shaped** build (§5a); the open model calibrates to a hand-checkable open SAM. All pass
+  the standard CGE correctness battery (benchmark replication, homogeneity, Walras) plus the
+  recycling-effect checks, with theory-consistent carbon-price responses; the open model
+  additionally exhibits **carbon leakage** (`cge_static` validation suite).
   **Honest scope note:** the automated build/validation uses the **offline pymrio *test* MRIO**
   (an EXIOBASE-shaped fixture), *not* live EXIOBASE — the live-data suite currently exercises only
-  the adapter and Engine 1. A live-EXIOBASE CGE gate is a follow-up. Armington trade, multiple
-  regions, and elasticity sensitivity are the remaining sub-phases; magnitudes are illustrative.
+  the adapter and Engine 1. A live-EXIOBASE CGE gate and a live open-SAM build are follow-ups.
+  **True multiple regions** (bilateral trade between build regions — the open model is single
+  region + RoW) and a **non-zero foreign-savings closure** (the pilot requires a balanced current
+  account) are the remaining sub-phases; magnitudes are illustrative.
 
 ## 1. Purpose & scope
 
@@ -73,9 +80,21 @@ are the documented next sub-phases.
 Unknowns are the price vectors $(p, w)$; every quantity is a closed-form function of prices, so the
 equilibrium is a small square system.
 
-**Value-added unit cost** (Cobb-Douglas cost function):
+**Value-added unit cost** (Cobb-Douglas cost function, the default $\sigma_{va}=1$):
 $$ pv_i = \frac{1}{av_i}\prod_f \left(\frac{w_f}{\beta_{fi}}\right)^{\beta_{fi}},\qquad
 av_i = \prod_f \beta_{fi}^{-\beta_{fi}} \ \Rightarrow\ pv_i = 1 \text{ at } w=1. \tag{1} $$
+
+**CES generalisation ($\sigma_{va}\neq 1$).** Value added is a CES nest over factors with per-sector
+substitution elasticity $\sigma_{va}$ (the `va_elast` calibration input; $\sigma_{va}=1$ recovers
+(1) as the Cobb-Douglas special case). The CES cost function and its Shephard factor demand are
+$$ pv_i = \frac{1}{av_i}\Big[\textstyle\sum_f \delta_{fi}^{\,\sigma}\, w_f^{\,1-\sigma}\Big]^{\frac{1}{1-\sigma}},
+\qquad F_{fi} = \frac{va_i}{pv_i}\,\frac{1}{av_i}\,(pv_i\,av_i)^{\sigma}\,\delta_{fi}^{\,\sigma}\,w_f^{-\sigma},
+\tag{1'} $$
+with the CES share $\delta_{fi}$ and scale $av_i$ calibrated so $pv_i=1$ and $F_{fi}=F^0_{fi}$ at the
+benchmark ($w=1$). A **non-unitary** $\sigma_{va}$ lets firms substitute between capital and labour
+as the carbon price shifts relative factor prices — the channel behind factor-substitution and
+double-dividend analysis. `va_elast` must be finite and strictly positive (scalar or one value per
+sector). The same nest is used in the open model (§8).
 
 **Zero-profit / price** (unit cost = price):
 $$ p_i = \sum_j ax_{ji}\,p_j + va_i\,pv_i + \tau e_i. \tag{2} $$
@@ -235,14 +254,34 @@ accounts [Hosoe2010, ch. 7]:
   benchmark level; the **exchange rate is endogenous** and the value trade balance clears through
   relative prices. The CES/CET share and scale parameters are calibrated so both the composite
   price and the output price equal 1 at benchmark (verified against Shephard's/Hotelling's lemma).
+  Value added uses the same CES nest as the closed model (§4, eq. 1′); a per-sector `va_elast`
+  drives factor substitution. Structural zeros (a non-traded good, $M_i=0$; a non-exporter,
+  $E_i=0$) are supported — the singular CES/CET price terms are masked, not evaluated.
 
-The equilibrium is a square residual system in $(pd, pq, w, er)$ — Armington-price identities,
-zero-profit, composite-market clearing, factor clearing (one dropped by Walras), the trade balance,
-and the CD-CPI numéraire. It **replicates its benchmark to machine precision** and produces the
-signature open-economy result: a carbon price on the dirty sector causes **carbon leakage** — its
-domestic output falls, its **imports rise** (substitution to foreign supply) and its **exports
-fall** (lost competitiveness), while the clean sector expands and exports more. The engine emits
-`import_change`, `export_change` and `exchange_rate_change` alongside the usual outputs. Validation:
+**Square residual system.** The unknowns are $z=(pd, pq, w, er)$ — that is $2N + |F| + 1$ of them
+($N$ domestic prices, $N$ composite prices, $|F|$ factor prices, one exchange rate); the output
+price $pz$ is a *derived* CET dual of $pd$, not an independent unknown. The residuals are exactly
+$2N + |F| + 1$: $N$ Armington-price identities, $N$ zero-profit identities, $|F|-1$ factor-market
+clearings (one dropped by Walras), one trade balance, and the CD-CPI numéraire. **Composite-market
+clearing $Q_i=\sum_j ax_{ij}Z_j+FD_i$ is *not* an independent residual** — it is solved
+algebraically inside the quantity block ($Q=(I-ax\,\mathrm{diag}(\text{ratio}))^{-1}FD$,
+$Z=\text{ratio}\cdot Q$), so the market clears by construction; adding it as a row would be
+tautological and overdetermine the system on paper. The system is therefore genuinely square.
+
+**Closure restriction (pilot).** The pilot **requires a balanced current account** ($\sum M=\sum E$,
+i.e. zero foreign savings): household income circulates only factor income + recycled carbon
+revenue, so a non-zero current account (which implies a net capital transfer with the rest of the
+world) is not yet represented in the income identity and is **rejected at calibration** rather than
+producing a non-replicating benchmark. A ROW-transfer / savings-investment closure is a documented
+follow-up.
+
+It **replicates its benchmark to machine precision** and produces the signature open-economy result:
+a carbon price on the dirty sector causes **carbon leakage** — its domestic output falls, its
+**imports rise** (substitution to foreign supply) and its **exports fall** (lost competitiveness),
+while the clean sector expands and exports more. The engine emits `import_change`, `export_change`
+and `exchange_rate_change` alongside the usual outputs; `gdp_change_real` is CPI-weighted expenditure
+$pq\cdot FD$ (the same real-GDP contract as the closed model). An **Armington elasticity sensitivity
+sweep** (`armington_sensitivity_sweep`) returns the low/central/high leakage envelope. Validation:
 `open_benchmark_replication`, `open_carbon_price_causes_leakage`.
 
 ## 9. Honest expectations

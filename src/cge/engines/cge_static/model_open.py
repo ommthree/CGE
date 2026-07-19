@@ -18,13 +18,19 @@ Everything else is derived by CES/CET **dual** (price) identities and Shephard/H
 - household demand ``FD_i = γ_i I / pq_i`` with income ``I = Σ_f w_f FF_f + carbon revenue``;
 - Armington/CET quantity splits (D, M, E) from Shephard/Hotelling on Q_i and Z_i.
 
-**Residuals (square):**
-- ns Armington-price identities;   - ns zero-profit (pz) identities;
-- ns composite-market clearing ``Q_i = Σ_j ax[i,j] Z_j + FD_i``;
-- (nf−1) factor-market clearing (one dropped by Walras);
-- 1 trade balance ``Σ pm_i M_i − Σ pe_i E_i − er·Sf = 0``;
+**Residuals — an exactly square system in the 2·ns + nf + 1 unknowns:**
+- ns Armington-price identities (pin ``pq``);
+- ns zero-profit (pz) identities (pin ``pd`` via ``pz(pd,pe)``);
+- (nf−1) factor-market clearing (one dropped by Walras' law);
+- 1 trade balance ``Σ pm_i M_i − Σ pe_i E_i − er·Sf = 0`` (pins ``er``);
 - 1 numéraire ``Π_i pq_i^{γ_i} = 1`` (the household CPI over the composite good).
-Total: 3·ns + nf + 1, matching the 2·ns + nf + 1 unknowns plus ns pz unknowns — see ``n_unknowns``.
+Total: 2·ns + (nf−1) + 1 + 1 = **2·ns + nf + 1 = n_unknowns**.
+
+Composite-market clearing ``Q_i = Σ_j ax[i,j] Z_j + FD_i`` is **not** an independent residual: it is
+solved *algebraically* inside ``_quantities`` (``Q = (I − ax·diag(ratio))⁻¹ FD``, ``Z = ratio·Q``),
+so the market clears by construction. Adding it as a residual row would be tautological (identically
+zero) and overdetermine the system on paper. ``pz`` is a *derived* price (the CET dual of ``pd``),
+not an independent unknown — hence 2·ns price unknowns, not 3·ns.
 """
 
 from __future__ import annotations
@@ -87,19 +93,29 @@ def _factor_demand(cal: OpenCalibratedModel, w: np.ndarray, pv: np.ndarray, va_c
 
 def _armington_price(cal: OpenCalibratedModel, pd: np.ndarray, pm: np.ndarray) -> np.ndarray:
     """CES cost function for the composite: pq = (1/A)[δ^σ pd^{1-σ}+(1-δ)^σ pm^{1-σ}]^{1/(1-σ)}.
-    A non-traded good (δ=1, share_m=0) collapses to pq = pd/A."""
+    A non-traded good (δ=1, share_m=0) collapses to pq = pd/A. The import term is masked where
+    share_m=0 so ``0**σ`` never produces a spurious 0/NaN (structural zeros are supported)."""
     sigma = cal.arm_elast
     e = 1.0 - sigma
-    inner = cal.arm_share_d**sigma * pd**e + cal.arm_share_m**sigma * pm**e
+    # Use a safe base (1.0 where the share is 0) so the *unselected* np.where branch never evaluates
+    # a singular power; the mask then zeroes that term. Keeps output warning-free for structural
+    # zeros (a non-traded good has share_m=0).
+    share_m = np.where(cal.arm_share_m > 0, cal.arm_share_m, 1.0)
+    m_term = np.where(cal.arm_share_m > 0, share_m**sigma * pm**e, 0.0)
+    inner = cal.arm_share_d**sigma * pd**e + m_term
     return (1.0 / cal.arm_scale) * np.power(inner, 1.0 / e)
 
 
 def _cet_price(cal: OpenCalibratedModel, pd: np.ndarray, pe: np.ndarray) -> np.ndarray:
     """CET revenue function for output: pz = (1/B)[ξ^{-Ω} pd^{1+Ω}+(1-ξ)^{-Ω} pe^{1+Ω}]^{1/(1+Ω)}
-    (verified via Hotelling; the negative share exponents distinguish the convex CET frontier)."""
+    (verified via Hotelling; the negative share exponents distinguish the convex CET frontier).
+    A non-exporting good (share_e=0) collapses to pz = pd/B; the export term is **masked** where
+    share_e=0 so ``0**(-Ω)`` never produces ``inf`` (review P1: structural zeros are supported)."""
     omega = cal.cet_elast
     e = 1.0 + omega
-    inner = cal.cet_share_d ** (-omega) * pd**e + cal.cet_share_e ** (-omega) * pe**e
+    share_e = np.where(cal.cet_share_e > 0, cal.cet_share_e, 1.0)  # safe base; masked below
+    e_term = np.where(cal.cet_share_e > 0, share_e ** (-omega) * pe**e, 0.0)
+    inner = cal.cet_share_d ** (-omega) * pd**e + e_term
     return (1.0 / cal.cet_scale) * np.power(inner, 1.0 / e)
 
 
@@ -121,28 +137,31 @@ def derive_open_state(
     pv = _va_unit_cost(cal, w)
     pz = _cet_price(cal, pd, pe)
 
-    # Household income = factor income + recycled carbon revenue. Solve the recycling fixed point
-    # by iterating on income (X depends on FD depends on income depends on revenue) — a couple of
-    # passes converge; the residual system's solver drives the outer prices anyway.
+    # Household income = factor income + recycled carbon revenue. At fixed prices every quantity is
+    # LINEAR in income (FD = γ·I/pq, Q solves a linear system in FD, Z = ratio·Q), so the recycling
+    # fixed point I = factor_income + cc·Z(I) is linear and solves in closed form — no iteration, no
+    # silent non-convergence (review P2). Writing Z = I·z_unit with z_unit = Z evaluated at I=1:
+    #   I = factor_income + k·I,  k = cc·z_unit  ⇒  I = factor_income / (1 − k),  guarded k < 1.
     factor_income = float(np.dot(w, cal.endowment))
-    income = factor_income
-    for _ in range(50):
-        FD = cal.gamma * income / pq
-        # Composite supply Q must meet intermediate + final demand. Intermediates use composite j
-        # per unit activity output; but activity output Z is itself set by CET from D. Solve the
-        # linear intermediate system for Z given FD via the domestic/composite identities below.
-        # Quantities from CES/CET Shephard/Hotelling (given prices), scaled to meet demand:
-        # First get unit split ratios, then scale by the market-clearing Q.
-        Q, Z, D, E, M = _quantities(cal, pd, pq, pm, pe, pz, FD)
-        carbon_revenue = float(cc @ Z)
-        new_income = factor_income + (carbon_revenue if recycling != "none" else 0.0)
-        if abs(new_income - income) < 1e-13 * max(1.0, abs(income)):
-            income = new_income
-            break
-        income = new_income
+    if recycling != "none" and np.any(cc != 0.0):
+        _, z_unit, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq)
+        k = float(cc @ z_unit)
+        if k >= 1.0 - 1e-12:
+            raise ValueError(
+                f"open recycling fixed point diverges: carbon revenue ≥ income (k={k:.6g} ≥ 1); "
+                "the recycled transfer would exceed factor income. Lower the carbon price."
+            )
+        income = factor_income / (1.0 - k)
+    else:
+        income = factor_income
     FD = cal.gamma * income / pq
     Q, Z, D, E, M = _quantities(cal, pd, pq, pm, pe, pz, FD)
     carbon_revenue = float(cc @ Z)
+    # Independent check of the income identity we just solved (cheap; catches any regression in the
+    # linearity assumption above).
+    resid = income - (factor_income + (carbon_revenue if recycling != "none" else 0.0))
+    if abs(resid) > 1e-9 * max(1.0, abs(income)):  # pragma: no cover - guards the closed form
+        raise ValueError(f"open income identity not satisfied (residual {resid:.3e}).")
     # Factor demand (Shephard on VA cost).
     va_cost = cal.va_share * pv * Z
     F = _factor_demand(cal, w, pv, va_cost)
@@ -188,9 +207,10 @@ def _quantities(cal, pd, pq, pm, pe, pz, FD):
     # CET (Hotelling on the revenue fn): per unit activity output Z,
     #   D/Z = (1/B)(pz·B)^{-Ω} ξ^{-Ω} pd^{Ω};  E/Z = (1/B)(pz·B)^{-Ω} (1-ξ)^{-Ω} pe^{Ω}.
     sZd = (1.0 / B) * np.power(pz * B, -omega) * cal.cet_share_d ** (-omega) * np.power(pd, omega)
+    share_e = np.where(cal.cet_share_e > 0, cal.cet_share_e, 1.0)  # safe base; masked below
     sZe = np.where(
         cal.cet_share_e > 0,
-        (1.0 / B) * np.power(pz * B, -omega) * cal.cet_share_e ** (-omega) * np.power(pe, omega),
+        (1.0 / B) * np.power(pz * B, -omega) * share_e ** (-omega) * np.power(pe, omega),
         0.0,
     )
     # Z in terms of Q via domestic-sales consistency: D = sQ·Q (Armington) = sZd·Z (CET) ⇒
@@ -228,27 +248,30 @@ def residuals(
     pv = _va_unit_cost(cal, w)
 
     res = []
-    # Armington price identity: pq = CES cost of (pd, pm).
+    # Armington price identity: pq = CES cost of (pd, pm).  [ns rows]
     pq_id = _armington_price(cal, pd, pm)
     res.extend((pq - pq_id).tolist())
     # Zero-profit: activity output price pz(pd,pe) = intermediate composite cost + VA + carbon.
+    # [ns rows]
     pz = _cet_price(cal, pd, pe)
     for i in range(ns):
         intermediate = sum(cal.ax[j, i] * pq[j] for j in range(ns))
         res.append(pz[i] - (intermediate + cal.va_share[i] * pv[i] + cc[i]))
-    # Composite market clearing: Q_i = Σ_j ax[i,j] Z_j + FD_i.
-    intermediate_use = cal.ax @ st.Z
-    res.extend((st.Q - (intermediate_use + st.FD)).tolist())
-    # Factor clearing (drop one by Walras).
+    # NB: composite-market clearing Q_i = Σ_j ax[i,j] Z_j + FD_i is NOT an independent residual — it
+    # is solved *algebraically* inside _quantities() (Q = (I − ax·diag(ratio))⁻¹ FD, Z = ratio·Q),
+    # so (Q − (ax·Z + FD)) ≡ 0 by construction and would be a tautological row (review P2). The
+    # composite market is therefore closed by construction, not by a solver equation.
+    # Factor clearing (drop one by Walras).  [nf−1 rows]
     for f in range(nf):
         if f == drop_factor:
             continue
         res.append(float(st.F[f, :].sum()) - cal.endowment[f])
-    # Trade balance: Σ pm·M − Σ pe·E − er·Sf = 0.
+    # Trade balance: Σ pm·M − Σ pe·E − er·Sf = 0.  [1 row]
     res.append(float(pm @ st.M - pe @ st.E - er * cal.foreign_savings))
-    # Numéraire: household CPI over the composite good, Π pq_i^γ_i = 1.
+    # Numéraire: household CPI over the composite good, Π pq_i^γ_i = 1.  [1 row]
     cpi = float(np.prod(np.power(pq, cal.gamma)))
     res.append(cpi - 1.0)
+    # Total: ns + ns + (nf−1) + 1 + 1 = 2·ns + nf + 1 = n_unknowns — an exactly square system.
     return np.array(res, dtype=float)
 
 

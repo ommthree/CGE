@@ -4,9 +4,13 @@ Pins benchmark replication (activity output, domestic sales, imports, exports), 
 calibration identities, carbon leakage direction, homogeneity, and the engine dispatch.
 """
 
+from datetime import date
+
 import numpy as np
+import pandas as pd
 import pytest
 
+from cge.contracts.data_objects import SAM, Provenance
 from cge.contracts.engine import registry
 from cge.contracts.shocks import CarbonPrice
 from cge.data.sam import toy_open_sam
@@ -173,3 +177,204 @@ def test_armington_elasticity_one_rejected():
     """σ = 1 is the Cobb-Douglas trade special case (singular here); rejected with guidance."""
     with pytest.raises(ValueError, match="must be ≠ 1"):
         calibrate_open(toy_open_sam(), sectors=_SECTORS, factors=_FACTORS, arm_elast=1.0)
+
+
+# -- 2026-07 review remediation -----------------------------------------------
+#
+# The findings below are the ones the independent review reproduced; each test pins the fix.
+
+
+def _build_open_sam(exports: dict, imports: dict, domestic: dict) -> SAM:
+    """Assemble a balanced 2-sector open SAM from trade/production dicts (test helper).
+
+    ``exports``/``imports``/``domestic`` are per-sector money flows; value added is the residual of
+    activity output over intermediate purchases, split 50/50, and household final demand is the
+    residual of each commodity's supply over its intermediate use — so the matrix balances by
+    construction for any inputs whose aggregate trade balances."""
+    accounts = ["a_BRD", "a_MIL", "c_BRD", "c_MIL", "CAP", "LAB", "HOH", "ROW"]
+    inter = {("c_MIL", "a_BRD"): 24.0, ("c_BRD", "a_MIL"): 15.0}
+    m = pd.DataFrame(0.0, index=accounts, columns=accounts)
+    for s in _SECTORS:
+        m.loc[f"a_{s}", f"c_{s}"] = domestic[s]
+        m.loc[f"a_{s}", "ROW"] = exports[s]
+        m.loc["ROW", f"c_{s}"] = imports[s]
+    for (com, act), v in inter.items():
+        m.loc[com, act] = v
+    for s in _SECTORS:
+        output = domestic[s] + exports[s]
+        ii = sum(m.loc[c, f"a_{s}"] for c in ("c_BRD", "c_MIL"))
+        va = output - ii
+        m.loc["CAP", f"a_{s}"] = va / 2.0
+        m.loc["LAB", f"a_{s}"] = va / 2.0
+    for s in _SECTORS:
+        m.loc[f"c_{s}", "HOH"] = m[f"c_{s}"].sum() - m.loc[f"c_{s}"].sum()
+    m.loc["HOH", "CAP"] = m.loc["CAP", ["a_BRD", "a_MIL"]].sum()
+    m.loc["HOH", "LAB"] = m.loc["LAB", ["a_BRD", "a_MIL"]].sum()
+    prov = Provenance(
+        source="test",
+        source_version="v",
+        licence="n/a",
+        reference_year=0,
+        retrieved=date.today().isoformat(),
+        notes="test open SAM",
+    )
+    return SAM(provenance=prov, accounts=accounts, matrix=m)
+
+
+def test_open_dispatch_rejects_unbalanced_sam():
+    """P1: the open path now gates the SAM before calibration (it previously bypassed the check)."""
+    eng = registry.get("cge_static")
+    bad = toy_open_sam()
+    bad.matrix.iloc[0, 1] += 7.0  # break balance in one cell
+    with pytest.raises(ValueError, match="not balanced"):
+        eng.run(data={"SAM": bad}, shocks=[], years=[2020])
+
+
+def test_open_dispatch_rejects_unsupported_shock_controls():
+    """P1: gas selection and spatial coverage are rejected on the open path, not ignored."""
+    eng = registry.get("cge_static")
+    data = {"SAM": toy_open_sam(), "carbon_cost_share": {"BRD": 0.2, "MIL": 0.05}}
+    with pytest.raises(ValueError, match="cannot select gases"):
+        eng.run(data=data, shocks=[CarbonPrice(price=1.0, gases=["CH4"])], years=[2020])
+    with pytest.raises(ValueError, match="coverage"):
+        eng.run(data=data, shocks=[CarbonPrice(price=1.0, coverage_regions=["ZZ"])], years=[2020])
+
+
+def test_open_zero_export_sector_runs():
+    """P1: a balanced SAM with a non-exporting sector calibrates and solves (no 0**-Ω = inf)."""
+    sam = _build_open_sam(
+        exports={"BRD": 30.0, "MIL": 0.0},  # MIL exports nothing
+        imports={"BRD": 12.0, "MIL": 18.0},  # aggregate trade balanced (30 = 30)
+        domestic={"BRD": 80.0, "MIL": 110.0},
+    )
+    assert is_balanced(sam.matrix, tol=1e-9)
+    cal = calibrate_open(sam, sectors=_SECTORS, factors=_FACTORS)
+    assert cal.cet_share_e[1] == 0.0  # structural zero recorded
+    pz = MO._cet_price(cal, np.ones(2), np.ones(2))
+    assert np.all(np.isfinite(pz))  # the CET dual no longer blows up
+    eng = registry.get("cge_static")
+    res = eng.run(data={"SAM": sam}, shocks=[], years=[2020])
+    assert not res.data["value"].isna().any()
+
+
+def test_open_nonzero_foreign_savings_rejected():
+    """P1: the pilot requires a balanced current account (income identity omits the ROW flow)."""
+    sam = _build_open_sam(
+        exports={"BRD": 20.0, "MIL": 10.0},
+        imports={"BRD": 22.0, "MIL": 18.0},  # imports 40 > exports 30 → Sf = 10 ≠ 0
+        domestic={"BRD": 80.0, "MIL": 110.0},
+    )
+    with pytest.raises(ValueError, match="balanced current account"):
+        calibrate_open(sam, sectors=_SECTORS, factors=_FACTORS)
+
+
+def test_open_manifest_distinguishes_carbon_shares_and_elasticities():
+    """P1: two runs differing only in carbon shares (or an elasticity vector) get different
+    manifests — the substantive inputs are recorded, not just the SAM and first elasticity."""
+    eng = registry.get("cge_static")
+    base = {"SAM": toy_open_sam()}
+
+    def _assum(share, **extra):
+        res = eng.run(
+            data={**base, "carbon_cost_share": share, **extra},
+            shocks=[CarbonPrice(price=0.1)],
+            years=[2020],
+        )
+        return res.manifest.assumptions
+
+    a1 = _assum({"BRD": 0.2, "MIL": 0.05})
+    a2 = _assum({"BRD": 0.1, "MIL": 0.1})
+    assert a1 != a2  # different carbon shares ⇒ different provenance
+    # Full per-sector vectors recorded, not scalars.
+    a3 = _assum({"BRD": 0.2, "MIL": 0.05}, armington_elast=np.array([2.0, 4.0]))
+    a4 = _assum({"BRD": 0.2, "MIL": 0.05}, armington_elast=np.array([2.0, 1.5]))
+    assert a3["armington_elasticity"] == [2.0, 4.0]
+    assert a3 != a4
+    assert "va_elast" in a1 and "solver_backends" in a1
+
+
+def test_open_recycling_income_identity_holds():
+    """P2: recycling is solved in closed form; the household budget identity holds exactly (the old
+    50-iteration loop could stop with the identity violated while the solver residual was ~0)."""
+    cal = _cal()
+    st = MO.derive_open_state(
+        cal,
+        np.ones(2),
+        np.ones(2),
+        np.ones(2),
+        1.0,
+        carbon_cost=np.array([0.2, 0.05]),
+        recycling="lump_sum",
+    )
+    factor_income = float(np.dot(np.ones(2), cal.endowment))
+    assert abs(st.income - (factor_income + st.carbon_revenue)) < 1e-12
+
+
+def test_open_recycling_diverges_when_revenue_exceeds_income():
+    """P2: a carbon cost so large that revenue ≥ income is rejected (k ≥ 1), not returned."""
+    cal = _cal()
+    with pytest.raises(ValueError, match="k="):
+        MO.derive_open_state(
+            cal,
+            np.ones(2),
+            np.ones(2),
+            np.ones(2),
+            1.0,
+            carbon_cost=np.array([1.5, 0.375]),
+            recycling="lump_sum",
+        )
+
+
+def test_open_residual_system_is_square():
+    """P2: the residual vector has exactly n_unknowns rows (the tautological composite-market rows
+    were removed), so the system is genuinely square — not 9×7 with two identically-zero rows."""
+    cal = _cal()
+    z = MO.initial_guess(cal)
+    res = MO.residuals(cal, z)
+    assert res.shape == (MO.n_unknowns(cal),)
+
+
+def test_open_gdp_change_real_uses_cpi_weighted_expenditure():
+    """P2: gdp_change_real is CPI-weighted expenditure pq·FD (the same contract as the closed
+    model), not the unweighted Σ FD — so it equals the Cobb-Douglas welfare move at the CPI num."""
+    eng = registry.get("cge_static")
+    data = {"SAM": toy_open_sam(), "carbon_cost_share": {"BRD": 0.2, "MIL": 0.05}}
+    res = eng.run(data=data, shocks=[CarbonPrice(price=0.1)], years=[2020])
+    d = res.data
+    gdp = d[(d["variable"] == "gdp_change_real")]["value"].iloc[0]
+    welfare = d[(d["variable"] == "welfare_change")]["value"].iloc[0]
+    # Under the CPI numéraire, real expenditure and CD utility move together (both = ΔI / CPI).
+    assert abs(gdp - welfare) < 1e-6
+
+
+@pytest.mark.parametrize("bad", [-1.0, 0.0])
+def test_open_elasticity_must_be_positive(bad):
+    """P2: negative and zero VA/Armington/CET elasticities are rejected (not silently used)."""
+    with pytest.raises(ValueError, match="positive"):
+        calibrate_open(toy_open_sam(), sectors=_SECTORS, factors=_FACTORS, arm_elast=bad)
+
+
+def test_open_elasticity_length_one_vector_rejected():
+    """P2: a length-1 elasticity vector is rejected, not silently broadcast to every sector."""
+    with pytest.raises(ValueError, match="scalar or a length-2"):
+        calibrate_open(
+            toy_open_sam(), sectors=_SECTORS, factors=_FACTORS, arm_elast=np.array([3.0])
+        )
+
+
+def test_open_va_elast_length_one_rejected():
+    """P2: a one-element VA vector raised a raw IndexError before; now a clear ValueError."""
+    with pytest.raises(ValueError, match="scalar or a length-2"):
+        calibrate_open(toy_open_sam(), sectors=_SECTORS, factors=_FACTORS, va_elast=np.array([0.8]))
+
+
+def test_sensitivity_sweep_rejects_unordered_bands():
+    """P2: an unordered (high, central, low) triple is rejected — it would mislabel the envelope."""
+    from cge.engines.cge_static.engine import armington_sensitivity_sweep
+
+    with pytest.raises(ValueError, match="ordered"):
+        armington_sensitivity_sweep(
+            {"SAM": toy_open_sam(), "carbon_cost_share": {"BRD": 0.2, "MIL": 0.05}},
+            [CarbonPrice(price=0.1)],
+            elasticities=(4.0, 2.0, 1.5),
+        )

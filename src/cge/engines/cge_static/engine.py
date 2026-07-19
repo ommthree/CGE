@@ -7,12 +7,15 @@ per-unit emissions cost wedge, solves for the new equilibrium, and emits a ``Res
 and volume changes plus GE outputs (factor prices, real GDP, welfare, carbon revenue). The CPI is
 the numéraire, so there is no separate deflator/inflation output.
 
-**Pilot scope (single region, one household):** the model is the small, correctness-first pilot
-from `docs/phase-5-plan.md` §5.2a — Leontief intermediates, Cobb-Douglas value added and household
-demand, CPI numéraire, with **revenue recycling** (lump_sum / labour_tax_cut). It passes benchmark
-replication, homogeneity, Walras and the recycling-effect checks (the `cge_static` validation
-suite). Armington trade and multiple regions are the next sub-phases; this engine is the provable
-core, not yet the production model.
+**Scope:** the correctness-first pilot from `docs/phase-5-plan.md` §5.2a — Leontief intermediates,
+CES/Cobb-Douglas value added, Cobb-Douglas household demand, CPI numéraire, with **revenue
+recycling** (lump_sum / labour_tax_cut). Two variants share this engine: a **closed** single-region
+economy, and an **open** economy (Armington imports + CET exports + a rest-of-world account, CES
+value added, an endogenous exchange rate) selected automatically when the SAM carries a ``ROW``
+account. Both pass benchmark replication, homogeneity and Walras (the `cge_static` validation
+suite); the open variant additionally shows carbon leakage. **True multiple regions** (bilateral
+trade between build regions) and a **non-zero foreign-savings closure** are documented follow-ups;
+the open variant requires a balanced current account.
 
 Data contract (``data`` dict): either a ``SAM`` supplied directly (validated: aligned, finite,
 non-negative, balanced) with an optional per-sector dimensionless ``carbon_cost_share``, OR an
@@ -36,7 +39,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor the single institution as a sector.
@@ -49,8 +52,9 @@ ASSUMPTIONS = {
     ),
     "scope": (
         "single region, one representative household; revenue recycling supported "
-        "(none/lump_sum/labour_tax_cut, the last two equivalent with one household); "
-        "Armington trade / multi-region are later sub-phases"
+        "(none/lump_sum/labour_tax_cut, the last two equivalent with one household). This is the "
+        "CLOSED variant; an OPEN variant (Armington/CET) runs when the SAM carries a ROW account. "
+        "True multiple regions are a later sub-phase."
     ),
     "carbon_price": "per-unit emissions cost wedge τ·e[i] in the zero-profit condition",
     "revenue_recycling": (
@@ -76,6 +80,43 @@ ASSUMPTIONS = {
         "volumes."
     ),
     "reference": "Hosoe, Gasawa & Hashimoto (2010), Textbook of CGE Modeling [Hosoe2010]",
+}
+
+# Assumptions for the OPEN-economy variant. It shares the solver rule and reference but has a
+# genuinely different model (Armington/CET, separate activity/commodity accounts, CES value added,
+# an exchange rate) — recording the closed assumptions verbatim would misdescribe an open run
+# (review P1/P3). Only keys that actually differ are overridden here; the rest are inherited.
+OPEN_ASSUMPTIONS = {
+    **ASSUMPTIONS,
+    "model": (
+        "static open-economy CGE: Leontief intermediates over an Armington composite commodity; "
+        "value added a CES (or Cobb-Douglas) nest over factors; CET transformation of output into "
+        "domestic sales and exports; small open economy (world prices + foreign savings fixed, "
+        "exchange rate endogenous); CPI numéraire"
+    ),
+    "model_variant": (
+        "open economy (Armington imports + CET exports) with a rest-of-world account; single "
+        "region + RoW (true multi-region is a follow-up); balanced current account required (zero "
+        "foreign savings — a non-zero-Sf closure is a documented follow-up)"
+    ),
+    "scope": (
+        "single region + rest-of-world, one representative household; revenue recycling to the "
+        "household; Armington/CET trade IS modelled here; true multiple regions are a later phase"
+    ),
+    "trade": (
+        "Armington import composite (elasticity σ) and CET export transformation (elasticity Ω) "
+        "per sector; import/export world prices fixed at 1 in foreign currency; the exchange rate "
+        "clears the fixed-foreign-savings trade balance; a carbon price causes carbon leakage"
+    ),
+    "value_added": (
+        "CES value-added nest with per-sector substitution elasticity σ_va (σ_va=1 ⇒ "
+        "Cobb-Douglas); non-unitary σ_va enables factor-substitution / double-dividend analysis"
+    ),
+    "interpretation": (
+        "GENERAL-EQUILIBRIUM open-economy price and volume response with factor-market feedback, "
+        "input substitution and trade reallocation (imports/exports respond to relative prices). "
+        "Indicative magnitudes (pilot calibration)."
+    ),
 }
 
 
@@ -215,6 +256,9 @@ class CGEStaticEngine:
                 **ASSUMPTIONS,
                 "sectors": sectors,
                 "factors": factors,
+                # VA elasticity materially changes results, so it belongs in the manifest — two runs
+                # differing only in va_elast must have different assumptions (review P1).
+                "va_elast": [round(float(v), 12) for v in cal.va_elast.tolist()],
                 "recycling_mode": recycling,
                 "recycling_defaulted_from_none": recycling_defaulted,
                 "solver_backends": sorted(backends),
@@ -534,6 +578,46 @@ def _sam_fingerprint(sam: SAM) -> dict:
     }
 
 
+def _validate_open_sam(sam: SAM, sectors: list[str], factors: list[str]) -> None:
+    """Structural gate for a supplied OPEN SAM (review P1: the open path bypassed every SAM check).
+
+    Requires the ``a_<s>``/``c_<s>`` activity/commodity pair for each sector, the named factors, a
+    single household, exactly one ``ROW`` account, unique/aligned axes, finite non-negative cells,
+    and an overall-balanced matrix — the same standard the closed path enforces, adapted to the
+    open account structure. A bad SAM is rejected rather than silently calibrated."""
+    from cge.data.sam.balance import imbalance, is_balanced
+
+    need = [f"a_{s}" for s in sectors] + [f"c_{s}" for s in sectors] + list(factors) + ["ROW"]
+    missing = [a for a in need if a not in sam.accounts]
+    if missing:
+        raise ValueError(f"supplied open SAM is missing required accounts: {missing}")
+    households = [
+        a
+        for a in sam.accounts
+        if not a.startswith(("a_", "c_")) and a not in factors and a != "ROW"
+    ]
+    if len(households) != 1:
+        raise ValueError(f"open SAM expects exactly one household account, got {households}")
+    m = sam.matrix
+    idx, cols = list(m.index), list(m.columns)
+    if len(set(idx)) != len(idx) or len(set(cols)) != len(cols):
+        raise ValueError("supplied open SAM matrix has duplicate row or column labels")
+    accts = set(sam.accounts)
+    if set(idx) != accts or set(cols) != accts:
+        raise ValueError("supplied open SAM matrix axes must equal the declared accounts exactly")
+    arr = m.to_numpy(dtype=float)
+    if not np.isfinite(arr).all():
+        raise ValueError("supplied open SAM has non-finite cells")
+    if float(arr.min()) < -1e-9:
+        raise ValueError("supplied open SAM has negative cells; a SAM must be non-negative")
+    if not is_balanced(m, tol=1e-6):
+        worst = float(imbalance(m).abs().max())
+        raise ValueError(
+            f"supplied open SAM is not balanced (max |row−col| = {worst:.3e} > 1e-6); "
+            f"the open CGE calibrates only on a balanced SAM."
+        )
+
+
 def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
     """Open-economy (Armington/CET) CGE run. The SAM has ``a_<s>``/``c_<s>`` activity/commodity
     accounts, factors, a household and a ``ROW`` account. Carbon cost is a supplied per-sector
@@ -546,11 +630,31 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     factors = [f for f in _DEFAULT_FACTORS if f in sam.accounts]
     ns = len(sectors)
 
+    # Gate the supplied SAM BEFORE calibration (review P1: the open path skipped this).
+    _validate_open_sam(sam, sectors, factors)
+
     carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+    # Apply/reject every CarbonPrice control (review P1: the open path ignored gases + coverage).
+    # The open path also carries a single dimensionless per-sector cost share, so — like the
+    # supplied-SAM closed path — it cannot express gas selection or spatial coverage; reject them
+    # rather than silently returning the same result regardless of the control.
+    for s in carbon_shocks:
+        if s.gases != ["CO2"]:
+            raise ValueError(
+                f"the open-economy CGE applies a single dimensionless carbon_cost_share and cannot "
+                f"select gases; got gases={s.gases}. Leave gases at the default ['CO2']."
+            )
+        if s.coverage_sectors or s.coverage_regions:
+            raise ValueError(
+                "the open-economy CGE cannot apply sector/region coverage (the cost share is "
+                "already per-sector and single-region); express coverage via carbon_cost_share."
+            )
+
     modes = {s.revenue_recycling for s in carbon_shocks} or {"none"}
     if len(modes) > 1:
         raise ValueError(f"cge_static needs a single recycling mode; got {sorted(modes)}.")
     recycling = modes.pop()
+    recycling_defaulted = recycling == "none"
     if recycling == "none":
         recycling = "lump_sum"  # the open economy also circulates carbon revenue to the household
 
@@ -591,30 +695,59 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     _bsol, base = _solve_year(np.zeros(ns))
     records: list[dict] = []
     resid_max = _bsol.residual_norm
+    backends: set[str] = {_bsol.backend}
+    statuses: set[str] = {_bsol.status}
+    cc_by_year: dict[int, np.ndarray] = {}
     for year in years:
         tau = sum(s.price_at(year) for s in carbon_shocks)
         cc = tau * share
+        cc_by_year[year] = cc
         sol, st = _solve_year(cc)
         resid_max = max(resid_max, sol.residual_norm)
+        backends.add(sol.backend)
+        statuses.add(sol.status)
         _emit_open(records, cal, base, st, year)
 
+    # Substantive provenance: the effective per-year carbon-cost vector (hashed) + the full
+    # per-sector elasticity vectors, so two runs that differ only in carbon shares or in an
+    # elasticity vector produce different manifests (review P1).
+    effective = {str(y): [round(float(v), 12) for v in cc.tolist()] for y, cc in cc_by_year.items()}
+    emissions_inputs = (
+        [
+            {
+                "name": "EffectiveCarbonCostShare",
+                "sectors": sectors,
+                "content_hash": content_hash(effective),
+            }
+        ]
+        if any(any(v != 0.0 for v in row) for row in effective.values())
+        else []
+    )
     manifest = RunManifest.build(
         engine_name=meta.name,
         engine_version=meta.version,
         data_source=data_source_id(sam.provenance),
         scenario={"shocks": [s.model_dump(mode="json") for s in shocks], "years": years},
         assumptions={
-            **ASSUMPTIONS,
-            "model_variant": "open economy (Armington imports + CET exports; small-open, fixed "
-            "world prices and foreign savings; exchange rate endogenous)",
+            **OPEN_ASSUMPTIONS,
             "sectors": sectors,
             "factors": factors,
             "recycling_mode": recycling,
-            "armington_elasticity": float(cal.arm_elast[0]),
-            "cet_elasticity": float(cal.cet_elast[0]),
+            "recycling_defaulted_from_none": recycling_defaulted,
+            # FULL per-sector elasticity vectors, not just the first element (review P1).
+            "armington_elasticity": [round(float(v), 12) for v in cal.arm_elast.tolist()],
+            "cet_elasticity": [round(float(v), 12) for v in cal.cet_elast.tolist()],
+            "va_elast": [round(float(v), 12) for v in cal.va_elast.tolist()],
+            "solver_backends": sorted(backends),
+            "solver_statuses": sorted(statuses),
             "solver_max_residual_norm": resid_max,
+            "foreign_savings": float(cal.foreign_savings),
             "emissions_priced": bool(np.any(share != 0.0) and positive_price),
-            "inputs": [input_identity("SAM", sam.provenance, content=_sam_fingerprint(sam))],
+            "benchmark_gdp_normalised": cal.gdp0,
+            "inputs": [
+                input_identity("SAM", sam.provenance, content=_sam_fingerprint(sam)),
+                *emissions_inputs,
+            ],
         },
     )
     return ResultSet.from_records(records, manifest)
@@ -631,9 +764,13 @@ def _emit_open(records, cal, base, st, year: int) -> None:
     for f_idx, factor in enumerate(cal.factors):
         records.append(_rec("factor_price_change", factor, year, st.w[f_idx] / base.w[f_idx] - 1.0))
     records.append(_rec("exchange_rate_change", "__economy__", year, st.er / base.er - 1.0))
-    # Real GDP = real absorption at benchmark composite prices (CPI numéraire): Σ FD (household) is
-    # the real consumption index; report it as the real-GDP proxy for the pilot.
-    records.append(_rec("gdp_change_real", "__economy__", year, st.FD.sum() / base.FD.sum() - 1.0))
+    # Real GDP — the SAME contract as the closed model (review P2): CPI-numéraire expenditure on the
+    # composite good, Σ pq_i·FD_i. Prices are in CPI units (Π pq^γ=1 pinned), so this expenditure
+    # aggregate is already real. Using the unweighted Σ FD instead would be a different (Laspeyres)
+    # metric under the same name — and would drift from the closed model's gdp_change_real.
+    real_gdp = float(np.dot(st.pq, st.FD))
+    real_gdp_base = float(np.dot(base.pq, base.FD))
+    records.append(_rec("gdp_change_real", "__economy__", year, real_gdp / real_gdp_base - 1.0))
     u = float(np.prod(np.power(st.FD, cal.gamma)))
     u_base = float(np.prod(np.power(base.FD, cal.gamma)))
     records.append(_rec("welfare_change", "__economy__", year, u / u_base - 1.0))
@@ -663,7 +800,15 @@ def armington_sensitivity_sweep(
     if sam is None or "ROW" not in sam.accounts:
         raise ValueError("armington_sensitivity_sweep needs an open SAM (with a ROW account)")
 
-    bands = {"low": elasticities[0], "central": elasticities[1], "high": elasticities[2]}
+    lo, ce, hi = (float(e) for e in elasticities)
+    if not all(np.isfinite([lo, ce, hi])) or lo <= 0:
+        raise ValueError(f"sweep elasticities must be finite and positive; got {elasticities}.")
+    if not (lo < ce < hi):
+        raise ValueError(
+            f"sweep elasticities must be strictly ordered low < central < high; got "
+            f"(low={lo}, central={ce}, high={hi}). An unordered band would mislabel the envelope."
+        )
+    bands = {"low": lo, "central": ce, "high": hi}
     per_band: dict[str, pd.Series] = {}
     for band, elast in bands.items():
         res = CGEStaticEngine().run(

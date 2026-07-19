@@ -310,3 +310,64 @@ recovery found two blockers and several mediums; all fixed:
   Armington" wording, v0.3.0), `phase-4-status.md` (test/check counts), `roadmap.md` (old linear
   ε·Δp / fixed-point wording) corrected. Elasticity `source` strings documented honestly as
   descriptive attributions, not per-value citations (curated citations remain a follow-up).
+
+---
+
+# Independent review (2026-07, open-economy round) — remediation
+
+A second, deeper review of the **open-economy CGE** (Armington/CET + CES + sweeps) found nine real,
+reproduced defects — all confirmed against HEAD and now fixed. The closed pilot was judged sound;
+the open variant's *supported domain* was narrower than documented and several closed-path
+safeguards were bypassed on the new open path. Engine `cge_static` bumped **0.3.0 → 0.4.0**.
+
+## P1 (fixed)
+
+- **Open dispatch bypassed the SAM + shock-control gates.** `_run_open` returned before any
+  validation ran, so an unbalanced open SAM and unknown gases/coverage were accepted. Added
+  `_validate_open_sam` (structure, unique/aligned axes, finite, non-negative, balanced) **before**
+  calibration, and explicit rejection of gas selection / spatial coverage the single dimensionless
+  cost share cannot express. Tests added.
+- **Foreign-savings closure did not replicate a non-zero current account.** Household income omits
+  the ROW transfer, so a SAM with `Sf ≠ 0` would not replicate. **Restricted** the pilot to a
+  balanced current account: `calibrate_open` rejects `Σ M ≠ Σ E` with guidance; a ROW-transfer
+  closure is a documented follow-up. Added `open_nonzero_foreign_savings_rejected` to the standing
+  validation suite (as the review requested) + a pytest.
+- **Zero-export sector crashed calibration** (`0 ** (-Ω) = inf`). **Fixed** with masked branching
+  (safe base in the CET/Armington price duals and quantity splits), so structural zeros — common in
+  real trade data — run warning-free. Test with a non-exporting sector added.
+- **Open manifest could not identify the inputs that drive results.** It recorded only the SAM and
+  the *first* elasticity. Now records the **effective per-year carbon-cost vector (hashed)**, the
+  **full per-sector** Armington/CET/VA elasticity vectors, solver backend/status, the
+  recycling-defaulted flag, foreign savings, and accurate open/CES assumptions (`OPEN_ASSUMPTIONS`).
+  The **closed** manifest now also records `va_elast`. Version bumped for the model additions.
+
+## P2 (fixed)
+
+- **Recycling fixed point could stop above tolerance.** The 50-iteration undamped loop had no
+  convergence check. **Replaced with the closed-form solution** `I = factor_income/(1−k)` (income is
+  linear at fixed prices), with a `k ≥ 1` guard and an independent income-identity check. The budget
+  identity now holds exactly.
+- **Elasticity + sweep-band inputs under-validated.** Added `_elast_vector`: finite, strictly
+  positive, exact scalar-or-`(ns,)` shape (a length-1 vector no longer silently broadcasts; a
+  one-element VA no longer raises a raw IndexError), applied to VA/Armington/CET in **both** the open
+  and closed calibrations. The sweep now requires strictly ordered `low < central < high`.
+- **Open system was overdetermined with tautological rows** (9 residuals vs 7 unknowns for 2
+  sectors; the composite-market rows were identically zero because `_quantities` already solves those
+  markets). **Removed** the redundant rows → a genuinely square `2·ns + nf + 1` system; corrected the
+  module + model-doc equation count. (This also removes the latent risk that the IPOPT adapter, which
+  builds exactly *n* constraints, would silently ignore excess equations.)
+- **Open `gdp_change_real` changed the metric's meaning.** It reported unweighted `Σ FD` while the
+  closed model reports CPI-weighted expenditure `p·FD`. **Aligned** the open path to `pq·FD` — the
+  same real-GDP contract — so it equals the CD welfare move at the CPI numéraire.
+
+## P3 (fixed)
+
+- **Docs de-staled.** `cge-static.md` (open economy no longer "pending"; CES value-added equation
+  (1′) added; the square reduced system + balanced-current-account restriction documented; v0.4.0),
+  `README.md` (open economy is in, not pending), `roadmap.md` §5.1 (hand-built open SAM done),
+  `user-guide.md` (engine version), and the engine's `ASSUMPTIONS`/docstring (the open run no longer
+  claims Armington is a later phase) all reconciled.
+
+**Verification:** 229 pytest passed / 5 skipped (18 new regression tests); `cge validate` 44/44;
+ruff check + format clean. **Remaining (deferred, larger effort):** true multi-region with bilateral
+trade, a non-zero-foreign-savings ROW closure, and a live-EXIOBASE open-SAM build.

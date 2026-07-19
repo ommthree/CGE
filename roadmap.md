@@ -252,8 +252,8 @@ not currently installed; the plan chooses IPOPT (via `idaes` binary) with a pure
 fallback so CI stays solver-independent on the 2-sector toy. A solver abstraction records the
 solver + termination status; a non-optimal solve raises (never returns numbers).
 
-**5.1 SAM construction (2–4 wk) — ✅ closed single-region done; open-economy accounts pending**
-- ✅ Map EXIOBASE flows into SAM accounts: sectors (activity=commodity, collapsed), factors (labour, capital), representative household — **single-region closed** economy (regions summed; the pilot is closed). Government / savings-investment / rest-of-world accounts land with the open-economy + recycling sub-phase (5.3). `cge.data.sam.build_sam`.
+**5.1 SAM construction (2–4 wk) — ✅ closed single-region done; ✅ open SAM (hand-built) done; live open-SAM build pending**
+- ✅ Map EXIOBASE flows into SAM accounts: sectors (activity=commodity, collapsed), factors (labour, capital), representative household — **single-region closed** economy (regions summed). `cge.data.sam.build_sam`. A **hand-built open SAM** (`cge.data.sam.toy_open`) with separate activity/commodity + rest-of-world accounts drives the open-economy variant; a live-EXIOBASE **open** SAM build is the remaining piece.
 - ✅ Value added derived from the IO identity and split capital/labour by a documented assumption; RAS balancer (`balance.py`) for the thin-data path; SAM-specific `QualityReport` (`quality.py`): balance, **aggregate preservation**, adjustment audit, negative-cell + assumed-share flags — surfaced in the run manifest, and a failing SAM is rejected.
 - **DoD (met for the closed single-region SAM):** balanced SAM reproducing source aggregates to 1e-6 with an audit trail; the CGE calibrates on it and replicates its benchmark to machine precision (`replicates_on_built_sam` validation check). Runs on the offline EXIOBASE-shaped test build; a live-EXIOBASE CGE gate is a follow-up.
 

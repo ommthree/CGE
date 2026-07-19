@@ -26,8 +26,10 @@ contracts, with a standing model-validation suite ([`docs/validation.md`](docs/v
 Also: **macro aggregates** (GVA/GDP/deflators, real vs nominal — Phase 4b) and a **static CGE**
 (Engine 3, Phase 5) with **carbon-tax revenue recycling** — a pilot that calibrates on an
 EXIOBASE-shaped SAM, passes the standard CGE battery (replication/homogeneity/Walras), and shows
-the revenue-recycling effect and dirty→clean reallocation (Armington/multi-region pending). Volume
-magnitudes are indicative; cost answers are validated. See
+the revenue-recycling effect and dirty→clean reallocation. It also runs as an **open economy**
+(Armington imports + CET exports + a rest-of-world account, CES value added, elasticity sweeps),
+where a carbon price causes textbook **carbon leakage** (single region + RoW; true multi-region
+pending). Volume magnitudes are indicative; cost answers are validated. See
 [`docs/models/cge-static.md`](docs/models/cge-static.md).
 
 ```bash

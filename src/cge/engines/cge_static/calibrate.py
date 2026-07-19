@@ -26,6 +26,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from cge.contracts.data_objects import SAM
+from cge.engines.cge_static.calibrate_open import _elast_vector
 
 
 @dataclass(frozen=True)
@@ -112,14 +113,14 @@ def calibrate(
     # Cobb-Douglas factor shares within value added (columns sum to 1).
     beta = F0 / VA0[None, :]  # [f,i]
     ns = len(sectors)
-    sigma_va = (
-        np.full(ns, float(va_elast)) if np.isscalar(va_elast) else np.asarray(va_elast, float)
-    )
+    # Validate σ_va: scalar or exactly (ns,), finite, strictly positive — a length-1 vector used to
+    # raise a raw IndexError and a non-positive value was silently used (review P2).
+    sigma_va = _elast_vector(va_elast, ns, "va_elast")
     # CES factor share δ (used when σ ≠ 1): from the benchmark factor mix, δ_f/δ_g = (F_f/F_g)^{1/σ}
     # at unit factor prices, normalised to sum to 1 per sector. (For σ = 1 δ = β, harmless.)
     with np.errstate(divide="ignore", invalid="ignore"):
         weights = np.where(F0 > 0, np.power(F0, 1.0 / sigma_va[None, :]), 0.0)
-    va_ces_share = weights / weights.sum(axis=0)[None, :]
+        va_ces_share = weights / weights.sum(axis=0)[None, :]
     # Scale ``av`` so the VA unit cost is exactly 1 at benchmark (w = 1). CD: av = Π (1/β)^β; CES:
     # av = [Σ_f δ_f^σ]^{1/(1-σ)}. Chosen per sector by whether σ = 1.
     av = np.empty(ns)

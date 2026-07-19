@@ -293,3 +293,53 @@ def _ces_va_replication():
     st = M.derive_state(cal, sol.x[:ns], sol.x[ns:])
     err = float(np.max(np.abs(st.X - cal.X0)))
     return err < 1e-6, f"CES (σ=0.6) benchmark replication error = {err:.2e}", err, 1e-6
+
+
+@check(SUITE, "open_nonzero_foreign_savings_rejected")
+def _open_nonzero_sf_rejected():
+    """The open pilot's closure (income = factor income + recycled revenue) only replicates a
+    balanced current account, so a SAM with non-zero foreign savings is **rejected at calibration**
+    rather than silently returning a non-replicating benchmark (2026-07 review P1). A proper
+    ROW-transfer closure is a documented follow-up."""
+    from datetime import date
+
+    import pandas as pd
+
+    from cge.contracts.data_objects import SAM, Provenance
+    from cge.engines.cge_static.calibrate_open import calibrate_open
+
+    # A minimal open SAM with imports (40) > exports (30) ⇒ Sf = 10 ≠ 0, balanced overall.
+    accts = ["a_BRD", "a_MIL", "c_BRD", "c_MIL", "CAP", "LAB", "HOH", "ROW"]
+    exp = {"BRD": 20.0, "MIL": 10.0}
+    imp = {"BRD": 22.0, "MIL": 18.0}
+    dom = {"BRD": 80.0, "MIL": 110.0}
+    inter = {("c_MIL", "a_BRD"): 24.0, ("c_BRD", "a_MIL"): 15.0}
+    m = pd.DataFrame(0.0, index=accts, columns=accts)
+    for s in ("BRD", "MIL"):
+        m.loc[f"a_{s}", f"c_{s}"] = dom[s]
+        m.loc[f"a_{s}", "ROW"] = exp[s]
+        m.loc["ROW", f"c_{s}"] = imp[s]
+    for (com, act), v in inter.items():
+        m.loc[com, act] = v
+    for s in ("BRD", "MIL"):
+        va = dom[s] + exp[s] - sum(m.loc[c, f"a_{s}"] for c in ("c_BRD", "c_MIL"))
+        m.loc["CAP", f"a_{s}"] = m.loc["LAB", f"a_{s}"] = va / 2.0
+    for s in ("BRD", "MIL"):
+        m.loc[f"c_{s}", "HOH"] = m[f"c_{s}"].sum() - m.loc[f"c_{s}"].sum()
+    m.loc["HOH", "CAP"] = m.loc["CAP", ["a_BRD", "a_MIL"]].sum()
+    m.loc["HOH", "LAB"] = m.loc["LAB", ["a_BRD", "a_MIL"]].sum()
+    prov = Provenance(
+        source="validation",
+        source_version="v",
+        licence="n/a",
+        reference_year=0,
+        retrieved=date.today().isoformat(),
+        notes="non-zero-Sf open SAM",
+    )
+    sam = SAM(provenance=prov, accounts=accts, matrix=m)
+    try:
+        calibrate_open(sam, sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
+        return False, "non-zero foreign savings was NOT rejected", None, None
+    except ValueError as e:
+        ok = "balanced current account" in str(e)
+        return ok, f"rejected as expected: {str(e)[:60]}", None, None
