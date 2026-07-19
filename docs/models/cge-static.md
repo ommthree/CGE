@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.4.0)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.5.0)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -302,6 +302,34 @@ and `exchange_rate_change` alongside the usual outputs; `gdp_change_real` is CPI
 $pq\cdot FD$ (the same real-GDP contract as the closed model). An **Armington elasticity sensitivity
 sweep** (`armington_sensitivity_sweep`) returns the low/central/high leakage envelope. Validation:
 `open_benchmark_replication`, `open_carbon_price_causes_leakage`.
+
+## 8a. Multi-region (true bilateral trade)
+
+When the SAM carries **several households** ``HOH_<r>`` and region-prefixed activities
+``a_<r>_<s>``, the engine runs the **multi-region variant** (`cge.engines.cge_static.model_multi`) —
+a closed global economy of ``R`` regions that trade bilaterally (`toy_multi_sam` is the hand-checkable
+2-region × 2-sector target). Each region ``r`` has:
+
+- an **Armington** composite ``Q[r,s]`` that is a CES over its **domestic variety** and **imports
+  from every partner region** ``o≠r`` (region-of-origin substitution);
+- a **CET** transform of output ``Z[r,s]`` into **domestic sales** and **exports to every partner**
+  ``d≠r``;
+- **region-specific, immobile** factors and its own household.
+
+Bilateral consistency holds at the benchmark: region ``d``'s import of ``s`` from ``o`` equals
+region ``o``'s export of ``s`` to ``d``. Foreign savings per region ``Sf[r]=ΣM−ΣE`` is fixed at
+benchmark and globally zero-sum (financed by household capital transfers).
+
+**Price convention.** The first implementation uses the **law of one price**: a producer's domestic
+and export price coincide (``pd[r,s]``), and the CET allocates *quantities* between domestic sales
+and exports; a separate border/export price is a documented refinement. The unknowns are
+``pd[r,s]``, ``pq[r,s]`` (composite price), ``w[f,r]`` — a square system of ``2·nr·ns + nf·nr`` (one
+global CPI numéraire, one factor market dropped by Walras; composite-market clearing solved
+algebraically). It **replicates its benchmark to machine precision** — every bilateral import and
+export returns to the SAM values — and produces the signature result: a carbon price in **one**
+region cuts that region's output, **raises its imports from partner regions** (cross-region carbon
+leakage) and **raises partners' output** of that good. Results are **region-tagged**. Validation:
+`multi_region_benchmark_replication`, `multi_region_cross_region_leakage`.
 
 ## 9. Honest expectations
 

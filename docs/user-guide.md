@@ -26,7 +26,7 @@ $ cge engines                  # should list io_price and partial_eq
 You should see something like:
 
 ```
-cge_static v0.4.0 [general_equilibrium, prices, volumes] — Static CGE pilot: GE price + volume response with factor-market feedback.
+cge_static v0.5.0 [general_equilibrium, prices, volumes] — Static CGE pilot: GE price + volume response with factor-market feedback.
     shocks: carbon_price
 io_price v0.6.0 [prices] — Leontief cost-push pass-through: Δprice of every good under a carbon price and/or an energy-carrier output-price change.
     shocks: carbon_price, energy_price

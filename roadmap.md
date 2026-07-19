@@ -241,10 +241,18 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 > precision and pass the
 > standard CGE battery.
 >
-> **Remaining (a genuinely larger effort, deferred):** true **multiple regions** with bilateral
-> trade between build regions (the current open model is single-region + rest-of-world); the GE
-> tier of the macro aggregates (native per-sector GVA + capital rental rate — the rental rate is
-> already emitted as a factor price); and a live-EXIOBASE open-SAM build.
+> **Also complete:** **true multiple regions** with **bilateral trade** between build regions
+> (`model_multi` — a closed global economy of R regions, each with an Armington composite over the
+> domestic variety + imports from every partner and a CET transform into domestic sales + exports to
+> every partner; region-specific factors and households). Replicates its benchmark to machine
+> precision and shows **cross-region carbon leakage** (a carbon price in one region relocates
+> production and raises imports from partners); results are region-tagged.
+>
+> **Remaining (deferred):** the GE tier of the macro aggregates (native per-sector GVA + capital
+> rental rate — the rental rate is already emitted as a factor price); a **live-EXIOBASE** open/multi
+> SAM build (the offline test MRIO works); and multi-region refinements (separate export/border
+> prices — currently law-of-one-price; per-cell trade elasticities; an IOSystem→multi-region-SAM
+> builder).
 
 > **Detailed plan: [`docs/phase-5-plan.md`](docs/phase-5-plan.md)** — solver-first sequencing,
 > equation-level model structure, SAM balancing with an audit trail, the standard CGE

@@ -39,7 +39,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor the single institution as a sector.
@@ -136,6 +136,33 @@ OPEN_ASSUMPTIONS = {
     ),
 }
 
+# Assumptions for the MULTI-REGION variant (true bilateral trade between build regions).
+MULTI_ASSUMPTIONS = {
+    **OPEN_ASSUMPTIONS,
+    "model": (
+        "static multi-region CGE: R regions trading bilaterally in a closed global economy; per "
+        "region Leontief intermediates over an Armington composite (CES over the domestic variety "
+        "+ imports from every partner region), CES/Cobb-Douglas value added, and a CET transform "
+        "of output into domestic sales + exports to every partner; region-specific factors; global "
+        "CPI numéraire"
+    ),
+    "model_variant": (
+        "multi-region (bilateral Armington/CET between build regions); region-specific immobile "
+        "factors and one household per region; law of one price (a producer's domestic and export "
+        "price coincide; a separate border/export price is a documented refinement); foreign "
+        "savings per region fixed at benchmark and globally zero-sum"
+    ),
+    "scope": (
+        "R regions with bilateral trade, one representative household per region; carbon pricing "
+        "in one region causes CROSS-REGION leakage (production/imports shift to partner regions)"
+    ),
+    "interpretation": (
+        "GENERAL-EQUILIBRIUM multi-region price/volume response with bilateral trade reallocation: "
+        "a carbon price in one region relocates production and raises imports from partners "
+        "(cross-region carbon leakage). Indicative magnitudes (pilot calibration)."
+    ),
+}
+
 
 def _carbon_cost_share(data: dict, sectors: list[str]) -> np.ndarray | None:
     """Per-sector **dimensionless carbon cost-share** supplied directly (the toy pilot path).
@@ -188,10 +215,12 @@ class CGEStaticEngine:
     )
 
     def run(self, *, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
-        # Open economy (Armington/CET) when the SAM carries a rest-of-world account, or when an
-        # IOSystem build is supplied with an ``open_home_region`` (build an open SAM from it);
-        # otherwise the closed pilot. The open path has its own calibration/model.
+        # Dispatch by SAM structure: MULTI-REGION (bilateral trade — several HOH_<r> households) →
+        # _run_multi; OPEN (a single ROW account) → _run_open; an IOSystem + open_home_region builds
+        # an open SAM; otherwise the CLOSED pilot. Each variant has its own calibration/model.
         supplied_sam = data.get("SAM")
+        if supplied_sam is not None and _is_multi_region_sam(supplied_sam):
+            return _run_multi(self.meta, data, shocks, years)
         if supplied_sam is not None and "ROW" in supplied_sam.accounts:
             return _run_open(self.meta, data, shocks, years)
         if data.get("IOSystem") is not None and data.get("open_home_region") is not None:
@@ -958,6 +987,238 @@ def _emit_open(records, cal, base, st, year: int) -> None:
 
 def _ratio(x: float, x0: float) -> float:
     return float(x / x0 - 1.0) if x0 > 0 else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Multi-region variant (Phase 5.4 — true bilateral trade)
+# ---------------------------------------------------------------------------
+
+
+def _is_multi_region_sam(sam: SAM) -> bool:
+    """A multi-region SAM has several ``HOH_<r>`` households and region-prefixed ``a_<r>_<s>``
+    activities (distinguishing it from the single-region open SAM's single ``HOH`` + ``ROW``)."""
+    households = [a for a in sam.accounts if a.startswith("HOH_")]
+    region_activities = [a for a in sam.accounts if a.startswith("a_") and a.count("_") >= 2]
+    return len(households) >= 2 and len(region_activities) > 0
+
+
+def _rec_r(variable: str, sector: str, region: str, year: int, value: float) -> dict:
+    return {
+        "variable": variable,
+        "sector": sector,
+        "region": region,
+        "year": year,
+        "scenario": "central",
+        "value": float(value),
+    }
+
+
+def _validate_multi_sam(sam: SAM, regions: list[str], sectors: list[str], factors: list[str]):
+    """Structural gate for a supplied multi-region SAM: the a_<r>_<s>/c_<r>_<s> accounts, per-region
+    factors and households must exist, axes unique/aligned, cells finite non-negative, and the
+    matrix globally balanced."""
+    from cge.data.sam.balance import imbalance, is_balanced
+
+    need = []
+    for r in regions:
+        need += [f"a_{r}_{s}" for s in sectors] + [f"c_{r}_{s}" for s in sectors]
+        need += [f"{f}_{r}" for f in factors] + [f"HOH_{r}"]
+    missing = [x for x in need if x not in sam.accounts]
+    if missing:
+        raise ValueError(f"multi-region SAM is missing required accounts: {missing[:6]}...")
+    m = sam.matrix
+    idx, cols = list(m.index), list(m.columns)
+    if set(idx) != set(sam.accounts) or set(cols) != set(sam.accounts):
+        raise ValueError("multi-region SAM matrix axes must equal the declared accounts exactly")
+    arr = m.to_numpy(dtype=float)
+    if not np.isfinite(arr).all() or float(arr.min()) < -1e-9:
+        raise ValueError("multi-region SAM has non-finite or negative cells")
+    if not is_balanced(m, tol=1e-6):
+        worst = float(imbalance(m).abs().max())
+        raise ValueError(f"multi-region SAM is not balanced (max |row−col| = {worst:.3e} > 1e-6)")
+
+
+def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
+    """Multi-region (bilateral Armington/CET) CGE run. The SAM has ``a_<r>_<s>``/``c_<r>_<s>``
+    accounts, per-region factors ``<f>_<r>`` and households ``HOH_<r>``. Carbon cost is a supplied
+    per-(region, sector) dimensionless ``carbon_cost_share`` (a nested dict
+    ``{region: {sector: v}}`` or a full [nr, ns] array)."""
+    from cge.engines.cge_static import model_multi as MM
+    from cge.engines.cge_static.calibrate_multi import calibrate_multi
+
+    sam: SAM = data["SAM"]
+    regions = sorted({a.split("_")[1] for a in sam.accounts if a.startswith("HOH_")})
+    # Sectors from a_<r>_<s>: strip the region and keep distinct sector names.
+    sectors = sorted({a.split("_", 2)[2] for a in sam.accounts if a.startswith("a_")})
+    factors = list(_DEFAULT_FACTORS)
+    _validate_multi_sam(sam, regions, sectors, factors)
+    nr, ns = len(regions), len(sectors)
+
+    carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+    for s in carbon_shocks:
+        if s.gases != ["CO2"] or s.coverage_sectors or s.coverage_regions:
+            raise ValueError(
+                "the multi-region CGE applies a per-(region,sector) carbon_cost_share and cannot "
+                "select gases or apply coverage; express coverage via carbon_cost_share values."
+            )
+    modes = {s.revenue_recycling for s in carbon_shocks} or {"none"}
+    if len(modes) > 1:
+        raise ValueError(f"cge_static needs a single recycling mode; got {sorted(modes)}.")
+    recycling = "lump_sum" if modes.pop() == "none" else "lump_sum"
+
+    share = _multi_carbon_share(data, regions, sectors)
+    positive = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
+    if positive and share is None:
+        raise ValueError(
+            "a positive carbon price on the multi-region CGE requires carbon_cost_share"
+        )
+    share = share if share is not None else np.zeros((nr, ns))
+
+    cal = calibrate_multi(
+        sam,
+        regions=regions,
+        sectors=sectors,
+        factors=factors,
+        arm_elast=data.get("armington_elast", 2.0),
+        cet_elast=data.get("cet_elast", 2.0),
+        va_elast=data.get("va_elast", 1.0),
+    )
+
+    def _solve_year(cc):
+        sol = solve(
+            lambda z: MM.residuals(cal, z, carbon_cost=cc, recycling=recycling),
+            MM.initial_guess(cal),
+            prefer="scipy",
+        )
+        pd = sol.x[: nr * ns].reshape(nr, ns)
+        pq = sol.x[nr * ns : 2 * nr * ns].reshape(nr, ns)
+        w = sol.x[2 * nr * ns :].reshape(len(factors), nr)
+        st = MM.derive_multi_state(cal, pd, pq, w, carbon_cost=cc, recycling=recycling)
+        return sol, st
+
+    _bsol, base = _solve_year(np.zeros((nr, ns)))
+    records: list[dict] = []
+    resid_max = _bsol.residual_norm
+    backends, statuses = {_bsol.backend}, {_bsol.status}
+    for year in years:
+        tau = sum(s.price_at(year) for s in carbon_shocks)
+        cc = tau * share
+        sol, st = _solve_year(cc)
+        resid_max = max(resid_max, sol.residual_norm)
+        backends.add(sol.backend)
+        statuses.add(sol.status)
+        _emit_multi(records, cal, base, st, year)
+
+    manifest = RunManifest.build(
+        engine_name=meta.name,
+        engine_version=meta.version,
+        data_source=data_source_id(sam.provenance),
+        scenario={"shocks": [s.model_dump(mode="json") for s in shocks], "years": years},
+        assumptions={
+            **MULTI_ASSUMPTIONS,
+            "regions": regions,
+            "sectors": sectors,
+            "factors": factors,
+            "recycling_mode": recycling,
+            "armington_elasticity": float(cal.arm_elast[0, 0]),
+            "cet_elasticity": float(cal.cet_elast[0, 0]),
+            "va_elast": float(cal.va_elast[0, 0]),
+            "value_added_nest": _va_nest_description(cal.va_elast),
+            "solver_backends": sorted(backends),
+            "solver_statuses": sorted(statuses),
+            "solver_max_residual_norm": resid_max,
+            "foreign_savings_by_region": [
+                round(float(v), 12) for v in cal.foreign_savings.tolist()
+            ],
+            "emissions_priced": bool(np.any(share != 0.0) and positive),
+            "benchmark_gdp_normalised": cal.gdp0,
+            "inputs": [input_identity("SAM", sam.provenance, content=_sam_fingerprint(sam))],
+        },
+    )
+    return ResultSet.from_records(records, manifest)
+
+
+def _emit_multi(records, cal, base, st, year: int) -> None:
+    """Emit multi-region results, region-tagged: per (region, sector) price/volume/import/export
+    change, per-region factor prices, real GDP, welfare and carbon revenue."""
+    for ri, region in enumerate(cal.regions):
+        for si, sector in enumerate(cal.sectors):
+            records.append(
+                _rec_r("price_change", sector, region, year, st.pq[ri, si] / base.pq[ri, si] - 1.0)
+            )
+            records.append(
+                _rec_r("volume_change", sector, region, year, st.Z[ri, si] / base.Z[ri, si] - 1.0)
+            )
+            records.append(
+                _rec_r(
+                    "import_change",
+                    sector,
+                    region,
+                    year,
+                    _ratio(st.M[ri, si, :].sum(), base.M[ri, si, :].sum()),
+                )
+            )
+            records.append(
+                _rec_r(
+                    "export_change",
+                    sector,
+                    region,
+                    year,
+                    _ratio(st.EX[ri, si, :].sum(), base.EX[ri, si, :].sum()),
+                )
+            )
+        for fi, factor in enumerate(cal.factors):
+            records.append(
+                _rec_r(
+                    "factor_price_change",
+                    factor,
+                    region,
+                    year,
+                    st.w[fi, ri] / base.w[fi, ri] - 1.0,
+                )
+            )
+        real_gdp = float(np.dot(st.pq[ri], st.FD[ri]))
+        real_gdp_base = float(np.dot(base.pq[ri], base.FD[ri]))
+        records.append(
+            _rec_r("gdp_change_real", "__economy__", region, year, real_gdp / real_gdp_base - 1.0)
+        )
+        u = float(np.prod(np.power(st.FD[ri], cal.gamma[ri])))
+        u_base = float(np.prod(np.power(base.FD[ri], cal.gamma[ri])))
+        records.append(_rec_r("welfare_change", "__economy__", region, year, u / u_base - 1.0))
+        records.append(
+            _rec_r("carbon_revenue", "__economy__", region, year, st.carbon_revenue[ri] / cal.gdp0)
+        )
+
+
+def _multi_carbon_share(data: dict, regions: list[str], sectors: list[str]):
+    """Per-(region, sector) dimensionless carbon cost share from ``data['carbon_cost_share']``.
+
+    Accepts a nested dict ``{region: {sector: value}}`` or a full ``[nr, ns]`` array. Missing
+    entries default to 0. Values must be finite and non-negative (a negative share is an
+    undocumented subsidy)."""
+    ei = data.get("carbon_cost_share")
+    if ei is None:
+        return None
+    nr, ns = len(regions), len(sectors)
+    arr = np.zeros((nr, ns))
+    if isinstance(ei, dict):
+        unknown_r = [r for r in ei if r not in regions]
+        if unknown_r:
+            raise ValueError(f"carbon_cost_share regions not in the SAM {regions}: {unknown_r}")
+        for ri, r in enumerate(regions):
+            row = ei.get(r, {})
+            unknown_s = [s for s in row if s not in sectors]
+            if unknown_s:
+                raise ValueError(f"carbon_cost_share sectors not in the SAM {sectors}: {unknown_s}")
+            for si, s in enumerate(sectors):
+                arr[ri, si] = float(row.get(s, 0.0))
+    else:
+        arr = np.asarray(ei, dtype=float)
+        if arr.shape != (nr, ns):
+            raise ValueError(f"carbon_cost_share array must be shape ({nr}, {ns}); got {arr.shape}")
+    if not np.isfinite(arr).all() or float(arr.min()) < 0.0:
+        raise ValueError("carbon_cost_share values must be finite and non-negative")
+    return arr
 
 
 @dataclass(frozen=True)

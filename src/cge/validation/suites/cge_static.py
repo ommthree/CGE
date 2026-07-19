@@ -324,6 +324,70 @@ def _open_leakage():
     )
 
 
+def _multi_cal():
+    from cge.data.sam.toy_multi import REGIONS, SECTORS, toy_multi_sam
+    from cge.engines.cge_static.calibrate_multi import calibrate_multi
+
+    return calibrate_multi(
+        toy_multi_sam(), regions=REGIONS, sectors=SECTORS, factors=["CAP", "LAB"]
+    )
+
+
+def _multi_solve(cal, carbon_cost=None):
+    from cge.engines.cge_static import model_multi as MM
+
+    nr, ns, nf = cal.nr, cal.ns, cal.nf
+    sol = solve(
+        lambda z: MM.residuals(cal, z, carbon_cost=carbon_cost, recycling="lump_sum"),
+        MM.initial_guess(cal) * 1.03,
+        prefer="scipy",
+    )
+    pd = sol.x[: nr * ns].reshape(nr, ns)
+    pq = sol.x[nr * ns : 2 * nr * ns].reshape(nr, ns)
+    w = sol.x[2 * nr * ns :].reshape(nf, nr)
+    st = MM.derive_multi_state(cal, pd, pq, w, carbon_cost=carbon_cost, recycling="lump_sum")
+    return sol, st
+
+
+@check(SUITE, "multi_region_benchmark_replication")
+def _multi_replication():
+    """The multi-region model (R regions, bilateral Armington/CET) replicates its benchmark to
+    machine precision — activity output and every bilateral import/export return to the SAM
+    values at unit prices, proving the region-indexed calibration + model are sound."""
+    cal = _multi_cal()
+    _s, st = _multi_solve(cal)
+    err = max(
+        float(np.max(np.abs(st.Z - cal.Z0))),
+        float(np.max(np.abs(st.M - cal.M0))),
+        float(np.max(np.abs(st.EX - cal.EX0))),
+    )
+    return err < 1e-6, f"multi-region benchmark replication error = {err:.2e}", err, 1e-6
+
+
+@check(SUITE, "multi_region_cross_region_leakage")
+def _multi_leakage():
+    """The signature multi-region result: a carbon price on ONE region's dirty sector cuts that
+    region's output, RAISES its imports of the good from the partner region (cross-region leakage),
+    and RAISES the partner's output — carbon pricing relocates production across build regions."""
+    import numpy as _np
+
+    cal = _multi_cal()
+    _b, base = _multi_solve(cal)
+    cc = _np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3  # region 0, sector 0 (the dirty sector)
+    _s, st = _multi_solve(cal, carbon_cost=cc)
+    out_falls = st.Z[0, 0] < base.Z[0, 0] - 1e-9
+    imports_rise = st.M[0, 0, 1] > base.M[0, 0, 1] + 1e-12
+    partner_rises = st.Z[1, 0] > base.Z[1, 0] + 1e-9
+    ok = out_falls and imports_rise and partner_rises
+    return (
+        ok,
+        f"taxed↓={out_falls}, imports↑={imports_rise}, partner output↑={partner_rises}",
+        None,
+        None,
+    )
+
+
 @check(SUITE, "ces_value_added_replicates")
 def _ces_va_replication():
     """The CES value-added nest (σ_va ≠ 1) replicates the benchmark to machine precision — the
