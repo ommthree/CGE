@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from cge.contracts.shocks import AnyShock
 
@@ -23,6 +23,19 @@ class Scenario(BaseModel):
     engine: str = Field(description="engine name to run this scenario against")
     years: list[int] = Field(default_factory=lambda: [2020])
     shocks: list[AnyShock] = Field(default_factory=list)
+
+    @field_validator("years")
+    @classmethod
+    def _years_valid(cls, v: list[int]) -> list[int]:
+        """Years must be a **non-empty, unique** list — reject at construction rather than let an
+        empty list produce an empty/`IndexError` run or duplicates produce duplicate result rows
+        that fail schema validation late (review P2). Returned sorted for deterministic output."""
+        if not v:
+            raise ValueError("Scenario.years must be non-empty")
+        if len(set(v)) != len(v):
+            dupes = sorted({y for y in v if v.count(y) > 1})
+            raise ValueError(f"Scenario.years has duplicates: {dupes}")
+        return sorted(v)
 
     def to_hashable(self) -> dict:
         """Deterministic dict for content hashing (see provenance.content_hash)."""

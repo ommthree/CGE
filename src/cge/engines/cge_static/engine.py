@@ -80,11 +80,26 @@ def _carbon_cost_share(data: dict, sectors: list[str]) -> np.ndarray | None:
     if ei is None:
         return None
     if isinstance(ei, dict):
-        return np.array([float(ei.get(s, 0.0)) for s in sectors])
-    arr = np.asarray(ei, dtype=float)
-    if arr.shape != (len(sectors),):
+        # Keys must belong to the declared sectors — a typo would otherwise be silently dropped
+        # (review P1). Values must be finite and non-negative (a negative share is an undocumented
+        # subsidy: it lowers the dirty-sector price and generates negative revenue).
+        unknown = [k for k in ei if k not in sectors]
+        if unknown:
+            raise ValueError(f"carbon_cost_share keys not in the SAM sectors {sectors}: {unknown}")
+        arr = np.array([float(ei.get(s, 0.0)) for s in sectors])
+    else:
+        arr = np.asarray(ei, dtype=float)
+        if arr.shape != (len(sectors),):
+            raise ValueError(
+                f"carbon_cost_share must have one value per sector ({len(sectors)}), "
+                f"got shape {arr.shape}"
+            )
+    if not np.isfinite(arr).all():
+        raise ValueError("carbon_cost_share values must be finite")
+    if float(arr.min()) < 0.0:
         raise ValueError(
-            f"carbon_cost_share must have one value per sector ({len(sectors)}), got {arr.shape}"
+            "carbon_cost_share values must be non-negative (a negative share is a carbon subsidy, "
+            "not a price; it would lower the dirty-sector price and generate negative revenue)"
         )
     return arr
 
@@ -114,6 +129,7 @@ class CGEStaticEngine:
         ns = len(sectors)
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+        _validate_cge_shock_controls(inp, carbon_shocks)
         # One government ⇒ one recycling rule; a scenario cannot mix modes.
         modes = {s.revenue_recycling for s in carbon_shocks} or {"none"}
         if len(modes) > 1:
@@ -143,11 +159,13 @@ class CGEStaticEngine:
         records: list[dict] = []
         backends: set[str] = {base_sol.backend}
         statuses: set[str] = {base_sol.status}
+        resid_max: float = base_sol.residual_norm
         for year in years:
             cc, _prov = cc_by_year[year]
             sol = _solve(cal, carbon_cost=cc, recycling=recycling)
             backends.add(sol.backend)
             statuses.add(sol.status)
+            resid_max = max(resid_max, sol.residual_norm)
             st = M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling=recycling)
             _emit(records, cal, base, st, year)
 
@@ -168,6 +186,10 @@ class CGEStaticEngine:
                 "recycling_defaulted_from_none": recycling_defaulted,
                 "solver_backends": sorted(backends),
                 "solver_statuses": sorted(statuses),
+                # The strongest numerical convergence evidence: max ‖F(x)‖∞ over all solves. The
+                # solver already re-verifies this < tol before returning (else it raises), so this
+                # records HOW converged the equilibrium is (review P2).
+                "solver_max_residual_norm": resid_max,
                 "emissions_priced": emissions_priced,
                 "carbon_cost_path": cc_by_year[years[0]][1].get("path"),
                 "benchmark_gdp_normalised": cal.gdp0,
@@ -227,14 +249,31 @@ def _resolve_inputs(data: dict) -> _Inputs:
 
 def _validate_supplied_sam(sam: SAM, sectors: list[str], factors: list[str]) -> None:
     """Gate a directly-supplied SAM (review P1: a supplied SAM bypassed every check). Requires the
-    named sector/factor accounts to exist, all cells finite and non-negative, and the matrix
-    balanced (row sum = column sum per account). The engine will not calibrate on a bad SAM."""
+    named sector/factor accounts to exist, the **matrix axes to be unique and aligned to the
+    accounts** used (review P2: a renamed-axis matrix passed the name check then raised a raw
+    KeyError during calibration), all cells finite and non-negative, and the matrix balanced (row
+    sum = column sum per account). The engine will not calibrate on a bad SAM."""
     from cge.data.sam.balance import is_balanced
 
     m = sam.matrix
     missing = [a for a in sectors + factors if a not in sam.accounts]
     if missing:
         raise ValueError(f"supplied SAM is missing named accounts: {missing}")
+    # Axis alignment: the matrix index/columns must be unique and contain every account the engine
+    # will index by (sectors, factors, and the household institution). Otherwise ``m.loc[...]``
+    # later raises a raw KeyError. Household = the accounts that are neither sector nor factor.
+    household = [a for a in sam.accounts if a not in sectors and a not in factors]
+    needed = set(sectors) | set(factors) | set(household)
+    idx, cols = list(m.index), list(m.columns)
+    if len(set(idx)) != len(idx) or len(set(cols)) != len(cols):
+        raise ValueError("supplied SAM matrix has duplicate row or column labels")
+    missing_axis = sorted(needed - (set(idx) & set(cols)))
+    if missing_axis:
+        raise ValueError(
+            f"supplied SAM matrix axes do not contain the accounts {missing_axis}; the matrix "
+            f"index/columns must be aligned to the SAM accounts (a renamed axis would raise a raw "
+            f"KeyError during calibration)."
+        )
     arr = m.to_numpy(dtype=float)
     if not np.isfinite(arr).all():
         raise ValueError("supplied SAM has non-finite cells")
@@ -301,6 +340,35 @@ def _assert_cge_units(io: IOSystem, sat: SatelliteAccount) -> None:
             raise ValueError(
                 f"satellite row {row!r} has unit {sat.units.get(row)!r}, expected {expected!r}; "
                 f"the M→{cur} carbon cost-share scaling assumes exactly this unit."
+            )
+
+
+def _validate_cge_shock_controls(inp: _Inputs, carbon_shocks: list[CarbonPrice]) -> None:
+    """Reject shock controls the CGE cannot honour, rather than silently ignore them (review P1).
+
+    - **IO-backed path:** coverage labels (sectors/regions) must exist in the build, exactly as
+      Engine 1 requires — a typo would otherwise give a silent zero-impact scenario.
+    - **Supplied-SAM path:** the dimensionless ``carbon_cost_share`` cannot express per-gas or
+      spatial coverage, so any non-default ``gases`` / ``coverage_sectors`` / ``coverage_regions``
+      is **rejected** (not applied to a global vector as if honoured)."""
+    if inp.io is not None:
+        from cge.engines.io_price.engine import _assert_coverage_labels
+
+        _assert_coverage_labels(carbon_shocks, inp.io)
+        return
+    # Supplied-SAM path: reject controls that this path structurally cannot apply.
+    for s in carbon_shocks:
+        if s.gases != ["CO2"]:
+            raise ValueError(
+                f"the supplied-SAM CGE path applies a single dimensionless carbon_cost_share and "
+                f"cannot select gases; got gases={s.gases}. Use an IOSystem+satellite build for "
+                f"gas selection, or leave gases at the default ['CO2']."
+            )
+        if s.coverage_sectors or s.coverage_regions:
+            raise ValueError(
+                "the supplied-SAM CGE path cannot apply sector/region coverage (the cost share is "
+                "already per-sector and single-region); set coverage via carbon_cost_share values, "
+                "or use an IOSystem+satellite build."
             )
 
 

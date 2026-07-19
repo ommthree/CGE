@@ -560,3 +560,33 @@ def test_coverage_restricts_direct_cost():
     df = run_scenario(scenario, data_source="toy").data
     b_direct = df[(df["variable"] == "price_change_direct") & (df["region"] == "B")]
     assert np.allclose(b_direct["value"].to_numpy(), 0.0)
+
+
+def test_conflicting_energy_pins_rejected():
+    """Review P2: two EnergyPrice shocks pinning the same carrier product to different values are
+    rejected (the outcome would otherwise be silently order-dependent)."""
+    from cge.engines.io_price.engine import IOPriceEngine
+
+    io, sat = toy_economy()
+    with pytest.raises(ValueError, match="conflicting energy-price pins"):
+        IOPriceEngine().run(
+            data={"IOSystem": io, "SatelliteAccount": sat},
+            shocks=[
+                EnergyPrice(carrier="energy", change=0.2),
+                EnergyPrice(carrier="energy", change=0.5),
+            ],
+            years=[2020],
+        )
+
+
+def test_scenario_year_list_validated():
+    """Review P2: Scenario rejects empty and duplicate year lists at construction."""
+    from cge.scenarios.loader import Scenario
+
+    with pytest.raises(ValueError, match="non-empty"):
+        Scenario(name="y", engine="io_price", years=[], shocks=[CarbonPrice(price=1.0)])
+    with pytest.raises(ValueError, match="duplicates"):
+        Scenario(name="y", engine="io_price", years=[2020, 2020], shocks=[CarbonPrice(price=1.0)])
+    # a valid unsorted list is accepted and returned sorted
+    sc = Scenario(name="y", engine="io_price", years=[2030, 2020], shocks=[CarbonPrice(price=1.0)])
+    assert sc.years == [2020, 2030]

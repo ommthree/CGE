@@ -38,7 +38,10 @@ ASSUMPTIONS = {
     "full_cost_pass_through": "producers pass 100% of cost increases downstream",
     "price_formation": "cost-push (Leontief price dual), not demand-driven",
     "carbon_cost_basis": "per-unit cost on emissions in the selected GHG account (scope-1)",
-    "linearity": "price system is linear; independent shocks add",
+    "linearity": (
+        "the carbon-cost price system is linear (independent carbon shocks add); an EnergyPrice "
+        "is an exogenous price pin that overrides the carrier's own price rather than adding to it"
+    ),
     "interpretation": (
         "Cost-pass-through price change under FIXED technology and FULL pass-through; no "
         "input substitution, demand response, or volume effect. Because substitution would "
@@ -262,8 +265,8 @@ def energy_price_pins(
     carrier's higher price through the Leontief solve. Returns ``{label_index: Δp}`` for the pinned
     carrier products (restricted to coverage) plus a human description.
 
-    If two shocks pin the same product to different values, the later one wins with a recorded note
-    (a scenario should not do this); same-value duplicates are harmless.
+    Two shocks pinning the **same product to different values** are **rejected** — the result would
+    otherwise be silently order-dependent (review P2). Same-value overlaps are harmless.
     """
     pins: dict[int, float] = {}
     descs: list[str] = []
@@ -271,6 +274,12 @@ def energy_price_pins(
         change = s.change_at(year)
         for i, lab in enumerate(labels):
             if lab.split(":", 1)[1] == s.carrier and s.applies_to(*_rs(lab)):
+                if i in pins and abs(pins[i] - change) > 1e-12:
+                    raise ValueError(
+                        f"conflicting energy-price pins on {lab!r}: {pins[i]:+.3g} vs "
+                        f"{change:+.3g}. Two EnergyPrice shocks cannot pin the same carrier "
+                        f"product to different values (the outcome would be order-dependent)."
+                    )
                 pins[i] = change  # pin this carrier product's Δp exogenously
         descs.append(f"{change:+.0%} output price (pinned) on {s.carrier}")
     return pins, descs
@@ -487,11 +496,6 @@ class IOPriceEngine:
                 },
                 "monetary_unit": io.unit,
                 "unit_scaling": "τ(€/t)·e(t/MEUR)·1e-6 → dimensionless cost share",
-                "energy_price_basis": (
-                    "EnergyPrice adds the carrier's fractional output-price change directly as a "
-                    "(dimensionless) cost share on the carrier's products; propagated identically "
-                    "to the carbon cost and composed additively"
-                ),
                 "value_meaning": "Δp is a fractional change in unit price index (base p₀=1)",
                 "n_products": len(labels),
                 "carbon_shocks": len(carbon_shocks),
@@ -499,6 +503,21 @@ class IOPriceEngine:
                 "decomposition_tiers": 3,
                 "data_build_id": io.provenance.build_id,
                 "data_generation": io.provenance.generation,
+                # An EnergyPrice basis note is included ONLY when energy shocks are present, so a
+                # carbon-only result does not carry an irrelevant (pin-specific) assumption.
+                **(
+                    {
+                        "energy_price_basis": (
+                            "EnergyPrice PINS the carrier's own price change to exactly the "
+                            "requested fractional change (an exogenous boundary condition); the "
+                            "pinned price propagates to downstream users through the Leontief "
+                            "solve. On the carrier the pin OVERRIDES any carbon-induced price "
+                            "change (it does not add to it)."
+                        )
+                    }
+                    if energy_shocks
+                    else {}
+                ),
                 # Identify EVERY substantive input (IO system AND satellite), each with a content
                 # hash — a changed satellite (different generation, or doubled emissions) moves
                 # prices and must move the manifest (review P1). The IO-only data_source above is

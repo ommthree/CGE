@@ -109,9 +109,21 @@ def _elasticity_row(sector: str, eset: ElasticitySet):
 
 def _finite_demand_response(dp: np.ndarray, eps: np.ndarray) -> np.ndarray:
     """Δy/y = (1+Δp)^ε − 1, the finite-change constant-elasticity form. Bounded below by −1
-    (a price rise cannot destroy more than 100% of demand), unlike linear ε·Δp."""
-    # (1+Δp) is a price ratio ≥ 0 for any Δp ≥ −1; carbon-price Δp ≥ 0, so this is safe.
-    return np.power(1.0 + dp, eps) - 1.0
+    (a price rise cannot destroy more than 100% of demand), unlike linear ε·Δp.
+
+    The price *ratio* 1+Δp must be strictly positive: with a demand elasticity ε < 0, a ratio of 0
+    gives 0^ε = +∞ and a negative ratio gives a complex/NaN result. A carrier priced to −100%
+    (``EnergyPrice(change=-1)``) or a propagation that drives a price ratio ≤ 0 hits this. Reject it
+    with a clear error rather than emitting inf/NaN that only surfaces as a late schema failure
+    (review P1)."""
+    ratio = 1.0 + dp
+    if float(np.min(ratio)) <= 0.0:
+        raise ValueError(
+            "partial_eq needs a positive price ratio (1 + Δp > 0); got an effective price of "
+            f"{float(np.min(ratio)):.3g} ≤ 0 for some good (e.g. a carrier priced to −100%). The "
+            "constant-elasticity demand response is undefined there."
+        )
+    return np.power(ratio, eps) - 1.0
 
 
 class PartialEqEngine:

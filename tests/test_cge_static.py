@@ -333,3 +333,75 @@ def test_welfare_is_cobb_douglas_utility():
     sum_fd = st.FD.sum() / base.FD.sum() - 1.0
     assert cd_welfare < -1e-6  # the true CD welfare loss is strictly negative
     assert cd_welfare < sum_fd  # and more negative than the (misleading) sum-of-quantities
+
+
+# -- second-round review: shock controls, cost-share, axis alignment ----------
+def test_io_cge_rejects_unknown_coverage_region():
+    """Review P1: the IO-backed CGE must reject a nonexistent coverage region (Engine 1's check),
+    not silently produce a zero-impact scenario."""
+    io, sat = _eur_io_sat()
+    with pytest.raises(ValueError, match="coverage_regions not in the build"):
+        registry.get("cge_static").run(
+            data={"IOSystem": io, "SatelliteAccount": sat},
+            shocks=[CarbonPrice(price=100.0, coverage_regions=["NO_SUCH"])],
+            years=[2020],
+        )
+
+
+def test_supplied_sam_cge_rejects_gas_and_coverage():
+    """Review P1: the supplied-SAM path cannot honour gas/coverage, so it rejects them."""
+    data = {"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}}
+    with pytest.raises(ValueError, match="cannot select gases"):
+        registry.get("cge_static").run(
+            data=data, shocks=[CarbonPrice(price=0.1, gases=["CH4"])], years=[2020]
+        )
+    with pytest.raises(ValueError, match="cannot apply sector/region coverage"):
+        registry.get("cge_static").run(
+            data=data, shocks=[CarbonPrice(price=0.1, coverage_sectors=["BRD"])], years=[2020]
+        )
+
+
+def test_negative_carbon_cost_share_rejected():
+    """Review P1: a negative carbon_cost_share is a subsidy, not a price — rejected."""
+    with pytest.raises(ValueError, match="non-negative"):
+        registry.get("cge_static").run(
+            data={"SAM": toy_sam(), "carbon_cost_share": {"BRD": -0.1, "MIL": 0.5}},
+            shocks=[CarbonPrice(price=0.1)],
+            years=[2020],
+        )
+
+
+def test_carbon_cost_share_unknown_key_rejected():
+    with pytest.raises(ValueError, match="keys not in the SAM sectors"):
+        registry.get("cge_static").run(
+            data={"SAM": toy_sam(), "carbon_cost_share": {"ZZZ": 0.5}},
+            shocks=[CarbonPrice(price=0.1)],
+            years=[2020],
+        )
+
+
+def test_supplied_sam_renamed_axis_gives_clean_error():
+    """Review P2: a balanced matrix with axes not matching the accounts raises a clean ValueError,
+    not a raw KeyError during calibration."""
+    sam = toy_sam()
+    m = sam.matrix.copy()
+    idx = list(m.index)
+    idx[0] = "XXX"  # rename BRD on both axes; accounts list still says BRD
+    m.index = idx
+    m.columns = idx
+    sam.matrix = m
+    with pytest.raises(ValueError, match="axes do not contain the accounts"):
+        registry.get("cge_static").run(
+            data={"SAM": sam, "sectors": ["BRD", "MIL"]},
+            shocks=[CarbonPrice(price=0.1)],
+            years=[2020],
+        )
+
+
+def test_solver_residual_norm_recorded():
+    """Review P2: the manifest records the max solver residual norm (convergence evidence)."""
+    res = registry.get("cge_static").run(
+        data={"SAM": toy_sam()}, shocks=[CarbonPrice(price=0.0)], years=[2020]
+    )
+    rn = res.manifest.assumptions["solver_max_residual_norm"]
+    assert isinstance(rn, float) and rn == rn and rn < 1e-6  # finite (not NaN), converged

@@ -378,3 +378,18 @@ def test_rejects_unsupported_shock():
     )
     with pytest.raises(ValueError, match="does not support"):
         run_scenario(sc, data_source="toy")
+
+
+def test_energy_price_minus_100pct_rejected():
+    """Review P1: EnergyPrice(change=-1) pins the carrier to a zero price; with a negative demand
+    elasticity 0^ε diverges. partial_eq must reject the non-positive price ratio, not emit inf."""
+    from cge.contracts.shocks import EnergyPrice
+
+    sc = Scenario(
+        name="e",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[EnergyPrice(carrier="energy", change=-1.0)],
+    )
+    with pytest.raises(ValueError, match="positive price ratio"):
+        run_scenario(sc, data_source="toy")

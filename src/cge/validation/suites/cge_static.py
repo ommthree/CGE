@@ -113,17 +113,48 @@ def _walras_recycled():
     )
 
 
-@check(SUITE, "revenue_recycling_offsets_welfare_loss")
+def _cd_utility(cal, state):
+    """Cobb-Douglas household utility U = Π FD_i^{γ_i} — the correct welfare measure for the CD
+    household (the emitted ``welfare_change``); Σ FD (quantities) is NOT utility (review P1)."""
+    return float(np.prod(np.power(state.FD, cal.gamma)))
+
+
+@check(SUITE, "recycled_carbon_price_welfare_is_small_and_negative")
 def _recycling_effect():
-    """The revenue-recycling effect: lump-sum recycling restores real household consumption that a
-    pure price wedge would destroy — the headline GE feature (Engines 1-2 cannot show it)."""
+    """Validate the **Cobb-Douglas welfare** the engine emits (not a Σ-FD sum): under a carbon
+    price WITH lump-sum recycling, CD utility falls only slightly — the revenue is returned, so the
+    remaining loss is just the relative-price distortion. (No comparison to the non-closing `none`
+    model, which violates Walras and is not a valid equilibrium counterfactual — review P1.)"""
     cal = _cal()
     _b, base = _solve(cal)
     _r, st = _solve(cal, carbon_cost=0.15 * _EMISSIONS, recycling="lump_sum")
-    welfare = st.FD.sum() / base.FD.sum() - 1.0
+    welfare = _cd_utility(cal, st) / _cd_utility(cal, base) - 1.0
     revenue = st.carbon_revenue
-    ok = revenue > 0 and welfare > -1e-6  # recycling ~fully offsets in the single-household pilot
-    return ok, f"carbon revenue={revenue:.4f}, recycled welfare change={welfare:+.4f}", None, None
+    # Recycled: a small NEGATIVE CD-welfare change (the distortion), and revenue is collected.
+    ok = revenue > 0 and -0.05 < welfare < 0.0
+    return (
+        ok,
+        f"carbon revenue={revenue:.4f}, recycled CD welfare change={welfare:+.5f}",
+        None,
+        None,
+    )
+
+
+@check(SUITE, "recycling_improves_welfare_over_no_recycling")
+def _recycling_beats_none():
+    """A *valid* recycling comparison at fixed prices: at the recycled equilibrium prices, the
+    household's CD utility is higher WITH the revenue transfer than WITHOUT it (income is strictly
+    larger by the transfer). This isolates the recycling benefit without invoking the non-closing
+    `none` equilibrium."""
+    cal = _cal()
+    _r, st = _solve(cal, carbon_cost=0.15 * _EMISSIONS, recycling="lump_sum")
+    # Same prices, but strip the recycled revenue from income → lower demand, lower utility.
+    factor_income = float(np.dot(st.w, cal.endowment))
+    fd_no_transfer = cal.gamma * factor_income / st.p
+    u_with = float(np.prod(np.power(st.FD, cal.gamma)))
+    u_without = float(np.prod(np.power(fd_no_transfer, cal.gamma)))
+    ok = u_with > u_without
+    return ok, f"CD utility with transfer {u_with:.5f} > without {u_without:.5f} = {ok}", None, None
 
 
 @check(SUITE, "carbon_price_reallocates_dirty_to_clean")
