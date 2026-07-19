@@ -644,4 +644,37 @@ def _ratio(x: float, x0: float) -> float:
     return float(x / x0 - 1.0) if x0 > 0 else 0.0
 
 
+def armington_sensitivity_sweep(
+    data: dict,
+    shocks: list[Shock],
+    year: int = 2020,
+    *,
+    elasticities: tuple[float, float, float] = (1.5, 2.0, 4.0),
+):
+    """Run the open-economy CGE across low/central/high **Armington** elasticities and return a
+    tidy DataFrame of the response **envelope** (Phase 5.3 sensitivity sweep). Volume responses are
+    elasticity-sensitive, so — as with Engine 2's demand bands — the band is a first-class output.
+
+    Returns columns ``sector, variable, low, central, high`` for the per-sector volume/import/export
+    responses (the leakage channel is the most elasticity-sensitive). Requires an open SAM."""
+    import pandas as pd
+
+    sam = data.get("SAM")
+    if sam is None or "ROW" not in sam.accounts:
+        raise ValueError("armington_sensitivity_sweep needs an open SAM (with a ROW account)")
+
+    bands = {"low": elasticities[0], "central": elasticities[1], "high": elasticities[2]}
+    per_band: dict[str, pd.Series] = {}
+    for band, elast in bands.items():
+        res = CGEStaticEngine().run(
+            data={**data, "armington_elast": elast}, shocks=shocks, years=[year]
+        )
+        d = res.data
+        d = d[d["variable"].isin(("volume_change", "import_change", "export_change"))]
+        per_band[band] = d.set_index(["sector", "variable"])["value"]
+
+    out = pd.DataFrame(per_band).reset_index()
+    return out.sort_values(["variable", "sector"]).reset_index(drop=True)
+
+
 registry.register(CGEStaticEngine())

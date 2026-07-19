@@ -152,3 +152,24 @@ def test_open_requires_carbon_cost_share_for_positive_price():
     eng = registry.get("cge_static")
     with pytest.raises(ValueError, match="requires a 'carbon_cost_share'"):
         eng.run(data={"SAM": toy_open_sam()}, shocks=[CarbonPrice(price=100.0)], years=[2020])
+
+
+def test_armington_sensitivity_sweep_bands():
+    """The sensitivity sweep returns a low/central/high envelope; higher Armington elasticity → more
+    import leakage for the dirty sector (the leakage channel is elasticity-sensitive)."""
+    from cge.engines.cge_static.engine import armington_sensitivity_sweep
+
+    sw = armington_sensitivity_sweep(
+        {"SAM": toy_open_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+        [CarbonPrice(price=0.1)],
+        elasticities=(1.5, 2.0, 4.0),
+    )
+    assert set(sw.columns) == {"sector", "variable", "low", "central", "high"}
+    brd_imp = sw[(sw["sector"] == "BRD") & (sw["variable"] == "import_change")].iloc[0]
+    assert brd_imp["high"] > brd_imp["central"] > brd_imp["low"] > 0  # more elastic → more leakage
+
+
+def test_armington_elasticity_one_rejected():
+    """σ = 1 is the Cobb-Douglas trade special case (singular here); rejected with guidance."""
+    with pytest.raises(ValueError, match="must be ≠ 1"):
+        calibrate_open(toy_open_sam(), sectors=_SECTORS, factors=_FACTORS, arm_elast=1.0)

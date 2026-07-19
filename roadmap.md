@@ -209,7 +209,7 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 **Risks:** the PE-tier GVA/GDP are indicative and will move under GE substitution — label them exactly as Engine 2's volumes are labelled; **do not let the interest-rate overlay be read as a real forecast** — it is the item most likely to be over-interpreted, so it is opt-in and caveated.
 **Depends on:** P4 (needs the volume response for real GVA) for the full PE tier; the deflator alone needs only P1/P2. **Unblocks:** real/nominal reporting everywhere; feeds the P5 credibility cross-checks and the P7 dynamic GDP-growth paths.
 
-### Phase 5 — Engine 3: simple static CGE (6–12 wk) ⚠ the hard part — 🔶 PILOT + RECYCLING ON REAL DATA (5.0 + 5.1 + 5.2a + 5.3 recycling)
+### Phase 5 — Engine 3: static CGE (6–12 wk) ⚠ the hard part — ✅ COMPLETE (single-region + RoW): solver, SAM, recycling, Armington/CET open economy, CES value added, sensitivity sweeps
 
 > **Progress:** the **solver gate (5.0)**, **SAM construction & balancing (5.1)**, and the
 > **correctness-first pilot (5.2a)** are built and green. `cge.engines.cge_static` calibrates to a
@@ -231,10 +231,16 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 > lump_sum (recorded) and points to Engine 1 for the pure price-side view. Emits `welfare_change`,
 > `carbon_revenue`, and per-factor price changes.
 >
-> **Remaining for the full phase:** **Armington/CET** open economy, **multiple regions**, the
-> carbon-price sensitivity experiment across elasticity bands, and the GE tier of the macro
-> aggregates (native per-sector GVA + capital rental rate). The pilot is the provable core those
-> build on.
+> **Now complete for the single-region economy:** the **Armington/CET open economy** (imports and
+> exports respond to relative prices; a carbon price causes textbook carbon leakage), a **CES
+> value-added nest** (non-unitary factor substitution → factor-substitution / double-dividend
+> analysis), and **Armington elasticity sensitivity sweeps** (low/central/high envelopes). All
+> replicate their benchmark to machine precision and pass the standard CGE battery.
+>
+> **Remaining (a genuinely larger effort, deferred):** true **multiple regions** with bilateral
+> trade between build regions (the current open model is single-region + rest-of-world); the GE
+> tier of the macro aggregates (native per-sector GVA + capital rental rate — the rental rate is
+> already emitted as a factor price); and a live-EXIOBASE open-SAM build.
 
 > **Detailed plan: [`docs/phase-5-plan.md`](docs/phase-5-plan.md)** — solver-first sequencing,
 > equation-level model structure, SAM balancing with an audit trail, the standard CGE

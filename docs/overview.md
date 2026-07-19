@@ -125,7 +125,10 @@ precision), **homogeneity**, and **Walras' law**. It does the thing that makes a
 trouble: **carbon-tax revenue recycling** (lump-sum / labour-tax-cut), showing the **revenue-
 recycling effect** (recycling offsets the welfare loss) and **sectoral reallocation** from dirty to
 clean — not just a shrinking economy. "Toy but honest": *precise about structure, indicative about
-magnitudes*. Still to come: Armington trade, multiple regions, elasticity sensitivity sweeps.
+magnitudes*. It also runs as an **open economy** (Armington imports + CET exports + a rest-of-world
+account): a carbon price then causes textbook **carbon leakage** — the dirty sector's output falls,
+its imports rise and its exports fall — with a **CES value-added nest** and **elasticity sensitivity
+sweeps**. Still to come: true multiple regions with bilateral trade.
 → [`docs/models/cge-static.md`](models/cge-static.md) (equation-level) · **plan:**
 [`docs/phase-5-plan.md`](phase-5-plan.md).
 
@@ -224,7 +227,7 @@ CGE and nature extensions are the next work.**
 | 3 — Web GUI | the six-page Streamlit app | ✅ [status](phase-3-status.md) |
 | 4 — Engine 2 (volume) | partial-equilibrium volume response with bands | ✅ [status](phase-4-status.md) |
 | 4b — Macro aggregates | GVA/GDP/deflators, real vs nominal (PE tier) | ✅ [model doc](models/macro-aggregates.md) |
-| 5 — Engine 3 (CGE) | GE price+volume, **revenue recycling**, reallocation — pilot on EXIOBASE-shaped data (Armington/multi-region pending) | 🔶 [model doc](models/cge-static.md) |
+| 5 — Engine 3 (CGE) | GE price+volume, **revenue recycling**, **open economy** (Armington/CET, carbon leakage), **CES value added**, elasticity sweeps — single-region + RoW complete (multi-region ahead) | ✅ [model doc](models/cge-static.md) |
 | 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | ⬜ [roadmap](../roadmap.md) |
 | 7 — Pathway stack | NGFS-driven dynamics + FaIR climate | ⬜ [roadmap](../roadmap.md) |
 

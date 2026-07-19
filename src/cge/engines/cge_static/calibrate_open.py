@@ -143,6 +143,13 @@ def calibrate_open(
 
     arm = np.full(ns, float(arm_elast)) if np.isscalar(arm_elast) else np.asarray(arm_elast, float)
     cet = np.full(ns, float(cet_elast)) if np.isscalar(cet_elast) else np.asarray(cet_elast, float)
+    # The Armington/CET aggregators use ρ=(σ−1)/σ and ^{1/ρ}, singular at σ=1 (the Cobb-Douglas
+    # special case, not implemented for trade). Require σ ≠ 1 with a clear message.
+    if np.any(np.abs(arm - 1.0) < 1e-9) or np.any(np.abs(cet - 1.0) < 1e-9):
+        raise ValueError(
+            "Armington/CET elasticities must be ≠ 1 (σ=1 is the Cobb-Douglas special case, not "
+            "implemented for trade); typical values are 1.5–5."
+        )
 
     # Armington CES: Q = A[δ D^ρ + (1−δ) M^ρ]^{1/ρ}, ρ=(σ−1)/σ. At benchmark (pd=pm=1) the cost-min
     # FOC gives D/M = (δ/(1−δ))^σ, so δ = ratio/(1+ratio) with ratio = (D/M)^{1/σ}; then A from the
