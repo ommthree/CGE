@@ -20,17 +20,17 @@ prices when firms substitute inputs and factor markets clear — the feedback En
 structurally cannot capture. The carbon price raises the cost of emitting sectors; the economy
 re-allocates; the model reports the new equilibrium relative to the benchmark.
 
-**In scope (pilot):** a closed, single-region economy with N sectors (activity = commodity),
-Leontief intermediates, Cobb-Douglas value added (capital + labour) and household demand, fixed
+**In scope:** N sectors (activity/commodity), Leontief intermediates, a **CES value-added nest**
+(capital + labour; elasticity σ_va, default 1 = Cobb-Douglas), Cobb-Douglas household demand, fixed
 factor endowments, CPI numéraire, a carbon price as a per-unit emissions cost wedge, and
-**carbon-revenue recycling** (lump-sum / labour-tax-cut) — the headline general-equilibrium feature
-Engines 1–2 cannot provide.
+**carbon-revenue recycling** (lump-sum / labour-tax-cut). An **open-economy variant** (§8) adds
+Armington imports and CET exports with a rest-of-world account — chosen automatically when the SAM
+carries a `ROW` account.
 
-**Not yet modelled:** Armington imports / CET exports (open economy), multiple regions,
-savings/investment dynamics, heterogeneous households, non-unitary substitution elasticities in the
-value-added nest, and a distortionary labour-tax wedge (so the "double-dividend" channel that would
-distinguish labour-tax-cut from lump-sum recycling). These are the documented next sub-phases; the
-pilot is the provable core.
+**Not yet modelled:** multiple regions (single region + RoW only), savings/investment dynamics,
+heterogeneous households, and a distortionary labour-tax wedge (so the "double-dividend" channel
+that would distinguish labour-tax-cut from lump-sum recycling in a *single*-household model). These
+are the documented next sub-phases.
 
 ## 2. Notation
 
@@ -51,9 +51,11 @@ pilot is the provable core.
 
 ## 3. Assumptions
 
-1. **Leontief intermediates, Cobb-Douglas value added** (KLEM with Leontief M) — the standard
-   "toy but honest" pilot structure [Hosoe2010, ch. 4-6]. Substitution happens within value added
-   (between capital and labour); intermediates are fixed-coefficient.
+1. **Leontief intermediates, CES value added** (KLEM with Leontief M) — the standard structure
+   [Hosoe2010, ch. 4-6]. Substitution happens within the value-added nest, between capital and
+   labour, with elasticity σ_va (`va_elast`; default 1 = Cobb-Douglas). A lower σ_va means factors
+   are harder to substitute, so a carbon price that shifts the relative factor price produces a
+   larger factor-price swing (validated). Intermediates are fixed-coefficient.
 2. **Cobb-Douglas household demand** — constant budget shares $\gamma_i$.
 3. **Fixed factor endowments** — labour and capital supply are inelastic; factor prices adjust to
    clear their markets.
@@ -219,7 +221,31 @@ Plus solver checks (known-answer, non-convergence raises, IPOPT gated) and engin
 (zero-shock replication, GE outputs emitted, cross-engine sign consistency with Engine 2, recycling
 rejected in the pilot).
 
-## 8. Honest expectations
+## 8. Open economy (Armington / CET)
+
+When the SAM carries a rest-of-world (`ROW`) account, the engine runs the **open-economy variant**
+(`cge.engines.cge_static.model_open`) — a small open economy with separate activity and commodity
+accounts [Hosoe2010, ch. 7]:
+
+- **Armington**: the composite commodity $Q_i$ used by intermediates and the household is a CES
+  aggregate of the domestically-produced variety $D_i$ and imports $M_i$ (elasticity σ, `arm_elast`).
+- **CET**: activity output $Z_i$ is transformed between domestic sales $D_i$ and exports $E_i$
+  (elasticity Ω, `cet_elast`), a convex transformation frontier.
+- World import/export prices are fixed (small-open-economy); foreign savings is fixed at its
+  benchmark level; the **exchange rate is endogenous** and the value trade balance clears through
+  relative prices. The CES/CET share and scale parameters are calibrated so both the composite
+  price and the output price equal 1 at benchmark (verified against Shephard's/Hotelling's lemma).
+
+The equilibrium is a square residual system in $(pd, pq, w, er)$ — Armington-price identities,
+zero-profit, composite-market clearing, factor clearing (one dropped by Walras), the trade balance,
+and the CD-CPI numéraire. It **replicates its benchmark to machine precision** and produces the
+signature open-economy result: a carbon price on the dirty sector causes **carbon leakage** — its
+domestic output falls, its **imports rise** (substitution to foreign supply) and its **exports
+fall** (lost competitiveness), while the clean sector expands and exports more. The engine emits
+`import_change`, `export_change` and `exchange_rate_change` alongside the usual outputs. Validation:
+`open_benchmark_replication`, `open_carbon_price_causes_leakage`.
+
+## 9. Honest expectations
 
 The pilot delivers a *provably correct* general-equilibrium core: it replicates its benchmark,
 satisfies homogeneity and Walras, and moves in the theory-consistent direction under a carbon
@@ -229,7 +255,7 @@ literature elasticities. *Precise about structure, indicative about magnitudes, 
 assumptions* — every run prints its closures, sectors, factors, solver backend, and the SAM
 identity it was calibrated to.
 
-## 9. References
+## 10. References
 
 - **[Hosoe2010]** Hosoe, Gasawa & Hashimoto, *Textbook of Computable General Equilibrium Modeling*
   (Palgrave Macmillan) — the pilot's structure, calibration, closures, and correctness tests.

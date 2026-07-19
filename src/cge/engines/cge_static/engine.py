@@ -142,7 +142,7 @@ class CGEStaticEngine:
             inp.sectors,
             [f for f in _DEFAULT_FACTORS if f in inp.sam.accounts],
         )
-        cal = calibrate(sam, sectors=sectors, factors=factors)
+        cal = calibrate(sam, sectors=sectors, factors=factors, va_elast=data.get("va_elast", 1.0))
         ns = len(sectors)
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
@@ -562,7 +562,14 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         )
     share = share if share is not None else np.zeros(ns)
 
-    cal = calibrate_open(sam, sectors=sectors, factors=factors)
+    cal = calibrate_open(
+        sam,
+        sectors=sectors,
+        factors=factors,
+        va_elast=data.get("va_elast", 1.0),
+        arm_elast=data.get("armington_elast", 2.0),
+        cet_elast=data.get("cet_elast", 2.0),
+    )
 
     def _solve_year(cc):
         sol = solve(

@@ -42,6 +42,8 @@ class OpenCalibratedModel:
     va_share: np.ndarray  # [i] value added per unit activity output
     beta: np.ndarray  # [f, i] Cobb-Douglas VA factor shares (cols → 1)
     av: np.ndarray  # [i] VA scale so unit VA cost = 1 at benchmark
+    va_elast: np.ndarray  # [i] VA substitution elasticity σ_va (1 ⇒ Cobb-Douglas)
+    va_ces_share: np.ndarray  # [f, i] CES VA factor share δ (used when σ ≠ 1)
     gamma: np.ndarray  # [i] household budget share over composite commodities (→ 1)
     endowment: np.ndarray  # [f] fixed factor endowment
     # trade parameters
@@ -76,9 +78,11 @@ def calibrate_open(
     factors: list[str],
     arm_elast: float | np.ndarray = DEFAULT_ARMINGTON_ELAST,
     cet_elast: float | np.ndarray = DEFAULT_CET_ELAST,
+    va_elast: float | np.ndarray = 1.0,
 ) -> OpenCalibratedModel:
     """Calibrate the open CGE from a balanced open SAM with ``a_<s>``/``c_<s>`` activity/commodity
-    accounts, factors, one household, and a ``ROW`` account."""
+    accounts, factors, one household, and a ``ROW`` account. ``va_elast`` is the value-added
+    substitution elasticity σ_va (1 ⇒ Cobb-Douglas, the default; ≠ 1 ⇒ CES)."""
     m = sam.matrix
     act = [f"a_{s}" for s in sectors]
     com = [f"c_{s}" for s in sectors]
@@ -113,16 +117,27 @@ def calibrate_open(
     if float(D0.min()) <= 0:
         raise ValueError("open SAM has non-positive domestic sales; Armington/CET undefined")
 
-    # Value added (Cobb-Douglas) — activity output value less intermediate composite cost.
+    # Value added — activity output value less intermediate composite cost. CD (σ=1) or CES.
     VA0 = Z0 - INT0.sum(axis=0)
     if float(VA0.min()) <= 0:
         raise ValueError("open SAM has non-positive value added for some activity")
     va_share = VA0 / Z0
     ax = INT0 / Z0[None, :]
     beta = F0 / VA0[None, :]
-    av = np.prod(
-        np.power(np.where(beta > 0, 1.0 / np.where(beta > 0, beta, 1.0), 1.0), beta), axis=0
+    sigma_va = (
+        np.full(ns, float(va_elast)) if np.isscalar(va_elast) else np.asarray(va_elast, float)
     )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        w_ces = np.where(F0 > 0, np.power(F0, 1.0 / sigma_va[None, :]), 0.0)
+    va_ces_share = w_ces / w_ces.sum(axis=0)[None, :]
+    av = np.empty(ns)
+    for i in range(ns):
+        if abs(sigma_va[i] - 1.0) < 1e-12:
+            b = beta[:, i]
+            av[i] = np.prod(np.power(np.where(b > 0, 1.0 / np.where(b > 0, b, 1.0), 1.0), b))
+        else:
+            si, d = sigma_va[i], va_ces_share[:, i]
+            av[i] = np.power(np.sum(d**si), 1.0 / (1.0 - si))
     gamma = FD0 / FD0.sum()
     endowment = F0.sum(axis=1)
 
@@ -167,6 +182,8 @@ def calibrate_open(
         va_share=va_share,
         beta=beta,
         av=av,
+        va_elast=sigma_va,
+        va_ces_share=va_ces_share,
         gamma=gamma,
         endowment=endowment,
         arm_elast=arm,

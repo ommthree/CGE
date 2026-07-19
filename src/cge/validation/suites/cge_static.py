@@ -280,3 +280,16 @@ def _open_leakage():
         None,
         None,
     )
+
+
+@check(SUITE, "ces_value_added_replicates")
+def _ces_va_replication():
+    """The CES value-added nest (σ_va ≠ 1) replicates the benchmark to machine precision — the
+    Cobb-Douglas pilot is the σ = 1 special case; a non-unitary elasticity must still calibrate to
+    reproduce the base year."""
+    cal = calibrate(toy_sam(), sectors=_SECTORS, factors=_FACTORS, va_elast=0.6)
+    sol = solve(lambda z: M.residuals(cal, z), M.initial_guess(cal) * 1.05, prefer="scipy")
+    ns = len(cal.sectors)
+    st = M.derive_state(cal, sol.x[:ns], sol.x[ns:])
+    err = float(np.max(np.abs(st.X - cal.X0)))
+    return err < 1e-6, f"CES (σ=0.6) benchmark replication error = {err:.2e}", err, 1e-6

@@ -49,11 +49,37 @@ class ModelState:
 
 
 def _va_unit_cost(cal: CalibratedModel, w: np.ndarray) -> np.ndarray:
-    """Cobb-Douglas value-added unit cost pv[i] = (1/av[i])·Π_f (w[f]/β[f,i])^{β[f,i]}."""
-    # w[:,None] broadcast over sectors; guard β=0 (a factor unused in a sector) by skipping it.
-    beta = cal.beta  # [f,i]
-    ratio = np.where(beta > 0, (w[:, None] / np.where(beta > 0, beta, 1.0)), 1.0)
-    return (1.0 / cal.av) * np.prod(np.power(ratio, beta), axis=0)
+    """Value-added unit cost pv[i]. σ_va = 1 ⇒ Cobb-Douglas
+    ``pv = (1/av)·Π_f (w_f/β_f)^{β_f}``; σ_va ≠ 1 ⇒ CES
+    ``pv = (1/av)·[Σ_f δ_f^σ w_f^{1-σ}]^{1/(1-σ)}``. Computed per sector so a mix of σ works."""
+    ns = len(cal.sectors)
+    pv = np.empty(ns)
+    for i in range(ns):
+        s = cal.va_elast[i]
+        if abs(s - 1.0) < 1e-12:
+            b = cal.beta[:, i]
+            ratio = np.where(b > 0, w / np.where(b > 0, b, 1.0), 1.0)
+            pv[i] = (1.0 / cal.av[i]) * np.prod(np.power(ratio, b))
+        else:
+            d = cal.va_ces_share[:, i]
+            pv[i] = (1.0 / cal.av[i]) * np.power(np.sum(d**s * w ** (1.0 - s)), 1.0 / (1.0 - s))
+    return pv
+
+
+def _factor_demand(cal: CalibratedModel, w: np.ndarray, pv: np.ndarray, va_cost: np.ndarray):
+    """Factor demand F[f,i] by Shephard's lemma on the VA cost. CD: F = β·va_cost/w; CES:
+    F = va_cost·(1/av)·(pv·av)^σ·δ^σ·w^{-σ}. ``va_cost`` = va_share·pv·X is total VA payment."""
+    ns, nf = len(cal.sectors), len(cal.factors)
+    F = np.empty((nf, ns))
+    for i in range(ns):
+        s = cal.va_elast[i]
+        if abs(s - 1.0) < 1e-12:
+            F[:, i] = cal.beta[:, i] * va_cost[i] / w
+        else:
+            d = cal.va_ces_share[:, i]
+            unit = (1.0 / cal.av[i]) * (pv[i] * cal.av[i]) ** s * d**s * w ** (-s)
+            F[:, i] = unit * (va_cost[i] / pv[i])  # va_cost/pv = VA quantity
+    return F
 
 
 def derive_state(
@@ -105,9 +131,9 @@ def derive_state(
     FD = income * demand_per_income  # Cobb-Douglas household demand
     X = leontief @ FD  # goods-market clearing
     carbon_revenue = float(cc @ X)
-    # Factor demand (Shephard on the value-added cost va_share·pv·X, split by CD share β).
+    # Factor demand (Shephard on the value-added cost va_share·pv·X). CD or CES per sector.
     va_cost = cal.va_share * pv * X  # [i] total VA payment per sector
-    F = cal.beta * va_cost[None, :] / w[:, None]  # [f,i]
+    F = _factor_demand(cal, w, pv, va_cost)  # [f,i]
     return ModelState(
         p=p,
         w=w,

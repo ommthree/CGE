@@ -38,13 +38,17 @@ class CalibratedModel:
     ax: np.ndarray  # [j, i] Leontief intermediate coefficients (input j per unit output i)
     va_share: np.ndarray  # [i] value added per unit output (Leontief VA requirement)
     beta: np.ndarray  # [f, i] Cobb-Douglas value-added share of factor f in sector i (cols sum→1)
-    av: np.ndarray  # [i] value-added scale constant (Cobb-Douglas efficiency)
+    av: np.ndarray  # [i] value-added scale constant (CD or CES, so unit VA cost = 1 at benchmark)
     gamma: np.ndarray  # [i] household Cobb-Douglas budget share (sums→1)
     endowment: np.ndarray  # [f] fixed factor endowment (benchmark factor income)
     X0: np.ndarray  # [i] benchmark gross output
     F0: np.ndarray  # [f, i] benchmark factor demand
     Z0: np.ndarray  # [j, i] benchmark intermediate flows
     FD0: np.ndarray  # [i] benchmark household final demand
+    # Value-added nest elasticity of substitution between factors. σ = 1 ⇒ Cobb-Douglas (uses
+    # ``beta``); σ ≠ 1 ⇒ CES (uses ``va_ces_share``). Per sector.
+    va_elast: np.ndarray  # [i] VA substitution elasticity σ_va
+    va_ces_share: np.ndarray  # [f, i] CES factor share δ_{fi} (cols sum→1); used when σ ≠ 1
 
     @property
     def gdp0(self) -> float:
@@ -52,10 +56,20 @@ class CalibratedModel:
         return float(self.F0.sum())
 
 
-def calibrate(sam: SAM, *, sectors: list[str], factors: list[str]) -> CalibratedModel:
+def calibrate(
+    sam: SAM,
+    *,
+    sectors: list[str],
+    factors: list[str],
+    va_elast: float | np.ndarray = 1.0,
+) -> CalibratedModel:
     """Calibrate the pilot CGE from a balanced ``sam``. ``sectors`` and ``factors`` name the SAM
     accounts to treat as activities/commodities and factors; the remaining institution account is
-    the household (final demand + factor income). Assumes benchmark prices = 1."""
+    the household (final demand + factor income). Assumes benchmark prices = 1.
+
+    ``va_elast`` is the value-added substitution elasticity σ_va (scalar or per-sector). σ = 1 is
+    Cobb-Douglas (the default, preserving the pilot); σ ≠ 1 is CES, calibrated so the VA unit cost
+    is still 1 at benchmark."""
     m = sam.matrix
     hoh = [a for a in sam.accounts if a not in sectors and a not in factors]
     if len(hoh) != 1:
@@ -97,11 +111,26 @@ def calibrate(sam: SAM, *, sectors: list[str], factors: list[str]) -> Calibrated
     va_share = VA0 / X0
     # Cobb-Douglas factor shares within value added (columns sum to 1).
     beta = F0 / VA0[None, :]  # [f,i]
-    # Cobb-Douglas scale so the VA unit cost is exactly 1 at benchmark prices (w = 1):
-    # pv[i] = (1/av[i])·Π_f (1/β[f,i])^{β[f,i]} = 1  ⇒  av[i] = Π_f (1/β[f,i])^{β[f,i]}.
-    av = np.prod(
-        np.power(np.where(beta > 0, 1.0 / np.where(beta > 0, beta, 1.0), 1.0), beta), axis=0
+    ns = len(sectors)
+    sigma_va = (
+        np.full(ns, float(va_elast)) if np.isscalar(va_elast) else np.asarray(va_elast, float)
     )
+    # CES factor share δ (used when σ ≠ 1): from the benchmark factor mix, δ_f/δ_g = (F_f/F_g)^{1/σ}
+    # at unit factor prices, normalised to sum to 1 per sector. (For σ = 1 δ = β, harmless.)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        weights = np.where(F0 > 0, np.power(F0, 1.0 / sigma_va[None, :]), 0.0)
+    va_ces_share = weights / weights.sum(axis=0)[None, :]
+    # Scale ``av`` so the VA unit cost is exactly 1 at benchmark (w = 1). CD: av = Π (1/β)^β; CES:
+    # av = [Σ_f δ_f^σ]^{1/(1-σ)}. Chosen per sector by whether σ = 1.
+    av = np.empty(ns)
+    for i in range(ns):
+        if abs(sigma_va[i] - 1.0) < 1e-12:
+            b = beta[:, i]
+            av[i] = np.prod(np.power(np.where(b > 0, 1.0 / np.where(b > 0, b, 1.0), 1.0), b))
+        else:
+            s = sigma_va[i]
+            d = va_ces_share[:, i]
+            av[i] = np.power(np.sum(d**s), 1.0 / (1.0 - s))
     # Household Cobb-Douglas budget shares (of total final demand).
     gamma = FD0 / FD0.sum()
     # Fixed factor endowments = total benchmark factor income.
@@ -120,4 +149,6 @@ def calibrate(sam: SAM, *, sectors: list[str], factors: list[str]) -> Calibrated
         F0=F0,
         Z0=Z0,
         FD0=FD0,
+        va_elast=sigma_va,
+        va_ces_share=va_ces_share,
     )

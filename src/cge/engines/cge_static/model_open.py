@@ -55,9 +55,34 @@ class OpenModelState:
 
 
 def _va_unit_cost(cal: OpenCalibratedModel, w: np.ndarray) -> np.ndarray:
-    beta = cal.beta
-    ratio = np.where(beta > 0, w[:, None] / np.where(beta > 0, beta, 1.0), 1.0)
-    return (1.0 / cal.av) * np.prod(np.power(ratio, beta), axis=0)
+    """VA unit cost per activity. σ_va = 1 ⇒ Cobb-Douglas; σ_va ≠ 1 ⇒ CES (per sector)."""
+    ns = len(cal.sectors)
+    pv = np.empty(ns)
+    for i in range(ns):
+        s = cal.va_elast[i]
+        if abs(s - 1.0) < 1e-12:
+            b = cal.beta[:, i]
+            ratio = np.where(b > 0, w / np.where(b > 0, b, 1.0), 1.0)
+            pv[i] = (1.0 / cal.av[i]) * np.prod(np.power(ratio, b))
+        else:
+            d = cal.va_ces_share[:, i]
+            pv[i] = (1.0 / cal.av[i]) * np.power(np.sum(d**s * w ** (1.0 - s)), 1.0 / (1.0 - s))
+    return pv
+
+
+def _factor_demand(cal: OpenCalibratedModel, w: np.ndarray, pv: np.ndarray, va_cost: np.ndarray):
+    """Factor demand by Shephard on the VA cost. CD or CES per sector (mirrors the closed model)."""
+    ns, nf = len(cal.sectors), len(cal.factors)
+    F = np.empty((nf, ns))
+    for i in range(ns):
+        s = cal.va_elast[i]
+        if abs(s - 1.0) < 1e-12:
+            F[:, i] = cal.beta[:, i] * va_cost[i] / w
+        else:
+            d = cal.va_ces_share[:, i]
+            unit = (1.0 / cal.av[i]) * (pv[i] * cal.av[i]) ** s * d**s * w ** (-s)
+            F[:, i] = unit * (va_cost[i] / pv[i])
+    return F
 
 
 def _armington_price(cal: OpenCalibratedModel, pd: np.ndarray, pm: np.ndarray) -> np.ndarray:
@@ -120,7 +145,7 @@ def derive_open_state(
     carbon_revenue = float(cc @ Z)
     # Factor demand (Shephard on VA cost).
     va_cost = cal.va_share * pv * Z
-    F = cal.beta * va_cost[None, :] / w[:, None]
+    F = _factor_demand(cal, w, pv, va_cost)
     return OpenModelState(
         pd=pd,
         pq=pq,

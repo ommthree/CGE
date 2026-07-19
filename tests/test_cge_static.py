@@ -463,3 +463,79 @@ def test_supplied_sam_extra_account_rejected():
             shocks=[CarbonPrice(price=0.1)],
             years=[2020],
         )
+
+
+# -- CES value-added nest (non-unitary factor substitution) -------------------
+def _asymmetric_sam():
+    """A SAM where BRD is capital-intensive and MIL labour-intensive, so a change in the relative
+    factor price exercises the CES value-added nest."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import SAM, Provenance
+
+    acc = ["BRD", "MIL", "CAP", "LAB", "HOH"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc["BRD", "MIL"] = 24.0
+    m.loc["MIL", "BRD"] = 15.0
+    m.loc["CAP", "BRD"] = 60.0  # BRD capital-heavy
+    m.loc["LAB", "BRD"] = 25.0
+    m.loc["CAP", "MIL"] = 30.0  # MIL labour-heavy
+    m.loc["LAB", "MIL"] = 66.0
+    m.loc["BRD", "HOH"] = 76.0
+    m.loc["MIL", "HOH"] = 105.0
+    m.loc["HOH", "CAP"] = 90.0
+    m.loc["HOH", "LAB"] = 91.0
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=0, retrieved="2026-07-19"
+    )
+    return SAM(provenance=prov, accounts=acc, matrix=m)
+
+
+def test_ces_va_replicates_for_all_elasticities():
+    """The CES value-added nest replicates the benchmark exactly for σ = 1 (CD), 0.5, 2."""
+    sam = _asymmetric_sam()
+    for sigma in (1.0, 0.5, 2.0):
+        cal = calibrate(sam, sectors=_SECTORS, factors=_FACTORS, va_elast=sigma)
+        sol = solve(lambda z, c=cal: M.residuals(c, z), M.initial_guess(cal) * 1.05, prefer="scipy")
+        st = M.derive_state(cal, sol.x[:2], sol.x[2:])
+        assert np.allclose(st.X, cal.X0, atol=1e-6), f"σ={sigma} failed replication"
+
+
+def test_ces_elasticity_governs_factor_price_swing():
+    """With asymmetric factor intensities, a carbon price shifts the relative factor price, and a
+    LOWER VA elasticity (harder to substitute) gives a LARGER swing — the CES bites."""
+    sam = _asymmetric_sam()
+    e = np.array([2.0, 0.5])
+
+    def rel_factor_price(sigma):
+        cal = calibrate(sam, sectors=_SECTORS, factors=_FACTORS, va_elast=sigma)
+        sol = solve(
+            lambda z: M.residuals(cal, z, carbon_cost=0.15 * e, recycling="lump_sum"),
+            M.initial_guess(cal),
+            prefer="scipy",
+        )
+        st = M.derive_state(cal, sol.x[:2], sol.x[2:], carbon_cost=0.15 * e, recycling="lump_sum")
+        return abs(st.w[0] / st.w[1] - 1.0)  # |wCAP/wLAB − 1|
+
+    swing_low = rel_factor_price(0.3)
+    swing_high = rel_factor_price(3.0)
+    assert swing_low > swing_high > 0  # lower elasticity → larger relative-price swing
+
+
+def test_open_ces_va_replicates():
+    """The open model's CES value-added nest also replicates the benchmark for σ ≠ 1."""
+    from cge.data.sam import toy_open_sam
+    from cge.engines.cge_static import model_open as MO
+    from cge.engines.cge_static.calibrate_open import calibrate_open
+
+    for sigma in (0.5, 2.0):
+        cal = calibrate_open(toy_open_sam(), sectors=_SECTORS, factors=_FACTORS, va_elast=sigma)
+        sol = solve(
+            lambda z, c=cal: MO.residuals(c, z, recycling="lump_sum"),
+            MO.initial_guess(cal) * 1.03,
+            prefer="scipy",
+        )
+        st = MO.derive_open_state(
+            cal, sol.x[:2], sol.x[2:4], sol.x[4:6], float(sol.x[6]), recycling="lump_sum"
+        )
+        assert np.allclose(st.Z, cal.Z0, atol=1e-6), f"open σ={sigma} failed replication"
