@@ -213,3 +213,70 @@ def _real_sam_replication():
     st = M.derive_state(cal, sol.x[:ns], sol.x[ns:])
     err = float(np.max(np.abs(st.X - cal.X0)))
     return err < 1e-6, f"real-SAM benchmark replication error = {err:.2e}", err, 1e-6
+
+
+# -- open economy (Armington/CET) ---------------------------------------------
+_OPEN_EMISSIONS = np.array([2.0, 0.5])
+
+
+def _open_cal():
+    from cge.data.sam import toy_open_sam
+    from cge.engines.cge_static.calibrate_open import calibrate_open
+
+    return calibrate_open(toy_open_sam(), sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
+
+
+def _open_solve(cal, carbon_cost=None):
+    from cge.engines.cge_static import model_open as MO
+
+    ns, nf = len(cal.sectors), len(cal.factors)
+    cc = np.zeros(ns) if carbon_cost is None else carbon_cost
+    sol = solve(
+        lambda z: MO.residuals(cal, z, carbon_cost=cc, recycling="lump_sum"),
+        MO.initial_guess(cal) * 1.03,
+        prefer="scipy",
+    )
+    st = MO.derive_open_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns : 2 * ns],
+        sol.x[2 * ns : 2 * ns + nf],
+        float(sol.x[-1]),
+        carbon_cost=cc,
+        recycling="lump_sum",
+    )
+    return sol, st
+
+
+@check(SUITE, "open_benchmark_replication")
+def _open_replication():
+    """The open Armington/CET model replicates its benchmark SAM to machine precision (activity
+    output, domestic sales, imports, exports)."""
+    cal = _open_cal()
+    _s, st = _open_solve(cal)
+    err = max(
+        float(np.max(np.abs(st.Z - cal.Z0))),
+        float(np.max(np.abs(st.M - cal.M0))),
+        float(np.max(np.abs(st.E - cal.E0))),
+    )
+    return err < 1e-6, f"open benchmark replication error = {err:.2e}", err, 1e-6
+
+
+@check(SUITE, "open_carbon_price_causes_leakage")
+def _open_leakage():
+    """A carbon price on the dirty sector causes **carbon leakage**: its domestic output falls, its
+    imports rise (substitution to foreign supply) and its exports fall (lost competitiveness) — the
+    open-economy response Engines 1–2 and the closed CGE cannot show."""
+    cal = _open_cal()
+    _b, base = _open_solve(cal)
+    _s, st = _open_solve(cal, carbon_cost=0.15 * _OPEN_EMISSIONS)
+    out_falls = st.Z[0] < base.Z[0] - 1e-9
+    imports_rise = st.M[0] > base.M[0] + 1e-9
+    exports_fall = st.E[0] < base.E[0] - 1e-9
+    ok = out_falls and imports_rise and exports_fall
+    return (
+        ok,
+        f"dirty: output↓={out_falls}, imports↑={imports_rise}, exports↓={exports_fall}",
+        None,
+        None,
+    )

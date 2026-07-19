@@ -130,6 +130,12 @@ class CGEStaticEngine:
     )
 
     def run(self, *, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
+        # Open economy (Armington/CET) when the SAM carries a rest-of-world account; otherwise the
+        # closed pilot. The open path has its own calibration/model (activity+commodity accounts).
+        supplied_sam = data.get("SAM")
+        if supplied_sam is not None and "ROW" in supplied_sam.accounts:
+            return _run_open(self.meta, data, shocks, years)
+
         inp = _resolve_inputs(data)
         sam, sectors, factors = (
             inp.sam,
@@ -526,6 +532,109 @@ def _sam_fingerprint(sam: SAM) -> dict:
         "accounts": list(sam.accounts),
         "values": [round(float(v), 10) for v in m.to_numpy(dtype=float).ravel().tolist()],
     }
+
+
+def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
+    """Open-economy (Armington/CET) CGE run. The SAM has ``a_<s>``/``c_<s>`` activity/commodity
+    accounts, factors, a household and a ``ROW`` account. Carbon cost is a supplied per-sector
+    dimensionless ``carbon_cost_share`` (an IOSystem→SAM open build is a follow-up)."""
+    from cge.engines.cge_static import model_open as MO
+    from cge.engines.cge_static.calibrate_open import calibrate_open
+
+    sam: SAM = data["SAM"]
+    sectors = [a[2:] for a in sam.accounts if a.startswith("a_")]
+    factors = [f for f in _DEFAULT_FACTORS if f in sam.accounts]
+    ns = len(sectors)
+
+    carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+    modes = {s.revenue_recycling for s in carbon_shocks} or {"none"}
+    if len(modes) > 1:
+        raise ValueError(f"cge_static needs a single recycling mode; got {sorted(modes)}.")
+    recycling = modes.pop()
+    if recycling == "none":
+        recycling = "lump_sum"  # the open economy also circulates carbon revenue to the household
+
+    share = _carbon_cost_share(data, sectors)
+    positive_price = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
+    if positive_price and share is None:
+        raise ValueError(
+            "a positive carbon price on the open-economy CGE requires a 'carbon_cost_share'."
+        )
+    share = share if share is not None else np.zeros(ns)
+
+    cal = calibrate_open(sam, sectors=sectors, factors=factors)
+
+    def _solve_year(cc):
+        sol = solve(
+            lambda z: MO.residuals(cal, z, carbon_cost=cc, recycling=recycling),
+            MO.initial_guess(cal),
+            prefer="scipy",
+        )
+        st = MO.derive_open_state(
+            cal,
+            sol.x[:ns],
+            sol.x[ns : 2 * ns],
+            sol.x[2 * ns : 2 * ns + len(factors)],
+            float(sol.x[-1]),
+            carbon_cost=cc,
+            recycling=recycling,
+        )
+        return sol, st
+
+    _bsol, base = _solve_year(np.zeros(ns))
+    records: list[dict] = []
+    resid_max = _bsol.residual_norm
+    for year in years:
+        tau = sum(s.price_at(year) for s in carbon_shocks)
+        cc = tau * share
+        sol, st = _solve_year(cc)
+        resid_max = max(resid_max, sol.residual_norm)
+        _emit_open(records, cal, base, st, year)
+
+    manifest = RunManifest.build(
+        engine_name=meta.name,
+        engine_version=meta.version,
+        data_source=data_source_id(sam.provenance),
+        scenario={"shocks": [s.model_dump(mode="json") for s in shocks], "years": years},
+        assumptions={
+            **ASSUMPTIONS,
+            "model_variant": "open economy (Armington imports + CET exports; small-open, fixed "
+            "world prices and foreign savings; exchange rate endogenous)",
+            "sectors": sectors,
+            "factors": factors,
+            "recycling_mode": recycling,
+            "armington_elasticity": float(cal.arm_elast[0]),
+            "cet_elasticity": float(cal.cet_elast[0]),
+            "solver_max_residual_norm": resid_max,
+            "emissions_priced": bool(np.any(share != 0.0) and positive_price),
+            "inputs": [input_identity("SAM", sam.provenance, content=_sam_fingerprint(sam))],
+        },
+    )
+    return ResultSet.from_records(records, manifest)
+
+
+def _emit_open(records, cal, base, st, year: int) -> None:
+    """Emit open-economy results: activity output (volume), domestic/import/export volumes, the
+    composite price, factor prices, exchange rate, real GDP, welfare and carbon revenue."""
+    for i, sector in enumerate(cal.sectors):
+        records.append(_rec("price_change", sector, year, st.pq[i] / base.pq[i] - 1.0))
+        records.append(_rec("volume_change", sector, year, st.Z[i] / base.Z[i] - 1.0))
+        records.append(_rec("import_change", sector, year, _ratio(st.M[i], base.M[i])))
+        records.append(_rec("export_change", sector, year, _ratio(st.E[i], base.E[i])))
+    for f_idx, factor in enumerate(cal.factors):
+        records.append(_rec("factor_price_change", factor, year, st.w[f_idx] / base.w[f_idx] - 1.0))
+    records.append(_rec("exchange_rate_change", "__economy__", year, st.er / base.er - 1.0))
+    # Real GDP = real absorption at benchmark composite prices (CPI numéraire): Σ FD (household) is
+    # the real consumption index; report it as the real-GDP proxy for the pilot.
+    records.append(_rec("gdp_change_real", "__economy__", year, st.FD.sum() / base.FD.sum() - 1.0))
+    u = float(np.prod(np.power(st.FD, cal.gamma)))
+    u_base = float(np.prod(np.power(base.FD, cal.gamma)))
+    records.append(_rec("welfare_change", "__economy__", year, u / u_base - 1.0))
+    records.append(_rec("carbon_revenue", "__economy__", year, st.carbon_revenue / cal.gdp0))
+
+
+def _ratio(x: float, x0: float) -> float:
+    return float(x / x0 - 1.0) if x0 > 0 else 0.0
 
 
 registry.register(CGEStaticEngine())
