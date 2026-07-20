@@ -244,15 +244,18 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 > **Also complete:** **true multiple regions** with **bilateral trade** between build regions
 > (`model_multi` — a closed global economy of R regions, each with an Armington composite over the
 > domestic variety + imports from every partner and a CET transform into domestic sales + exports to
-> every partner; region-specific factors and households). Replicates its benchmark to machine
-> precision and shows **cross-region carbon leakage** (a carbon price in one region relocates
-> production and raises imports from partners); results are region-tagged.
+> every partner; region-specific factors and households). Every trade route has its own
+> **destination-specific price** `pe[o,s,d]`, and every bilateral goods market clears explicitly
+> (`M[d,s,o]=EX[o,s,d]`) rather than assuming a law-of-one-price reduction. Replicates its benchmark
+> to machine precision, clears every bilateral and factor market under shock, and shows
+> **cross-region carbon leakage** (a carbon price in one region relocates production and raises
+> imports from partners); results are region-tagged.
 >
 > **Remaining (deferred):** the GE tier of the macro aggregates (native per-sector GVA + capital
 > rental rate — the rental rate is already emitted as a factor price); a **live-EXIOBASE** open/multi
-> SAM build (the offline test MRIO works); and multi-region refinements (separate export/border
-> prices — currently law-of-one-price; per-cell trade elasticities; an IOSystem→multi-region-SAM
-> builder).
+> SAM build (the offline test MRIO works, including an IOSystem-driven build for the single-region
+> open economy — the multi-region side still requires a supplied SAM); per-cell (rather than
+> uniform) trade elasticities; and an IOSystem→multi-region-SAM builder.
 
 > **Detailed plan: [`docs/phase-5-plan.md`](docs/phase-5-plan.md)** — solver-first sequencing,
 > equation-level model structure, SAM balancing with an audit trail, the standard CGE

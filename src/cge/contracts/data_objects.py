@@ -74,6 +74,13 @@ class IOSystem(_DataObject):
     Envelope only in Phase 0; Phase 1 fills the frames from EXIOBASE. The technical
     coefficients ``A`` and final demand ``final_demand`` are indexed by the sector ×
     region product of ``sectors`` and ``regions``.
+
+    ``final_demand`` rows are producing labels; its columns are either a single aggregate
+    column (legacy builds) or **one column per consuming region** (review P1: the open-SAM
+    builder needs to know WHO consumes each product to attribute home final demand exactly
+    rather than imputing it). Every consumer that only needs totals keeps using
+    ``final_demand.sum(axis=1)``; ``fd_by_region()`` exposes the per-consumer split when
+    present.
     """
 
     sectors: Classification
@@ -113,6 +120,16 @@ class IOSystem(_DataObject):
     @property
     def n(self) -> int:
         return len(self.sectors) * len(self.regions)
+
+    def fd_by_region(self) -> pd.DataFrame | None:
+        """The per-consuming-region final-demand split, or ``None`` when this build only carries
+        an aggregate column. The convention: ``final_demand`` is by-consuming-region exactly when
+        its column set equals the build's region label set (order-insensitive)."""
+        if self.final_demand.empty:
+            return None
+        if set(self.final_demand.columns) == set(self.regions.labels):
+            return self.final_demand
+        return None
 
 
 class SatelliteAccount(_DataObject):

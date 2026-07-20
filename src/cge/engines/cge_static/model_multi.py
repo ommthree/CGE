@@ -4,27 +4,30 @@ Closed global economy of ``R`` regions trading bilaterally [Hosoe2010, ch. 7 gen
 region has an Armington import composite over **every partner region** and a CET transformation of
 output into domestic sales + **exports to every partner**. Factors are region-specific.
 
-**Price convention (law of one price).** A producer sells its good at a single supply price
-``pd[r,s]`` whether domestically or as an export; the CET allocates *quantities* between domestic
-sales and exports, and region ``d``'s import price of good ``s`` from origin ``o`` is ``pd[o,s]``.
-(A separate export/border price is a documented refinement.) One global numéraire pins region-0's
-composite CPI.
+**Bilateral prices + market clearing (the corrected design).** Each traded route has its own price
+``pe[o,s,d]`` — the price region ``d`` pays for good ``s`` imported from origin ``o`` (= the price
+``o`` receives on that export). The Armington composite in ``d`` mixes the domestic variety (price
+``pd[d,s]``) with imports at ``pe[o,s,d]``; the CET in ``o`` splits output between domestic sales
+(``pd[o,s]``) and exports at ``pe[o,s,d]``. Each bilateral goods market clears explicitly:
+``M[d,s,o] = EX[o,s,d]`` — the equation that pins ``pe`` and makes the result a genuine equilibrium
+(the earlier law-of-one-price reduction left these markets **uncleared**). One global numéraire pins
+region-0's composite CPI.
 
-**Unknowns** ``z = [pd (nr·ns), pq (nr·ns), w (nf·nr)]``:
-- ``pd[r,s]`` — producer/domestic price of region ``r``'s good ``s`` (also its export price);
+**Unknowns** ``z = [pd (nr·ns), pq (nr·ns), pe (nr·(nr−1)·ns), w (nf·nr)]``:
+- ``pd[r,s]`` — domestic-sales price of region ``r``'s good ``s``;
 - ``pq[r,s]`` — Armington composite price in region ``r``;
+- ``pe[o,s,d]`` — bilateral export/import price on route ``o→d`` for good ``s`` (``o≠d``);
 - ``w[f,r]`` — region-``r`` factor prices.
 
-Derived by CES/CET duals: composite price (Armington cost fn over ``pd[r,s]`` + partners'
-``pd[o,s]``), output price ``pz`` (CET revenue fn), factor demand + quantities (Shephard/Hotelling).
-
-**Residuals — square in ``2·nr·ns + nf·nr``:**
+**Residuals — square in ``2·nr·ns + nr·(nr−1)·ns + nf·nr``:**
 - ``nr·ns`` Armington-price identities (pin ``pq``);
 - ``nr·ns`` zero-profit identities (pin ``pd`` via the CET dual ``pz``);
+- ``nr·(nr−1)·ns`` bilateral goods-market clearings ``M[d,s,o] = EX[o,s,d]`` (pin ``pe``);
 - ``nf·nr − 1`` factor-market clearings (one dropped globally by Walras);
 - 1 numéraire.
-Composite-market clearing is solved algebraically inside ``_quantities`` (not a residual), exactly
-as in the single-region open model.
+The **domestic** goods market clears algebraically inside ``_quantities`` (domestic Armington demand
+= domestic CET supply, per region-sector); a region's current account then closes by Walras once the
+bilateral and factor markets clear.
 """
 
 from __future__ import annotations
@@ -38,14 +41,15 @@ from cge.engines.cge_static.calibrate_multi import MultiCalibratedModel
 
 @dataclass(frozen=True)
 class MultiModelState:
-    pd: np.ndarray  # [r, s] producer/domestic prices
+    pd: np.ndarray  # [r, s] domestic-sales prices
     pq: np.ndarray  # [r, s] composite prices
+    pe: np.ndarray  # [o, s, d] bilateral export/import price on route o→d (own slot unused)
     pz: np.ndarray  # [r, s] activity output prices
     w: np.ndarray  # [f, r] factor prices
     Z: np.ndarray  # [r, s] activity output
     D: np.ndarray  # [r, s] domestic sales
-    EX: np.ndarray  # [r, s, d] exports to region d
-    M: np.ndarray  # [r, s, o] imports from region o
+    EX: np.ndarray  # [o, s, d] export supply from o to d
+    M: np.ndarray  # [d, s, o] import demand of d from o
     Q: np.ndarray  # [r, s] composite supply
     FD: np.ndarray  # [r, s] household final demand
     F: np.ndarray  # [f, r, s] factor demand
@@ -92,109 +96,122 @@ def _factor_demand(cal, w, pv, va_cost):
     return F
 
 
-def _armington_price(cal: MultiCalibratedModel, pd: np.ndarray) -> np.ndarray:
-    """Composite price pq[r,s] = CES cost over the domestic variety (price pd[r,s]) and imports from
-    each partner o (price pd[o,s]): pq = (1/A)[δ_d·pd_r^{1-σ} + Σ_o δ_o·pd_o^{1-σ}]^{1/(1-σ)}."""
+def _import_price(cal: MultiCalibratedModel, ri: int, si: int, oi: int, pd, pe) -> float:
+    """Price region ``ri`` pays for good ``si`` from origin ``oi`` — its own domestic price on the
+    own slot, else the bilateral route price ``pe[oi,si,ri]``."""
+    return pd[ri, si] if oi == ri else pe[oi, si, ri]
+
+
+def _armington_price(cal: MultiCalibratedModel, pd: np.ndarray, pe: np.ndarray) -> np.ndarray:
+    """Composite price pq[d,s] = CES cost over the domestic variety (price pd[d,s]) and imports from
+    each origin o at the bilateral price pe[o,s,d]:
+        pq = (1/A)[δ_d·pd_d^{1-σ} + Σ_o δ_o·pe[o,s,d]^{1-σ}]^{1/(1-σ)}."""
     nr, ns = cal.nr, cal.ns
     sigma = cal.arm_elast
     e = 1.0 - sigma
     pq = np.empty((nr, ns))
-    for ri in range(nr):
+    for di in range(nr):
         for si in range(ns):
-            term = cal.arm_share_d[ri, si] ** sigma[ri, si] * pd[ri, si] ** e[ri, si]
+            term = cal.arm_share_d[di, si] ** sigma[di, si] * pd[di, si] ** e[di, si]
             for oi in range(nr):
-                dm = cal.arm_share_m[ri, si, oi]
+                dm = cal.arm_share_m[di, si, oi]
                 if dm > 0:
-                    term += dm ** sigma[ri, si] * pd[oi, si] ** e[ri, si]
-            pq[ri, si] = (1.0 / cal.arm_scale[ri, si]) * term ** (1.0 / e[ri, si])
+                    p_imp = pe[oi, si, di]
+                    term += dm ** sigma[di, si] * p_imp ** e[di, si]
+            pq[di, si] = (1.0 / cal.arm_scale[di, si]) * term ** (1.0 / e[di, si])
     return pq
 
 
-def _cet_price(cal: MultiCalibratedModel, pd: np.ndarray) -> np.ndarray:
-    """Activity output price pz[r,s] = CET revenue fn. With law-of-one-price the domestic and every
-    export sink share the producer price pd[r,s], so pz = (1/B)[Σ_k ξ_k^{-Ω}]^{1/(1+Ω)}·pd — the
-    revenue index collapses to a constant × pd at a common price (the frontier is homogeneous)."""
+def _cet_price(cal: MultiCalibratedModel, pd: np.ndarray, pe: np.ndarray) -> np.ndarray:
+    """Activity output price pz[o,s] = CET revenue function over domestic sales (price pd[o,s]) and
+    exports to each destination d at price pe[o,s,d]:
+        pz = (1/B)[ξ_d^{-Ω}·pd_o^{1+Ω} + Σ_d ξ_{e,d}^{-Ω}·pe[o,s,d]^{1+Ω}]^{1/(1+Ω)}."""
     nr, ns = cal.nr, cal.ns
     omega = cal.cet_elast
     e = 1.0 + omega
     pz = np.empty((nr, ns))
-    for ri in range(nr):
+    for oi in range(nr):
         for si in range(ns):
-            coef = cal.cet_share_d[ri, si] ** (-omega[ri, si])
+            term = cal.cet_share_d[oi, si] ** (-omega[oi, si]) * pd[oi, si] ** e[oi, si]
             for di in range(nr):
-                xe = cal.cet_share_e[ri, si, di]
+                xe = cal.cet_share_e[oi, si, di]
                 if xe > 0:
-                    coef += xe ** (-omega[ri, si])
-            pz[ri, si] = (1.0 / cal.cet_scale[ri, si]) * coef ** (1.0 / e[ri, si]) * pd[ri, si]
+                    term += xe ** (-omega[oi, si]) * pe[oi, si, di] ** e[oi, si]
+            pz[oi, si] = (1.0 / cal.cet_scale[oi, si]) * term ** (1.0 / e[oi, si])
     return pz
 
 
-def _quantities(cal, pd, pq, pz, FD):
-    """Given prices and per-region final demand FD[r,s], solve for composite Q, output Z and the
-    domestic/import/export splits. The composite market in each region is linear in that region's Q
-    once the domestic/import Shephard shares (functions of prices) are known; imports come from
-    partners' output. We solve the GLOBAL linear system for all Q[r,s] jointly (imports couple
-    regions).
+def _quantities(cal, pd, pq, pe, pz, FD):
+    """Given prices and per-region final demand FD[r,s], solve for composite supply Q, output Z, the
+    domestic split D, bilateral import demand M[d,s,o] and export supply EX[o,s,d].
 
-    Shephard (Armington): per unit composite Q[r,s], domestic sD = (1/A)(pq·A)^σ δ_d^σ pd_r^{-σ};
-    import input from o, sM_o = (1/A)(pq·A)^σ δ_o^σ pd_o^{-σ}.
-    Hotelling (CET): per unit output Z[r,s], domestic sink sZd = (1/B)(pz·B)^{-Ω} ξ_d^{-Ω} pd_r^{Ω};
-    export sink to d, sZe_d = (1/B)(pz·B)^{-Ω} ξ_{e,d}^{-Ω} pd_r^{Ω}.
-    Consistency: domestic demand D[r,s] = sD·Q[r,s] must equal domestic CET supply sZd·Z[r,s], and
-    import M[d,s,o] = sM_o·Q[d,s] must equal export EX[o,s,d] = sZe_d(o)·Z[o,s]."""
+    Armington (Shephard on the composite cost fn), per unit composite Q[d,s]:
+      domestic  sD  = (1/A)(pq·A)^σ δ_d^σ pd_d^{-σ};
+      import-o  sM_o = (1/A)(pq·A)^σ δ_o^σ pe[o,s,d]^{-σ}.
+    CET (Hotelling on the revenue fn), per unit output Z[o,s]:
+      domestic  sZd  = (1/B)(pz·B)^{-Ω} ξ_d^{-Ω} pd_o^{Ω};
+      export-d  sZe_d = (1/B)(pz·B)^{-Ω} ξ_{e,d}^{-Ω} pe[o,s,d]^{Ω}.
+
+    The **domestic** market clears by construction — domestic Armington demand sD·Q equals domestic
+    CET supply sZd·Z, giving Z[r,s] = (sD/sZd)·Q — so we solve each region's composite market
+    (linear in Q) block by block. Bilateral import demand M and export supply EX are then returned
+    **separately**; the residual system clears M[d,s,o] = EX[o,s,d] by choosing pe."""
     nr, ns = cal.nr, cal.ns
     sigma = cal.arm_elast
     omega = cal.cet_elast
     A, B = cal.arm_scale, cal.cet_scale
 
-    # Armington unit shares.
+    # Armington unit shares (per unit composite Q[d,s]).
     sD = np.zeros((nr, ns))
-    sM = np.zeros((nr, ns, nr))  # [r,s,o] import of o per unit Q[r,s]
-    for ri in range(nr):
+    sM = np.zeros((nr, ns, nr))  # [d,s,o] import of o per unit Q[d,s]
+    for di in range(nr):
         for si in range(ns):
-            base = (1.0 / A[ri, si]) * (pq[ri, si] * A[ri, si]) ** sigma[ri, si]
-            sD[ri, si] = (
-                base * cal.arm_share_d[ri, si] ** sigma[ri, si] * pd[ri, si] ** (-sigma[ri, si])
+            base = (1.0 / A[di, si]) * (pq[di, si] * A[di, si]) ** sigma[di, si]
+            sD[di, si] = (
+                base * cal.arm_share_d[di, si] ** sigma[di, si] * pd[di, si] ** (-sigma[di, si])
             )
             for oi in range(nr):
-                dm = cal.arm_share_m[ri, si, oi]
+                dm = cal.arm_share_m[di, si, oi]
                 if dm > 0:
-                    sM[ri, si, oi] = base * dm ** sigma[ri, si] * pd[oi, si] ** (-sigma[ri, si])
-    # CET unit shares.
+                    p_imp = pe[oi, si, di]
+                    sM[di, si, oi] = base * dm ** sigma[di, si] * p_imp ** (-sigma[di, si])
+    # CET unit shares (per unit output Z[o,s]).
     sZd = np.zeros((nr, ns))
-    sZe = np.zeros((nr, ns, nr))  # [r,s,d] export to d per unit Z[r,s]
-    for ri in range(nr):
+    sZe = np.zeros((nr, ns, nr))  # [o,s,d] export to d per unit Z[o,s]
+    for oi in range(nr):
         for si in range(ns):
-            base = (1.0 / B[ri, si]) * (pz[ri, si] * B[ri, si]) ** (-omega[ri, si])
-            sZd[ri, si] = (
-                base * cal.cet_share_d[ri, si] ** (-omega[ri, si]) * pd[ri, si] ** omega[ri, si]
+            base = (1.0 / B[oi, si]) * (pz[oi, si] * B[oi, si]) ** (-omega[oi, si])
+            sZd[oi, si] = (
+                base * cal.cet_share_d[oi, si] ** (-omega[oi, si]) * pd[oi, si] ** omega[oi, si]
             )
             for di in range(nr):
-                xe = cal.cet_share_e[ri, si, di]
+                xe = cal.cet_share_e[oi, si, di]
                 if xe > 0:
-                    sZe[ri, si, di] = base * xe ** (-omega[ri, si]) * pd[ri, si] ** omega[ri, si]
+                    sZe[oi, si, di] = (
+                        base * xe ** (-omega[oi, si]) * pe[oi, si, di] ** omega[oi, si]
+                    )
 
-    # Domestic consistency gives Z[r,s] = (sD[r,s]/sZd[r,s]) · Q[r,s].
+    # Domestic consistency: Z[r,s] = (sD[r,s]/sZd[r,s]) · Q[r,s].
     ratio = sD / sZd  # [r,s]
-
-    # Composite market per (r,s): Q[r,s] = Σ_j ax[r,j? ] ... intermediates + FD, where intermediates
-    # use composite (r,s) by activity (r,i): Σ_i ax[r,s,i]·Z[r,i]. With Z = ratio·Q:
+    # Composite market per region (block-diagonal — intermediates are within-region):
     #   Q[r,s] = Σ_i ax[r,s,i]·ratio[r,i]·Q[r,i] + FD[r,s].
-    # This is block-diagonal per region (intermediates are within-region); solve region by region.
     Q = np.zeros((nr, ns))
     for ri in range(nr):
-        coeff = cal.ax[ri] * ratio[ri][None, :]  # ax[r, s, i]·ratio[r,i]  → [s, i]
+        coeff = cal.ax[ri] * ratio[ri][None, :]  # ax[r,s,i]·ratio[r,i] → [s,i]
         Q[ri] = np.linalg.solve(np.eye(ns) - coeff, FD[ri])
     Z = ratio * Q
     D = sD * Q
-    M = np.zeros((nr, ns, nr))
-    EX = np.zeros((nr, ns, nr))
-    for ri in range(nr):
-        for si in range(ns):
+    M = np.zeros((nr, ns, nr))  # [d,s,o] import DEMAND of d from o
+    EX = np.zeros((nr, ns, nr))  # [o,s,d] export SUPPLY of o to d
+    for si in range(ns):
+        for di in range(nr):
             for oi in range(nr):
-                M[ri, si, oi] = sM[ri, si, oi] * Q[ri, si]  # r imports s from o
+                if oi != di:
+                    M[di, si, oi] = sM[di, si, oi] * Q[di, si]
+        for oi in range(nr):
             for di in range(nr):
-                EX[ri, si, di] = sZe[ri, si, di] * Z[ri, si]  # r exports s to d
+                if di != oi:
+                    EX[oi, si, di] = sZe[oi, si, di] * Z[oi, si]
     return Q, Z, D, EX, M
 
 
@@ -202,41 +219,51 @@ def derive_multi_state(
     cal: MultiCalibratedModel,
     pd: np.ndarray,
     pq: np.ndarray,
+    pe: np.ndarray,
     w: np.ndarray,
     *,
     carbon_cost: np.ndarray | None = None,
     recycling: str = "lump_sum",
+    strict: bool = False,
 ) -> MultiModelState:
-    """Close the multi-region model at prices (pd, pq, w): derive all quantities and per-region
-    income. ``carbon_cost`` is [r,s] (per-region-sector cost wedge). Income per region = factor
-    income + er·Sf (er=1 in the single-numéraire reduction) + recycled carbon revenue."""
+    """Close the multi-region model at prices (pd, pq, pe, w): derive all quantities and per-region
+    income. ``carbon_cost`` is [r,s]. Income per region = factor income + Sf transfer + recycled
+    carbon revenue. ``strict`` raises on a diverging recycling fixed point (k≥1) at the accepted
+    equilibrium; non-strict clamps it (keeps the residual continuous during the solve)."""
     nr, ns = cal.nr, cal.ns
     cc = np.zeros((nr, ns)) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pv = _va_unit_cost(cal, w)
-    pz = _cet_price(cal, pd)
+    pz = _cet_price(cal, pd, pe)
 
-    # Per-region income closed form (linear in income, like the open model): base = factor income +
-    # foreign-savings transfer; recycled carbon revenue adds k·I. Region incomes couple only through
-    # prices (already fixed here), so each region's income solves independently.
+    # Per-region income: base = factor income + the fixed foreign-savings transfer (Sf valued at the
+    # bilateral prices is exactly the benchmark Sf at benchmark; here we hold Sf at its calibrated
+    # nominal level, consistent with the fixed-Sf closure). Recycled carbon revenue adds k·I.
     factor_income = (w * cal.endowment).sum(axis=0)  # [r]
-    base_income = factor_income + cal.foreign_savings  # er=1 in the single-numéraire reduction
+    base_income = factor_income + cal.foreign_savings  # [r]
     income = base_income.copy()
     if recycling != "none" and np.any(cc != 0.0):
-        # z_unit[r,s] = Z[r,s] at unit income for region r; k[r] = Σ_s cc·z_unit.
         FD_unit = cal.gamma / pq  # per-unit-income FD
-        _, Zc, *_ = _quantities(cal, pd, pq, pz, FD_unit)
+        _, Zc, *_ = _quantities(cal, pd, pq, pe, pz, FD_unit)
         k = (cc * Zc).sum(axis=1)  # [r]
-        k = np.clip(k, None, 1.0 - 1e-9)  # feasibility floor (strict check is at the engine level)
+        if strict and np.any(k >= 1.0 - 1e-12):
+            bad = int(np.argmax(k))
+            raise ValueError(
+                f"multi-region recycling fixed point diverges in region "
+                f"{cal.regions[bad]}: carbon revenue ≥ income (k={k[bad]:.6g} ≥ 1). Lower the "
+                "carbon price."
+            )
+        k = np.clip(k, None, 1.0 - 1e-9)
         income = base_income / (1.0 - k)
 
     FD = cal.gamma * income[:, None] / pq
-    Q, Z, D, EX, M = _quantities(cal, pd, pq, pz, FD)
+    Q, Z, D, EX, M = _quantities(cal, pd, pq, pe, pz, FD)
     carbon_revenue = (cc * Z).sum(axis=1)  # [r]
     va_cost = cal.va_share * pv * Z
     F = _factor_demand(cal, w, pv, va_cost)
     return MultiModelState(
         pd=pd,
         pq=pq,
+        pe=pe,
         pz=pz,
         w=w,
         Z=Z,
@@ -251,6 +278,36 @@ def derive_multi_state(
     )
 
 
+def _unpack(cal, z):
+    """Split the flat unknown vector into (pd, pq, pe, w)."""
+    nr, ns, nf = cal.nr, cal.ns, cal.nf
+    o1 = nr * ns
+    o2 = 2 * nr * ns
+    n_pe = nr * (nr - 1) * ns
+    o3 = o2 + n_pe
+    pd = np.asarray(z[:o1], dtype=float).reshape(nr, ns)
+    pq = np.asarray(z[o1:o2], dtype=float).reshape(nr, ns)
+    pe = _pe_from_flat(cal, np.asarray(z[o2:o3], dtype=float))
+    w = np.asarray(z[o3 : o3 + nf * nr], dtype=float).reshape(nf, nr)
+    return pd, pq, pe, w
+
+
+def _pe_from_flat(cal, flat: np.ndarray) -> np.ndarray:
+    """Expand the packed bilateral prices (routes o→d, o≠d) into a full [o,s,d] array (own
+    slot 1)."""
+    nr, ns = cal.nr, cal.ns
+    pe = np.ones((nr, ns, nr))
+    idx = 0
+    for oi in range(nr):
+        for di in range(nr):
+            if oi == di:
+                continue
+            for si in range(ns):
+                pe[oi, si, di] = flat[idx]
+                idx += 1
+    return pe
+
+
 def residuals(
     cal: MultiCalibratedModel,
     z: np.ndarray,
@@ -260,32 +317,37 @@ def residuals(
     drop_factor: int = 0,
 ) -> np.ndarray:
     nr, ns, nf = cal.nr, cal.ns, cal.nf
-    pd = np.asarray(z[: nr * ns], dtype=float).reshape(nr, ns)
-    pq = np.asarray(z[nr * ns : 2 * nr * ns], dtype=float).reshape(nr, ns)
-    w = np.asarray(z[2 * nr * ns : 2 * nr * ns + nf * nr], dtype=float).reshape(nf, nr)
+    pd, pq, pe, w = _unpack(cal, z)
     cc = np.zeros((nr, ns)) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
 
-    st = derive_multi_state(cal, pd, pq, w, carbon_cost=cc, recycling=recycling)
+    st = derive_multi_state(cal, pd, pq, pe, w, carbon_cost=cc, recycling=recycling)
     pv = _va_unit_cost(cal, w)
-    pz = _cet_price(cal, pd)
+    pz = _cet_price(cal, pd, pe)
 
     res: list[float] = []
-    # 1. Armington price identity: pq = CES cost of (pd_r, {pd_o}).  [nr·ns]
-    pq_id = _armington_price(cal, pd)
+    # 1. Armington price identity: pq = CES cost of (pd_d, {pe[o,s,d]}).  [nr·ns]
+    pq_id = _armington_price(cal, pd, pe)
     res.extend((pq - pq_id).ravel().tolist())
-    # 2. Zero-profit: pz(pd) = Σ_j ax[r,j,i]·pq[r,j] + va_share·pv + cc.  [nr·ns]
+    # 2. Zero-profit: pz(pd,pe) = Σ_j ax[r,j,i]·pq[r,j] + va_share·pv + cc.  [nr·ns]
     for ri in range(nr):
         for ii in range(ns):
             intermediate = float(np.dot(cal.ax[ri, :, ii], pq[ri]))
             res.append(pz[ri, ii] - (intermediate + cal.va_share[ri, ii] * pv[ri, ii] + cc[ri, ii]))
-    # 3. Factor clearing per region-factor, dropping ONE globally by Walras.  [nf·nr − 1]
+    # 3. Bilateral goods-market clearing: import demand = export supply on each route.  [nr(nr−1)ns]
+    for oi in range(nr):
+        for di in range(nr):
+            if oi == di:
+                continue
+            for si in range(ns):
+                res.append(st.M[di, si, oi] - st.EX[oi, si, di])
+    # 4. Factor clearing per region-factor, dropping ONE globally by Walras.  [nf·nr − 1]
     flat = 0
     for fi in range(nf):
         for ri in range(nr):
             if flat != drop_factor:
                 res.append(float(st.F[fi, ri, :].sum()) - cal.endowment[fi, ri])
             flat += 1
-    # 4. Numéraire: region-0 household CPI over its composite good, Π pq[0,s]^γ[0,s] = 1.  [1]
+    # 5. Numéraire: region-0 household CPI over its composite good.  [1]
     cpi0 = float(np.prod(np.power(pq[0], cal.gamma[0])))
     res.append(cpi0 - 1.0)
     return np.array(res, dtype=float)
@@ -293,8 +355,16 @@ def residuals(
 
 def initial_guess(cal: MultiCalibratedModel) -> np.ndarray:
     """Benchmark start: all prices = 1."""
-    return np.ones(2 * cal.nr * cal.ns + cal.nf * cal.nr)
+    return np.ones(n_unknowns(cal))
 
 
 def n_unknowns(cal: MultiCalibratedModel) -> int:
-    return 2 * cal.nr * cal.ns + cal.nf * cal.nr
+    return 2 * cal.nr * cal.ns + cal.nr * (cal.nr - 1) * cal.ns + cal.nf * cal.nr
+
+
+def unpack_state(cal, x, *, carbon_cost=None, recycling="lump_sum", strict=True):
+    """Convenience: derive the model state from a solved unknown vector (used by the engine)."""
+    pd, pq, pe, w = _unpack(cal, x)
+    return derive_multi_state(
+        cal, pd, pq, pe, w, carbon_cost=carbon_cost, recycling=recycling, strict=strict
+    )

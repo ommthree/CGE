@@ -246,12 +246,20 @@ def adapt_pymrio(
         raise ValueError("pymrio A index and columns differ; cannot map to a square IOSystem")
     A = pd.DataFrame(pio.A.to_numpy(dtype=float), index=labels, columns=labels)
 
-    # Reindex final demand onto A's product order explicitly (Y's row order need not match A);
-    # a missing row would be a real alignment error, not a zero.
-    y_by_product = pio.Y.sum(axis=1).reindex(pio.A.index)
-    if y_by_product.isna().any():
+    # Retain final demand BY CONSUMING REGION (review P1: collapsing pymrio's Y consuming-region
+    # columns made it impossible for the open-SAM builder to identify home final demand — it had to
+    # impute the imported share). pymrio's Y columns are (consuming region, FD category); sum the
+    # categories within each consuming region and keep one column per region. Reindex rows onto A's
+    # product order explicitly (Y's row order need not match A); a missing row would be a real
+    # alignment error, not a zero.
+    y_by_region = pio.Y.T.groupby(level=0).sum().T.reindex(pio.A.index)
+    if y_by_region.isna().any().any():
         raise ValueError("final demand (Y) is not aligned with A's products after reindexing")
-    final_demand = pd.DataFrame({"final_demand": y_by_product.to_numpy(dtype=float)}, index=labels)
+    final_demand = pd.DataFrame(
+        y_by_region.to_numpy(dtype=float),
+        index=labels,
+        columns=[str(c) for c in y_by_region.columns],
+    )
 
     sectors, regions = [], []
     for region, sector in pio.A.index:

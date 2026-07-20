@@ -208,17 +208,20 @@ def calibrate_open(
 
     # Foreign savings Sf = Σ M − Σ E at benchmark: the net capital inflow financing a trade deficit
     # (Sf>0 ⇒ imports exceed exports). The rest of the world runs a matching capital account, which
-    # the SAM records as a **ROW → household transfer** of Sf (the inflow the household spends). The
+    # the SAM records as a capital transfer in the direction of the flow: **ROW → household** for a
+    # deficit (the inflow the household spends), **household → ROW** for a surplus (home lending
+    # abroad) — review P1: reading only the ROW→HOH cell rejected every valid exporter SAM. The
     # closure fixes Sf at this benchmark level (a standard small-open-economy closure); household
     # income carries er·Sf (see model_open.derive_open_state) so the model replicates a
-    # non-zero current account exactly. We read the transfer from the SAM and check it equals Sf, so
-    # a mis-specified ROW account (transfer ≠ net trade) is caught rather than silently producing a
-    # non-replicating benchmark.
+    # non-zero current account exactly. We read the NET transfer from the SAM and check it equals
+    # Sf, so a mis-specified ROW account (transfer ≠ net trade) is caught rather than silently
+    # producing a non-replicating benchmark.
     foreign_savings = float(M0.sum() - E0.sum())
-    row_transfer = float(m.loc[household, "ROW"]) / scale  # ROW → HOH capital transfer (normalised)
+    # Net ROW → HOH capital transfer (normalised): inflow cell minus outflow cell.
+    row_transfer = float(m.loc[household, "ROW"] - m.loc["ROW", household]) / scale
     if abs(row_transfer - foreign_savings) > 1e-6 * max(1.0, abs(foreign_savings)):
         raise ValueError(
-            f"open SAM's ROW→household transfer ({row_transfer:.6g}) must equal net foreign "
+            f"open SAM's net ROW↔household transfer ({row_transfer:.6g}) must equal net foreign "
             f"savings Σimports−Σexports ({foreign_savings:.6g}); the rest-of-world capital account "
             "does not balance the current account. Check the SAM's ROW row/column."
         )

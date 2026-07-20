@@ -128,7 +128,11 @@ clean — not just a shrinking economy. "Toy but honest": *precise about structu
 magnitudes*. It also runs as an **open economy** (Armington imports + CET exports + a rest-of-world
 account): a carbon price then causes textbook **carbon leakage** — the dirty sector's output falls,
 its imports rise and its exports fall — with a **CES value-added nest** and **elasticity sensitivity
-sweeps**. Still to come: true multiple regions with bilateral trade.
+sweeps**. It also runs as a **true multi-region economy** with bilateral trade between build
+regions — each trade route has its own destination-specific price, every bilateral market clears
+explicitly, and a carbon price in one region relocates production and raises imports from partners
+(cross-region leakage). Still to come: an IOSystem-driven multi-region SAM build (today it requires
+a supplied SAM).
 → [`docs/models/cge-static.md`](models/cge-static.md) (equation-level) · **plan:**
 [`docs/phase-5-plan.md`](phase-5-plan.md).
 

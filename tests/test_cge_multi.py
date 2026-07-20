@@ -24,16 +24,12 @@ def _cal(**kw):
 
 
 def _solve(cal, carbon_cost=None):
-    nr, ns, nf = cal.nr, cal.ns, cal.nf
     sol = solve(
         lambda z: MM.residuals(cal, z, carbon_cost=carbon_cost, recycling="lump_sum"),
         MM.initial_guess(cal) * 1.03,
         prefer="scipy",
     )
-    pd = sol.x[: nr * ns].reshape(nr, ns)
-    pq = sol.x[nr * ns : 2 * nr * ns].reshape(nr, ns)
-    w = sol.x[2 * nr * ns :].reshape(nf, nr)
-    st = MM.derive_multi_state(cal, pd, pq, w, carbon_cost=carbon_cost, recycling="lump_sum")
+    st = MM.unpack_state(cal, sol.x, carbon_cost=carbon_cost, recycling="lump_sum")
     return sol, st
 
 
@@ -105,6 +101,44 @@ def test_multi_carbon_price_causes_cross_region_leakage():
     assert shk.Z[1, 0] > base.Z[1, 0]  # South BRD output rises (production relocates)
 
 
+def test_multi_bilateral_markets_clear_under_shock():
+    """THE correctness test the earlier design failed: at the SHOCKED equilibrium every bilateral
+    goods market clears (import demand M[d,s,o] = export supply EX[o,s,d]) — the equations the
+    law-of-one-price reduction omitted, which let a machine-zero solver residual coexist with a 15%
+    trade imbalance."""
+    cal = _cal()
+    cc = np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3
+    _s, st = _solve(cal, carbon_cost=cc)
+    max_disc = 0.0
+    for d in range(cal.nr):
+        for o in range(cal.nr):
+            if d != o:
+                max_disc = max(max_disc, float(np.max(np.abs(st.M[d, :, o] - st.EX[o, :, d]))))
+    assert max_disc < 1e-8, f"bilateral market not cleared: {max_disc:.2e}"
+
+
+def test_multi_all_factor_markets_clear_under_shock():
+    """Every regional factor market clears at the shocked equilibrium (the one dropped by Walras
+    included) — the earlier design left the dropped market ~0.7% off."""
+    cal = _cal()
+    cc = np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3
+    _s, st = _solve(cal, carbon_cost=cc)
+    for fi in range(cal.nf):
+        for ri in range(cal.nr):
+            gap = abs(float(st.F[fi, ri, :].sum()) - cal.endowment[fi, ri])
+            assert gap < 1e-8, f"factor {fi} region {ri} market not cleared: {gap:.2e}"
+
+
+@pytest.mark.parametrize("bad", [-2.0, 0.0])
+def test_multi_trade_elasticity_must_be_positive(bad):
+    with pytest.raises(ValueError, match="positive"):
+        calibrate_multi(
+            toy_multi_sam(), regions=REGIONS, sectors=SECTORS, factors=_FACTORS, arm_elast=bad
+        )
+
+
 def test_multi_trade_elasticity_one_rejected():
     with pytest.raises(ValueError, match="must be ≠ 1"):
         calibrate_multi(
@@ -122,7 +156,7 @@ def test_engine_dispatches_to_multi_region():
     assert "multi-region" in res.manifest.assumptions["model_variant"]
     assert sorted(res.data["region"].unique()) == ["N", "S"]
     # Per-region GDP and factor prices are emitted.
-    assert (res.data["variable"] == "gdp_change_real").sum() == len(REGIONS)
+    assert (res.data["variable"] == "real_consumption_change").sum() == len(REGIONS)
 
 
 def test_engine_multi_region_cross_region_leakage():

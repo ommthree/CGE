@@ -197,9 +197,10 @@ def _build_open_sam(exports: dict, imports: dict, domestic: dict) -> SAM:
     ``exports``/``imports``/``domestic`` are per-sector money flows; value added is the residual of
     activity output over intermediate purchases, split 50/50, and household final demand is the
     residual of each commodity's supply over its intermediate use. When aggregate imports ≠ exports
-    (a non-zero current account), the ROW account is balanced by a **ROW→HOH capital transfer**
-    equal to the net capital inflow (Σ imports − Σ exports) — so the matrix balances for *any* trade
-    inputs, including Sf ≠ 0, and the household spends that inflow."""
+    (a non-zero current account), the ROW account is balanced by a capital transfer **in the
+    direction of the flow**: ROW→HOH for a trade deficit (the household spends the inflow), HOH→ROW
+    for a trade surplus (home lends abroad) — so the matrix balances for *any* trade inputs,
+    including Sf ≠ 0 of either sign, with no negative cells."""
     accounts = ["a_BRD", "a_MIL", "c_BRD", "c_MIL", "CAP", "LAB", "HOH", "ROW"]
     inter = {("c_MIL", "a_BRD"): 24.0, ("c_BRD", "a_MIL"): 15.0}
     m = pd.DataFrame(0.0, index=accounts, columns=accounts)
@@ -215,8 +216,13 @@ def _build_open_sam(exports: dict, imports: dict, domestic: dict) -> SAM:
         va = output - ii
         m.loc["CAP", f"a_{s}"] = va / 2.0
         m.loc["LAB", f"a_{s}"] = va / 2.0
-    # Net capital inflow that finances a trade deficit (0 when trade is balanced): ROW → HOH.
-    m.loc["HOH", "ROW"] = sum(imports.values()) - sum(exports.values())
+    # Net capital transfer in the direction of the flow (review P1): deficit → ROW→HOH inflow;
+    # surplus → HOH→ROW outflow. Both representations keep every cell non-negative.
+    sf = sum(imports.values()) - sum(exports.values())
+    if sf >= 0:
+        m.loc["HOH", "ROW"] = sf
+    else:
+        m.loc["ROW", "HOH"] = -sf
     for s in _SECTORS:
         m.loc[f"c_{s}", "HOH"] = m[f"c_{s}"].sum() - m.loc[f"c_{s}"].sum()
     m.loc["HOH", "CAP"] = m.loc["CAP", ["a_BRD", "a_MIL"]].sum()
@@ -317,7 +323,7 @@ def test_open_nonzero_foreign_savings_replicates():
 
 
 def test_open_row_transfer_must_match_net_trade():
-    """The SAM's ROW→household transfer must equal net foreign savings (Σimports−Σexports); a
+    """The SAM's net ROW↔household transfer must equal net foreign savings (Σimports−Σexports); a
     mismatched ROW capital account is rejected rather than silently non-replicating."""
     sam = _build_open_sam(
         exports={"BRD": 20.0, "MIL": 10.0},
@@ -326,8 +332,30 @@ def test_open_row_transfer_must_match_net_trade():
     )
     sam.matrix.loc["HOH", "ROW"] += 5.0  # break the ROW capital-account balance
     sam.matrix.loc["HOH", "CAP"] -= 5.0  # keep the matrix balanced overall
-    with pytest.raises(ValueError, match="ROW→household transfer"):
+    with pytest.raises(ValueError, match="household transfer"):
         calibrate_open(sam, sectors=_SECTORS, factors=_FACTORS)
+
+
+def test_open_export_surplus_replicates():
+    """P1 regression: an EXPORTER economy (Σ exports 40 > Σ imports 30 ⇒ Sf = −10, closed by a
+    household → ROW capital outflow — a positive HOH→ROW cell, no negative entries) calibrates and
+    replicates its benchmark. The earlier code wrote the signed Sf into the ROW→HOH cell, so every
+    valid trade-surplus SAM either carried a negative cell or was rejected by the transfer check."""
+    sam = _build_open_sam(
+        exports={"BRD": 22.0, "MIL": 18.0},  # Σ exports 40 > Σ imports 30 → Sf = −10
+        imports={"BRD": 20.0, "MIL": 10.0},
+        domestic={"BRD": 80.0, "MIL": 110.0},
+    )
+    assert is_balanced(sam.matrix, tol=1e-9)
+    assert sam.matrix.to_numpy().min() >= 0.0  # the surplus closure adds no negative cell
+    assert sam.matrix.loc["ROW", "HOH"] == pytest.approx(10.0)  # home lends abroad
+    cal = calibrate_open(sam, sectors=_SECTORS, factors=_FACTORS)
+    assert cal.foreign_savings < 0  # net capital outflow
+    sol, st = _solve(cal)
+    assert np.allclose(sol.x, 1.0, atol=1e-6)  # benchmark prices + er = 1
+    assert np.allclose(st.Z, cal.Z0, atol=1e-6)
+    assert np.allclose(st.E, cal.E0, atol=1e-6)
+    assert np.allclose(st.FD, cal.FD0, atol=1e-6)
 
 
 def test_open_zero_import_sector_arm_below_one_warning_free():

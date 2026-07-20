@@ -174,6 +174,154 @@ def test_engine_runs_on_real_build_via_runner(small_build_io):
     assert {"SAM", "EffectiveCarbonCostShare", "SatelliteAccount"} <= input_names
 
 
+def test_build_open_sam_both_home_regions_and_surplus_closure(small_build_io):
+    """P1 regressions, both at once. (1) Export-surplus closure: the surplus region builds a VALID
+    open SAM — the surplus is closed by a household → ROW outflow cell, not a negative ROW → HOH
+    entry (previously the surplus region failed the non-negativity gate). (2) Measured home final
+    demand: with FD retained by consuming region the two single-region reductions are MIRROR
+    images — A's exports equal B's imports and vice versa — which the imputed construction could
+    not achieve. Both regions run end-to-end and replicate on a zero shock."""
+    from cge.data.sam import build_open_sam
+    from cge.engines.cge_static.engine import CGEStaticEngine
+
+    io, _store, _bid = small_build_io
+    trade = {}
+    for home in ("A", "B"):
+        sam, report, sectors = build_open_sam(io, home_region=home)
+        assert report.passed
+        m = sam.matrix
+        assert m.to_numpy().min() >= 0.0  # no negative cells either way round
+        assert any(
+            c.name == "open_fd_attribution" and c.severity.value == "pass" for c in report.checks
+        )  # measured, not imputed
+        trade[home] = (
+            sum(m.loc[f"a_{s}", "ROW"] for s in sectors),  # exports
+            sum(m.loc["ROW", f"c_{s}"] for s in sectors),  # imports
+            float(m.loc["HOH", "ROW"]),
+            float(m.loc["ROW", "HOH"]),
+        )
+        res = CGEStaticEngine().run(
+            data={"IOSystem": io, "open_home_region": home},
+            shocks=[CarbonPrice(price=0.0)],
+            years=[2020],
+        )
+        assert res.data["value"].abs().max() < 1e-6  # zero-shock replication
+    # Mirror consistency: one region's exports are the other's imports (measured attribution).
+    assert trade["A"][0] == pytest.approx(trade["B"][1], rel=1e-6)
+    assert trade["B"][0] == pytest.approx(trade["A"][1], rel=1e-6)
+    # The surplus region lends abroad (HOH→ROW cell), the deficit region receives (ROW→HOH) —
+    # exactly one direction populated on each side.
+    (ea, ma, in_a, out_a), (eb, mb, in_b, out_b) = trade["A"], trade["B"]
+    assert ea > ma and out_a > 0 and in_a == 0.0  # A: surplus → outflow
+    assert mb > eb and in_b > 0 and out_b == 0.0  # B: deficit → inflow
+
+
+def test_build_open_sam_imputed_fd_is_explicit(small_build_io):
+    """P1: a legacy build with only an AGGREGATE final-demand column still builds (the documented
+    import-share imputation), but the synthetic construction is EXPLICIT — a WARN quality check and
+    a provenance note — rather than silent."""
+    from cge.contracts.data_objects import IOSystem
+    from cge.data.sam import build_open_sam
+
+    io, _store, _bid = small_build_io
+    legacy = IOSystem(
+        provenance=io.provenance,
+        sectors=io.sectors,
+        regions=io.regions,
+        price_basis=io.price_basis,
+        currency=io.currency,
+        unit=io.unit,
+        A=io.A,
+        final_demand=io.final_demand.sum(axis=1).to_frame("final_demand"),  # collapse the split
+    )
+    assert legacy.fd_by_region() is None
+    sam, report, _sectors = build_open_sam(legacy, home_region="A")
+    check = next(c for c in report.checks if c.name == "open_fd_attribution")
+    assert check.severity.value == "warn"  # synthetic → visible, not hidden
+    assert "imputed" in check.message
+    assert "SYNTHETIC" in sam.provenance.notes
+
+
+# -- IO-backed OPEN path: effective carbon cost (review P0: price was applied twice) ----------
+def _run_open_io(small_build_io, shocks, years):
+    from cge.engines.cge_static.engine import CGEStaticEngine
+
+    io, store, bid = small_build_io
+    sat = store.load(bid)["SatelliteAccount"]
+    return CGEStaticEngine().run(
+        data={"IOSystem": io, "SatelliteAccount": sat, "open_home_region": "A"},
+        shocks=shocks,
+        years=years,
+    )
+
+
+def test_open_io_carbon_cost_linear_in_price(small_build_io):
+    """THE P0 regression: on the IO-backed open path the response is ~linear in the carbon price.
+    The double-application bug multiplied the price twice, so doubling the price QUADRUPLED the
+    (small) response; with the fix the ratio is ~2."""
+    r50 = _run_open_io(small_build_io, [CarbonPrice(price=50.0)], [2020])
+    r100 = _run_open_io(small_build_io, [CarbonPrice(price=100.0)], [2020])
+
+    def _max_price(res):
+        d = res.data
+        return d[d["variable"] == "price_change"]["value"].abs().max()
+
+    ratio = _max_price(r100) / _max_price(r50)
+    assert abs(ratio - 2.0) < 0.05, f"response not linear in price: ratio={ratio:.3f}"
+
+
+def test_open_io_price_path_zero_then_positive(small_build_io):
+    """A price PATH is honoured per year on the IO-backed open path: a year priced at zero
+    replicates the benchmark while a later positive year moves it."""
+    res = _run_open_io(
+        small_build_io, [CarbonPrice(price=0.0, path={2020: 0.0, 2030: 100.0})], [2020, 2030]
+    )
+    d = res.data
+    assert d[d["year"] == 2020]["value"].abs().max() < 1e-7  # unpriced year replicates
+    assert d[d["year"] == 2030]["value"].abs().max() > 0  # priced year responds
+
+
+def test_open_io_gas_selection_and_multi_shock_composition(small_build_io):
+    """Gas selection is HONOURED on the IO-backed open path (carbon_cost_vector applies it), not
+    rejected like on the supplied-SAM path: gases=['CO2e'] runs, and — because the fixture's CO2e
+    row equals its CO2 row — reproduces the CO2 result exactly (it read the requested row). Two
+    stacked shocks compose: the effective cost doubles, so the near-linear response ~doubles."""
+    r_co2 = _run_open_io(small_build_io, [CarbonPrice(price=100.0)], [2020])
+    r_co2e = _run_open_io(small_build_io, [CarbonPrice(price=100.0, gases=["CO2e"])], [2020])
+    v1 = r_co2.data[r_co2.data["variable"] == "price_change"]["value"].to_numpy()
+    v2 = r_co2e.data[r_co2e.data["variable"] == "price_change"]["value"].to_numpy()
+    assert np.allclose(v1, v2, atol=1e-12)  # identical intensity rows → identical result
+
+    r_two = _run_open_io(
+        small_build_io, [CarbonPrice(price=100.0), CarbonPrice(price=100.0)], [2020]
+    )
+
+    def _max_price(res):
+        d = res.data
+        return d[d["variable"] == "price_change"]["value"].abs().max()
+
+    ratio = _max_price(r_two) / _max_price(r_co2)
+    assert abs(ratio - 2.0) < 0.05, f"shocks do not compose: ratio={ratio:.3f}"
+
+
+def test_open_io_coverage_honoured(small_build_io):
+    """Spatial coverage is honoured on the IO-backed open path: pricing only the OTHER region
+    leaves the home economy unpriced (benchmark replication), and an unknown coverage label is
+    rejected up front rather than silently pricing nothing."""
+    res = _run_open_io(small_build_io, [CarbonPrice(price=100.0, coverage_regions=["B"])], [2020])
+    assert res.data["value"].abs().max() < 1e-7  # home region A is outside the coverage
+    with pytest.raises(ValueError, match="coverage"):
+        _run_open_io(small_build_io, [CarbonPrice(price=100.0, coverage_regions=["ZZ"])], [2020])
+
+
+def test_open_io_manifest_records_effective_cost_and_satellite(small_build_io):
+    """The IO-backed open manifest carries the hashed effective carbon-cost matrix (price-included,
+    named EffectiveCarbonCost — not the share) AND the SatelliteAccount identity (review P1)."""
+    res = _run_open_io(small_build_io, [CarbonPrice(price=100.0)], [2020])
+    input_names = {i.get("name") for i in res.manifest.assumptions["inputs"]}
+    assert {"SAM", "EffectiveCarbonCost", "SatelliteAccount"} <= input_names
+
+
 def test_zero_shock_replicates_on_real_build(small_build_io):
     from cge.runner import run_scenario
     from cge.scenarios.loader import Scenario

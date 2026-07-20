@@ -107,7 +107,18 @@ def aggregate_io(
         A_agg = np.where(x_agg[np.newaxis, :] > 0, Z_agg / x_agg[np.newaxis, :], 0.0)
 
     A_agg_df = pd.DataFrame(A_agg, index=target_labels, columns=target_labels)
-    fd_agg_df = pd.DataFrame({"final_demand": f_agg}, index=target_labels)
+    # Final demand: when the build carries the per-consuming-region split (review P1 — the open-SAM
+    # builder needs it), aggregate BOTH axes: producing labels through B, consuming-region columns
+    # through the region bridge. Otherwise keep the legacy single aggregate column.
+    fd_region = io.fd_by_region()
+    if fd_region is not None:
+        source_regions = list(fd_region.columns)
+        Br = bridge_matrix(region_cmap, source_regions)  # target_region × source_region
+        F = fd_region.reindex(labels).fillna(0.0).to_numpy(dtype=float)
+        F_agg = B @ F @ Br.to_numpy(dtype=float).T
+        fd_agg_df = pd.DataFrame(F_agg, index=target_labels, columns=list(Br.index))
+    else:
+        fd_agg_df = pd.DataFrame({"final_demand": f_agg}, index=target_labels)
 
     tr_sectors: list[str] = []
     tr_regions: list[str] = []

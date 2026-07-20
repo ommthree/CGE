@@ -429,3 +429,108 @@ why the reviewer would not yet call such runs safe. All fixed; still engine `cge
 **Verification:** 236 pytest passed / 5 skipped; `cge validate` 47/47; ruff check + format clean.
 **Remaining (deferred, larger effort):** true multi-region with bilateral trade, a
 non-zero-foreign-savings ROW closure, and a live-EXIOBASE open-SAM build.
+
+## Eighth review round (2026-07) — multi-region redesign + IO double-price fix (fixed)
+
+An independent validation-agent review of HEAD `bb54a1d` found two release-blocking P0s and
+several P1/P2s. Both P0s were verified genuine against current code before any fix; per the
+review's own ordering, the multi-region redesign was done first, then the double-price fix, then
+the rest, then this documentation reconciliation last.
+
+### P0 (fixed)
+
+- **The multi-region model did not clear bilateral trade or the factor market dropped by Walras.**
+  The earlier law-of-one-price reduction (`pd[r,s]` shared by domestic and export sales, CET
+  allocating *quantities* only) let a machine-zero solver residual coexist with a ~15.2% bilateral
+  trade discrepancy and a ~0.70% gap on the dropped factor market — the advertised South-production
+  increase and cross-region leakage could have been an artefact of unbalanced demand and supply,
+  not a genuine equilibrium. **Redesigned model_multi.py**: every trade route carries its own
+  **destination-specific price** `pe[o,s,d]`; the Armington composite and CET transform are each
+  CES duals over domestic + every partner's route price; import demand `M` and export supply `EX`
+  are computed **separately** from their duals and reconciled by an **explicit bilateral
+  market-clearing residual** `M[d,s,o]=EX[o,s,d]` for every `o≠d`, added to the square system
+  (`2·nr·ns + nr·(nr−1)·ns + nf·nr` unknowns/residuals). Post-fix: bilateral discrepancy
+  2.08e-17 (was 15.2%), every factor market gap 0 (was 0.70%). New standing checks
+  (`test_multi_bilateral_markets_clear_under_shock`, `test_multi_all_factor_markets_clear_under_shock`,
+  and `multi_region_markets_clear_under_shock` in the `cge validate` suite) assert both under a
+  live carbon shock, not just at the benchmark.
+- **The IO-backed open-economy path applied the carbon price twice.** `carbon_cost_vector`
+  (Engine 1's per-year cost builder) already multiplies price × intensity × 1e-6; the multi-region
+  and open IO paths stuffed that finished cost into `carbon_cost_share` and then let `_run_open`
+  re-multiply by the price, quadrupling the response to a doubled price instead of doubling it.
+  Fixed by carrying an **effective per-year cost dict** (`{year: cc[ns]}`, already price-included)
+  end-to-end from `_open_effective_cc_from_io` through `_run_open`, which now consumes it verbatim
+  with an explicit "do NOT re-multiply" guard at the point of use. Verified: response ratio at
+  price=100 vs price=50 is 2.000 (was ~4 with the bug). The gas/coverage rejection loop that
+  previously ran unconditionally in `_run_open` (correct for a supplied dimensionless share, wrong
+  for the IO path, which **honours** gases/coverage/paths via `carbon_cost_vector`) is now gated on
+  whether the run is IO-backed; new regression tests pin price linearity, a price path that starts
+  at zero and later goes positive, gas selection (`gases=["CO2e"]`) matching the CO2 result on the
+  fixture's identical intensity rows, two stacked shocks doubling the response, coverage excluding
+  the home region replicating the benchmark, an unknown coverage label being rejected, and the
+  manifest carrying both `EffectiveCarbonCost` and the `SatelliteAccount` identity.
+
+### P1 (fixed)
+
+- **Multi-region omitted the universal post-calibration replication gate** the closed/open models
+  already had (refusing a balanced-but-uncalibratable SAM topology). Added
+  `_assert_multi_replicates`, called after the benchmark solve, checking prices, `Z`, `D`, `M`,
+  `EX`, `FD`, and `F` against the calibrated benchmark.
+- **Multi-region manifest recorded only the SAM identity** (two runs with carbon shares 0.1 vs 0.3
+  produced identical manifests) **and inherited a false "law of one price" assumption string from
+  the closed/open models.** The manifest now includes a hashed `EffectiveCarbonCostMatrix` input,
+  restores the `SatelliteAccount` identity on the IO-backed path, and `model_variant`/`trade`/
+  `closure` describe the actual destination-specific-price, explicit-bilateral-clearing,
+  no-exchange-rate/no-external-ROW/one-dropped-factor-market closure.
+- **A non-zero current account only worked for import deficits.** `build_open_sam` wrote the signed
+  net foreign savings `Sf=ΣM−ΣE` into a single `HOH→ROW` cell, so an export-surplus region (`Sf<0`)
+  produced a **negative SAM cell** and failed the non-negativity quality gate outright — every valid
+  exporter economy was unusable. Fixed to write the transfer **in the direction of the flow**:
+  `HOH→ROW` for a deficit, `ROW→HOH` for a surplus, both non-negative; `calibrate_open` now reads
+  the **net** transfer (inflow cell minus outflow cell) rather than assuming one direction. Verified
+  on the test build's other home region (`B`, an exporter): builds, passes quality, calibrates, and
+  replicates.
+- **The open-SAM builder could not identify home final demand**, because the EXIOBASE adapter
+  collapsed pymrio's `Y` consuming-region columns into one aggregate column — the imported share of
+  home final demand had to be *imputed* from the intermediate-use import ratio rather than measured.
+  Extended the harmonised data contract: `IOSystem.final_demand` may now carry **one column per
+  consuming region** (`fd_by_region()` exposes the split when present; every existing consumer that
+  only wants totals is unaffected, since `.sum(axis=1)` still works). The adapter now retains the
+  per-region split; `aggregate_io` aggregates it through the region bridge on top of the existing
+  producing-label bridge; `build_open_raw_sam` uses it when present for an **exact** home-final-demand
+  and import attribution, falling back to the documented imputation on legacy builds. Both paths are
+  explicit in provenance and the quality report: a new `open_fd_attribution` check is PASS
+  ("measured") or WARN ("imputed_import_share (synthetic: ...)"), and the SAM's provenance notes
+  record which attribution was used. Verified: on the test build, the two single-region reductions
+  (home=A, home=B) are now **exact mirror images** (A's exports equal B's imports and vice versa) —
+  something the imputed construction could not guarantee.
+- **Multi-region's `gdp_change_real` was current-price consumption mislabelled as real GDP**
+  (already fixed in an earlier pass this round, retained here for the record): renamed to
+  `real_consumption_change`, a base-price (Laspeyres) household-consumption index — documented as
+  NOT production-side real GDP, since only region 0's CPI is pinned.
+
+### P2 (fixed)
+
+- Multi-region's trade elasticities (`arm_elast`/`cet_elast`) now go through the same strict
+  `_elast_vector` validation as closed/open (finite, positive, correct shape) — negative or zero
+  elasticities are rejected with a clear error instead of silently producing nonsense CES/CET
+  scales.
+- Multi-region's recycling mode is validated the same way as closed/open: an unsupported mode
+  raises; a `none` request on a positive-revenue scenario is recorded as
+  `recycling_defaulted_from_none` rather than silently collapsing.
+- **Documentation reconciled last** (per the review's explicit ordering), only after the P0/P1 gates
+  above passed: `docs/user-guide.md` no longer calls Cobb-Douglas value added "fixed proportions"
+  (that's Leontief; Cobb-Douglas has unit elasticity of substitution) and its multi-region section
+  now names `real_consumption_change` and describes destination-specific prices instead of the
+  law of one price; `README.md`, `docs/overview.md`, and `docs/models/cge-static.md` (header, §8a,
+  and the "not yet modelled" line) now describe multi-region as implemented with bilateral clearing
+  rather than "pending"; `roadmap.md`'s Phase 5 status no longer says the multi-region model
+  "currently law-of-one-price" and separates the still-pending items (IOSystem-driven multi-region
+  SAM build, per-cell trade elasticities) from what this round completed.
+
+**Verification:** 268 pytest passed / 5 skipped; `cge validate` 51/51; ruff check + format clean.
+Engine version bumped `0.5.0` → `0.5.1` (multi-region equation redesign + IO carbon-cost fix are
+behavior-changing).
+**Remaining (deferred, larger effort):** an IOSystem-driven multi-region SAM build (the multi-region
+model still requires a supplied SAM); per-cell (rather than uniform) trade elasticities; a
+live-EXIOBASE SAM build for all three CGE variants.

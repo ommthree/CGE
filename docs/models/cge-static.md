@@ -1,27 +1,33 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.5.0)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.5.1)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
-- **Status:** implemented as the **correctness-first pilot** with **revenue recycling**, in two
-  variants sharing one engine: a **closed** single-region economy and an **open** economy
-  (Armington imports + CET exports + a rest-of-world account, CES value added, an endogenous
-  exchange rate), selected automatically when the SAM carries a `ROW` account (§8). The closed
+- **Status:** implemented as the **correctness-first pilot** with **revenue recycling**, in three
+  variants sharing one engine: a **closed** single-region economy, an **open** economy (Armington
+  imports + CET exports + a rest-of-world account, CES value added, an endogenous exchange rate),
+  and a **multi-region** economy with true bilateral trade among the build's own regions (§8a),
+  selected automatically from the SAM's account structure — a `ROW` account selects open (§8);
+  several region-tagged households and region-prefixed activities select multi-region. The closed
   model calibrates to a hand-checkable 2-sector SAM *and* to a SAM built from an aggregated
-  **EXIOBASE-shaped** build (§5a); the open model calibrates to a hand-checkable open SAM. All pass
+  **EXIOBASE-shaped** build (§5a); the open model calibrates to a hand-checkable open SAM *and* to
+  one built from an EXIOBASE-shaped IOSystem; the multi-region model calibrates to a hand-checkable
+  multi-region SAM (an IOSystem-driven multi-region build is a remaining sub-phase — §8a). All pass
   the standard CGE correctness battery (benchmark replication, homogeneity, Walras) plus the
-  recycling-effect checks, with theory-consistent carbon-price responses; the open model
-  additionally exhibits **carbon leakage** (`cge_static` validation suite).
+  recycling-effect checks, with theory-consistent carbon-price responses; the open and multi-region
+  models additionally exhibit **carbon leakage** (`cge_static` validation suite), and the
+  multi-region model clears every bilateral trade route and factor market under shock, not just at
+  the benchmark.
   **Honest scope note:** the automated build/validation uses the **offline pymrio *test* MRIO**
   (an EXIOBASE-shaped fixture), *not* live EXIOBASE — the live-data suite currently exercises only
   the adapter and Engine 1. A live-EXIOBASE CGE gate is a follow-up. The open CGE also builds its
   SAM from an EXIOBASE-shaped **IOSystem** (`build_open_sam`: a home region + rest-of-world, with
   Armington import / CET export / ROW accounts derived from the MRIO's inter-regional blocks) and
   replicates that built benchmark to machine precision — the `open_replicates_on_built_sam` gate.
-  **True multiple regions** (bilateral trade between build regions — the open model is single
-  region + RoW) and a **non-zero foreign-savings closure** (the pilot requires a balanced current
-  account) are the remaining sub-phases; magnitudes are illustrative.
+  A **live-EXIOBASE** SAM build for all three variants, an **IOSystem-driven multi-region SAM
+  build**, and **per-cell (rather than uniform) trade elasticities** are the remaining sub-phases;
+  magnitudes are illustrative.
 
 ## 1. Purpose & scope
 
@@ -37,10 +43,10 @@ factor endowments, CPI numéraire, a carbon price as a per-unit emissions cost w
 Armington imports and CET exports with a rest-of-world account — chosen automatically when the SAM
 carries a `ROW` account.
 
-**Not yet modelled:** multiple regions (single region + RoW only), savings/investment dynamics,
-heterogeneous households, and a distortionary labour-tax wedge (so the "double-dividend" channel
-that would distinguish labour-tax-cut from lump-sum recycling in a *single*-household model). These
-are the documented next sub-phases.
+**Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today),
+savings/investment dynamics, heterogeneous households, and a distortionary labour-tax wedge (so the
+"double-dividend" channel that would distinguish labour-tax-cut from lump-sum recycling in a
+*single*-household model). These are the documented next sub-phases.
 
 ## 2. Notation
 
@@ -316,20 +322,39 @@ a closed global economy of ``R`` regions that trade bilaterally (`toy_multi_sam`
   ``d≠r``;
 - **region-specific, immobile** factors and its own household.
 
-Bilateral consistency holds at the benchmark: region ``d``'s import of ``s`` from ``o`` equals
-region ``o``'s export of ``s`` to ``d``. Foreign savings per region ``Sf[r]=ΣM−ΣE`` is fixed at
-benchmark and globally zero-sum (financed by household capital transfers).
+**Price convention.** Every trade route has its own **destination-specific price** ``pe[o,s,d]`` —
+there is no law-of-one-price reduction. The Armington composite in destination ``d`` is a CES over
+domestic ``pd[d,s]`` and imports at ``pe[o,s,d]`` for every origin ``o``; the CET transform in
+origin ``o`` is a CES-dual over domestic ``pd[o,s]`` and exports at ``pe[o,s,d]`` for every
+destination ``d``. Import demand ``M[d,s,o]`` and export supply ``EX[o,s,d]`` are computed
+separately from their respective duals and reconciled by an **explicit bilateral market-clearing
+residual** ``M[d,s,o]=EX[o,s,d]`` for every ``o≠d`` — the equation set an earlier reduction omitted,
+which let a machine-zero solver residual coexist with a double-digit-percent trade imbalance. The
+unknowns are ``pd[r,s]``, ``pq[r,s]`` (composite price), the packed bilateral route prices
+``pe[o,s,d]`` (one direction per unordered pair, own-region slot fixed at 1), and ``w[f,r]`` — a
+square system of ``2·nr·ns + nr·(nr−1)·ns + nf·nr`` (domestic-market clearing solved algebraically;
+one global CPI numéraire; one factor market dropped by Walras). Foreign savings per region
+``Sf[r]=ΣM−ΣE`` is fixed at benchmark and globally zero-sum (financed by household capital
+transfers); there is no exchange rate and no external rest-of-world — trade is entirely among the
+build's own regions.
 
-**Price convention.** The first implementation uses the **law of one price**: a producer's domestic
-and export price coincide (``pd[r,s]``), and the CET allocates *quantities* between domestic sales
-and exports; a separate border/export price is a documented refinement. The unknowns are
-``pd[r,s]``, ``pq[r,s]`` (composite price), ``w[f,r]`` — a square system of ``2·nr·ns + nf·nr`` (one
-global CPI numéraire, one factor market dropped by Walras; composite-market clearing solved
-algebraically). It **replicates its benchmark to machine precision** — every bilateral import and
-export returns to the SAM values — and produces the signature result: a carbon price in **one**
-region cuts that region's output, **raises its imports from partner regions** (cross-region carbon
-leakage) and **raises partners' output** of that good. Results are **region-tagged**. Validation:
-`multi_region_benchmark_replication`, `multi_region_cross_region_leakage`.
+It **replicates its benchmark to machine precision** — every bilateral import and export returns to
+the SAM values (`multi_region_benchmark_replication`, plus the universal post-calibration
+replication gate shared with the closed/open variants) — and **clears every bilateral goods market
+and every factor market under shock**, not just at the benchmark
+(`multi_region_markets_clear_under_shock`). It produces the signature result: a carbon price in
+**one** region cuts that region's output, **raises its imports from partner regions** (cross-region
+carbon leakage) and **raises partners' output** of that good
+(`multi_region_cross_region_leakage`). Results are **region-tagged**, and the manifest records the
+hashed effective carbon-cost matrix plus the SAM/SatelliteAccount identity so two runs that differ
+only in carbon shares or recycling mode produce distinct manifests. The emitted
+``real_consumption_change`` is a base-price (Laspeyres) household-consumption index, not
+production-side real GDP (only region 0's CPI is pinned, so ``pq·FD`` off that region is not a
+valid deflation).
+
+**Remaining sub-phases:** an IOSystem-driven multi-region SAM build (today the multi-region variant
+requires a supplied SAM — see §5a for the single-region open economy, which does have an
+IOSystem build) and per-cell (rather than uniform) trade elasticities.
 
 ## 9. Honest expectations
 

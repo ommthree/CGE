@@ -363,8 +363,11 @@ above, made concrete), and `none` reports that it defaulted to `lump_sum`.
 
 ### 7c — Factor substitution: the CES value-added nest
 
-In 7a the sectors combined capital and labour in **fixed proportions** (Cobb-Douglas with unit
-elasticity). Real firms **substitute**: if capital gets relatively cheaper, they use more of it. The
+In 7a the sectors combined capital and labour **Cobb-Douglas** (unit elasticity of substitution —
+*not* fixed proportions; that's a stronger assumption called Leontief, where the factor ratio
+never moves regardless of relative prices). Real firms can substitute **more or less easily than
+Cobb-Douglas's unit elasticity**: if capital gets relatively cheaper, how much more of it they use
+depends on that elasticity. The
 CGE captures this with a **CES (constant-elasticity-of-substitution) value-added nest**, governed by
 one number, `va_elast` (σ_va):
 
@@ -459,7 +462,10 @@ North's dirty sector. Read across regions:
 
 - North `BRD`: **output falls**, **imports rise** (from the South).
 - South `BRD`: **output rises** — the relocated production.
-- Per-region `gdp_change_real`, `factor_price_change`, `welfare_change`, `carbon_revenue`.
+- Per-region `real_consumption_change`, `factor_price_change`, `welfare_change`, `carbon_revenue`.
+  (`real_consumption_change` is a base-price household-consumption index, not production-side real
+  GDP — only region North's CPI is pinned as numéraire, so a `pq·FD` deflation off that region isn't
+  valid; see §7c/§7b for the closed/open engine's own GDP treatment.)
 
 That North-loses / South-gains split in one good is **cross-region carbon leakage** made explicit — a
 result neither the closed nor the single-region-open model can express.
@@ -467,11 +473,13 @@ result neither the closed nor the single-region-open model can express.
 **GUI.** On **Run scenario**, set **Data** to `toy_cge_multi` and run. On **Results**, filter the
 `region` column to compare `N` and `S`: the taxed region's dirty output falls while the partner's rises.
 
-> **Scope, honestly.** These are *toy* SAMs chosen to be hand-checkable, and the multi-region model
-> uses the law of one price (a producer's home and export price coincide). Magnitudes are illustrative;
-> the value is the **direction and mechanism** — which are textbook-correct and replicate their
-> benchmark to machine precision. Running on real EXIOBASE-shaped data is a matter of building an open
-> SAM from a data build (`build_open_sam`); live-EXIOBASE remains a documented follow-up.
+> **Scope, honestly.** These are *toy* SAMs chosen to be hand-checkable. Every trade route has its
+> own destination-specific price (no law-of-one-price shortcut), and every bilateral market clears
+> explicitly under a shock, not just at the benchmark. Magnitudes are illustrative; the value is the
+> **direction and mechanism** — which are textbook-correct and replicate their benchmark to machine
+> precision. Running on real EXIOBASE-shaped data needs an IOSystem-driven multi-region SAM build,
+> which (unlike the single-region open economy's `build_open_sam`) is a documented follow-up —
+> today the multi-region model requires a supplied SAM.
 
 ---
 

@@ -28,8 +28,10 @@ Also: **macro aggregates** (GVA/GDP/deflators, real vs nominal — Phase 4b) and
 EXIOBASE-shaped SAM, passes the standard CGE battery (replication/homogeneity/Walras), and shows
 the revenue-recycling effect and dirty→clean reallocation. It also runs as an **open economy**
 (Armington imports + CET exports + a rest-of-world account, CES value added, elasticity sweeps),
-where a carbon price causes textbook **carbon leakage** (single region + RoW; true multi-region
-pending). Volume magnitudes are indicative; cost answers are validated. See
+where a carbon price causes textbook **carbon leakage**, and as a **true multi-region economy**
+with bilateral trade between build regions (destination-specific route prices, explicit bilateral
+market clearing, cross-region leakage; an IOSystem-driven multi-region SAM build is the remaining
+sub-phase). Volume magnitudes are indicative; cost answers are validated. See
 [`docs/models/cge-static.md`](docs/models/cge-static.md).
 
 ```bash

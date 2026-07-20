@@ -180,9 +180,14 @@ def calibrate_multi(
     gamma = FD0 / FD0.sum(axis=1)[:, None]
     endowment = F0.sum(axis=2)  # [f, r]
 
-    arm = np.full((nr, ns), float(arm_elast))
-    cet = np.full((nr, ns), float(cet_elast))
-    if abs(arm_elast - 1.0) < 1e-9 or abs(cet_elast - 1.0) < 1e-9:
+    # Validate each elasticity is finite and strictly positive (reuse the open model's validator),
+    # then broadcast to every region-sector; σ=1 is the singular Cobb-Douglas case (review P2: a
+    # negative elasticity used to be accepted).
+    arm_scalar = float(_elast_vector(arm_elast, 1, "arm_elast")[0])
+    cet_scalar = float(_elast_vector(cet_elast, 1, "cet_elast")[0])
+    arm = np.full((nr, ns), arm_scalar)
+    cet = np.full((nr, ns), cet_scalar)
+    if abs(arm_scalar - 1.0) < 1e-9 or abs(cet_scalar - 1.0) < 1e-9:
         raise ValueError(
             "Armington/CET elasticities must be ≠ 1 (σ=1 is the Cobb-Douglas special case, not "
             "implemented for trade); typical values are 1.5–5."

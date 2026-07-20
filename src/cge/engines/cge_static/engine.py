@@ -39,7 +39,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor the single institution as a sector.
@@ -148,9 +148,21 @@ MULTI_ASSUMPTIONS = {
     ),
     "model_variant": (
         "multi-region (bilateral Armington/CET between build regions); region-specific immobile "
-        "factors and one household per region; law of one price (a producer's domestic and export "
-        "price coincide; a separate border/export price is a documented refinement); foreign "
-        "savings per region fixed at benchmark and globally zero-sum"
+        "factors and one household per region; each trade route o→d has its own price "
+        "pe[o,s,d] and every bilateral goods market clears explicitly (M[d,s,o]=EX[o,s,d]); "
+        "foreign savings per region fixed at benchmark and globally zero-sum"
+    ),
+    "trade": (
+        "bilateral Armington imports (each region's composite is a CES over its domestic "
+        "variety + imports from every partner) and CET exports (output split over domestic "
+        "sales + exports to every partner); a **destination-specific price** on each route "
+        "clears each bilateral goods market; a carbon price in one region causes cross-region "
+        "leakage"
+    ),
+    "closure": (
+        "region-specific fixed factor supply; one global numéraire (region-0's CPI, "
+        "Π pq[0,s]^γ=1); no external rest-of-world and no exchange rate (a closed global "
+        "economy of the build regions); one factor market dropped by Walras' law"
     ),
     "scope": (
         "R regions with bilateral trade, one representative household per region; carbon pricing "
@@ -159,7 +171,8 @@ MULTI_ASSUMPTIONS = {
     "interpretation": (
         "GENERAL-EQUILIBRIUM multi-region price/volume response with bilateral trade reallocation: "
         "a carbon price in one region relocates production and raises imports from partners "
-        "(cross-region carbon leakage). Indicative magnitudes (pilot calibration)."
+        "(cross-region carbon leakage). Every bilateral goods and factor market clears (verified). "
+        "Indicative magnitudes (pilot calibration)."
     ),
 }
 
@@ -684,6 +697,21 @@ def _assert_open_replicates(cal, base, x0: np.ndarray) -> None:
     _raise_if_not_replicating(checks, "open")
 
 
+def _assert_multi_replicates(cal, base, x0: np.ndarray) -> None:
+    """Assert the benchmark solve reproduces the MULTI-region model's calibrated quantities and
+    unit prices (review P1: the multi path skipped this gate). Same rationale as closed/open."""
+    checks = {
+        "prices": (x0, np.ones_like(x0)),
+        "output Z": (base.Z, cal.Z0),
+        "domestic D": (base.D, cal.D0),
+        "imports M": (base.M, cal.M0),
+        "exports EX": (base.EX, cal.EX0),
+        "final demand FD": (base.FD, cal.FD0),
+        "factor demand F": (base.F, cal.F0),
+    }
+    _raise_if_not_replicating(checks, "multi-region")
+
+
 def _raise_if_not_replicating(checks: dict, variant: str) -> None:
     worst_name, worst_err = None, 0.0
     for name, (got, want) in checks.items():
@@ -764,22 +792,40 @@ def _run_open_from_io(meta, data: dict, shocks: list[Shock], years: list[int]) -
     # Per-sector carbon cost share from the satellite, restricted to the HOME region's labels and
     # aggregated to sectors output-weighted (same construction as the closed IO path).
     carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
-    share = _open_carbon_share_from_io(io, sat, carbon_shocks, home, sectors, years)
+    # Gas/coverage controls ARE honoured on this path (carbon_cost_vector applies them), so — like
+    # the closed IO path — validate that requested coverage labels exist in the build up front.
+    if carbon_shocks:
+        from cge.engines.io_price.engine import _assert_coverage_labels
+
+        _assert_coverage_labels(carbon_shocks, io)
+    # Build the EFFECTIVE per-year carbon-cost vector (already price × intensity × 1e-6,
+    # honouring gases/coverage/paths). This is NOT a price-free share: it is the finished
+    # per-year cost, so the open path must consume it directly rather than re-multiply by the
+    # price (review P0: the earlier code stuffed this into carbon_cost_share and _run_open
+    # re-applied the price → double-counted).
+    cc_by_year = _open_effective_cc_from_io(io, sat, carbon_shocks, home, sectors, years)
 
     inner = {k: v for k, v in data.items() if k not in ("IOSystem", "SatelliteAccount")}
     inner["SAM"] = sam
-    if share is not None:
-        inner["carbon_cost_share"] = share
     inner["_sam_quality"] = quality  # surfaced in the manifest by _run_open
+    # Mark the run IO-backed even when the effective cost comes out empty (e.g. coverage excludes
+    # the home region): gas/coverage controls were honoured here, so _run_open must not apply its
+    # supplied-SAM rejection or demand a carbon_cost_share.
+    inner["_io_backed"] = True
+    if cc_by_year is not None:
+        inner["_effective_cc_by_year"] = (
+            cc_by_year  # per-year [ns] cost, consumed as-is by _run_open
+        )
+        inner["_emissions_provenance"] = _sat_identity(sat)
     return _run_open(meta, inner, shocks, years)
 
 
-def _open_carbon_share_from_io(io, sat, carbon_shocks, home, sectors, years):
-    """Per-sector dimensionless carbon cost share for the HOME region, or None if not priced.
-
-    Reuses Engine 1's ``carbon_cost_vector`` (units/gases/coverage/1e-6 scaling) on the home
-    region's labels, then aggregates to sectors output-weighted — the same recipe the closed path
-    uses, restricted to the home economy."""
+def _open_effective_cc_from_io(io, sat, carbon_shocks, home, sectors, years):
+    """Effective per-year carbon-cost vector for the HOME region: ``{year: cc[ns]}`` or None if not
+    priced. Reuses Engine 1's ``carbon_cost_vector`` (units/gases/coverage/paths/1e-6 scaling) PER
+    YEAR on the home region's labels, then aggregates to sectors output-weighted — the same recipe
+    the closed path uses. The result already includes the carbon price, so the caller must not
+    re-multiply it (review P0)."""
     positive = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
     if not positive or sat is None:
         return None
@@ -787,22 +833,34 @@ def _open_carbon_share_from_io(io, sat, carbon_shocks, home, sectors, years):
 
     _assert_cge_units(io, sat)
     labels = list(io.A.columns)
-    home_mask = [lb.split(":", 1)[0] == home for lb in labels]
-    cost, _descs = carbon_cost_vector(carbon_shocks, sat, labels, years[0])
+    home_mask = np.array([lb.split(":", 1)[0] == home for lb in labels])
     A = io.A.to_numpy(dtype=float)
     fd = io.final_demand.sum(axis=1).reindex(labels).fillna(0.0).to_numpy(dtype=float)
     x = np.linalg.solve(np.eye(A.shape[0]) - A, fd)
     s_index = {s: k for k, s in enumerate(sectors)}
-    num = np.zeros(len(sectors))
-    den = np.zeros(len(sectors))
-    for lb, c_i, xi, is_home in zip(labels, cost, x, home_mask, strict=True):
-        if not is_home:
-            continue
-        k = s_index[lb.split(":", 1)[1]]
-        num[k] += c_i * xi
-        den[k] += xi
-    cc = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
-    return {s: float(cc[i]) for i, s in enumerate(sectors)} if np.any(cc != 0.0) else None
+    out: dict[int, np.ndarray] = {}
+    for year in years:
+        cost, _descs = carbon_cost_vector(
+            carbon_shocks, sat, labels, year
+        )  # already price-included
+        num = np.zeros(len(sectors))
+        den = np.zeros(len(sectors))
+        for lb, c_i, xi, is_home in zip(labels, cost, x, home_mask, strict=True):
+            if not is_home:
+                continue
+            k = s_index[lb.split(":", 1)[1]]
+            num[k] += c_i * xi
+            den[k] += xi
+        out[year] = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
+    return out if any(np.any(v != 0.0) for v in out.values()) else None
+
+
+def _sat_identity(sat) -> dict:
+    """SatelliteAccount source/version/generation identity for the manifest (review P1: it was
+    dropped when the IO-backed open path delegated to _run_open)."""
+    from cge.engines.io_price.engine import _df_fingerprint
+
+    return input_identity("SatelliteAccount", sat.provenance, content=_df_fingerprint(sat.data))
 
 
 def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
@@ -822,39 +880,57 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     _validate_open_sam(sam, sectors, factors)
 
     carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+    # Two cost sources: an EFFECTIVE per-year cost from the IO path (already price-included — used
+    # verbatim, review P0), or a supplied dimensionless share re-scaled by the price per year.
+    io_backed = bool(data.get("_io_backed"))
+    eff_by_year = data.get("_effective_cc_by_year")
     # Apply/reject every CarbonPrice control (review P1: the open path ignored gases + coverage).
-    # The open path also carries a single dimensionless per-sector cost share, so — like the
-    # supplied-SAM closed path — it cannot express gas selection or spatial coverage; reject them
-    # rather than silently returning the same result regardless of the control.
-    for s in carbon_shocks:
-        if s.gases != ["CO2"]:
-            raise ValueError(
-                f"the open-economy CGE applies a single dimensionless carbon_cost_share and cannot "
-                f"select gases; got gases={s.gases}. Leave gases at the default ['CO2']."
-            )
-        if s.coverage_sectors or s.coverage_regions:
-            raise ValueError(
-                "the open-economy CGE cannot apply sector/region coverage (the cost share is "
-                "already per-sector and single-region); express coverage via carbon_cost_share."
-            )
+    # The supplied-SAM path carries a single dimensionless cost share, so — like the supplied-SAM
+    # closed path — it cannot express gas selection or spatial coverage; reject them rather than
+    # silently returning the same result regardless of the control. The IO-backed path is different:
+    # its effective cost came from carbon_cost_vector, which HONOURS gases/coverage/paths, so those
+    # controls are legitimate there and must not be rejected (review P0 follow-up). This branches on
+    # io_backed, NOT on eff_by_year: a legitimate coverage selection can leave the home region
+    # unpriced (empty effective cost) and must not fall back into the supplied-SAM rejection.
+    if not io_backed:
+        for s in carbon_shocks:
+            if s.gases != ["CO2"]:
+                raise ValueError(
+                    f"the open-economy CGE applies a single dimensionless carbon_cost_share and "
+                    f"cannot select gases; got gases={s.gases}. Use an IOSystem+satellite build "
+                    f"for gas selection, or leave gases at the default ['CO2']."
+                )
+            if s.coverage_sectors or s.coverage_regions:
+                raise ValueError(
+                    "the open-economy CGE cannot apply sector/region coverage on a supplied SAM "
+                    "(the cost share is already per-sector and single-region); express coverage "
+                    "via carbon_cost_share, or use an IOSystem+satellite build."
+                )
 
     modes = {s.revenue_recycling for s in carbon_shocks} or {"none"}
     if len(modes) > 1:
         raise ValueError(f"cge_static needs a single recycling mode; got {sorted(modes)}.")
     requested_recycling = modes.pop()
 
-    share = _carbon_cost_share(data, sectors)
     positive_price = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
-    if positive_price and share is None:
-        raise ValueError(
-            "a positive carbon price on the open-economy CGE requires a 'carbon_cost_share'."
-        )
-    share = share if share is not None else np.zeros(ns)
+    if eff_by_year is not None:
+        share = None
+        emissions_priced = any(np.any(v != 0.0) for v in eff_by_year.values())
+    elif io_backed:
+        # IO-backed but nothing priced (no satellite, zero price, or coverage excludes the home
+        # region): a zero cost is the honest answer — do not demand a carbon_cost_share.
+        share = np.zeros(ns)
+        emissions_priced = False
+    else:
+        share = _carbon_cost_share(data, sectors)
+        if positive_price and share is None:
+            raise ValueError(
+                "a positive carbon price on the open-economy CGE requires a 'carbon_cost_share'."
+            )
+        share = share if share is not None else np.zeros(ns)
+        emissions_priced = bool(positive_price and np.any(share != 0.0))
 
-    # Only a scenario that actually generates carbon revenue can be "defaulted from none": a
-    # no-shock (or zero-share) run circulates no revenue, so recording defaulted=True there would
-    # misdescribe it (review P2). Emissions are priced iff a positive price meets a non-zero share.
-    emissions_priced = bool(positive_price and np.any(share != 0.0))
+    # Only a scenario that actually generates carbon revenue can be "defaulted from none".
     recycling = requested_recycling
     recycling_defaulted = requested_recycling == "none" and emissions_priced
     if recycling == "none":
@@ -899,8 +975,11 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     statuses: set[str] = {_bsol.status}
     cc_by_year: dict[int, np.ndarray] = {}
     for year in years:
-        tau = sum(s.price_at(year) for s in carbon_shocks)
-        cc = tau * share
+        if eff_by_year is not None:
+            cc = eff_by_year[year]  # already price-included (IO path); do NOT re-multiply
+        else:
+            tau = sum(s.price_at(year) for s in carbon_shocks)
+            cc = tau * share
         cc_by_year[year] = cc
         sol, st = _solve_year(cc)
         resid_max = max(resid_max, sol.residual_norm)
@@ -912,17 +991,21 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     # per-sector elasticity vectors, so two runs that differ only in carbon shares or in an
     # elasticity vector produce different manifests (review P1).
     effective = {str(y): [round(float(v), 12) for v in cc.tolist()] for y, cc in cc_by_year.items()}
-    emissions_inputs = (
-        [
+    emissions_inputs: list = []
+    if any(any(v != 0.0 for v in row) for row in effective.values()):
+        emissions_inputs.append(
             {
-                "name": "EffectiveCarbonCostShare",
+                "name": "EffectiveCarbonCost"
+                if eff_by_year is not None
+                else "EffectiveCarbonCostShare",
                 "sectors": sectors,
                 "content_hash": content_hash(effective),
             }
-        ]
-        if any(any(v != 0.0 for v in row) for row in effective.values())
-        else []
-    )
+        )
+    # Restore the SatelliteAccount source/version/generation identity on the IO-backed path (review
+    # P1: it was dropped when _run_open_from_io delegated).
+    if data.get("_emissions_provenance") is not None:
+        emissions_inputs.append(data["_emissions_provenance"])
     manifest = RunManifest.build(
         engine_name=meta.name,
         engine_version=meta.version,
@@ -1064,7 +1147,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     modes = {s.revenue_recycling for s in carbon_shocks} or {"none"}
     if len(modes) > 1:
         raise ValueError(f"cge_static needs a single recycling mode; got {sorted(modes)}.")
-    recycling = "lump_sum" if modes.pop() == "none" else "lump_sum"
+    requested_recycling = modes.pop()
 
     share = _multi_carbon_share(data, regions, sectors)
     positive = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
@@ -1073,6 +1156,15 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             "a positive carbon price on the multi-region CGE requires carbon_cost_share"
         )
     share = share if share is not None else np.zeros((nr, ns))
+
+    # Each region has one household, so labour_tax_cut ≡ lump_sum within a region (same aggregate
+    # income). 'none' does not close (revenue would vanish), so it defaults to lump_sum — but only
+    # when a positive-revenue scenario actually reaches here (review P2: the flag was always set).
+    emissions_priced = bool(positive and np.any(share != 0.0))
+    recycling = requested_recycling
+    recycling_defaulted = requested_recycling == "none" and emissions_priced
+    if recycling == "none":
+        recycling = "lump_sum"
 
     cal = calibrate_multi(
         sam,
@@ -1090,25 +1182,46 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             MM.initial_guess(cal),
             prefer="scipy",
         )
-        pd = sol.x[: nr * ns].reshape(nr, ns)
-        pq = sol.x[nr * ns : 2 * nr * ns].reshape(nr, ns)
-        w = sol.x[2 * nr * ns :].reshape(len(factors), nr)
-        st = MM.derive_multi_state(cal, pd, pq, w, carbon_cost=cc, recycling=recycling)
+        # strict=True enforces the recycling k<1 feasibility guard on the ACCEPTED equilibrium.
+        st = MM.unpack_state(cal, sol.x, carbon_cost=cc, recycling=recycling, strict=True)
         return sol, st
 
     _bsol, base = _solve_year(np.zeros((nr, ns)))
+    # Universal post-calibration replication gate (review P1): refuse a balanced-but-unsupported SAM
+    # whose benchmark does not reproduce the calibrated quantities.
+    _assert_multi_replicates(cal, base, _bsol.x)
     records: list[dict] = []
     resid_max = _bsol.residual_norm
     backends, statuses = {_bsol.backend}, {_bsol.status}
+    cc_by_year: dict[int, np.ndarray] = {}
     for year in years:
         tau = sum(s.price_at(year) for s in carbon_shocks)
         cc = tau * share
+        cc_by_year[year] = cc
         sol, st = _solve_year(cc)
         resid_max = max(resid_max, sol.residual_norm)
         backends.add(sol.backend)
         statuses.add(sol.status)
         _emit_multi(records, cal, base, st, year)
 
+    # Substantive provenance: the effective per-year carbon-cost matrix (hashed) so two runs that
+    # differ only in the carbon shares get different manifests (review P1).
+    effective = {
+        str(y): [[round(float(v), 12) for v in row] for row in cc.tolist()]
+        for y, cc in cc_by_year.items()
+    }
+    emissions_inputs = (
+        [
+            {
+                "name": "EffectiveCarbonCostMatrix",
+                "regions": regions,
+                "sectors": sectors,
+                "content_hash": content_hash(effective),
+            }
+        ]
+        if emissions_priced
+        else []
+    )
     manifest = RunManifest.build(
         engine_name=meta.name,
         engine_version=meta.version,
@@ -1120,6 +1233,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             "sectors": sectors,
             "factors": factors,
             "recycling_mode": recycling,
+            "recycling_defaulted_from_none": recycling_defaulted,
             "armington_elasticity": float(cal.arm_elast[0, 0]),
             "cet_elasticity": float(cal.cet_elast[0, 0]),
             "va_elast": float(cal.va_elast[0, 0]),
@@ -1130,9 +1244,12 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             "foreign_savings_by_region": [
                 round(float(v), 12) for v in cal.foreign_savings.tolist()
             ],
-            "emissions_priced": bool(np.any(share != 0.0) and positive),
+            "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
-            "inputs": [input_identity("SAM", sam.provenance, content=_sam_fingerprint(sam))],
+            "inputs": [
+                input_identity("SAM", sam.provenance, content=_sam_fingerprint(sam)),
+                *emissions_inputs,
+            ],
         },
     )
     return ResultSet.from_records(records, manifest)
@@ -1177,10 +1294,17 @@ def _emit_multi(records, cal, base, st, year: int) -> None:
                     st.w[fi, ri] / base.w[fi, ri] - 1.0,
                 )
             )
-        real_gdp = float(np.dot(st.pq[ri], st.FD[ri]))
-        real_gdp_base = float(np.dot(base.pq[ri], base.FD[ri]))
+        # Real household consumption per region, as a **base-price (Laspeyres) quantity index**:
+        # benchmark prices are 1, so Σ FD valued at benchmark prices = Σ FD. This is
+        # region-internally consistent (unlike pq·FD, since only region 0's CPI is pinned — pq
+        # for other regions is in an unpinned scale). NB this is disposable **consumption**,
+        # NOT production-side real GDP: a
+        # true real-GDP series needs a base-price value-added measure with trade + tax accounting
+        # (review P1). Renamed accordingly so it is not read as GDP.
+        cons = float(np.dot(np.ones(cal.ns), st.FD[ri]))
+        cons_base = float(np.dot(np.ones(cal.ns), base.FD[ri]))
         records.append(
-            _rec_r("gdp_change_real", "__economy__", region, year, real_gdp / real_gdp_base - 1.0)
+            _rec_r("real_consumption_change", "__economy__", region, year, cons / cons_base - 1.0)
         )
         u = float(np.prod(np.power(st.FD[ri], cal.gamma[ri])))
         u_base = float(np.prod(np.power(base.FD[ri], cal.gamma[ri])))

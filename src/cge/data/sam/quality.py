@@ -41,6 +41,7 @@ def sam_quality_report(
     adjustment: pd.DataFrame | None = None,
     value_added_clipped: float = 0.0,
     open_economy: bool = False,
+    fd_attribution: str | None = None,
 ) -> QualityReport:
     """Build the SAM ``QualityReport``. ``adjustment`` (raw − balanced) drives the adjustment-audit
     check when RAS moved cells; pass ``None`` when no balancing was needed. ``open_economy`` selects
@@ -128,7 +129,29 @@ def sam_quality_report(
         )
     )
 
-    # 6. Assumptions recorded (informational PASS — the audit trail).
+    # 6. Home final-demand attribution on the OPEN build (review P1): "measured" when the build
+    # carries final demand by consuming region; "imputed_import_share" is a SYNTHETIC construction
+    # (WARN — visible, not hidden) where the imported share of final use was imputed from the
+    # intermediate-use import ratio because only an aggregate FD column exists.
+    if fd_attribution is not None:
+        imputed = fd_attribution != "measured"
+        report.add(
+            QualityCheck(
+                name="open_fd_attribution",
+                severity=Severity.WARN if imputed else Severity.PASS,
+                message=(
+                    f"home final demand {fd_attribution.replace('_', ' ')}"
+                    + (
+                        " (synthetic: aggregate FD column only — rebuild with final demand by "
+                        "consuming region for a measured attribution)"
+                        if imputed
+                        else " (final demand retained by consuming region)"
+                    )
+                ),
+            )
+        )
+
+    # 7. Assumptions recorded (informational PASS — the audit trail).
     report.add(
         QualityCheck(
             name="assumed_capital_share",

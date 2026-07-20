@@ -336,16 +336,12 @@ def _multi_cal():
 def _multi_solve(cal, carbon_cost=None):
     from cge.engines.cge_static import model_multi as MM
 
-    nr, ns, nf = cal.nr, cal.ns, cal.nf
     sol = solve(
         lambda z: MM.residuals(cal, z, carbon_cost=carbon_cost, recycling="lump_sum"),
         MM.initial_guess(cal) * 1.03,
         prefer="scipy",
     )
-    pd = sol.x[: nr * ns].reshape(nr, ns)
-    pq = sol.x[nr * ns : 2 * nr * ns].reshape(nr, ns)
-    w = sol.x[2 * nr * ns :].reshape(nf, nr)
-    st = MM.derive_multi_state(cal, pd, pq, w, carbon_cost=carbon_cost, recycling="lump_sum")
+    st = MM.unpack_state(cal, sol.x, carbon_cost=carbon_cost, recycling="lump_sum")
     return sol, st
 
 
@@ -386,6 +382,33 @@ def _multi_leakage():
         None,
         None,
     )
+
+
+@check(SUITE, "multi_region_markets_clear_under_shock")
+def _multi_clearing():
+    """The equilibrium correctness gate the earlier design failed: at the SHOCKED equilibrium every
+    **bilateral goods market** clears (import demand M[d,s,o] = export supply EX[o,s,d]) and every
+    **regional factor market** clears (Walras). A machine-zero solver residual with unbalanced trade
+    is NOT an equilibrium; this pins that the redesigned bilateral-price system genuinely clears."""
+    import numpy as _np
+
+    cal = _multi_cal()
+    cc = _np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3
+    _s, st = _multi_solve(cal, carbon_cost=cc)
+    trade_disc = 0.0
+    for d in range(cal.nr):
+        for o in range(cal.nr):
+            if d != o:
+                trade_disc = max(
+                    trade_disc, float(_np.max(_np.abs(st.M[d, :, o] - st.EX[o, :, d])))
+                )
+    factor_gap = 0.0
+    for fi in range(cal.nf):
+        for ri in range(cal.nr):
+            factor_gap = max(factor_gap, abs(float(st.F[fi, ri, :].sum()) - cal.endowment[fi, ri]))
+    err = max(trade_disc, factor_gap)
+    return err < 1e-8, f"max bilateral-trade + factor-market discrepancy = {err:.2e}", err, 1e-8
 
 
 @check(SUITE, "ces_value_added_replicates")

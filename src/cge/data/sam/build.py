@@ -51,6 +51,11 @@ class RawSAM:
     source_final_demand: float
     source_value_added: float
     value_added_clipped: float  # total negative value added clipped to zero (audit)
+    # How home final demand was attributed on the OPEN build (review P1): "measured" when the
+    # build carries final demand by consuming region, "imputed_import_share" when only an
+    # aggregate column exists and the imported share was imputed from the intermediate-use ratio.
+    # None on closed builds (no attribution needed).
+    fd_attribution: str | None = None
 
 
 def _gross_output(io: IOSystem) -> tuple[np.ndarray, list[str]]:
@@ -241,20 +246,38 @@ def build_open_raw_sam(
     # it is supplied by domestic activities (``D``) and imports (``M``). Home activity output ``Z``
     # is sold domestically (``D``) or exported (``E``).
     INT = np.zeros((ns, ns))  # composite i used by home activity j (all home use of commodity i)
-    Muse = np.zeros(ns)  # imports of commodity i used by the home economy (intermediate + final)
+    Muse = np.zeros(ns)  # imports of commodity i used by home activities (intermediate only)
     FD = np.zeros(ns)  # home household final demand on composite i
+    Mfd = np.zeros(ns)  # imports of commodity i for home FINAL use (measured path only)
     Xhome = np.zeros(ns)  # home activity gross output per sector
     Xrow = np.zeros(ns)  # ROW gross output per sector (for the export attribution)
+
+    # Home final demand attribution (review P1). When the build retains final demand BY CONSUMING
+    # REGION, home final demand is MEASURED: the home column of Y gives what home consumers buy
+    # from every producing label — home purchases from ROW producers are imports for final use,
+    # and ROW purchases of home products flow into exports via the residual. When only an
+    # aggregate column exists (legacy builds), fall back to the documented imputation: the
+    # region-summed final demand of home producers proxies home consumption, and the imported
+    # share of final use is imputed from the intermediate-use import ratio.
+    fd_region = io.fd_by_region()
+    fd_measured = fd_region is not None
+    if fd_measured:
+        yh = fd_region[home_region].reindex(labels).fillna(0.0).to_numpy(dtype=float)
 
     for a, lb_a in enumerate(labels):
         ra, ia = region_of(lb_a), s_index[_sector_of(lb_a)]
         if ra in home_set:
             Xhome[ia] += x[a]
-            FD[ia] += fd[
-                a
-            ]  # home final demand for good ia (home-consumed; supplier resolved below)
+            if not fd_measured:
+                # Imputed path: home producers' region-summed FD proxies home consumption.
+                FD[ia] += fd[a]
         else:
             Xrow[ia] += x[a]
+        if fd_measured:
+            # Measured path: home consumers' purchases from label a — ANY producing region.
+            FD[ia] += yh[a]
+            if ra in rest_set:
+                Mfd[ia] += yh[a]  # bought from a ROW producer → import for final use
         for b, lb_b in enumerate(labels):
             rb, jb = region_of(lb_b), s_index[_sector_of(lb_b)]
             if rb in home_set:
@@ -264,16 +287,19 @@ def build_open_raw_sam(
                 if ra in rest_set:
                     Muse[ia] += Z[a, b]
 
-    # Home final demand is met partly by imports; attribute the imported share of each commodity's
-    # home use by the same domestic/import ratio as intermediates (a documented, standard reduction
-    # assumption — the region-summed final demand does not separate supplier region). Then:
     #   composite supply of i = home use of i = Σ_j INT[i,j] + FD[i]
     #   imports M[i]          = imported share of that use
     #   domestic sales D[i]   = composite supply − imports
     home_use = INT.sum(axis=1) + FD  # total composite use of commodity i
-    with np.errstate(divide="ignore", invalid="ignore"):
-        import_frac = np.where(INT.sum(axis=1) > 0, Muse / INT.sum(axis=1), 0.0)
-    M = import_frac * home_use  # imports of commodity i (intermediate + final, same ratio)
+    if fd_measured:
+        M = Muse + Mfd  # imports measured exactly: intermediate + final use
+    else:
+        # Imputed path: attribute the imported share of each commodity's home use by the same
+        # domestic/import ratio as intermediates (a documented, standard reduction assumption —
+        # the region-summed final demand does not separate supplier region).
+        with np.errstate(divide="ignore", invalid="ignore"):
+            import_frac = np.where(INT.sum(axis=1) > 0, Muse / INT.sum(axis=1), 0.0)
+        M = import_frac * home_use  # imports of commodity i (intermediate + final, same ratio)
     D = home_use - M  # domestic supply of the composite
     E = Xhome - D  # exports = home output not sold domestically
     Z0 = Xhome
@@ -294,7 +320,10 @@ def build_open_raw_sam(
     VA = np.clip(VA_raw, 0.0, None)
     va_clip = float(np.sum(np.abs(np.minimum(VA_raw, 0.0))))
 
-    sam = _assemble_open_sam(sectors, INT, E, M, D, FD, VA, capital_share, io, home_region)
+    fd_attribution = "measured" if fd_measured else "imputed_import_share"
+    sam = _assemble_open_sam(
+        sectors, INT, E, M, D, FD, VA, capital_share, io, home_region, fd_attribution
+    )
     return RawSAM(
         sam=sam,
         sectors=sectors,
@@ -303,10 +332,13 @@ def build_open_raw_sam(
         source_final_demand=float(FD.sum()),
         source_value_added=float(VA_raw.sum()),
         value_added_clipped=va_clip,
+        fd_attribution=fd_attribution,
     )
 
 
-def _assemble_open_sam(sectors, INT, E, M, D, FD, VA, capital_share, io, home_region):
+def _assemble_open_sam(
+    sectors, INT, E, M, D, FD, VA, capital_share, io, home_region, fd_attribution
+):
     """Assemble the balanced open SAM matrix (a_<s>/c_<s>/CAP/LAB/HOH/ROW)."""
     ns = len(sectors)
     act = [f"a_{s}" for s in sectors]
@@ -324,8 +356,16 @@ def _assemble_open_sam(sectors, INT, E, M, D, FD, VA, capital_share, io, home_re
             m.loc[com[i], act[j]] = INT[i, j]  # composite i used by activity j
     m.loc[HOUSEHOLD, "CAP"] = capital_share * VA.sum()
     m.loc[HOUSEHOLD, "LAB"] = (1.0 - capital_share) * VA.sum()
-    # Net foreign savings Sf = ΣM − ΣE closed by a ROW → household capital transfer.
-    m.loc[HOUSEHOLD, "ROW"] = float(M.sum() - E.sum())
+    # Net foreign savings Sf = ΣM − ΣE closed by a capital transfer written in the direction of the
+    # flow: a trade DEFICIT (Sf > 0) is financed by a ROW → household inflow; a trade SURPLUS
+    # (Sf < 0) is home lending abroad, a household → ROW outflow. Writing the signed value into one
+    # cell put a NEGATIVE entry in the SAM on the surplus side (review P1) — a valid exporter
+    # economy then failed the non-negativity quality gate.
+    sf = float(M.sum() - E.sum())
+    if sf >= 0.0:
+        m.loc[HOUSEHOLD, "ROW"] = sf
+    else:
+        m.loc["ROW", HOUSEHOLD] = -sf
 
     prov = Provenance(
         source=io.provenance.source,
@@ -337,7 +377,15 @@ def _assemble_open_sam(sectors, INT, E, M, D, FD, VA, capital_share, io, home_re
         generation=io.provenance.generation,
         notes=(
             f"single-region-open SAM from {io.provenance.build_id}; home={home_region}, "
-            f"rest-of-world = other regions; VA split cap={capital_share} (assumption)."
+            f"rest-of-world = other regions; VA split cap={capital_share} (assumption); "
+            f"home final demand {fd_attribution.replace('_', ' ')}"
+            + (
+                ""
+                if fd_attribution == "measured"
+                else " (SYNTHETIC: aggregate FD column only — imported share of final use "
+                "imputed from the intermediate-use import ratio)"
+            )
+            + "."
         ),
     )
     return SAM(provenance=prov, accounts=accounts, matrix=m)
@@ -379,5 +427,6 @@ def build_open_sam(
         adjustment=adjustment,
         value_added_clipped=raw.value_added_clipped,
         open_economy=True,
+        fd_attribution=raw.fd_attribution,
     )
     return raw.sam, report, raw.sectors
