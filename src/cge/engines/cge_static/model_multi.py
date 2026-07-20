@@ -13,16 +13,27 @@ output into domestic sales + **exports to every partner**. Factors are region-sp
 (the earlier law-of-one-price reduction left these markets **uncleared**). One global numéraire pins
 region-0's composite CPI.
 
-**Unknowns** ``z = [pd (nr·ns), pq (nr·ns), pe (nr·(nr−1)·ns), w (nf·nr)]``:
+**Unknowns** ``z = [pd (nr·ns), pq (nr·ns), pe (n_active), w (nf·nr)]``:
 - ``pd[r,s]`` — domestic-sales price of region ``r``'s good ``s``;
 - ``pq[r,s]`` — Armington composite price in region ``r``;
-- ``pe[o,s,d]`` — bilateral export/import price on route ``o→d`` for good ``s`` (``o≠d``);
+- ``pe[o,s,d]`` — bilateral export/import price on route ``o→d`` for good ``s`` (``o≠d``), **one
+  unknown per ordered pair that actually trades** — ``n_active = len(cal.active_routes)``, a subset
+  of the ``nr·(nr−1)·ns`` possible directed routes;
 - ``w[f,r]`` — region-``r`` factor prices.
 
-**Residuals — square in ``2·nr·ns + nr·(nr−1)·ns + nf·nr``:**
+**Only routes with genuine benchmark trade get a price unknown** (review P1). A route with zero
+benchmark trade is never read by ``_armington_price``/``_cet_price``/``_quantities`` (they gate on
+the calibrated share being ``>0``), so packing a live, unpinned price unknown for it — as an earlier
+version did for every possible ``(o,s,d)`` — left the equilibrium **rank-deficient**: the Jacobian's
+rank fell by exactly the number of zero routes, and perturbing an unused route's price left every
+residual unchanged at machine-zero. Fixing an inactive route's price at 1 (never solved for) removes
+the free direction without changing any quantity, since nothing downstream reads it.
+
+**Residuals — square in ``2·nr·ns + n_active + nf·nr``:**
 - ``nr·ns`` Armington-price identities (pin ``pq``);
 - ``nr·ns`` zero-profit identities (pin ``pd`` via the CET dual ``pz``);
-- ``nr·(nr−1)·ns`` bilateral goods-market clearings ``M[d,s,o] = EX[o,s,d]`` (pin ``pe``);
+- ``n_active`` bilateral goods-market clearings ``M[d,s,o] = EX[o,s,d]`` (pin ``pe``), one per
+  active route only;
 - ``nf·nr − 1`` factor-market clearings (one dropped globally by Walras);
 - 1 numéraire.
 The **domestic** goods market clears algebraically inside ``_quantities`` (domestic Armington demand
@@ -283,7 +294,7 @@ def _unpack(cal, z):
     nr, ns, nf = cal.nr, cal.ns, cal.nf
     o1 = nr * ns
     o2 = 2 * nr * ns
-    n_pe = nr * (nr - 1) * ns
+    n_pe = len(cal.active_routes)
     o3 = o2 + n_pe
     pd = np.asarray(z[:o1], dtype=float).reshape(nr, ns)
     pq = np.asarray(z[o1:o2], dtype=float).reshape(nr, ns)
@@ -293,18 +304,16 @@ def _unpack(cal, z):
 
 
 def _pe_from_flat(cal, flat: np.ndarray) -> np.ndarray:
-    """Expand the packed bilateral prices (routes o→d, o≠d) into a full [o,s,d] array (own
-    slot 1)."""
+    """Expand the packed bilateral prices into a full [o,s,d] array. Only **active** routes (review
+    P1: genuine benchmark trade, ``cal.active_routes``) get an unknown; a structurally-zero route
+    keeps its price fixed at 1 — no unknown, no residual, since nothing in ``_armington_price`` /
+    ``_cet_price`` / ``_quantities`` reads a zero-share route's price anyway (they gate on
+    ``share > 0``), so fixing it at 1 changes nothing while removing a rank-deficient free
+    direction."""
     nr, ns = cal.nr, cal.ns
     pe = np.ones((nr, ns, nr))
-    idx = 0
-    for oi in range(nr):
-        for di in range(nr):
-            if oi == di:
-                continue
-            for si in range(ns):
-                pe[oi, si, di] = flat[idx]
-                idx += 1
+    for idx, (oi, si, di) in enumerate(cal.active_routes):
+        pe[oi, si, di] = flat[idx]
     return pe
 
 
@@ -333,13 +342,11 @@ def residuals(
         for ii in range(ns):
             intermediate = float(np.dot(cal.ax[ri, :, ii], pq[ri]))
             res.append(pz[ri, ii] - (intermediate + cal.va_share[ri, ii] * pv[ri, ii] + cc[ri, ii]))
-    # 3. Bilateral goods-market clearing: import demand = export supply on each route.  [nr(nr−1)ns]
-    for oi in range(nr):
-        for di in range(nr):
-            if oi == di:
-                continue
-            for si in range(ns):
-                res.append(st.M[di, si, oi] - st.EX[oi, si, di])
+    # 3. Bilateral goods-market clearing: import demand = export supply on each ACTIVE route only
+    # (review P1: a route with zero benchmark trade got a free price unknown and no way to pin it —
+    # Jacobian rank-deficient by exactly the number of zero routes; see cal.active_routes).
+    for oi, si, di in cal.active_routes:
+        res.append(st.M[di, si, oi] - st.EX[oi, si, di])
     # 4. Factor clearing per region-factor, dropping ONE globally by Walras.  [nf·nr − 1]
     flat = 0
     for fi in range(nf):
@@ -359,7 +366,7 @@ def initial_guess(cal: MultiCalibratedModel) -> np.ndarray:
 
 
 def n_unknowns(cal: MultiCalibratedModel) -> int:
-    return 2 * cal.nr * cal.ns + cal.nr * (cal.nr - 1) * cal.ns + cal.nf * cal.nr
+    return 2 * cal.nr * cal.ns + len(cal.active_routes) + cal.nf * cal.nr
 
 
 def unpack_state(cal, x, *, carbon_cost=None, recycling="lump_sum", strict=True):

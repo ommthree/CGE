@@ -9,13 +9,19 @@ the numéraire, so there is no separate deflator/inflation output.
 
 **Scope:** the correctness-first pilot from `docs/phase-5-plan.md` §5.2a — Leontief intermediates,
 CES/Cobb-Douglas value added, Cobb-Douglas household demand, CPI numéraire, with **revenue
-recycling** (lump_sum / labour_tax_cut). Two variants share this engine: a **closed** single-region
-economy, and an **open** economy (Armington imports + CET exports + a rest-of-world account, CES
-value added, an endogenous exchange rate) selected automatically when the SAM carries a ``ROW``
-account. Both pass benchmark replication, homogeneity and Walras (the `cge_static` validation
-suite); the open variant additionally shows carbon leakage. **True multiple regions** (bilateral
-trade between build regions) are a documented follow-up. A **non-zero current account** is supported
-(foreign savings enter household income as the ROW capital transfer er·Sf).
+recycling** (lump_sum / labour_tax_cut). Three variants share this engine, selected automatically
+from the SAM's account structure: a **closed** single-region economy; an **open** economy
+(Armington imports + CET exports + a rest-of-world account, CES value added, an endogenous
+exchange rate) when the SAM carries a ``ROW`` account; and a **multi-region** economy with true
+bilateral trade among the build's own regions (destination-specific route prices, explicit
+bilateral market clearing — see `model_multi.py`) when the SAM carries several region-tagged
+households. All three pass benchmark replication, homogeneity and Walras (the `cge_static`
+validation suite); the open and multi-region variants additionally show carbon leakage, and the
+multi-region variant clears every bilateral trade route and factor market under shock, not just at
+the benchmark. A **non-zero current account** is supported (foreign savings enter household income
+as the ROW capital transfer er·Sf in the open model, or a bilateral capital transfer per region in
+the multi-region model). Government/investment/an energy nest are reopened Phase 5 debt tracked as
+roadmap Phase 5d — not yet implemented.
 
 Data contract (``data`` dict): either a ``SAM`` supplied directly (validated: aligned, finite,
 non-negative, balanced) with an optional per-sector dimensionless ``carbon_cost_share``, OR an
@@ -39,7 +45,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor the single institution as a sector.
@@ -792,6 +798,20 @@ def _run_open_from_io(meta, data: dict, shocks: list[Shock], years: list[int]) -
     # Per-sector carbon cost share from the satellite, restricted to the HOME region's labels and
     # aggregated to sectors output-weighted (same construction as the closed IO path).
     carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+    # A positive carbon price needs a satellite, or this silently becomes a zero-impact run — the
+    # SAME gate the closed IO path already has (review P1: the open path lacked it, so a €100/t
+    # request with no SatelliteAccount was silently accepted with emissions_priced=False and zero
+    # impact instead of raising). This is distinct from a legitimate zero: a satellite that is
+    # present but has zero intensity on the home region's labels, or a coverage selection that
+    # excludes the home region, both still produce a real (zero) EffectiveCarbonCost and are left
+    # to _open_effective_cc_from_io / _run_open — only a missing satellite is rejected here.
+    positive_price = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
+    if positive_price and sat is None:
+        raise ValueError(
+            "a positive carbon price on an IO-backed open-economy CGE run requires a "
+            "'SatelliteAccount' (emission intensities); none supplied — the run would be "
+            "silently zero-impact."
+        )
     # Gas/coverage controls ARE honoured on this path (carbon_cost_vector applies them), so — like
     # the closed IO path — validate that requested coverage labels exist in the build up front.
     if carbon_shocks:
@@ -816,6 +836,11 @@ def _run_open_from_io(meta, data: dict, shocks: list[Shock], years: list[int]) -
         inner["_effective_cc_by_year"] = (
             cc_by_year  # per-year [ns] cost, consumed as-is by _run_open
         )
+    # Record the satellite's identity whenever one was actually consulted, even if the effective
+    # cost it produced is zero (coverage excludes home, or genuinely zero intensity there) — the
+    # manifest should reflect that a real satellite was read, not just that pricing happened to be
+    # nonzero (review P1 follow-up).
+    if sat is not None:
         inner["_emissions_provenance"] = _sat_identity(sat)
     return _run_open(meta, inner, shocks, years)
 
@@ -930,10 +955,16 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         share = share if share is not None else np.zeros(ns)
         emissions_priced = bool(positive_price and np.any(share != 0.0))
 
-    # Only a scenario that actually generates carbon revenue can be "defaulted from none".
+    # Only a scenario that actually generates carbon revenue can be "defaulted from none" — and
+    # only such a scenario should actually HAVE its recycling mode switched (review P2: the switch
+    # previously ran whenever requested_recycling=="none" regardless of emissions_priced, so a
+    # zero-impact run's manifest could report recycling_mode="lump_sum" alongside
+    # recycling_defaulted_from_none=False — internally contradictory, even though it made no
+    # numerical difference since derive_open_state already gates the recycling fixed-point on
+    # cc != 0).
     recycling = requested_recycling
     recycling_defaulted = requested_recycling == "none" and emissions_priced
-    if recycling == "none":
+    if recycling_defaulted:
         recycling = "lump_sum"  # the open economy also circulates carbon revenue to the household
 
     cal = calibrate_open(
@@ -1159,11 +1190,13 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
 
     # Each region has one household, so labour_tax_cut ≡ lump_sum within a region (same aggregate
     # income). 'none' does not close (revenue would vanish), so it defaults to lump_sum — but only
-    # when a positive-revenue scenario actually reaches here (review P2: the flag was always set).
+    # when a positive-revenue scenario actually reaches here (review P2: the flag was always set,
+    # and — round-9 follow-up — the switch itself must also only fire then, or a zero-impact run's
+    # manifest can report recycling_mode="lump_sum" next to recycling_defaulted_from_none=False).
     emissions_priced = bool(positive and np.any(share != 0.0))
     recycling = requested_recycling
     recycling_defaulted = requested_recycling == "none" and emissions_priced
-    if recycling == "none":
+    if recycling_defaulted:
         recycling = "lump_sum"
 
     cal = calibrate_multi(
@@ -1295,12 +1328,18 @@ def _emit_multi(records, cal, base, st, year: int) -> None:
                 )
             )
         # Real household consumption per region, as a **base-price (Laspeyres) quantity index**:
-        # benchmark prices are 1, so Σ FD valued at benchmark prices = Σ FD. This is
-        # region-internally consistent (unlike pq·FD, since only region 0's CPI is pinned — pq
-        # for other regions is in an unpinned scale). NB this is disposable **consumption**,
-        # NOT production-side real GDP: a
-        # true real-GDP series needs a base-price value-added measure with trade + tax accounting
-        # (review P1). Renamed accordingly so it is not read as GDP.
+        # benchmark prices are 1, so Σ FD valued at benchmark prices = Σ FD. Note the reason pq·FD
+        # would be unsuitable here is NOT that other regions' prices are somehow "unpinned" — in
+        # this connected system the single global numéraire (region 0's CPI = 1) fixes the common
+        # nominal scale for every region's prices, including pq[r] for r≠0, which are fully
+        # determined at the solved equilibrium (review P2: an earlier comment claimed otherwise).
+        # The actual reason is that pq[r]·FD[r] is CURRENT-PRICE nominal expenditure — it moves
+        # with both the quantity change AND the composite price change, so summing it conflates
+        # the two rather than isolating the real (quantity) effect. Valuing FD at BASE prices (all
+        # 1 at benchmark) strips out the price move and gives a genuine real quantity index. NB
+        # this is disposable **consumption**, NOT production-side real GDP: a true real-GDP series
+        # needs a base-price value-added measure with trade + tax accounting (review P1). Renamed
+        # accordingly so it is not read as GDP.
         cons = float(np.dot(np.ones(cal.ns), st.FD[ri]))
         cons_base = float(np.dot(np.ones(cal.ns), base.FD[ri]))
         records.append(

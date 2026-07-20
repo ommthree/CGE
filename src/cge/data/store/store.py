@@ -472,6 +472,7 @@ class DataStore:
             unit=meta.monetary_unit,
             A=A,
             final_demand=final_demand,
+            final_demand_kind=meta.final_demand_kind,
             value_added=value_added,
         )
 

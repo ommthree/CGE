@@ -40,6 +40,33 @@ def test_page_renders(page):
     assert not at.exception, f"{page} raised: {[getattr(e, 'value', e) for e in at.exception]}"
 
 
+_CGE_OPEN_RESULTS_SETUP = """
+import streamlit as st
+from cge.scenarios.loader import Scenario
+from cge.contracts.shocks import CarbonPrice
+from cge.runner import run_scenario
+sc = Scenario(name="t", engine="cge_static", years=[2020], shocks=[CarbonPrice(price=50.0)])
+st.session_state["last_result"] = run_scenario(sc, data_source="toy_cge_open")
+st.session_state["last_scenario"] = sc
+"""
+
+
+def test_results_page_renders_trade_factor_welfare_sections_for_open_cge():
+    """P2 (review round 9): the Results page must render its new Trade / Factor prices /
+    Welfare & carbon revenue sections for an open-economy CGE run, not just the price/volume/macro
+    tables the io_price/partial_eq engines produce."""
+    src = f"from cge.gui.pages import results\n{_CGE_OPEN_RESULTS_SETUP}\nresults.render()\n"
+    at = AppTest.from_string(src, default_timeout=60)
+    at.run()
+    assert not at.exception, (
+        f"results page raised: {[getattr(e, 'value', e) for e in at.exception]}"
+    )
+    headers = [h.value for h in at.subheader]
+    assert "Trade" in headers
+    assert "Factor prices" in headers
+    assert "Welfare & carbon revenue" in headers
+
+
 def test_run_page_energy_price_branch_renders():
     """Exercise the Run page's energy-price controls: set the shock count to 1 so the carrier /
     change / coverage widgets render, then trigger a run — the combined carbon+energy scenario

@@ -181,7 +181,7 @@ citations in [`docs/references.md`](references.md).
 | Family | Examples | Relation to this platform |
 |---|---|---|
 | **Environmentally-extended IO** | Leontief price model [MillerBlair2009], EXIOBASE [Stadler2018] | **What Engines 1–2 are.** The most transparent, parameter-free cost accounting; the foundation here. |
-| **Multi-region CGE** | GTAP [GTAP], and CGE textbook models [Hosoe2010] | **What Engine 3 (single-region pilot built; multi-region ahead) is a small, open version of.** GTAP is the precision benchmark — but its database is *licensed, not open*, which is why we build the SAM from EXIOBASE and stay "toy but honest." |
+| **Multi-region CGE** | GTAP [GTAP], and CGE textbook models [Hosoe2010] | **What Engine 3 (closed, open, and true multi-region variants built) is a small, open version of.** GTAP is the precision benchmark — but its database is *licensed, not open*, which is why we build the SAM from EXIOBASE and stay "toy but honest." |
 | **Process-based IAMs** | GCAM [GCAM], REMIND [REMIND], MESSAGE | **Deliberately not attempted.** These have explicit energy systems and land use and take teams years. We *consume their pathways* (via NGFS) and add sector/supply-chain resolution — the standard financial-sector pattern. |
 | **Cost–benefit IAMs** | DICE [Nordhaus2017] | Aggregate economy + damage function, no sectoral detail. We have the opposite trade-off (sector detail, no damage feedback in the credible mode); DICE is the reference for the *optional* damage path (P7.4). |
 | **Macro-econometric / IO** | E3ME [E3ME] | A non-equilibrium neighbour to the IO engines; named for context. |
@@ -231,7 +231,8 @@ CGE and nature extensions are the next work.**
 | 3 — Web GUI | the six-page Streamlit app | ✅ [status](phase-3-status.md) |
 | 4 — Engine 2 (volume) | partial-equilibrium volume response with bands | ✅ [status](phase-4-status.md) |
 | 4b — Macro aggregates | GVA/GDP/deflators, real vs nominal (PE tier) | ✅ [model doc](models/macro-aggregates.md) |
-| 5 — Engine 3 (CGE) | GE price+volume, **revenue recycling**, **open economy** (Armington/CET, carbon leakage), **CES value added**, elasticity sweeps — single-region + RoW complete (multi-region ahead) | ✅ [model doc](models/cge-static.md) |
+| 5 — Engine 3 (CGE) | GE price+volume, **revenue recycling**, **open economy** (Armington/CET, carbon leakage), **CES value added**, elasticity sweeps, **true multi-region** (bilateral trade, destination-specific prices) — pilot core complete; government/investment/energy nest reopened as 5d | ✅ [model doc](models/cge-static.md) |
+| 5d — Macro closure | government/fiscal account, savings-investment + capital accumulation, energy nest, labour market — reopened Phase 5 debt, not new scope | ⬜ [roadmap](../roadmap.md) |
 | 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | ⬜ [roadmap](../roadmap.md) |
 | 7 — Pathway stack | NGFS-driven dynamics + FaIR climate | ⬜ [roadmap](../roadmap.md) |
 

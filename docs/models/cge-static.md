@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.5.1)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.5.2)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -338,9 +338,14 @@ separately from their respective duals and reconciled by an **explicit bilateral
 residual** ``M[d,s,o]=EX[o,s,d]`` for every ``o≠d`` — the equation set an earlier reduction omitted,
 which let a machine-zero solver residual coexist with a double-digit-percent trade imbalance. The
 unknowns are ``pd[r,s]``, ``pq[r,s]`` (composite price), the packed bilateral route prices
-``pe[o,s,d]`` (one direction per unordered pair, own-region slot fixed at 1), and ``w[f,r]`` — a
-square system of ``2·nr·ns + nr·(nr−1)·ns + nf·nr`` (domestic-market clearing solved algebraically;
-one global CPI numéraire; one factor market dropped by Walras). Foreign savings per region
+``pe[o,s,d]`` — **one unknown per directed route with genuine benchmark trade**, own-region slot
+fixed at 1 — and ``w[f,r]`` — a square system of ``2·nr·ns + n_active + nf·nr`` where
+``n_active = len(cal.active_routes) ≤ nr·(nr−1)·ns`` (domestic-market clearing solved
+algebraically; one global CPI numéraire; one factor market dropped by Walras). A route with zero
+benchmark trade gets **no** price unknown and **no** clearing residual — packing one unconditionally
+for every possible directed route (as an earlier version did) left the system rank-deficient by
+exactly the number of zero-trade routes, since nothing in the Armington/CET duals reads a
+zero-share route's price anyway (`cal.active_routes`, `model_multi.py`). Foreign savings per region
 ``Sf[r]=ΣM−ΣE`` is fixed at benchmark and globally zero-sum (financed by household capital
 transfers); there is no exchange rate and no external rest-of-world — trade is entirely among the
 build's own regions.
@@ -353,11 +358,19 @@ and every factor market under shock**, not just at the benchmark
 **one** region cuts that region's output, **raises its imports from partner regions** (cross-region
 carbon leakage) and **raises partners' output** of that good
 (`multi_region_cross_region_leakage`). Results are **region-tagged**, and the manifest records the
-hashed effective carbon-cost matrix plus the SAM/SatelliteAccount identity so two runs that differ
-only in carbon shares or recycling mode produce distinct manifests. The emitted
+hashed effective carbon-cost matrix (``EffectiveCarbonCostMatrix``) so two runs that differ only in
+carbon shares or recycling mode produce distinct manifests — there is currently no
+IOSystem-driven multi-region SAM build (§8a's "Remaining sub-phases", below), so unlike the
+single-region open economy the multi-region manifest never carries a ``SatelliteAccount``
+identity; that identity only appears when a satellite is actually consulted. The emitted
 ``real_consumption_change`` is a base-price (Laspeyres) household-consumption index, not
-production-side real GDP (only region 0's CPI is pinned, so ``pq·FD`` off that region is not a
-valid deflation).
+production-side real GDP. This is **not** because other regions' prices are "unpinned" — one
+global numéraire (region 0's CPI) fixes the common nominal scale for every region, and every
+region's ``pq`` is fully determined at the solved equilibrium. The actual reason ``pq·FD`` is
+unsuitable is that it is **current-price nominal expenditure**: it moves with both the quantity
+change and the composite-price change, so summing it conflates the two. Valuing ``FD`` at
+**base** (benchmark) prices instead strips out the price move and isolates the real quantity
+effect.
 
 **Remaining sub-phases:** an IOSystem-driven multi-region SAM build (today the multi-region variant
 requires a supplied SAM — see §5a for the single-region open economy, which does have an

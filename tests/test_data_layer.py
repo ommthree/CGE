@@ -177,6 +177,22 @@ def test_build_test_end_to_end(tmp_path):
     assert store.load(written["small"])["IOSystem"].A.shape[0] < data["IOSystem"].A.shape[0]
 
 
+def test_store_roundtrip_preserves_final_demand_kind(tmp_path):
+    """P2 (review round 9): final_demand_kind is an explicit discriminator, not re-derived from
+    the parquet's columns on load — a round-tripped build must come back labelled the same way it
+    went in (by_region for a real adapter build, aggregate for the small aggregated derivative if
+    its final demand collapses to one column)."""
+    store = DataStore(tmp_path)
+    written = build_test(store=store)
+    full = store.load(written["full"])["IOSystem"]
+    assert full.final_demand_kind == "by_region"
+    assert full.fd_by_region() is not None
+    small = store.load(written["small"])["IOSystem"]
+    # The aggregation preserves the by-region split when the source had it.
+    assert small.final_demand_kind == "by_region"
+    assert small.fd_by_region() is not None
+
+
 def test_structural_guard_rejects_broken_build():
     """The structural consistency gate rejects non-finite / non-productive systems."""
     from cge.data.quality import ConsistencyError, assert_structural

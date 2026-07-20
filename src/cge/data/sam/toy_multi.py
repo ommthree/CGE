@@ -133,6 +133,85 @@ def toy_multi_sam() -> SAM:
     return SAM(provenance=prov, accounts=accounts, matrix=m)
 
 
+SPARSE_REGIONS = ["N", "S", "E"]  # North, South, East
+SPARSE_SECTORS = ["BRD", "MIL"]
+
+# Domestic sales, per (region, sector).
+_SPARSE_DOMESTIC = {(r, s): 80.0 for r in SPARSE_REGIONS for s in SPARSE_SECTORS}
+# Bilateral exports: (origin, dest, sector) → value. BRD trades only between N and S — the N-E and
+# S-E routes for BRD are STRUCTURALLY ZERO (no such flow in the SAM at all), while MIL trades on
+# every route. This is the sparse-trade topology the review (2026-07) found rank-deficient: a route
+# with zero benchmark trade still got a live price unknown with no equation to pin it.
+_SPARSE_EXPORTS = {
+    ("N", "S", "BRD"): 15.0,
+    ("S", "N", "BRD"): 12.0,
+    ("N", "S", "MIL"): 10.0,
+    ("S", "N", "MIL"): 8.0,
+    ("N", "E", "MIL"): 9.0,
+    ("E", "N", "MIL"): 7.0,
+    ("S", "E", "MIL"): 6.0,
+    ("E", "S", "MIL"): 5.0,
+}
+_SPARSE_INTERMEDIATE = {(r, "MIL", "BRD"): 15.0 for r in SPARSE_REGIONS} | {
+    (r, "BRD", "MIL"): 10.0 for r in SPARSE_REGIONS
+}
+
+
+def toy_multi_sparse_sam() -> SAM:
+    """A 3-region × 2-sector multi-region SAM with a STRUCTURALLY ZERO trade route (BRD does not
+    trade on the N↔E or S↔E routes at all), used to pin the fix for the sparse-topology rank
+    deficiency the 2026-07 review found: an inactive route must get no price unknown and no
+    clearing residual (`MultiCalibratedModel.active_routes`), not a live-but-unpinned one."""
+    regions, sectors = SPARSE_REGIONS, SPARSE_SECTORS
+    accounts = _acc(regions, sectors)
+    m = pd.DataFrame(0.0, index=accounts, columns=accounts)
+
+    for r in regions:
+        for s in sectors:
+            m.loc[f"a_{r}_{s}", f"c_{r}_{s}"] = _SPARSE_DOMESTIC[(r, s)]
+    for (o, d, s), v in _SPARSE_EXPORTS.items():
+        m.loc[f"a_{o}_{s}", f"c_{d}_{s}"] = v
+    for (r, com, act), v in _SPARSE_INTERMEDIATE.items():
+        m.loc[f"c_{r}_{com}", f"a_{r}_{act}"] = v
+
+    for r in regions:
+        for s in sectors:
+            output = _SPARSE_DOMESTIC[(r, s)] + sum(
+                _SPARSE_EXPORTS.get((r, d, s), 0.0) for d in regions if d != r
+            )
+            intermediates = sum(m.loc[f"c_{r}_{c}", f"a_{r}_{s}"] for c in sectors)
+            va = output - intermediates
+            m.loc[f"CAP_{r}", f"a_{r}_{s}"] = va / 2.0
+            m.loc[f"LAB_{r}", f"a_{r}_{s}"] = va / 2.0
+
+    for r in regions:
+        for s in sectors:
+            com = f"c_{r}_{s}"
+            supply = m[com].sum()
+            uses = m.loc[com].sum()
+            m.loc[com, f"HOH_{r}"] = supply - uses
+
+    for r in regions:
+        m.loc[f"HOH_{r}", f"CAP_{r}"] = m.loc[f"CAP_{r}", :].sum()
+        m.loc[f"HOH_{r}", f"LAB_{r}"] = m.loc[f"LAB_{r}", :].sum()
+
+    _add_capital_transfers(m, regions, sectors)
+
+    prov = Provenance(
+        source="toy (hand-built)",
+        source_version="multi-3region-2sector-sparse-v1",
+        licence="n/a",
+        reference_year=0,
+        retrieved=date.today().isoformat(),
+        notes=(
+            "Globally-balanced 3-region × 2-sector multi-region SAM with a structurally zero "
+            "trade route (BRD does not trade between N-E or S-E) — pins the sparse-topology "
+            "rank-deficiency fix."
+        ),
+    )
+    return SAM(provenance=prov, accounts=accounts, matrix=m)
+
+
 def _add_capital_transfers(m: pd.DataFrame, regions: list[str], sectors: list[str]) -> None:
     """Close each region's current account with a household↔household capital transfer so both the
     per-region and global accounts balance. Region r's current account (exports − imports) is its

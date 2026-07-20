@@ -78,9 +78,15 @@ class IOSystem(_DataObject):
     ``final_demand`` rows are producing labels; its columns are either a single aggregate
     column (legacy builds) or **one column per consuming region** (review P1: the open-SAM
     builder needs to know WHO consumes each product to attribute home final demand exactly
-    rather than imputing it). Every consumer that only needs totals keeps using
-    ``final_demand.sum(axis=1)``; ``fd_by_region()`` exposes the per-consumer split when
-    present.
+    rather than imputing it). ``final_demand_kind`` is an **explicit** discriminator between the
+    two shapes — set once by whoever constructs the object (the adapter, the aggregator, or the
+    store on load) — rather than inferred from the column set (review P2: inferring by
+    ``set(columns) == set(regions.labels)`` silently misclassified an *incomplete* by-region frame
+    — e.g. one region's column dropped by a bug — as a legacy aggregate, since the set comparison
+    just failed and fell through; the caller then imputed on data that was actually corrupted,
+    with no signal anything was wrong). Every consumer that only needs totals keeps using
+    ``final_demand.sum(axis=1)``; ``fd_by_region()`` exposes the per-consumer split when present,
+    and validates completeness/uniqueness whenever ``final_demand_kind == "by_region"``.
     """
 
     sectors: Classification
@@ -92,6 +98,14 @@ class IOSystem(_DataObject):
     A: pd.DataFrame = Field(default_factory=pd.DataFrame, description="technical coefficients")
     final_demand: pd.DataFrame = Field(default_factory=pd.DataFrame)
     value_added: pd.DataFrame = Field(default_factory=pd.DataFrame)
+    final_demand_kind: Literal["aggregate", "by_region"] = Field(
+        default="aggregate",
+        description=(
+            "Explicit discriminator for final_demand's column shape: a single aggregate column "
+            "(legacy builds) or one column per consuming region. Set by the constructing code, "
+            "never inferred from the column set."
+        ),
+    )
 
     @model_validator(mode="after")
     def _payloads_aligned(self) -> IOSystem:
@@ -99,7 +113,11 @@ class IOSystem(_DataObject):
         column labels, and ``final_demand`` must share that index. This makes label alignment a
         contract invariant enforced at **every** entry path (not just the build pipeline), so a
         permuted-axis matrix supplied directly to ``Engine.run()`` is rejected rather than silently
-        producing wrong results (review P2). Empty frames (the Phase-0 envelope) are exempt."""
+        producing wrong results (review P2). Empty frames (the Phase-0 envelope) are exempt.
+
+        When ``final_demand_kind == "by_region"``, the columns must be COMPLETE and UNIQUE against
+        ``regions`` — a dropped or duplicated region column is a real data-integrity error, not a
+        silent fallback to the aggregate interpretation (review P2)."""
         a = self.A
         if a.empty:
             return self
@@ -115,6 +133,19 @@ class IOSystem(_DataObject):
             )
         if not self.final_demand.empty and list(self.final_demand.index) != cols:
             raise ValueError("IOSystem.final_demand index is not aligned with A's labels")
+        if self.final_demand_kind == "by_region" and not self.final_demand.empty:
+            fd_cols = list(self.final_demand.columns)
+            if len(set(fd_cols)) != len(fd_cols):
+                raise ValueError(
+                    "IOSystem.final_demand has duplicate consuming-region columns; expected "
+                    "one column per region"
+                )
+            if set(fd_cols) != set(self.regions.labels):
+                raise ValueError(
+                    f"IOSystem.final_demand_kind='by_region' but its columns {sorted(fd_cols)} "
+                    f"do not exactly match the region labels {sorted(self.regions.labels)} — "
+                    "a region's final-demand column is missing or an extra column is present"
+                )
         return self
 
     @property
@@ -123,11 +154,10 @@ class IOSystem(_DataObject):
 
     def fd_by_region(self) -> pd.DataFrame | None:
         """The per-consuming-region final-demand split, or ``None`` when this build only carries
-        an aggregate column. The convention: ``final_demand`` is by-consuming-region exactly when
-        its column set equals the build's region label set (order-insensitive)."""
-        if self.final_demand.empty:
-            return None
-        if set(self.final_demand.columns) == set(self.regions.labels):
+        an aggregate column. Reads the explicit ``final_demand_kind`` discriminator (review P2) —
+        completeness/uniqueness against ``regions`` is already enforced by the validator above, so
+        this never needs to re-derive the shape from the column set."""
+        if self.final_demand_kind == "by_region" and not self.final_demand.empty:
             return self.final_demand
         return None
 

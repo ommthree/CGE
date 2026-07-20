@@ -36,6 +36,10 @@ class BuildMeta(BaseModel):
     price_basis: str = "basic"
     currency: str = "EUR"
     monetary_unit: str = "MEUR"
+    # Explicit discriminator for IOSystem.final_demand_kind, persisted alongside the build so a
+    # round-tripped load restores it rather than re-inferring it from the parquet's columns
+    # (review P2: shape-based inference silently misclassified an incomplete by-region frame).
+    final_demand_kind: str = "aggregate"
     aggregation: str = Field(default="full", description="'full' or a named aggregation")
     retrieved: str = Field(description="ISO date the raw data was retrieved/derived")
     # Durable per-save generation id. Written into both the build's meta.json AND the catalogue

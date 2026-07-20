@@ -122,6 +122,53 @@ def render() -> None:
                     gva[c] = (gva[c] * 100).round(2)
             st.dataframe(gva, width="stretch", hide_index=True)
 
+    # -- trade (open / multi-region CGE) ---------------------------------------
+    if rv.has_trade(result):
+        st.subheader("Trade")
+        st.caption(
+            "Δ imports / Δ exports per sector, from the Armington/CET trade block — a "
+            "general-equilibrium output, not a banded estimate. Shown as percent."
+        )
+        trade = rv.trade_table(result).copy()
+        for c in ("Imports Δ", "Exports Δ"):
+            if c in trade.columns:
+                trade[c] = (trade[c] * 100).round(2)
+        st.dataframe(trade, width="stretch", hide_index=True)
+        er = rv.exchange_rate_table(result)
+        if er is not None:
+            er = er.copy()
+            er["Exchange rate Δ"] = (er["Exchange rate Δ"] * 100).round(2)
+            st.caption(
+                "Exchange rate: the single-region open economy's numéraire-adjacent price of "
+                "foreign currency (the multi-region model has no exchange rate — trade is "
+                "entirely among the build's own regions)."
+            )
+            st.dataframe(er, width="stretch", hide_index=True)
+
+    # -- factor prices ----------------------------------------------------------
+    if rv.has_factor_prices(result):
+        st.subheader("Factor prices")
+        st.caption(
+            "The wage and capital-rental-rate change as production reallocates between sectors "
+            "with different factor intensities. Shown as percent."
+        )
+        fp = rv.factor_price_table(result).copy()
+        fp["Factor price Δ"] = (fp["Factor price Δ"] * 100).round(2)
+        st.dataframe(fp, width="stretch", hide_index=True)
+
+    # -- welfare & carbon revenue -------------------------------------------------
+    if rv.has_welfare(result):
+        st.subheader("Welfare & carbon revenue")
+        st.caption(
+            "Welfare Δ is the household's utility change (Cobb-Douglas index over consumption); "
+            "carbon revenue is the tax collected, as a share of benchmark GDP. Shown as percent."
+        )
+        wf_table = rv.welfare_table(result).copy()
+        for c in ("Welfare Δ", "Carbon revenue (share of GDP)"):
+            if c in wf_table.columns:
+                wf_table[c] = (wf_table[c] * 100).round(2)
+        st.dataframe(wf_table, width="stretch", hide_index=True)
+
     # -- decomposition waterfall ----------------------------------------------
     pairs = rv.goods_with_decomposition(result)
     if pairs:

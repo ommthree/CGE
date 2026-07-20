@@ -92,6 +92,26 @@ class MultiCalibratedModel:
     def nf(self) -> int:
         return len(self.factors)
 
+    @property
+    def active_routes(self) -> list[tuple[int, int, int]]:
+        """Ordered ``(o, s, d)`` triples for routes with genuine benchmark trade — ``M0[d,s,o] > 0``
+        (equivalently ``EX0[o,s,d] > 0``; the two coincide at a balanced benchmark). A route absent
+        from this list has **no** price unknown and **no** clearing residual (review P1): packing an
+        unknown for a structurally-zero route left its price undetermined — perturbing it by 1.5
+        left every residual at machine-zero, a genuine rank deficiency (Jacobian rank dropped by
+        exactly the number of zero routes), so the solver's "convergence" on a sparse SAM did not
+        pin a unique equilibrium. Real SAMs are commonly sparse (most region pairs don't trade every
+        good), so we pack only active routes rather than rejecting sparse topology outright."""
+        routes = []
+        for oi in range(self.nr):
+            for di in range(self.nr):
+                if oi == di:
+                    continue
+                for si in range(self.ns):
+                    if self.M0[di, si, oi] > 0 or self.EX0[oi, si, di] > 0:
+                        routes.append((oi, si, di))
+        return routes
+
 
 def calibrate_multi(
     sam: SAM,

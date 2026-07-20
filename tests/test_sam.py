@@ -216,6 +216,73 @@ def test_build_open_sam_both_home_regions_and_surplus_closure(small_build_io):
     assert mb > eb and in_b > 0 and out_b == 0.0  # B: deficit → inflow
 
 
+def test_fd_by_region_discriminator_is_explicit_not_inferred(small_build_io):
+    """P2 (review round 9): fd_by_region() reads the EXPLICIT final_demand_kind discriminator, not
+    a column-set-equality guess. An IOSystem with by-region-shaped columns but the aggregate kind
+    (mislabelled) is treated as aggregate; the real fixture from the adapter is labelled by_region
+    and behaves accordingly."""
+    from cge.contracts.data_objects import IOSystem
+
+    io, _store, _bid = small_build_io
+    assert io.final_demand_kind == "by_region"  # the adapter sets this explicitly
+    assert io.fd_by_region() is not None
+
+    # Same data, but mislabelled as "aggregate" — the discriminator, not the shape, controls the
+    # outcome, proving fd_by_region() isn't quietly re-deriving from set(columns).
+    mislabelled = IOSystem(
+        provenance=io.provenance,
+        sectors=io.sectors,
+        regions=io.regions,
+        price_basis=io.price_basis,
+        currency=io.currency,
+        unit=io.unit,
+        A=io.A,
+        final_demand=io.final_demand,
+        final_demand_kind="aggregate",
+    )
+    assert mislabelled.fd_by_region() is None
+
+
+def test_fd_by_region_rejects_incomplete_or_duplicate_columns(small_build_io):
+    """THE P2 regression: an INCOMPLETE by-region frame (one region's column dropped — e.g. by a
+    bug upstream) must be REJECTED at construction, not silently misclassified as a legacy
+    aggregate. Previously: dropping region B's column made the column-set check fail, so
+    fd_by_region() silently fell through to None and the corrupted data was never flagged."""
+    from cge.contracts.data_objects import IOSystem
+
+    io, _store, _bid = small_build_io
+
+    # Drop one region's column: an incomplete by-region frame, not a valid legacy aggregate.
+    with pytest.raises(ValueError, match="final-demand column is missing"):
+        IOSystem(
+            provenance=io.provenance,
+            sectors=io.sectors,
+            regions=io.regions,
+            price_basis=io.price_basis,
+            currency=io.currency,
+            unit=io.unit,
+            A=io.A,
+            final_demand=io.final_demand.drop(columns=[io.regions.labels[0]]),
+            final_demand_kind="by_region",
+        )
+
+    # A duplicated region column is equally invalid.
+    dup = io.final_demand.copy()
+    dup.columns = [io.regions.labels[0]] * len(dup.columns)  # collapse to one repeated label
+    with pytest.raises(ValueError, match="duplicate consuming-region columns"):
+        IOSystem(
+            provenance=io.provenance,
+            sectors=io.sectors,
+            regions=io.regions,
+            price_basis=io.price_basis,
+            currency=io.currency,
+            unit=io.unit,
+            A=io.A,
+            final_demand=dup,
+            final_demand_kind="by_region",
+        )
+
+
 def test_build_open_sam_imputed_fd_is_explicit(small_build_io):
     """P1: a legacy build with only an AGGREGATE final-demand column still builds (the documented
     import-share imputation), but the synthetic construction is EXPLICIT — a WARN quality check and
@@ -320,6 +387,52 @@ def test_open_io_manifest_records_effective_cost_and_satellite(small_build_io):
     res = _run_open_io(small_build_io, [CarbonPrice(price=100.0)], [2020])
     input_names = {i.get("name") for i in res.manifest.assumptions["inputs"]}
     assert {"SAM", "EffectiveCarbonCost", "SatelliteAccount"} <= input_names
+
+
+def test_open_io_missing_satellite_with_positive_price_rejected(small_build_io):
+    """THE second P1 regression (2026-07 review round 9): a positive carbon price on the IO-backed
+    open path with NO SatelliteAccount supplied must raise — the same gate the closed IO path
+    already has — rather than being silently accepted as a zero-impact run with
+    emissions_priced=False. Previously reproduced: €100/t ran with exactly zero impact and no
+    error, contradicting the closed path's own validation."""
+    from cge.engines.cge_static.engine import CGEStaticEngine
+
+    io, _store, _bid = small_build_io
+    with pytest.raises(ValueError, match="SatelliteAccount"):
+        CGEStaticEngine().run(
+            data={"IOSystem": io, "open_home_region": "A"},  # no SatelliteAccount
+            shocks=[CarbonPrice(price=100.0)],
+            years=[2020],
+        )
+
+
+def test_open_io_zero_price_without_satellite_is_a_genuine_zero(small_build_io):
+    """A ZERO carbon price with no satellite is a legitimate zero-impact run, distinct from the
+    missing-satellite-with-positive-price case above — no satellite is needed when nothing is
+    being priced."""
+    from cge.engines.cge_static.engine import CGEStaticEngine
+
+    io, _store, _bid = small_build_io
+    res = CGEStaticEngine().run(
+        data={"IOSystem": io, "open_home_region": "A"},
+        shocks=[CarbonPrice(price=0.0)],
+        years=[2020],
+    )
+    assert res.data["value"].abs().max() < 1e-9
+
+
+def test_open_io_coverage_excludes_home_still_records_satellite_provenance(small_build_io):
+    """A satellite that IS supplied but whose effective cost comes out zero (coverage prices only
+    the other region) is still a genuine zero, distinct from a missing satellite — and the
+    manifest must still record that a real SatelliteAccount was consulted (review P1 follow-up:
+    provenance was previously dropped whenever the effective cost happened to be zero)."""
+    res = _run_open_io(small_build_io, [CarbonPrice(price=100.0, coverage_regions=["B"])], [2020])
+    assert (
+        res.data["value"].abs().max() < 1e-7
+    )  # home region A is outside the coverage: a real zero
+    input_names = {i.get("name") for i in res.manifest.assumptions["inputs"]}
+    assert "SatelliteAccount" in input_names
+    assert "EffectiveCarbonCost" not in input_names  # nothing was actually priced
 
 
 def test_zero_shock_replicates_on_real_build(small_build_io):

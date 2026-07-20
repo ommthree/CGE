@@ -277,6 +277,7 @@ def adapt_pymrio(
         unit=monetary_unit,
         A=A,
         final_demand=final_demand,
+        final_demand_kind="by_region",  # one column per consuming region (review P2)
     )
 
     satellites: list[SatelliteAccount] = []

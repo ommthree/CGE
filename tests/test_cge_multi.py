@@ -9,7 +9,14 @@ import pytest
 
 from cge.contracts.shocks import CarbonPrice
 from cge.data.sam.balance import is_balanced
-from cge.data.sam.toy_multi import REGIONS, SECTORS, toy_multi_sam
+from cge.data.sam.toy_multi import (
+    REGIONS,
+    SECTORS,
+    SPARSE_REGIONS,
+    SPARSE_SECTORS,
+    toy_multi_sam,
+    toy_multi_sparse_sam,
+)
 from cge.engines.cge_static import model_multi as MM
 from cge.engines.cge_static.calibrate_multi import calibrate_multi
 from cge.engines.cge_static.solver import solve
@@ -73,6 +80,34 @@ def test_multi_benchmark_replication():
     assert np.allclose(st.M, cal.M0, atol=1e-7)  # bilateral imports
     assert np.allclose(st.EX, cal.EX0, atol=1e-7)  # bilateral exports
     assert np.allclose(st.FD, cal.FD0, atol=1e-7)
+
+
+def test_multi_numeraire_pins_every_region_not_just_region_zero():
+    """P2 (review round 9): the numéraire is a single GLOBAL constraint (region 0's CPI = 1), but in
+    a connected system that fixes the common nominal scale for EVERY region — every region's pq is
+    fully determined at the solved equilibrium, not just region 0's. This pins the correct rationale
+    against drifting back to the (wrong) claim that non-numéraire regions' prices are 'unpinned'."""
+    cal = _cal()
+    cc = np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3  # shock region 0 only, so other regions' prices actually move
+    sol, st = _solve(cal, carbon_cost=cc)
+    assert sol.residual_norm < 1e-8  # a genuine equilibrium was found — nothing was left free
+    # Every region's pq is a single well-defined number (not a degenerate/free direction):
+    # perturbing any region's solved pq away from its equilibrium value must violate a residual.
+    for ri in range(cal.nr):
+        for si in range(cal.ns):
+            pd, pq, pe, w = MM._unpack(cal, sol.x)
+            pq_perturbed = pq.copy()
+            pq_perturbed[ri, si] *= 1.01
+            # Re-pack: only pq changes, everything else stays at the solved point.
+            z = sol.x.copy()
+            o1 = cal.nr * cal.ns
+            z[o1 : 2 * o1] = pq_perturbed.ravel()
+            resid = np.abs(MM.residuals(cal, z, carbon_cost=cc)).max()
+            assert resid > 1e-6, (
+                f"region {ri} sector {si}: perturbing pq left residuals unchanged — its price "
+                "is not actually pinned by the system"
+            )
 
 
 def test_multi_homogeneity():
@@ -197,3 +232,97 @@ def test_engine_multi_region_carbon_share_validation():
             shocks=[CarbonPrice(price=1.0)],
             years=[2020],
         )
+
+
+def test_multi_zero_impact_run_does_not_overwrite_requested_recycling():
+    """P2 regression (review round 9): same fix as the open path — a zero-impact multi-region run
+    that explicitly requests revenue_recycling='none' must keep recycling_mode='none' in the
+    manifest rather than being silently switched to lump_sum with recycling_defaulted_from_none
+    reporting False."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": toy_multi_sam()},
+        shocks=[CarbonPrice(price=0.0, revenue_recycling="none")],
+        years=[2020],
+    )
+    assert res.manifest.assumptions["recycling_mode"] == "none"
+    assert res.manifest.assumptions["recycling_defaulted_from_none"] is False
+    assert res.manifest.assumptions["emissions_priced"] is False
+
+
+def test_multi_priced_run_still_defaults_none_to_lump_sum():
+    """The positive-revenue multi-region case must still default: 'none' with a genuinely positive
+    carbon cost switches to lump_sum AND records the flag."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": toy_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}},
+        shocks=[CarbonPrice(price=1.0, revenue_recycling="none")],
+        years=[2020],
+    )
+    assert res.manifest.assumptions["recycling_mode"] == "lump_sum"
+    assert res.manifest.assumptions["recycling_defaulted_from_none"] is True
+    assert res.manifest.assumptions["emissions_priced"] is True
+
+
+# -- Sparse bilateral trade (review 2026-07): inactive routes must not be free unknowns ---------
+def _sparse_cal(**kw):
+    return calibrate_multi(
+        toy_multi_sparse_sam(),
+        regions=SPARSE_REGIONS,
+        sectors=SPARSE_SECTORS,
+        factors=_FACTORS,
+        **kw,
+    )
+
+
+def test_multi_active_routes_excludes_zero_trade_routes():
+    """Only routes with genuine benchmark trade are 'active'; the fixture's BRD N-E and S-E routes
+    (structurally zero) must not appear."""
+    cal = _sparse_cal()
+    ns_brd = SPARSE_SECTORS.index("BRD")
+    n_idx, s_idx, e_idx = (SPARSE_REGIONS.index(r) for r in ("N", "S", "E"))
+    active = set(cal.active_routes)
+    # BRD trades only N<->S.
+    assert (n_idx, ns_brd, s_idx) in active
+    assert (s_idx, ns_brd, n_idx) in active
+    assert (n_idx, ns_brd, e_idx) not in active
+    assert (e_idx, ns_brd, n_idx) not in active
+    assert (s_idx, ns_brd, e_idx) not in active
+    assert (e_idx, ns_brd, s_idx) not in active
+    # 12 possible directed routes (3 regions x 2 partners x 2 sectors), only 8 active.
+    assert len(cal.active_routes) == 8
+
+
+def test_multi_sparse_topology_jacobian_is_full_rank():
+    """THE regression for the review's P1: with the fix, only active routes get a price unknown, so
+    the benchmark Jacobian is full rank — no free direction from an unpinned zero-trade route price
+    (previously: rank fell by exactly the number of zero routes)."""
+    cal = _sparse_cal()
+    x0 = MM.initial_guess(cal)
+    n = len(x0)
+    eps = 1e-6
+    r0 = MM.residuals(cal, x0)
+    jac = np.zeros((n, n))
+    for j in range(n):
+        dz = x0.copy()
+        dz[j] += eps
+        jac[:, j] = (MM.residuals(cal, dz) - r0) / eps
+    rank = np.linalg.matrix_rank(jac, tol=1e-8)
+    assert rank == n, f"Jacobian rank {rank} < n_unknowns {n}: still rank-deficient"
+
+
+def test_multi_sparse_topology_replicates_and_solves_uniquely():
+    """The sparse-topology SAM replicates its benchmark and produces a genuine equilibrium: unlike
+    the pre-fix design, perturbing an inactive route's price is not even possible (it no longer has
+    an unknown), and the solve converges to machine precision with the bilateral markets cleared."""
+    cal = _sparse_cal()
+    sol, st = _solve(cal)
+    assert sol.residual_norm < 1e-8
+    assert np.allclose(st.Z, cal.Z0, atol=1e-6)
+    assert np.allclose(st.M, cal.M0, atol=1e-6)
+    assert np.allclose(st.EX, cal.EX0, atol=1e-6)
+    assert MM.n_unknowns(cal) == 2 * cal.nr * cal.ns + len(cal.active_routes) + cal.nf * cal.nr

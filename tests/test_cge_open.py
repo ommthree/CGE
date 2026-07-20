@@ -152,6 +152,38 @@ def test_engine_open_carbon_run_emits_leakage():
     assert brd_vol < 0 and brd_imp > 0  # output down, imports up (leakage)
 
 
+def test_open_zero_impact_run_does_not_overwrite_requested_recycling():
+    """P2 regression (review round 9): a zero-impact run (nothing priced) that explicitly requests
+    revenue_recycling='none' must actually run with recycling_mode='none' in the manifest, not be
+    silently switched to lump_sum while recycling_defaulted_from_none reports False — previously
+    the switch fired whenever requested_recycling=='none' regardless of emissions_priced, so the
+    manifest could show recycling_mode='lump_sum' next to recycling_defaulted_from_none=False,
+    which is internally contradictory."""
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": toy_open_sam()},
+        shocks=[CarbonPrice(price=0.0, revenue_recycling="none")],
+        years=[2020],
+    )
+    assert res.manifest.assumptions["recycling_mode"] == "none"
+    assert res.manifest.assumptions["recycling_defaulted_from_none"] is False
+    assert res.manifest.assumptions["emissions_priced"] is False
+
+
+def test_open_priced_run_still_defaults_none_to_lump_sum():
+    """The positive-revenue case must still default (unaffected by the fix above): requesting
+    'none' with a genuinely positive carbon cost switches to lump_sum AND records the flag."""
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": toy_open_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+        shocks=[CarbonPrice(price=0.1, revenue_recycling="none")],
+        years=[2020],
+    )
+    assert res.manifest.assumptions["recycling_mode"] == "lump_sum"
+    assert res.manifest.assumptions["recycling_defaulted_from_none"] is True
+    assert res.manifest.assumptions["emissions_priced"] is True
+
+
 def test_open_requires_carbon_cost_share_for_positive_price():
     eng = registry.get("cge_static")
     with pytest.raises(ValueError, match="requires a 'carbon_cost_share'"):

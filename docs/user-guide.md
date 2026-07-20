@@ -464,8 +464,12 @@ North's dirty sector. Read across regions:
 - South `BRD`: **output rises** — the relocated production.
 - Per-region `real_consumption_change`, `factor_price_change`, `welfare_change`, `carbon_revenue`.
   (`real_consumption_change` is a base-price household-consumption index, not production-side real
-  GDP — only region North's CPI is pinned as numéraire, so a `pq·FD` deflation off that region isn't
-  valid; see §7c/§7b for the closed/open engine's own GDP treatment.)
+  GDP. One global numéraire (North's CPI) fixes the common price scale for *every* region — South's
+  prices are just as fully determined, not "unpinned" — so that isn't the reason a `pq·FD`
+  deflation would be wrong. The real reason: `pq·FD` is current-price nominal spending, which moves
+  with both quantity *and* price, so it conflates the two; valuing at base (benchmark) prices
+  strips out the price move and leaves a genuine real quantity. See §7c/§7b for the closed/open
+  engine's own GDP treatment.)
 
 That North-loses / South-gains split in one good is **cross-region carbon leakage** made explicit — a
 result neither the closed nor the single-region-open model can express.
@@ -500,11 +504,14 @@ the pages left to right; they mirror this guide:
   add any number of **energy-carrier price** shocks (Engines 1–2). Everything is composed into one
   scenario; the controls that appear are driven by the chosen engine's registry metadata.
 - **Results** — the headline price table, the volume envelope (when Engine 2 ran), the CGE's
-  **factor prices / trade / exchange-rate** rows, the **macroeconomic aggregates** (GDP/GVA/deflator,
-  nominal and real; the CGE emits per-region GDP for `toy_cge_multi`), the supply-chain
-  **decomposition waterfall**, the full assumptions block, and **exports** (CSV, or Parquet with the
-  run manifest embedded so a downloaded result stays traceable to its inputs). For the multi-region
-  run, filter the **region** column to compare `N` and `S`.
+  **Trade** section (import/export change, and the single-region open economy's exchange rate —
+  the multi-region model has none), **Factor prices**, **Welfare & carbon revenue**, the
+  **macroeconomic aggregates** (GDP/GVA/deflator, nominal and real for the closed/open CGE;
+  `real_consumption_change` — a base-price consumption index, **not** production-side GDP — for
+  `toy_cge_multi`), the supply-chain **decomposition waterfall**, the full assumptions block, and
+  **exports** (CSV, or Parquet with the run manifest embedded so a downloaded result stays
+  traceable to its inputs). For the multi-region run, filter the **region** column to compare `N`
+  and `S`.
 
 ---
 

@@ -117,8 +117,10 @@ def aggregate_io(
         F = fd_region.reindex(labels).fillna(0.0).to_numpy(dtype=float)
         F_agg = B @ F @ Br.to_numpy(dtype=float).T
         fd_agg_df = pd.DataFrame(F_agg, index=target_labels, columns=list(Br.index))
+        fd_kind = "by_region"
     else:
         fd_agg_df = pd.DataFrame({"final_demand": f_agg}, index=target_labels)
+        fd_kind = "aggregate"
 
     tr_sectors: list[str] = []
     tr_regions: list[str] = []
@@ -133,7 +135,7 @@ def aggregate_io(
         build_id=new_build_id,
         aggregation=aggregation_name,
         notes=f"Aggregated from {meta.build_id}: {n} -> {len(target_labels)} labels.",
-    )
+    ).model_copy(update={"final_demand_kind": fd_kind})  # explicit, not inherited from the source
     new_io = IOSystem(
         provenance=io.provenance,
         sectors=Classification(
@@ -147,6 +149,7 @@ def aggregate_io(
         unit=io.unit,
         A=A_agg_df,
         final_demand=fd_agg_df,
+        final_demand_kind=fd_kind,
     )
 
     # Satellites: intensities -> totals (× x) -> aggregate -> back to intensities (÷ x_agg).

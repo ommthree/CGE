@@ -86,6 +86,7 @@ def build_from_pymrio(
         licence=io.provenance.licence,
         currency=currency,
         monetary_unit=monetary_unit,
+        final_demand_kind=io.final_demand_kind,
         retrieved=date.today().isoformat(),
     )
     quality = build_quality_report(build_id, io, satellites, row_regions=_region_row_labels(io))

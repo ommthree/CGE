@@ -534,3 +534,105 @@ behavior-changing).
 **Remaining (deferred, larger effort):** an IOSystem-driven multi-region SAM build (the multi-region
 model still requires a supplied SAM); per-cell (rather than uniform) trade elasticities; a
 live-EXIOBASE SAM build for all three CGE variants.
+
+## Ninth review round (2026-07) — sparse-trade rank deficiency + missing-satellite gap (fixed)
+
+A follow-up independent review of HEAD `ea5a060` (round 8's fixes) found no new P0 — both prior P0s
+held — but two P1s in the *implemented* model, plus several P2/P3s. Fixed in order: both P1s, then
+the P2s, then documentation last, matching this project's standing remediation discipline.
+
+### P1 (fixed)
+
+- **Sparse bilateral trade made the multi-region equilibrium rank-deficient.** Every possible
+  directed route `(o,s,d)` got a live price unknown `pe[o,s,d]` and a clearing residual, even when
+  benchmark trade on that route was genuinely zero — but nothing in `_armington_price`/
+  `_cet_price`/`_quantities` ever *reads* a zero-share route's price (they gate on `share > 0`), so
+  that unknown was a free, unpinned direction. Reproduced exactly as described: on a 3-region toy
+  SAM with one structurally-zero trade route, the benchmark Jacobian's rank was 26 against 30
+  unknowns, and perturbing the unused route's price by 3× left every residual at machine-zero
+  (2.22e-16) — the solver's "convergence" did not pin a unique equilibrium. Real SAMs are commonly
+  sparse (most region pairs don't trade every good), so per the review's own framing, fixed by
+  **packing only active routes** rather than rejecting sparse topology: added
+  `MultiCalibratedModel.active_routes` (routes with `M0>0` or `EX0>0` at benchmark), and
+  `model_multi.py`'s `_pe_from_flat`/`_unpack`/`residuals`/`n_unknowns` now pack/residual only those
+  routes, fixing every inactive route's price at 1 (never solved for, never read). Post-fix on the
+  same fixture: 26 unknowns (not 30), Jacobian full rank, benchmark and shocked replication both to
+  machine precision. New `toy_multi_sparse_sam()` fixture (3 regions, one sector genuinely untraded
+  on two routes) plus regression tests pinning full Jacobian rank and correct replication.
+- **A positive carbon price on the IO-backed open path with no satellite was silently accepted as
+  a zero-impact run.** `_open_effective_cc_from_io` returned `None` whenever `sat is None`,
+  identically to a genuine zero price or a coverage selection that excludes the home region — but
+  a *missing* satellite with a *requested* positive price is a data error, not a legitimate zero,
+  and the closed IO path already raises on exactly this case. Reproduced: a €100/t run with no
+  `SatelliteAccount` supplied ran to completion with `emissions_priced=False` and zero impact, no
+  error. Fixed by adding the same gate `_run_open_from_io` — a positive price with `sat is None`
+  now raises before calibration, naming the missing input, matching the closed path's message.
+  Distinct legitimate-zero cases (zero price with no satellite; a satellite present but coverage
+  excludes home) are unaffected and still produce a genuine, unflagged zero. Also fixed a related
+  gap the review's rationale implied: the `SatelliteAccount` identity was previously recorded in
+  the manifest only when the effective cost came out non-zero — it's now recorded whenever a
+  satellite was actually consulted, even if its effective cost is legitimately zero, so the
+  manifest reflects that real data was read rather than that pricing happened to be non-zero.
+
+### P2 (fixed)
+
+- **`fd_by_region()` inferred the final-demand column shape from `set(columns) == set(regions)`,**
+  which silently misclassified an *incomplete* by-region frame (e.g. one region's column dropped by
+  an upstream bug) as a legacy single-aggregate-column build — the set-equality check just failed
+  and fell through to `None`, with no signal the data was actually corrupted. Fixed by adding an
+  **explicit discriminator field**, `IOSystem.final_demand_kind: Literal["aggregate", "by_region"]`,
+  set once by whoever constructs the object (the EXIOBASE adapter, `aggregate_io`, or the store on
+  load — threaded through a new `BuildMeta.final_demand_kind` sidecar field for round-tripping) and
+  validated for completeness/uniqueness against `regions` whenever marked `by_region` — a dropped or
+  duplicated region column now raises at construction instead of silently degrading. `fd_by_region()`
+  reads the discriminator directly; it no longer re-derives the shape from the column set.
+- **The multi-region numéraire rationale was theoretically wrong.** A comment/docstring claimed
+  `pq·FD` is unsuitable as a real-consumption measure because "only region 0's CPI is pinned" and
+  other regions' `pq` is in an "unpinned scale" — false in a connected system: one global numéraire
+  fixes the common nominal scale for *every* region, and verified numerically that every region's
+  `pq` is a single, fully-determined number at the solved equilibrium (perturbing any region's
+  solved `pq` by 1% breaks a residual). The actual reason `pq·FD` is unsuitable: it is
+  **current-price nominal expenditure**, conflating the quantity change with the composite-price
+  change; valuing `FD` at **base** (benchmark) prices isolates the real quantity effect. The emitted
+  `real_consumption_change` index itself was already correct — only the stated rationale was wrong.
+  Corrected in `engine.py`, `docs/models/cge-static.md`, and `docs/user-guide.md`; added a
+  regression test proving every region's price is genuinely pinned (not just region 0's).
+- **Zero-impact runs still silently overwrote the requested recycling mode.** On the open and
+  multi-region paths, `if recycling == "none": recycling = "lump_sum"` ran unconditionally whenever
+  `none` was requested, regardless of whether anything was actually priced — so a zero-impact run
+  explicitly requesting `revenue_recycling="none"` had its manifest report
+  `recycling_mode: "lump_sum"` next to `recycling_defaulted_from_none: False`, which is internally
+  contradictory (if it wasn't defaulted, why does it show a different mode than requested?). The
+  closed-economy path already had the correct guard (`if recycling == "none" and emissions_priced`);
+  the open/multi paths now match it — the switch is gated on `recycling_defaulted`, the same flag
+  recorded in the manifest, so the two can never disagree again. Numerically inert either way
+  (`derive_open_state`/`derive_multi_state` already skip the recycling fixed-point when `cc == 0`),
+  but the manifest is now internally consistent.
+- **The GUI Results page exposed none of `import_change`/`export_change`/`factor_price_change`/
+  `exchange_rate_change`/`welfare_change`/`carbon_revenue`, and `has_macro()` ignored
+  `real_consumption_change`** entirely (so the multi-region macro section never rendered at all) —
+  these were only reachable via download, contradicting the user guide's instruction to find them
+  on Results. Added `has_trade`/`trade_table`/`exchange_rate_table`,
+  `has_factor_prices`/`factor_price_table`, and `has_welfare`/`welfare_table` to `results_view.py`;
+  wired three new sections (Trade, Factor prices, Welfare & carbon revenue) into the Results page;
+  fixed `has_macro`/`macro_gdp_table` to recognise `real_consumption_change` (labelled explicitly as
+  "NOT GDP"). New Streamlit-free unit tests for every new helper plus an `AppTest` smoke test
+  confirming all three new sections actually render for an open-economy CGE run.
+
+### P3 (fixed)
+
+- Remaining documentation staleness: `engine.py`'s module docstring still said "two variants" and
+  called multi-region "a documented follow-up" (it's implemented and heavily hardened this round);
+  `docs/overview.md` still said "multi-region ahead" in two places and didn't list the new Phase 5d;
+  `docs/user-guide.md` still claimed "the CGE emits per-region GDP for `toy_cge_multi`" (renamed to
+  `real_consumption_change` two rounds ago) and didn't mention the new Trade/Factor/Welfare Results
+  sections; `docs/models/cge-static.md` §8a still said "one direction per unordered pair" for the
+  bilateral route unknowns (both directed routes are packed when active) and implied the
+  square-system formula was still `nr·(nr−1)·ns` (now `n_active ≤ nr·(nr−1)·ns`). All corrected.
+
+**Verification:** 289 pytest passed / 5 skipped; `cge validate` 51/51; ruff check + format clean.
+Engine version bumped `0.5.1` → `0.5.2` (sparse-route packing changes the equilibrium's unknown
+structure; the missing-satellite gate and recycling-default fix are behavior-changing).
+**Remaining (deferred, larger effort, unchanged from round 8):** an IOSystem-driven multi-region SAM
+build (the multi-region model still requires a supplied SAM); per-cell (rather than uniform) trade
+elasticities; a live-EXIOBASE SAM build for all three CGE variants.
