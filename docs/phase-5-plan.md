@@ -1,14 +1,20 @@
 # Phase 5 plan — Engine 3: a simple static CGE
 
-**Status: PILOT IMPLEMENTED (5.0 + 5.1 + 5.2a + 5.3 recycling).** This is the original design-and-
-test plan; the correctness-first pilot it describes is now built — see
-[`docs/models/cge-static.md`](models/cge-static.md) for the equation-level implementation and honest
-scope (single region, EXIOBASE-shaped test data, scipy solver, recycling in; Armington / multi-
-region / live-EXIOBASE gate / elasticity sweeps pending). The guiding principle from the roadmap
-holds: **"toy but honest."** A small, static, single-region-first CGE that is *correct* and
-*transparent*, not a GTAP competitor. Its value
-is general-equilibrium price **and** volume answers with revenue recycling, and a cross-check
-on Engines 1–2 — not three-decimal precision.
+**Status: PILOT CORE IMPLEMENTED (5.0 + 5.1 + 5.2a + 5.3), macro closure (5.2 in full, 5d)
+outstanding.** This is the original design-and-test plan; the correctness-first pilot it describes
+is now built, including Armington/CET, true multi-region bilateral trade, and elasticity sweeps —
+see [`docs/models/cge-static.md`](models/cge-static.md) for the equation-level implementation and
+honest scope (EXIOBASE-shaped test data, scipy solver). **Not built, despite being specified below
+(§2 "Production", §3 "Government and closure"):** the **energy nest** (KL–E–M — energy is currently
+a plain intermediate, not a separable nest a carbon price can shift substitution within), a
+**government/fiscal account** (revenue is a same-period pass-through with no balance sheet), and
+**investment/savings** (no capital-accumulation mechanism — the recursive-dynamic wrapper in Phase
+7.1 needs this and currently has nothing to update from). These were silently dropped rather than
+carried forward; roadmap.md §Phase 5 now tracks them as **Phase 5d**, reopened Phase 5 debt, not
+new scope. The guiding principle from the roadmap holds: **"toy but honest."** A small, static CGE
+that is *correct* and *transparent*, not a GTAP competitor. Its value is general-equilibrium price
+**and** volume answers with revenue recycling, and a cross-check on Engines 1–2 — not three-decimal
+precision.
 
 Read alongside: `roadmap.md` §Phase 5, `docs/documentation-standard.md` (every model doc is
 equation-level with citations), `docs/validation.md` (standing validation suite), and the

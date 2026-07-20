@@ -43,10 +43,17 @@ factor endowments, CPI numéraire, a carbon price as a per-unit emissions cost w
 Armington imports and CET exports with a rest-of-world account — chosen automatically when the SAM
 carries a `ROW` account.
 
-**Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today),
-savings/investment dynamics, heterogeneous households, and a distortionary labour-tax wedge (so the
+**Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today);
+a **government/fiscal account** (carbon-tax revenue is collected and recycled in the same period —
+there is no balance sheet, so it cannot run a deficit/surplus or fund non-recycled spending); a
+**genuine energy nest** (KL–E–M — energy is a plain Leontief/CES intermediate today, not a
+separable nest a carbon price can shift substitution within); **savings/investment** (no
+capital-accumulation mechanism, so Phase 7's recursive-dynamic wrapper has nothing real to update
+between years); heterogeneous households; and a distortionary labour-tax wedge (so the
 "double-dividend" channel that would distinguish labour-tax-cut from lump-sum recycling in a
-*single*-household model). These are the documented next sub-phases.
+*single*-household model). Roadmap Phase 5.2 originally specified the government account,
+investment, and energy nest — they were dropped rather than carried forward, and are now tracked as
+**Phase 5d** (`roadmap.md` §Phase 5).
 
 ## 2. Notation
 

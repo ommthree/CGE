@@ -209,7 +209,7 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 **Risks:** the PE-tier GVA/GDP are indicative and will move under GE substitution — label them exactly as Engine 2's volumes are labelled; **do not let the interest-rate overlay be read as a real forecast** — it is the item most likely to be over-interpreted, so it is opt-in and caveated.
 **Depends on:** P4 (needs the volume response for real GVA) for the full PE tier; the deflator alone needs only P1/P2. **Unblocks:** real/nominal reporting everywhere; feeds the P5 credibility cross-checks and the P7 dynamic GDP-growth paths.
 
-### Phase 5 — Engine 3: static CGE (6–12 wk) ⚠ the hard part — ✅ COMPLETE (single-region + RoW): solver, SAM, recycling, Armington/CET open economy, CES value added, sensitivity sweeps
+### Phase 5 — Engine 3: static CGE (6–12 wk) ⚠ the hard part — pilot core ✅ done; macro closure (5.2, 5d) reopened as outstanding, not new scope
 
 > **Progress:** the **solver gate (5.0)**, **SAM construction & balancing (5.1)**, and the
 > **correctness-first pilot (5.2a)** are built and green. `cge.engines.cge_static` calibrates to a
@@ -251,11 +251,31 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 > **cross-region carbon leakage** (a carbon price in one region relocates production and raises
 > imports from partners); results are region-tagged.
 >
-> **Remaining (deferred):** the GE tier of the macro aggregates (native per-sector GVA + capital
-> rental rate — the rental rate is already emitted as a factor price); a **live-EXIOBASE** open/multi
-> SAM build (the offline test MRIO works, including an IOSystem-driven build for the single-region
-> open economy — the multi-region side still requires a supplied SAM); per-cell (rather than
-> uniform) trade elasticities; and an IOSystem→multi-region-SAM builder.
+> **Remaining, build-only (deferred):** the GE tier of the macro aggregates (native per-sector GVA +
+> capital rental rate — the rental rate is already emitted as a factor price); a **live-EXIOBASE**
+> open/multi SAM build (the offline test MRIO works, including an IOSystem-driven build for the
+> single-region open economy — the multi-region side still requires a supplied SAM); per-cell
+> (rather than uniform) trade elasticities; and an IOSystem→multi-region-SAM builder.
+>
+> **Correction (2026-07, prompted by an independent review): Phase 5 is not fully complete —
+> government, savings/investment, and the energy nest were dropped silently, not carried forward.**
+> The pilot above ("5.2a") is a genuine, correctness-first CGE core: it replicates its benchmark,
+> satisfies homogeneity and Walras, and demonstrates revenue recycling, Armington/CET trade, CES
+> value added, and true multi-region bilateral clearing. But **5.2's own original spec** (below)
+> called for a **government/fiscal account**, **savings/investment** (capital accumulation, not
+> just a factor endowment), and a **genuine energy nest** (KL–E–M, not KL with energy as a plain
+> intermediate) — **none of which exist in the implemented model.** Carbon-tax revenue is a
+> pass-through (collected and immediately recycled in the same period; there is no government
+> balance sheet to hold it), there is no investment/savings mechanism (so **Phase 7.1's recursive
+> dynamics, which explicitly need "savings/investment → next-year capital stock", currently have
+> no real mechanism to update from** — capital accumulation there would be imposed bookkeeping, not
+> a modelled decision), and energy is just another Leontief/CES input with no separable nest a
+> carbon price can shift substitution within. These were listed as "remaining, later enhancement"
+> in earlier drafts of this roadmap but dropped from the "remaining (deferred)" list above when
+> Phase 5's header was marked complete — an honesty gap in the roadmap itself, not just the model.
+> **They are reopened as Phase 5d below** — carried-forward Phase 5 debt, not new scope — and are a
+> prerequisite for Phase 7b (a baseline/pathway harmonizer is low-value without a government
+> account and an energy nest to harmonize NGFS's fiscal- and energy-transition pathways against).
 
 > **Detailed plan: [`docs/phase-5-plan.md`](docs/phase-5-plan.md)** — solver-first sequencing,
 > equation-level model structure, SAM balancing with an audit trail, the standard CGE
@@ -272,10 +292,11 @@ solver + termination status; a non-optimal solve raises (never returns numbers).
 - ✅ Value added derived from the IO identity and split capital/labour by a documented assumption; RAS balancer (`balance.py`) for the thin-data path; SAM-specific `QualityReport` (`quality.py`): balance, **aggregate preservation**, adjustment audit, negative-cell + assumed-share flags — surfaced in the run manifest, and a failing SAM is rejected.
 - **DoD (met for the closed single-region SAM):** balanced SAM reproducing source aggregates to 1e-6 with an audit trail; the CGE calibrates on it and replicates its benchmark to machine precision (`replicates_on_built_sam` validation check). Runs on the offline EXIOBASE-shaped test build; a live-EXIOBASE CGE gate is a follow-up.
 
-**5.2 Model core (2–4 wk)**
-- Static CGE in pyomo/IPOPT: nested CES production (KL–E–M nesting so carbon pricing can shift the energy nest), Armington imports / CET exports, household demand (Cobb-Douglas first, LES if needed), government with carbon-tax revenue and recycling options (lump-sum vs labour-tax cut), investment, standard closure choices (recommend: savings-driven, fixed trade balance, numéraire = CPI), square-model and degrees-of-freedom checks.
-- Pilot single-region model first; extend to multi-region only once the pilot passes 5.3's tests.
-- **DoD:** model solves from the SAM; equation/variable count documented; closures switchable by config.
+**5.2 Model core (2–4 wk) — ✅ pilot done; government/investment/energy-nest reopened as 5d**
+- ✅ Static CGE in pyomo/scipy: Armington imports / CET exports, household demand (Cobb-Douglas), carbon-tax revenue with recycling options (lump-sum vs labour-tax cut, as a same-period pass-through), square-model and degrees-of-freedom checks (proven square via the replication gate).
+- ⏳ **Not built, reopened as 5d:** nested CES production with a genuine **energy nest** (KL–E–M, so carbon pricing can shift substitution *within* the energy bundle, not just KL); a **government/fiscal account** (the tax is collected and recycled same-period with no balance sheet — cannot carry a deficit/surplus or fund non-recycled spending); **investment/savings** (standard closure choices — savings-driven, fixed trade balance — were never implemented; there is no capital-accumulation mechanism for 7.1 to update between years).
+- Pilot single-region model first; extend to multi-region only once the pilot passes 5.3's tests. (Done — see "Also complete" above and §8a in cge-static.md.)
+- **DoD:** model solves from the SAM; equation/variable count documented; closures switchable by config. **Met for the pilot's own scope**; not met for the government/investment/energy-nest scope this section originally specified — see 5d.
 
 **5.3 Calibration & credibility tests (2–4 wk) — ✅ correctness battery + revenue recycling + elasticity sensitivity sweeps done**
 - ✅ Benchmark replication (zero shock reproduces the SAM to machine precision), ✅ homogeneity, ✅ Walras' law — in CI (toy + real EXIOBASE SAM).
@@ -286,6 +307,43 @@ solver + termination status; a non-optimal solve raises (never returns numbers).
 **Decisions forced:** nesting structure; closure defaults; single- vs multi-region sequencing (recommendation above); how much tax detail to fabricate vs omit.
 **Risks:** SAM balancing is a known rabbit hole — timebox it and document rather than perfect; IPOPT convergence (mitigate: good starting values = benchmark data, gradual shock ramping); results sensitive to elasticities (mitigate: sweeps + Engine 2 cross-check, keep "toy but honest" framing).
 **Depends on:** P1, P4 (elasticities). **Unblocks:** GE price *and* volume answers; P7.
+
+### Phase 5d — Complete the macroeconomic closure (4–8 wk) — reopened Phase 5 debt, not new scope
+
+**This phase is not new scope.** Every item below was specified in 5.2's original design (a
+government account, savings/investment, an energy nest) and is being reopened, not invented — see
+the Phase 5 correction note above. It is sequenced as its own phase because it is now a real chunk
+of independent work, and because it is a genuine **prerequisite for Phase 7b** (a baseline/pathway
+harmonizer is low-value without a government account and an energy nest to harmonize NGFS's fiscal-
+and energy-transition pathways against) and for **Phase 7.1's recursive dynamics** (which need a
+real savings-investment mechanism to update capital between years — without this, capital
+accumulation in the dynamic wrapper is imposed bookkeeping, not a modelled decision).
+
+| # | Task | Effort |
+|---|---|---|
+| 5d.1 | **Government/fiscal account.** A tracked government balance sheet: carbon-tax revenue, subsidies, other tax instruments, and public spending as explicit SAM accounts (not a same-period collect-and-recycle pass-through); a `fiscal_balance` result variable; the closure choice (balanced budget vs deficit-financed) is a first-class, documented assumption | 1–2 wk |
+| 5d.2 | **Savings and investment.** A savings-investment identity closing the household/government/RoW accounts; investment demand as a new final-demand component with its own sectoral composition (not folded into household consumption); the standard closure choices from the original 5.2 spec (savings-driven investment as default, fixed vs flexible trade balance as alternatives) | 1–2 wk |
+| 5d.3 | **Capital accumulation, depreciation, and premature retirement.** Extends 5d.2 with a capital stock that depreciates and accumulates from investment — the actual mechanism Phase 7.1's recursive-dynamic wrapper needs between static solves (7.1 currently has no real capital-accumulation identity to call); premature asset retirement (e.g. stranded fossil capital under a carbon shock) as a documented, switchable option | 1 wk, shared with 7.1 |
+| 5d.4 | **Labour market: employment/unemployment and wages.** Today's factor market clears with a fixed endowment and a flexible wage (full employment by construction); add a documented labour-market closure alternative (a wage floor/curve with involuntary unemployment) so factor-market outcomes aren't always "full employment, wage adjusts" by assumption | 1–2 wk |
+| 5d.5 | **A genuine energy nest (KL–E–M).** Today energy is a plain Leontief/CES intermediate like any other; nest it separately (capital-labour, energy, materials) so a carbon price can shift substitution *within* the energy bundle (e.g. toward electricity, away from fossil fuels) rather than only across sectors. This is the single highest-value item for anything touching NGFS energy-transition pathways (Phase 7b) | 2–3 wk |
+| 5d.6 | **Adaptation and transition investment.** A documented shock/response channel: a scenario can specify adaptation or transition capital expenditure (e.g. retrofitting, energy-efficiency investment) that competes with 5d.2's investment demand and is reported as its own line item, not absorbed silently into aggregate investment | 1 wk |
+| 5d.7 | **Alternative external-balance and fiscal closures.** Beyond the fixed-trade-balance / lump-sum-recycling defaults already implemented: a flexible-trade-balance option and a government closure alternative (e.g. deficit-financed spending), each documented and switchable by config, with the standard correctness battery re-run under each | 1 wk |
+
+**Standard scenario output set (DoD across 5d):** every CGE run — closed, open, or multi-region —
+reports GDP, GVA, consumption, investment, employment, wages, inflation, trade, fiscal balance,
+capital returns, emissions, and energy use as named result variables, each provenance-tagged and
+each with an equation-level definition in `docs/models/cge-static.md`.
+**Decisions forced:** government closure (balanced-budget default, recommend deficit-financed as
+the documented alternative); investment closure (savings-driven default, per the original 5.2
+plan); whether labour-market closure defaults to full employment or exposes unemployment as an
+option (recommend: full employment default, unemployment as an explicit opt-in, clearly labelled).
+**Risks:** this is real new equation-writing, not wiring — expect it to take the same "correctness
+first" discipline as 5.0–5.3 (replication/homogeneity/Walras must still hold under every new
+closure). The energy nest (5d.5) is the item most likely to be asked about by a CGE-literate
+reviewer if skipped, so do not defer it in favour of the softer items (5d.6/5d.7).
+**Depends on:** Phase 5 (5.0–5.3, done). **Unblocks:** Phase 7.1 (recursive dynamics — needs 5d.3's
+capital-accumulation identity); Phase 7b (baseline/pathway harmonizer — needs 5d.1's government
+account and 5d.5's energy nest to harmonize NGFS pathways against).
 
 ### Phase 6 — Nature extension via ENCORE (3–6 wk) — parallel with P4/P5
 
@@ -302,14 +360,47 @@ solver + termination status; a non-optimal solve raises (never returns numbers).
 **Risks:** the concordance is judgement-heavy and the single biggest credibility surface here — cite sources per mapping and treat it as reviewable data, not code. Nature *scenario* design (6.4) is an open research question field-wide; lean on published scenarios and label outputs as illustrative, exactly as for damages in P7.
 **Depends on:** P1 (concordance framework), P2 (propagation). GE-mode nature runs need P5, but 6.1–6.3 and 6.5 don't — **runs in parallel with P4/P5.** **Unblocks:** nature-related exposure and stress answers.
 
+### Phase 6b — Physical nature-state and ecosystem-service scenario modelling (4–8 wk) — after P6
+
+Phase 6 gives **exposure**: which sectors depend on which ecosystem services, and by how much.
+Phase 6b adds the missing **state** layer: a physical model of the ecosystem services themselves,
+so a "30% pollination decline" scenario is a modelled physical trajectory, not an assumed number
+fed straight into 6.4's productivity shock. ENCORE stays the dependency/exposure layer (Phase 6)
+unchanged; this phase sits upstream of it.
+
+| # | Task | Effort |
+|---|---|---|
+| 6b.1 | **Physical ecosystem-service state variables.** For each service ENCORE scores (pollination, water, soil, forestry, fisheries, land-use, …), a documented physical state variable and its baseline level, sourced from published environmental accounts (not fabricated) | 1–2 wk |
+| 6b.2 | **Spatial degradation and restoration pathways.** Scenario-driven trajectories for each state variable — degradation (deforestation, aquifer depletion, soil erosion) and restoration (reforestation, water-management investment) — spatially resolved where the source data supports it, aggregated to the model's regions otherwise | 1–2 wk |
+| 6b.3 | **Channel-specific translation to productivity/input constraints.** A documented function per channel (water availability → agricultural yield; pollinator decline → crop-specific output; soil degradation → agricultural productivity; forestry/fisheries depletion → sectoral input availability) translating physical state into the `NatureStress` shocks Phase 6.4 already consumes | 1–2 wk |
+| 6b.4 | **Thresholds, nonlinearities, and recovery assumptions.** Ecosystem degradation is not always linear (tipping points, slow recovery even after restoration) — expose threshold/nonlinearity and recovery-rate assumptions as first-class, documented parameters per channel, not hard-coded constants | 1 wk |
+| 6b.5 | **Double-counting check against physical climate damages (Phase 7c).** Some nature degradation (e.g. heat-driven soil/water stress) is also a pathway in 7c's physical-risk channel library. A documented reconciliation rule (which channel owns which physical mechanism) and an automated check that a scenario invoking both does not apply the same physical effect twice — **this is a DoD criterion, not an afterthought**, since it is exactly the kind of gap a future review would catch | 1 wk |
+
+**DoD:** a nature scenario specifies a physical degradation/restoration pathway (not a bare
+productivity-shock number); it propagates through 6b.3's translation into the existing `NatureStress`
+shock vocabulary and runs end-to-end through an economic engine; the double-counting check (6b.5)
+passes for any scenario combining nature and climate-damage shocks; model doc covers every channel's
+translation function with citations.
+**Decisions forced:** which channels get a full physical-state model first (recommend: water and
+agriculture — best-sourced published data); threshold/nonlinearity defaults (recommend: linear
+default, documented nonlinear option per channel, not silently assumed away).
+**Risks:** same as 6.4 — nature *scenario* design is a live research question field-wide; lean on
+published pathways (IPBES, WWF, national ecosystem accounts) and label outputs as illustrative.
+The double-counting check (6b.5) is easy to skip under schedule pressure and is the single most
+likely thing a reviewer will ask about if this phase ships without it.
+**Depends on:** P6 (ENCORE exposure/concordance — 6b feeds *into* 6.4's shock vocabulary, doesn't
+replace it). **Unblocks:** physically-grounded nature scenarios; the double-counting reconciliation
+also depends on 7c existing (or at least its channel list being drafted) to know what to check
+against.
+
 ### Phase 7 — The pathway stack: "a CGE that speaks IAM" (6–12 wk for 7.1–7.3, then ongoing)
 
 A true process IAM (GCAM/REMIND-class) is a multi-year team effort; the achievable and standard alternative — used by most financial-sector "IAM-based" tools — is to give the CGE dynamics and consume published pathways.
 
 | # | Task | Effort |
 |---|---|---|
-| 7.1 | **Recursive-dynamic wrapper.** Solve any `general_equilibrium` engine year-by-year to 2050, updating capital (savings/investment → next-year capital stock with depreciation), labour (exogenous demographics), and productivity (exogenous trend) between static solves. No perfect foresight — dynamics are bookkeeping between solves, not a new solution concept | 4–8 wk |
-| 7.2 | **NGFS scenario reader.** Adapter: open NGFS database (IIASA) → shock paths in the standard vocabulary (carbon price path, GDP/population trajectories per region) for Net Zero 2050 / Delayed Transition / Current Policies etc. Transition intelligence is inherited from the process IAMs that built the scenarios; our model adds sector/supply-chain resolution | 1–2 wk |
+| 7.1 | **Recursive-dynamic wrapper.** Solve any `general_equilibrium` engine year-by-year to 2050, updating capital (savings/investment → next-year capital stock with depreciation), labour (exogenous demographics), and productivity (exogenous trend) between static solves. No perfect foresight — dynamics are bookkeeping between solves, not a new solution concept. **Needs Phase 5d.3's capital-accumulation identity** — without it there is no real savings/investment mechanism to update capital from, and this would be imposed bookkeeping rather than a modelled decision | 4–8 wk |
+| 7.2 | **NGFS scenario reader.** Adapter: open NGFS database (IIASA) → shock paths in the standard vocabulary (carbon price path, GDP/population trajectories per region) for Net Zero 2050 / Delayed Transition / Current Policies etc. Transition intelligence is inherited from the process IAMs that built the scenarios; our model adds sector/supply-chain resolution. **Raw NGFS pathways feed Phase 7b's harmonizer** before driving the model — imposing NGFS's own GDP/population path directly while also reporting GDP as an endogenous CGE result double-counts the same variable; 7b reconciles this | 1–2 wk |
 | 7.3 | **Climate module (FaIR).** One-way coupling behind the climate slot: model emissions in → temperature path out, reported alongside economic results | 1–2 wk |
 | 7.3b | **Temperature-target back-solve.** Given a temperature (or carbon-budget) target, invert the forward chain (carbon price → emissions → FaIR → temperature) to find the **carbon-price path** that hits it, then run forward for the sector impacts. A 1-D root-find per period (the chain is monotone), wrapping 7.1 + 7.3; reports the implied price path + resulting temperature, and flags infeasible targets rather than returning garbage. This is the credible, target-driven "IAM-ish" mode. See `docs/energy-and-temperature-plan.md`. | 1–2 wk |
 | 7.4 | **Damage feedback (optional, handle with care).** Temperature → damage function → productivity shocks fed back as standard shocks. **Distinct from 7.3b:** 7.3b uses only emissions→temperature (well-established); 7.4 adds temperature→economy through a damage function (the most contested object in climate economics — order-of-magnitude disagreement). Implement only with published functions (DICE, Burke–Hsiang–Miguel), labelled as scenario illustrations, with the choice surfaced as a first-class assumption in the GUI | 1–2 wk plumbing |
@@ -317,7 +408,119 @@ A true process IAM (GCAM/REMIND-class) is a multi-year team effort; the achievab
 
 **DoD (7.1–7.3b):** pick an NGFS scenario OR a temperature target in the GUI → the recursive-dynamic engine produces a 2020→2050 path of sector prices/volumes per region, with the associated (or target-hitting) carbon-price and temperature paths, all provenance-tagged.
 **Known limits even when complete:** no endogenous technological learning; energy as CES aggregates, not discrete technologies; no land-use module. The model traces the sectoral consequences of pathways others generate; it does not generate novel pathways. Say so in the docs.
-**Depends on:** P5 for GE-mode dynamics (7.2 and 7.3 can be built earlier against Engines 1–2).
+**Depends on:** P5 for GE-mode dynamics (7.2 and 7.3 can be built earlier against Engines 1–2); 7.1 additionally needs 5d.3 (capital accumulation).
+
+### Phase 7b — Baseline construction, pathway harmonization, and macroeconomic consistency (6–10 wk) — after 7.2, needs 5d
+
+A scenario needs a credible counterfactual **baseline**, not just a sequence of shocks laid on top
+of the benchmark year. Phase 7.2 gives raw access to NGFS's own trajectories; this phase reconciles
+them with the model's own country/sector detail instead of naively overwriting it, and is the
+direct consulting-grade upgrade from "we ran a shock on the benchmark SAM" to "we ran a shock on a
+credible reference pathway."
+
+| # | Task | Effort |
+|---|---|---|
+| 7b.1 | **Country and sector baselines.** Reconcile the model's benchmark-year SAM trajectory forward against published country/sector forecasts (IMF WEO, OECD Economic Outlook, national statistical-office projections where available); document the reconciliation method and every source per country | 1–2 wk |
+| 7b.2 | **Structural trajectories.** Documented, sourced paths for structural change (sectoral GDP-share drift), productivity growth, population, labour-force participation, and emissions intensity — the exogenous drivers 7.1's recursive wrapper needs between static solves, replacing ad hoc "flat trend" assumptions | 1–2 wk |
+| 7b.3 | **NGFS downscaling.** A transparent, documented method to downscale NGFS's coarse regions/sectors onto the model's finer EXIOBASE-shaped region/sector grid (e.g. GDP-share or historical-pattern based); the downscaling weights are provenance-tagged data, reviewable like the ENCORE concordance in Phase 6 | 1–2 wk |
+| 7b.4 | **Reconciliation rules (the core deliverable).** A documented rule set so NGFS's own GDP/population path is not simultaneously **imposed** as an exogenous driver and **reported** as an endogenous CGE result for the same variable — pick which variables are exogenous inputs (population, and typically productivity trend) vs which the CGE computes (GDP, sectoral output, trade), and make that split an explicit, auditable assumption per scenario, not an implementation accident | 1–2 wk |
+| 7b.5 | **Energy-mix, electrification, and technology-cost pathways.** Documented, sourced trajectories for the energy mix, electrification rate, and technology cost curves implied by each NGFS scenario, feeding the energy nest from Phase 5d.5 — this is the piece that actually makes "a CGE that speaks IAM" (Phase 7's own framing) speak the *energy-transition* part of IAM output, not just the carbon-price part | 1–2 wk |
+| 7b.6 | **Automated cross-variable consistency checks.** A standing check (in the same spirit as `cge.validation`) that GDP, energy, emissions, carbon price, and temperature stay mutually consistent across a harmonized scenario — catches, e.g., a downscaled energy pathway that implies emissions inconsistent with the scenario's own carbon-price/temperature path | 1 wk |
+
+**DoD:** running an NGFS scenario produces a harmonized baseline (not the raw NGFS numbers pasted
+in, nor the model's benchmark year naively extrapolated) with every reconciliation rule, downscaling
+weight, and structural-trajectory source documented and provenance-tagged; the consistency checks
+(7b.6) run automatically and fail loudly on an internally inconsistent harmonized scenario.
+**Decisions forced:** which variables are exogenous drivers vs endogenous CGE outputs (7b.4 — the
+single most consequential judgement call in this phase, make it explicit); which published baseline
+source to anchor country forecasts to when they disagree (recommend: IMF WEO as the default, with
+the choice documented and switchable).
+**Risks:** downscaling and reconciliation are judgement-heavy, similar in character to the ENCORE
+concordance (Phase 6.2) — treat every weight and rule as reviewable data with a cited source, not
+buried logic. This phase has the highest "looks precise, isn't" risk in the whole roadmap if the
+reconciliation rules aren't made explicit and auditable.
+**Depends on:** Phase 7.2 (NGFS reader — raw pathways to harmonize) and Phase 5d (government account
++ energy nest to harmonize NGFS's fiscal and energy-transition content against — low-value without
+them). **Unblocks:** credible baselines for every downstream pathway scenario; Phase 7c's driver
+decomposition (needs a harmonized baseline to decompose deviations *from*).
+
+### Phase 7c — Physical-risk channels, adaptation, uncertainty ensembles, and driver attribution (6–10 wk) — after 7b, P6b
+
+Two related consulting-grade upgrades: (1) the generic temperature-damage function from 7.4 is too
+aggregated for hazard-specific consulting scenarios — replace it with a channel library; (2) the
+elasticity sweeps from Phase 5.3 are a good start on uncertainty but are single-parameter and don't
+attribute *why* a result moved.
+
+| # | Task | Effort |
+|---|---|---|
+| 7c.1 | **Physical-risk channel library.** Hazard-specific channels replacing 7.4's single generic damage function: heat-related labour productivity, capital destruction and accelerated depreciation (feeds Phase 5d.3), agriculture and water availability (shares a translation layer with Phase 6b.3 — see the double-counting check there), energy demand and generation efficiency, transport/infrastructure disruption. Each channel published-function-based and labelled illustrative, exactly as 7.4 already requires | 2–3 wk |
+| 7c.2 | **Adaptation costs and avoided damages.** For each channel in 7c.1, a documented adaptation-investment option (competes with Phase 5d.6's transition investment) and the avoided-damage accounting it implies, so an adaptation scenario reports both the cost and the avoided loss, not just one side | 1 wk |
+| 7c.3 | **Parameter ensembles and scenario ranges.** Beyond Phase 5.3's single-elasticity sweeps: ensembles over damage-function choice, elasticity sets, and data vintage, run as a documented probability-free range (not a false-precision probability distribution) | 1–2 wk |
+| 7c.4 | **Uncertainty decomposition and sensitivity ranking.** Report model uncertainty (parameter/structural choice), data uncertainty (vintage/source), and scenario uncertainty (which NGFS/damage scenario) **separately**, with a sensitivity ranking of which inputs move the result most; quantile outputs where the ensemble supports them | 1–2 wk |
+| 7c.5 | **Driver decomposition.** Decompose a scenario's deviation from its Phase 7b baseline into carbon-policy, energy-transition, physical-climate, and nature contributions, with explicit interaction terms where effects don't add independently (flagged, not silently summed) — this is the client-presentation deliverable the rest of 7c exists to support | 1–2 wk |
+
+**DoD:** a scenario report includes a driver-decomposition chart (policy / energy / climate / nature
++ interaction terms) that sums to the total deviation from baseline; every physical-risk channel in
+7c.1 has a model doc entry with its source function cited; sensitivity rankings and the
+model/data/scenario uncertainty split are standard scenario outputs, not a bespoke one-off analysis.
+**Decisions forced:** how to present interaction terms when effects are materially non-additive
+(recommend: report the interaction as its own labelled term rather than allocating it to one driver).
+**Risks:** same character as Phase 7.4 — published damage functions disagree by an order of
+magnitude; treat every channel as a **labelled scenario illustration**, not a forecast, and say so
+as loudly as 7.4 already does. Coordinate with Phase 6b.5's double-counting check so a scenario using
+both nature-state and physical-climate channels doesn't apply the same physical mechanism twice.
+**Depends on:** Phase 7b (a baseline to decompose deviations from); Phase 6b (the nature-state
+channels the double-counting check needs to know about). **Unblocks:** hazard-specific consulting
+scenarios; the driver-attribution deliverable Phase 8's client reporting packages consume directly.
+
+### Phase 8 — Consulting delivery, model governance, and validation (8–14 wk) — after 7b/7c
+
+Everything through Phase 7c makes the platform a genuinely capable modelling engine. Phase 8 is
+what converts that into something a consultancy can put its name behind in a paid engagement: **(1)
+empirical evidence that the model's outputs are credible**, and **(2) the delivery/governance
+infrastructure a real engagement needs.** These are split into two workstreams within the phase
+because they have different risk profiles — validation is a research/credibility risk, delivery is
+an engineering/process risk — but both gate "ready for paid client work," so they're one phase.
+
+**8a. Empirical calibration and validation**
+
+| # | Task | Effort |
+|---|---|---|
+| 8a.1 | **Historical hindcasts.** Re-run the model against an earlier data vintage and compare its projected trajectory to what actually happened, for at least one carbon-price or trade-shock episode with a documented real-world outcome | 1–2 wk |
+| 8a.2 | **Calibration against observed sector responses.** Compare modelled sector responses to energy-price, trade, and carbon-price shocks against published empirical estimates (not just theory-consistent direction, which the standing validation suite already checks) | 1–2 wk |
+| 8a.3 | **Cross-model comparison.** Compare headline results against GTAP-based published studies, NGFS's own macro outputs, and at least one other established model, on a shared scenario where possible; document where and why results diverge | 1–2 wk |
+| 8a.4 | **Country/sector calibration targets with acceptance thresholds.** Documented, sourced target values (not just "plausible sign") and an explicit tolerance band per target, so a calibration run can pass/fail against a stated bar rather than a subjective read | 1 wk |
+| 8a.5 | **Governed parameter registry.** Every elasticity, damage-function choice, and assumed share gets a registry entry: source, confidence level, applicable geography/sector, and a review date — the single source of truth `RunManifest.assumptions` should trace back to, replacing scattered per-module defaults | 1–2 wk |
+| 8a.6 | **Independent model validation and a formal report.** A written validation report (methodology, results, limitations) reviewable by someone who did not build the model; documented limitations and an approved-use boundary **per module**, not just for the platform as a whole | 1–2 wk |
+
+**8b. Consulting engagement and governance layer**
+
+| # | Task | Effort |
+|---|---|---|
+| 8b.1 | **Engagement workspaces.** Frozen data build, assumption set, and model/engine version per engagement, so a client deliverable is reproducible after the platform itself has moved on | 1–2 wk |
+| 8b.2 | **Client-specific classifications, concordances, and expert overrides.** Client sector/region mappings distinct from the platform's default concordances; expert overrides to any calibrated parameter that are **visible and versioned** (an override is data, reviewable like the ENCORE concordance, never a silent code edit) | 1–2 wk |
+| 8b.3 | **Approved scenario packs and locked reference scenarios; batch comparison.** A curated, sign-off-gated set of reference scenarios per engagement; batch scenario comparison in the GUI (reusing Phase 7.5's scenario-library/cross-run-comparison groundwork) | 1–2 wk |
+| 8b.4 | **Review, approval, and sign-off workflow.** A tracked state machine (draft → reviewed → approved) for scenario packs and deliverables, with an audit trail of who approved what and when | 1 wk |
+| 8b.5 | **Deliverable generation.** Excel workbooks, report-quality charts, and an automatically-generated methodology appendix (assembled from the existing per-engine model docs and the run's own assumption dump — not hand-written per engagement); reproducible tables formatted for PowerPoint/Word | 1–2 wk |
+| 8b.6 | **API, auth, RBAC, client-data isolation, audit logs.** Programmatic access (building on Phase 7.5's optional API layer) with authentication, role-based access control, per-client data isolation, and an audit log of who ran/viewed what | 2–3 wk |
+| 8b.7 | **Commercial licensing and data-redistribution review.** A documented review of the licensing terms for every third-party data source in use (EXIOBASE, ENCORE, NGFS, and any future source) against the platform's intended commercial use and redistribution model — this is a legal/compliance gate, not an engineering task, but it blocks paid delivery if skipped | 1 wk, legal review |
+
+**DoD:** a validation report exists and is reviewable by someone outside the build; every
+calibration target has a documented source and tolerance; an engagement can be stood up as a frozen
+workspace, produce an approved scenario pack, and generate a client-ready deliverable (workbook +
+charts + methodology appendix) without hand-editing the platform's own code or docs; the licensing
+review is signed off for every data source actually in use.
+**Decisions forced:** how much hindcast/cross-model-comparison evidence is "enough" before calling
+the model validated for a given use case (recommend: document the acceptance bar per module up
+front, in 8a.4, rather than deciding case-by-case under client pressure); build vs buy for
+auth/RBAC (recommend: buy — this is not the platform's differentiator).
+**Risks:** 8a is a genuine research effort, not a checklist — expect hindcasts and cross-model
+comparisons to surface real disagreements, not just confirm the model. Treat that as the point, not
+a failure: a validation report that only ever says "matches" is not credible. 8b.7 (licensing) is
+easy to treat as a formality and is the one item here that can block commercial delivery entirely
+if it surfaces a real restriction late.
+**Depends on:** Phase 7b/7c (the model needs a harmonized baseline and driver attribution before a
+hindcast or cross-model comparison is a fair test). **Unblocks:** paid consulting engagements.
 
 ---
 
@@ -326,11 +529,16 @@ A true process IAM (GCAM/REMIND-class) is a multi-year team effort; the achievab
 ```
 P0 ─▶ P1 ─▶ P2 ─▶ P3 (GUI v1)
             │
-            ├──▶ P4 ─▶ P4b ─▶ P5 ─▶ P7
-            │         (macro aggregates: GVA/GDP/deflator, real vs nominal;
-            │          native + exact in P5; GDP *growth* needs 7.1)
-            │
-            └──▶ P6 (parallel with P4/P5; GE-mode nature runs need P5)
+            ├──▶ P4 ─▶ P4b ─▶ P5 ─▶ P5d ─▶ P7 (7.1 needs 5d.3; 7.2 feeds 7b)
+            │         (macro aggregates:         │
+            │          GVA/GDP/deflator,         └─▶ P7b ─▶ P7c ─▶ P8
+            │          real vs nominal;              (baseline/    (physical      (validation +
+            │          native + exact in P5;          harmonizer,   channels,      governance +
+            │          GDP *growth* needs 7.1)         needs P5d)   uncertainty,   delivery)
+            │                                                       attribution,
+            │                                                       needs P6b)
+            └──▶ P6 ─▶ P6b (nature-state layer; P6b.5 double-counting check needs P7c)
+                 (parallel with P4/P5; GE-mode nature runs need P5)
 ```
 
 ## 4. Effort & milestones
@@ -341,10 +549,14 @@ P0 ─▶ P1 ─▶ P2 ─▶ P3 (GUI v1)
 | End P4 | ~8–13 wk | Add production-**volume** responses (finite-change demand → Leontief propagation) with explicit uncertainty ranges |
 | End P4b | ~9–15 wk | **GVA per sector/country, GDP per country, and a deflator** per time-step, in **real and nominal** terms (indicative PE tier; native and exact in the CGE) |
 | End P6 (skipping P5) | ~11–19 wk | Nature dependency/impact exposure of any good, incl. via its supply chain, plus nature stress runs |
-| End P5 | ~16–25 wk | General-equilibrium price + volume answers with carbon-tax revenue recycling |
+| End P5 | ~16–25 wk | General-equilibrium price + volume answers with carbon-tax revenue recycling (Armington/CET open economy + true multi-region bilateral trade — no government account, investment, or energy nest yet: see P5d) |
+| End P5d | ~20–33 wk | A government/fiscal account, savings-investment with capital accumulation, an energy nest, and the full standard scenario output set (GDP, GVA, consumption, investment, employment, wages, fiscal balance, capital returns) — the macro closure Phase 5 originally specified |
+| End P6b | ~24–41 wk | Physically-grounded nature scenarios (degradation/restoration state, not a bare productivity-shock number) |
 | Full incl. P7 pathway stack | 6–12 months | NGFS-driven dynamic pathways to 2050 with temperature reporting, multi-source data, scenario library |
+| Full incl. P7b/7c | +4–5 months beyond P7 | Harmonized country/sector baselines reconciled to published forecasts; hazard-specific physical-risk channels; uncertainty ensembles with model/data/scenario decomposition; client-presentable driver attribution |
+| Full incl. P8 | +2–3.5 months beyond P7c | Empirically validated (hindcasts, cross-model comparison, governed parameter registry) and consulting-delivery-ready (engagement workspaces, approval workflow, client deliverables, API/RBAC, licensing sign-off) |
 
-Sequencing note: P3, P4, and P6a all deliver standalone value and can be reordered to taste. If forced to choose a minimal useful product, **P0→P1→P2→P3→P4→P6a** (cost + volumes + nature exposure, no CGE) is the highest value-per-week path and defers the hardest work.
+Sequencing note: P3, P4, and P6a all deliver standalone value and can be reordered to taste. If forced to choose a minimal useful product, **P0→P1→P2→P3→P4→P6a** (cost + volumes + nature exposure, no CGE) is the highest value-per-week path and defers the hardest work. Within the consulting-grade extensions (P5d/P6b/P7b/P7c/P8), **P5d is the highest-priority single item** — it is reopened Phase 5 debt (not new scope), and P7b/P8's value is materially lower without a government account and energy nest to harmonize pathways against and validate.
 
 ### Planned scenario-input extensions (detail in `docs/energy-and-temperature-plan.md`)
 
@@ -372,7 +584,7 @@ Two requested capabilities that fit the existing seams rather than adding new ph
 - **Provenance everywhere.** No result exists without its data version, engine version, scenario hash, and assumption dump. This is what lets the tool be trusted and compared across runs.
 - **Documentation as a deliverable — to equation level, with citations.** Every engine, module, and non-trivial data transformation ships a **model-description doc** stating the method *to equation level* (numbered equations, well-posedness argued) and citing the peer work it derives from (papers/textbooks in `docs/references.md`, institutional reports for applied choices). This is a **definition-of-done criterion** per phase, not optional — it is what makes results defensible to reviewers who know the field. The standard is `docs/documentation-standard.md`; the worked example is `docs/models/io-price-model.md`. Each doc's assumptions must match the engine's `RunManifest.assumptions`. ADRs record cross-cutting *why* (data format, closures, concordance choices).
 - **Assumptions visible in the GUI.** Every run page prints the assumptions behind its numbers. For a screening/stress tool this is the single highest-leverage credibility feature.
-- **A learning-path user guide (`docs/user-guide.md`) — kept current with each engine.** Distinct from the equation-level model docs (which target a CGE-literate reviewer): a *slow, hands-on* walkthrough that leads a new operator from the simplest run to the full feature set, **explaining the methodology conceptually** (what a Leontief inverse is, why a numéraire matters, what revenue recycling / carbon leakage / a double dividend *mean*) alongside **practical examples the reader runs themselves** after each step. It is a deliverable, not an afterthought: **every engine/feature that lands adds its guided step + a runnable example scenario before the phase is done.** *Current gap: the guide stops at Engine 2 — it needs a Phase-5 CGE arc (closed run → revenue recycling / double dividend → open economy + carbon leakage → CES substitution → elasticity sweeps), plus example scenarios for the open economy and sweeps, which do not yet exist.*
+- **A learning-path user guide (`docs/user-guide.md`) — kept current with each engine.** Distinct from the equation-level model docs (which target a CGE-literate reviewer): a *slow, hands-on* walkthrough that leads a new operator from the simplest run to the full feature set, **explaining the methodology conceptually** (what a Leontief inverse is, why a numéraire matters, what revenue recycling / carbon leakage / a double dividend *mean*) alongside **practical examples the reader runs themselves** after each step. It is a deliverable, not an afterthought: **every engine/feature that lands adds its guided step + a runnable example scenario before the phase is done.** The Phase 5 CGE arc (closed run → revenue recycling → open economy + carbon leakage → CES substitution → elasticity sweeps → multi-region bilateral trade) is done. **Owed, at the appropriate point in each new phase:** a 5d step (government account, savings/investment, the energy nest — what a fiscal closure and a KL–E–M nest mean conceptually, with a runnable example once implemented); a 6b step (physical nature-state scenarios, distinct from the existing 6.x ENCORE-exposure step); a 7b step (what a harmonized baseline is and why NGFS's raw numbers aren't run as-is); a 7c step (reading a driver-decomposition chart, what the uncertainty/sensitivity outputs mean); Phase 8 is delivery infrastructure, not new modelling — it does not need a guide arc of its own, but any new client-facing output format it introduces should get a short "how to read this deliverable" note.
 - **Versioning.** Contracts are semver-tagged; **scenarios** are content-hashed (`scenario_hash`); **data builds** have deterministic human-readable ids (source-version-year-aggregation) and record their reference year and aggregation in provenance. Results record the build id, scenario hash, and versions that produced them. (Content-hashing data builds too — so identical inputs collide and changed inputs diverge — is a tracked improvement, not yet done.)
 
 ---
@@ -391,4 +603,17 @@ Two requested capabilities that fit the existing seams rather than adding new ph
 - **Nature stress *scenarios*** (6.4) and **damage feedbacks** (7.4): the plumbing is easy; deciding what "pollination declines 30%" or "2°C costs Y%" means quantitatively is a live research question. Lean on published scenario/damage sets rather than inventing shocks, and label outputs as illustrative.
 - **Scope creep** is the top schedule risk. The modular design only pays off if each engine stays small. The single best decision available is to hold the P5 CGE to "toy but honest" for v1.
 
-**Bottom line.** The tool is buildable as designed: ~2 months FTE to a useful GUI-driven cost tool, ~4–6 months FTE to volumes + nature exposure + a simple CGE, with the main risks in data (SAM balancing, elasticities) rather than software. The phrase to hold onto: *precise about costs, indicative about volumes, transparent about assumptions.*
+**The consulting-grade extensions (P5d, P6b, P7b, P7c, P8) are a second project, not a tail on the
+first.** Everything through P7 is, at heart, one person building a correct, well-documented,
+"toy but honest" model — feasible solo, on the timelines above. P5d/P6b/P7b/P7c/P8 are a different
+kind of effort: they trade code volume for **empirical/data credibility work** (calibration
+targets, hindcasts, cross-model comparison, harmonization judgement calls) and **delivery
+infrastructure** (auth, RBAC, workflow, licensing) that a research-grade solo build does not
+usually need. Be explicit about this distinction when scoping: shipping P7 does not mean P8 is
+"just polish" — it is the difference between a research tool and a fee-earning deliverable.
+- **P5d is feasible, medium confidence** — same character as P5 itself (well-trodden CGE mechanics, the risk is calibration/closure judgement, not code) and is genuinely a Phase 5 completion, not new risk.
+- **P6b and P7c's physical channels are feasible, medium confidence, same caveat as P6.4/7.4** — the plumbing is straightforward; picking defensible channel-specific translation functions is the real work, and the honest answer is "lean on published functions, label as illustrative," same as the existing damage-function guidance.
+- **P7b is feasible but judgement-heavy** — most similar in character to the ENCORE concordance (P6.2): not hard engineering, but every downscaling weight and reconciliation rule is a reviewable judgement call that will be scrutinized by a CGE-literate client reviewer. Treat it with the same "document every source, treat weights as data" discipline as P6.2, not as a data-plumbing task.
+- **P8's validation workstream (8a) is genuinely hard, manage expectations directly.** Hindcasting and cross-model comparison for a solo-built model will likely surface real disagreements with GTAP-based studies and NGFS's own macro outputs — that is the point of doing it, not a sign it went wrong, but it means 8a needs to be scoped and communicated as an open-ended credibility investment, not a checklist with a fixed end date. **P8's delivery workstream (8b) is ordinary engineering** (auth, workflow, document generation) and should not be over-scheduled relative to 8a.
+
+**Bottom line.** The tool is buildable as designed: ~2 months FTE to a useful GUI-driven cost tool, ~4–6 months FTE to volumes + nature exposure + a simple CGE, with the main risks in data (SAM balancing, elasticities) rather than software. Reaching genuinely defensible, paid-consulting-ready output (through P8) is a further ~6–12 months FTE beyond that, weighted toward the empirical-validation and harmonization judgement calls, not new code volume. The phrase to hold onto: *precise about costs, indicative about volumes, transparent about assumptions* — and, for the consulting-grade tier, *validated where we've checked, and honest about where we haven't.*
