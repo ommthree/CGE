@@ -88,6 +88,15 @@ Note: **GTAP itself (the standard CGE database) is licensed, not open** — this
 
 Effort assumes **one competent person, quantitative background, comfortable in Python but new to CGE modelling**, in full-time-equivalent (FTE) days/weeks. Part-time: scale accordingly. Ranges reflect how much polish/validation you invest. Each phase lists tasks, a definition of done (DoD), the key design decisions it forces, and its main risks.
 
+**Phase headers are solo-project FTE totals — they must equal the sum of that phase's own task
+estimates** (review P2, round 10: two phase headers previously understated their own task totals
+by 4–10 weeks — Phase 5d said "4–8 wk" against task estimates summing to 8–12 wk, and Phase 8 said
+"8–14 wk" against 8a+8b summing to roughly 13–23 wk; both are corrected below). Where a phase
+splits into genuinely independent workstreams that **could** run in parallel with an additional
+person (e.g. Phase 8's 8a validation vs 8b delivery), the header states the solo-FTE total, and a
+parallel-capable **elapsed-time** estimate is called out separately in that phase's own text —
+parallelism reduces calendar time for a team, never the total work for a solo builder.
+
 ### Phase 0 — Foundations & contracts (1–1.5 wk)
 
 | # | Task | Effort |
@@ -252,10 +261,10 @@ Effort assumes **one competent person, quantitative background, comfortable in P
 > imports from partners); results are region-tagged.
 >
 > **Remaining, build-only (deferred):** the GE tier of the macro aggregates (native per-sector GVA +
-> capital rental rate — the rental rate is already emitted as a factor price); a **live-EXIOBASE**
-> open/multi SAM build (the offline test MRIO works, including an IOSystem-driven build for the
-> single-region open economy — the multi-region side still requires a supplied SAM); per-cell
-> (rather than uniform) trade elasticities; and an IOSystem→multi-region-SAM builder.
+> capital rental rate — the rental rate is already emitted as a factor price); a **live-EXIOBASE
+> multi-region SAM build** — now explicitly owned as **§5.1b** below (review P2, round 10: this was
+> acknowledged but unowned by any numbered task; Phase 7b/8 cannot credibly operate on a hand-built
+> supplied multi-region SAM); and per-cell (rather than uniform) trade elasticities.
 >
 > **Correction (2026-07, prompted by an independent review): Phase 5 is not fully complete —
 > government, savings/investment, and the energy nest were dropped silently, not carried forward.**
@@ -292,6 +301,42 @@ solver + termination status; a non-optimal solve raises (never returns numbers).
 - ✅ Value added derived from the IO identity and split capital/labour by a documented assumption; RAS balancer (`balance.py`) for the thin-data path; SAM-specific `QualityReport` (`quality.py`): balance, **aggregate preservation**, adjustment audit, negative-cell + assumed-share flags — surfaced in the run manifest, and a failing SAM is rejected.
 - **DoD (met for the closed single-region SAM):** balanced SAM reproducing source aggregates to 1e-6 with an audit trail; the CGE calibrates on it and replicates its benchmark to machine precision (`replicates_on_built_sam` validation check). Runs on the offline EXIOBASE-shaped test build; a live-EXIOBASE CGE gate is a follow-up.
 
+**5.1b Live-data multi-region SAM build (3–5 wk) — new task (review P2, round 10): owns the
+previously-unowned "live-EXIOBASE open/multi SAM build" and "IOSystem→multi-region-SAM builder"
+deferred items, explicitly, since Phase 7b (harmonization) and Phase 8 (empirical validation)
+cannot credibly operate on the current hand-built supplied multi-region SAM.**
+- An IOSystem-driven multi-region SAM builder generalising `build_open_sam` (§5.1) from
+  home-region + single ROW to **R build regions, each a genuine region** with its own household
+  and bilateral trade to every other region — reusing the same construction pattern (balanced by
+  construction, quality-gated).
+- **Satellite alignment**: the multi-region carbon-cost path (currently supplied-SAM-only —
+  `_run_multi` has no IOSystem/SatelliteAccount entry point, unlike the open model's
+  `_run_open_from_io`) needs the same `carbon_cost_vector`-based per-year effective cost
+  construction, aggregated per build region.
+- **Final-demand attribution** using the by-region `final_demand_kind` machinery already built for
+  the open path (§5.1's `open_fd_attribution` check), generalised to attribute each build region's
+  own final demand rather than a single home region's.
+- **Trade-materiality handling**: the live build's bilateral trade will be genuinely sparse (most
+  region pairs don't trade every good) and may contain near-zero noise from aggregation/RAS —
+  reuse `ROUTE_MATERIALITY_THRESHOLD` and `active_routes` (calibrate_multi.py) rather than
+  reintroducing a bare `>0` check.
+- **Topology validation**: a live build's region-trade graph must be checked for connectivity
+  (`connected_components`) before calibration — a live multi-region build is far more likely than
+  a hand-built toy to contain a genuinely disconnected pair of regions (e.g. two small economies
+  with no direct recorded trade link after aggregation), which must be rejected with a clear
+  message, not silently solved.
+- **Live-data replication gate**: `multi_region_live_replicates_on_built_sam`, the multi-region
+  analogue of `open_replicates_on_built_sam` — the multi-region CGE calibrates on the live-built
+  SAM and replicates its benchmark to machine precision, gating this task's own DoD.
+- **DoD:** an EXIOBASE-shaped multi-region SAM builds from a real (or realistically-aggregated)
+  IOSystem + SatelliteAccount, passes the SAM quality report, and the multi-region CGE calibrates
+  on it and replicates to machine precision, with topology validation and trade-materiality
+  handling exercised by the live data (not just the hand-built toy fixtures).
+- **Depends on:** §5.1 (the single-region open live build, whose patterns this generalises);
+  `calibrate_multi.py`'s `active_routes`/`connected_components` (already built). **Unblocks:**
+  Phase 7b (country/sector harmonization needs a live multi-region SAM, not a hand-built one) and
+  Phase 8 (empirical validation/hindcasting needs real data to validate against).
+
 **5.2 Model core (2–4 wk) — ✅ pilot done; government/investment/energy-nest reopened as 5d**
 - ✅ Static CGE in pyomo/scipy: Armington imports / CET exports, household demand (Cobb-Douglas), carbon-tax revenue with recycling options (lump-sum vs labour-tax cut, as a same-period pass-through), square-model and degrees-of-freedom checks (proven square via the replication gate).
 - ⏳ **Not built, reopened as 5d:** nested CES production with a genuine **energy nest** (KL–E–M, so carbon pricing can shift substitution *within* the energy bundle, not just KL); a **government/fiscal account** (the tax is collected and recycled same-period with no balance sheet — cannot carry a deficit/surplus or fund non-recycled spending); **investment/savings** (standard closure choices — savings-driven, fixed trade balance — were never implemented; there is no capital-accumulation mechanism for 7.1 to update between years).
@@ -301,14 +346,14 @@ solver + termination status; a non-optimal solve raises (never returns numbers).
 **5.3 Calibration & credibility tests (2–4 wk) — ✅ correctness battery + revenue recycling + elasticity sensitivity sweeps done**
 - ✅ Benchmark replication (zero shock reproduces the SAM to machine precision), ✅ homogeneity, ✅ Walras' law — in CI (toy + real EXIOBASE SAM).
 - ✅ **Revenue recycling** (lump_sum / labour_tax_cut): the carbon tax collects R and recycles it; validated **revenue-recycling effect** (recycling offsets the welfare loss) and **sectoral reallocation** (dirty→clean), with Walras holding under the recycled tax. Emits welfare, carbon revenue, factor prices.
-- ✅ Cross-engine sign consistency with Engine 2 (dirty sector contracts, same sign). Elasticity sensitivity sweeps + published-CGE literature bracket are the remaining credibility work (needs non-unitary substitution elasticities, a later enhancement).
+- ✅ Cross-engine sign consistency with Engine 2 (dirty sector contracts, same sign). ✅ Elasticity sensitivity sweeps (`armington_sensitivity_sweep`, low/central/high envelopes) are done for the open economy — see "Now complete for the single-region economy" above. A published-CGE literature bracket (cross-checking the sweep's envelope against values from the literature, not just internal sensitivity) remains a later enhancement.
 - **DoD (met for the pilot):** replication + homogeneity + Walras + recycling-effect tests green in CI; equation-level model doc (`docs/models/cge-static.md`) exists with closures, recycling, and sources.
 
 **Decisions forced:** nesting structure; closure defaults; single- vs multi-region sequencing (recommendation above); how much tax detail to fabricate vs omit.
 **Risks:** SAM balancing is a known rabbit hole — timebox it and document rather than perfect; IPOPT convergence (mitigate: good starting values = benchmark data, gradual shock ramping); results sensitive to elasticities (mitigate: sweeps + Engine 2 cross-check, keep "toy but honest" framing).
 **Depends on:** P1, P4 (elasticities). **Unblocks:** GE price *and* volume answers; P7.
 
-### Phase 5d — Complete the macroeconomic closure (4–8 wk) — reopened Phase 5 debt, not new scope
+### Phase 5d — Complete the macroeconomic closure (8–12 wk solo FTE) — reopened Phase 5 debt, not new scope
 
 **This phase is not new scope.** Every item below was specified in 5.2's original design (a
 government account, savings/investment, an energy nest) and is being reopened, not invented — see
@@ -330,9 +375,26 @@ accumulation in the dynamic wrapper is imposed bookkeeping, not a modelled decis
 | 5d.7 | **Alternative external-balance and fiscal closures.** Beyond the fixed-trade-balance / lump-sum-recycling defaults already implemented: a flexible-trade-balance option and a government closure alternative (e.g. deficit-financed spending), each documented and switchable by config, with the standard correctness battery re-run under each | 1 wk |
 
 **Standard scenario output set (DoD across 5d):** every CGE run — closed, open, or multi-region —
-reports GDP, GVA, consumption, investment, employment, wages, inflation, trade, fiscal balance,
+reports GDP, GVA, consumption, investment, employment, wages, a **relative cost-of-living /
+GDP-deflator index** (review P2, round 10: NOT "inflation" — see below), trade, fiscal balance,
 capital returns, emissions, and energy use as named result variables, each provenance-tagged and
 each with an equation-level definition in `docs/models/cge-static.md`.
+
+**"Inflation" corrected to a relative deflator (review P2, round 10).** An earlier draft of this
+output set promised "inflation" as a standard per-run output. The model fixes the household's CPI
+as the **numéraire** (Π pq^γ = 1, pinned by construction — see §4b.2 above, which already states
+this correctly: "there is no separate inflation/deflator" for the CGE tier), so there is no
+nominal/monetary anchor identifying an absolute price *level*, and therefore no absolute inflation
+rate — only *relative* price movements (which good got more expensive relative to which, and
+relative to the numéraire) are identified. Adding a government account, investment, or an energy
+nest (5d.1/5d.2/5d.5) does not change this: none of them introduce a money-demand equation, a
+central-bank reaction function, or a fixed money stock — the actual missing ingredient for
+identifying a nominal price level. What the model CAN honestly report, and what "inflation" in
+this output set actually means: a relative cost-of-living index (the wage-numéraire nominal GDP
+reference already emitted by the closed/open CGE, or an analogous relative deflator), explicitly
+labelled as relative, not an absolute inflation rate. If a genuine nominal anchor is wanted later,
+that is the optional, clearly-labelled "illustrative macro-financial overlay" already scoped as
+4b.5 — not a default output of every CGE run.
 **Decisions forced:** government closure (balanced-budget default, recommend deficit-financed as
 the documented alternative); investment closure (savings-driven default, per the original 5.2
 plan); whether labour-market closure defaults to full employment or exposes unemployment as an
@@ -402,7 +464,7 @@ A true process IAM (GCAM/REMIND-class) is a multi-year team effort; the achievab
 | 7.1 | **Recursive-dynamic wrapper.** Solve any `general_equilibrium` engine year-by-year to 2050, updating capital (savings/investment → next-year capital stock with depreciation), labour (exogenous demographics), and productivity (exogenous trend) between static solves. No perfect foresight — dynamics are bookkeeping between solves, not a new solution concept. **Needs Phase 5d.3's capital-accumulation identity** — without it there is no real savings/investment mechanism to update capital from, and this would be imposed bookkeeping rather than a modelled decision | 4–8 wk |
 | 7.2 | **NGFS scenario reader.** Adapter: open NGFS database (IIASA) → shock paths in the standard vocabulary (carbon price path, GDP/population trajectories per region) for Net Zero 2050 / Delayed Transition / Current Policies etc. Transition intelligence is inherited from the process IAMs that built the scenarios; our model adds sector/supply-chain resolution. **Raw NGFS pathways feed Phase 7b's harmonizer** before driving the model — imposing NGFS's own GDP/population path directly while also reporting GDP as an endogenous CGE result double-counts the same variable; 7b reconciles this | 1–2 wk |
 | 7.3 | **Climate module (FaIR).** One-way coupling behind the climate slot: model emissions in → temperature path out, reported alongside economic results | 1–2 wk |
-| 7.3b | **Temperature-target back-solve.** Given a temperature (or carbon-budget) target, invert the forward chain (carbon price → emissions → FaIR → temperature) to find the **carbon-price path** that hits it, then run forward for the sector impacts. A 1-D root-find per period (the chain is monotone), wrapping 7.1 + 7.3; reports the implied price path + resulting temperature, and flags infeasible targets rather than returning garbage. This is the credible, target-driven "IAM-ish" mode. See `docs/energy-and-temperature-plan.md`. | 1–2 wk |
+| 7.3b | **Temperature-target back-solve.** Given a temperature (or carbon-budget) target, invert the forward chain (carbon price → emissions → FaIR → temperature) to find the carbon-price path that hits it, then run forward for the sector impacts. **Corrected design (review P1, 2026-07): a single target is one scalar constraint, not enough to determine an entire multi-year price path** (per-year temperatures are dynamically coupled through cumulative emissions and climate inertia, not independent scalar roots) — so this is a genuine 1-D root-find only when it solves for **one scalar that scales a predetermined, documented price-path shape** (an NGFS trajectory or a parametric form), with an *empirically checked* monotonicity precondition (not assumed — recycling/leakage/substitution/rebound can break it for a given scenario configuration); flags infeasible or non-monotone cases rather than returning garbage. Choosing the path shape *itself* via optimisation is a distinct, harder follow-up, out of scope here. See `docs/energy-and-temperature-plan.md`. | 2–3 wk |
 | 7.4 | **Damage feedback (optional, handle with care).** Temperature → damage function → productivity shocks fed back as standard shocks. **Distinct from 7.3b:** 7.3b uses only emissions→temperature (well-established); 7.4 adds temperature→economy through a damage function (the most contested object in climate economics — order-of-magnitude disagreement). Implement only with published functions (DICE, Burke–Hsiang–Miguel), labelled as scenario illustrations, with the choice surfaced as a first-class assumption in the GUI | 1–2 wk plumbing |
 | 7.5 | **Ongoing hardening.** Second data source (FIGARO/ICIO) as a new adapter to test data sensitivity; more households/regions; scenario library + cross-run comparison in the GUI; job queue if runs get heavy; API layer if others need programmatic access | ongoing |
 
@@ -439,10 +501,12 @@ the choice documented and switchable).
 concordance (Phase 6.2) — treat every weight and rule as reviewable data with a cited source, not
 buried logic. This phase has the highest "looks precise, isn't" risk in the whole roadmap if the
 reconciliation rules aren't made explicit and auditable.
-**Depends on:** Phase 7.2 (NGFS reader — raw pathways to harmonize) and Phase 5d (government account
+**Depends on:** Phase 7.2 (NGFS reader — raw pathways to harmonize), Phase 5d (government account
 + energy nest to harmonize NGFS's fiscal and energy-transition content against — low-value without
-them). **Unblocks:** credible baselines for every downstream pathway scenario; Phase 7c's driver
-decomposition (needs a harmonized baseline to decompose deviations *from*).
+them), and **§5.1b** (a live multi-region SAM — country/sector harmonization on the current
+hand-built supplied SAM would not be credible; review P2, round 10). **Unblocks:** credible
+baselines for every downstream pathway scenario; Phase 7c's driver decomposition (needs a
+harmonized baseline to decompose deviations *from*).
 
 ### Phase 7c — Physical-risk channels, adaptation, uncertainty ensembles, and driver attribution (6–10 wk) — after 7b, P6b
 
@@ -473,7 +537,7 @@ both nature-state and physical-climate channels doesn't apply the same physical 
 channels the double-counting check needs to know about). **Unblocks:** hazard-specific consulting
 scenarios; the driver-attribution deliverable Phase 8's client reporting packages consume directly.
 
-### Phase 8 — Consulting delivery, model governance, and validation (8–14 wk) — after 7b/7c
+### Phase 8 — Consulting delivery, model governance, and validation (13–23 wk solo FTE) — after 7b/7c
 
 Everything through Phase 7c makes the platform a genuinely capable modelling engine. Phase 8 is
 what converts that into something a consultancy can put its name behind in a paid engagement: **(1)
@@ -504,6 +568,14 @@ an engineering/process risk — but both gate "ready for paid client work," so t
 | 8b.5 | **Deliverable generation.** Excel workbooks, report-quality charts, and an automatically-generated methodology appendix (assembled from the existing per-engine model docs and the run's own assumption dump — not hand-written per engagement); reproducible tables formatted for PowerPoint/Word | 1–2 wk |
 | 8b.6 | **API, auth, RBAC, client-data isolation, audit logs.** Programmatic access (building on Phase 7.5's optional API layer) with authentication, role-based access control, per-client data isolation, and an audit log of who ran/viewed what | 2–3 wk |
 | 8b.7 | **Commercial licensing and data-redistribution review.** A documented review of the licensing terms for every third-party data source in use (EXIOBASE, ENCORE, NGFS, and any future source) against the platform's intended commercial use and redistribution model — this is a legal/compliance gate, not an engineering task, but it blocks paid delivery if skipped | 1 wk, legal review |
+
+**FTE vs elapsed time (review P2, round 10):** 8a totals ~6–11 wk solo FTE, 8b totals ~7–12 wk solo
+FTE — **13–23 wk solo FTE combined**, which is what the phase header states. 8a (validation) and
+8b (delivery) are genuinely independent workstreams with different risk profiles (research vs
+engineering), so with a **second person** working 8b while the first works 8a, **elapsed time**
+could compress toward the *larger* of the two workstreams (~7–12 wk) rather than their sum — but
+that reduces calendar time for a team, not the ~13–23 wk of total work a solo builder still has to
+do.
 
 **DoD:** a validation report exists and is reviewable by someone outside the build; every
 calibration target has a documented source and tolerance; an engagement can be stood up as a frozen
@@ -549,14 +621,15 @@ P0 ─▶ P1 ─▶ P2 ─▶ P3 (GUI v1)
 | End P4 | ~8–13 wk | Add production-**volume** responses (finite-change demand → Leontief propagation) with explicit uncertainty ranges |
 | End P4b | ~9–15 wk | **GVA per sector/country, GDP per country, and a deflator** per time-step, in **real and nominal** terms (indicative PE tier; native and exact in the CGE) |
 | End P6 (skipping P5) | ~11–19 wk | Nature dependency/impact exposure of any good, incl. via its supply chain, plus nature stress runs |
-| End P5 | ~16–25 wk | General-equilibrium price + volume answers with carbon-tax revenue recycling (Armington/CET open economy + true multi-region bilateral trade — no government account, investment, or energy nest yet: see P5d) |
-| End P5d | ~20–33 wk | A government/fiscal account, savings-investment with capital accumulation, an energy nest, and the full standard scenario output set (GDP, GVA, consumption, investment, employment, wages, fiscal balance, capital returns) — the macro closure Phase 5 originally specified |
-| End P6b | ~24–41 wk | Physically-grounded nature scenarios (degradation/restoration state, not a bare productivity-shock number) |
+| End P5 | ~16–25 wk | General-equilibrium price + volume answers with carbon-tax revenue recycling (Armington/CET open economy + true multi-region bilateral trade — no government account, investment, or energy nest yet: see P5d; and the multi-region SAM is still hand-built, not live-EXIOBASE: see §5.1b) |
+| End §5.1b | ~19–30 wk | A live-EXIOBASE-driven multi-region SAM build (satellite alignment, FD attribution, trade-materiality handling, topology validation, live-data replication gate) — the data-side prerequisite Phase 7b/8 need before they can credibly operate on multi-region output |
+| End P5d | ~27–42 wk (revised — review P2, round 10: Phase 5d's own header corrected from 4–8 wk to 8–12 wk solo FTE to match its task total) | A government/fiscal account, savings-investment with capital accumulation, an energy nest, and the full standard scenario output set (GDP, GVA, consumption, investment, employment, wages, fiscal balance, capital returns, and a relative cost-of-living index — not "inflation", which the CPI-numéraire closure cannot identify) — the macro closure Phase 5 originally specified |
+| End P6b | ~34–56 wk | Physically-grounded nature scenarios (degradation/restoration state, not a bare productivity-shock number) |
 | Full incl. P7 pathway stack | 6–12 months | NGFS-driven dynamic pathways to 2050 with temperature reporting, multi-source data, scenario library |
 | Full incl. P7b/7c | +4–5 months beyond P7 | Harmonized country/sector baselines reconciled to published forecasts; hazard-specific physical-risk channels; uncertainty ensembles with model/data/scenario decomposition; client-presentable driver attribution |
-| Full incl. P8 | +2–3.5 months beyond P7c | Empirically validated (hindcasts, cross-model comparison, governed parameter registry) and consulting-delivery-ready (engagement workspaces, approval workflow, client deliverables, API/RBAC, licensing sign-off) |
+| Full incl. P8 | +3–5.5 months beyond P7c (revised — review P2, round 10: Phase 8's own header corrected from 8–14 wk to 13–23 wk solo FTE; a second person on 8b delivery while the first does 8a validation could compress **elapsed** time toward ~7–12 wk, not the total work) | Empirically validated (hindcasts, cross-model comparison, governed parameter registry) and consulting-delivery-ready (engagement workspaces, approval workflow, client deliverables, API/RBAC, licensing sign-off) |
 
-Sequencing note: P3, P4, and P6a all deliver standalone value and can be reordered to taste. If forced to choose a minimal useful product, **P0→P1→P2→P3→P4→P6a** (cost + volumes + nature exposure, no CGE) is the highest value-per-week path and defers the hardest work. Within the consulting-grade extensions (P5d/P6b/P7b/P7c/P8), **P5d is the highest-priority single item** — it is reopened Phase 5 debt (not new scope), and P7b/P8's value is materially lower without a government account and energy nest to harmonize pathways against and validate.
+Sequencing note: P3, P4, and P6a all deliver standalone value and can be reordered to taste. If forced to choose a minimal useful product, **P0→P1→P2→P3→P4→P6a** (cost + volumes + nature exposure, no CGE) is the highest value-per-week path and defers the hardest work. Within the consulting-grade extensions (§5.1b/P5d/P6b/P7b/P7c/P8), **P5d is the highest-priority single item** — it is reopened Phase 5 debt (not new scope), and P7b/P8's value is materially lower without a government account and energy nest to harmonize pathways against and validate. **§5.1b (the live multi-region SAM build) is the second priority** — P7b's harmonization and P8's empirical validation cannot credibly run against the current hand-built supplied multi-region SAM.
 
 ### Planned scenario-input extensions (detail in `docs/energy-and-temperature-plan.md`)
 
@@ -569,11 +642,14 @@ Two requested capabilities that fit the existing seams rather than adding new ph
   inverse (reusing Engine 1/2 machinery). Available in Engine 1/2 and the GUI; richer in the CGE
   (Phase 5), where it would trigger KL-E-M substitution.
 - **Temperature-target back-solving (Phase 7).** Given a temperature (or carbon-budget) target,
-  invert the forward chain to find the **carbon-price path** that hits it, then run forward for
-  the sector impacts — the credible, target-driven "IAM-ish" mode. Added as roadmap task **7.3b**
-  above; needs the Phase 7 climate module (FaIR) + recursive dynamics. Distinct from — and much
-  more defensible than — temperature→economy *damage* feedback (7.4), which stays optional and
-  illustrative for scientific reasons (damage-function disagreement).
+  invert the forward chain to find a scale factor on a **predetermined price-path shape** that
+  hits it, then run forward for the sector impacts — the credible, target-driven "IAM-ish" mode.
+  Added as roadmap task **7.3b** above; needs the Phase 7 climate module (FaIR) + recursive
+  dynamics. A single target is one scalar constraint — it determines a scale factor on a
+  documented path shape, not an arbitrary multi-year price path outright (see the corrected
+  design in `docs/energy-and-temperature-plan.md`). Distinct from — and much more defensible
+  than — temperature→economy *damage* feedback (7.4), which stays optional and illustrative for
+  scientific reasons (damage-function disagreement).
 
 ---
 

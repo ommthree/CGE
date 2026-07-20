@@ -123,41 +123,97 @@ established near-linearity of warming in cumulative CO₂ [MatthewsCarbonBudget;
    `ClimateModule: emissions → temperature`). This is the one-way coupling already planned for
    Phase 7.3.
 
-The forward chain is **monotone**: a higher carbon price ⇒ lower emissions ⇒ lower temperature.
-Monotonicity is what makes the inversion easy.
+The forward chain is **plausibly monotone in aggregate** — a uniformly higher carbon price tends
+to lower emissions, which lowers temperature — but this is an empirical property to check per
+scenario, not a guarantee: revenue recycling, cross-region leakage, sector substitution, and
+rebound effects can all push a *specific* price change in a direction that isn't simply "more
+price, less emissions" once general-equilibrium responses are in play. That distinction matters
+for what "the inversion" can honestly mean.
 
-### The inversion (the new bit)
-- Because the chain is monotone, back-solving is a **1-D root find per period** (or over a
-  cumulative-emissions budget): "find the carbon price such that the resulting temperature path
-  hits the target." A bisection / Brent solver on top of the forward model — a well-behaved,
-  standard numerical problem, not a bespoke optimisation.
-- Two target forms, both simple:
-  - **peak/end temperature** (e.g. "≤ 1.75°C in 2050"): solve the price path so temperature
-    stays under the cap;
-  - **carbon budget** (cumulative emissions ≤ B): often cleaner numerically, since temperature
-    is near-linear in cumulative CO₂.
-- The outer loop calls the (recursive-dynamic, Phase 7.1) engine forward each iteration. Cost:
-  a handful of forward solves per period — cheap on the small build.
-- **Guardrails (carry the platform's discipline):** if no carbon price within a sane bound hits
-  the target (e.g. the target is infeasible given the economy's structure), the solver **reports
-  infeasibility clearly** rather than returning a garbage price — the same "never return
-  meaningless numbers" rule as Engine 1's well-posedness guard.
+### The inversion (the new bit) — corrected 2026-07 (review P1)
+
+**Two target forms, both a single scalar constraint:**
+- **peak/end temperature** (e.g. "≤ 1.75°C in 2050"): scale the price path so the FaIR-projected
+  temperature at that year (or its peak) stays at or under the cap;
+- **carbon budget** (cumulative emissions ≤ B): often cleaner numerically, since temperature is
+  near-linear in cumulative CO₂ [MatthewsCarbonBudget; IPCC_AR6_WG3].
+
+**A single terminal temperature (or carbon-budget) target is ONE scalar constraint. A full
+multi-year carbon-price path has one degree of freedom per period.** Recovering an entire path
+from one target is underdetermined — infinitely many price paths can hit the same terminal
+temperature, because per-year temperatures are **dynamically coupled through cumulative
+emissions and climate inertia** (FaIR's temperature in year *t* depends on the whole emissions
+history up to *t*, not on that year's price in isolation). Treating this as "a 1-D root-find per
+period" — as an earlier version of this plan and the roadmap summary both said — is not a
+well-posed decomposition: the per-period equations are not independent scalar roots to solve one
+at a time.
+
+There are exactly two honest ways to make this a scalar root-find, and the design must pick one
+explicitly rather than leave the shape unstated:
+
+1. **Scale a predetermined path shape by one scalar.** Fix the *shape* of the price path from an
+   external source (e.g. an NGFS scenario's own price trajectory, or a documented functional form
+   like a constant real growth rate), and solve for a single multiplier that scales the whole
+   shape so the resulting terminal temperature (or cumulative-emissions budget) hits the target.
+   This **is** a genuine 1-D root-find — one scalar, one constraint — and the shape choice is a
+   first-class, documented assumption (which shape, and why) surfaced in the scenario's
+   provenance, not an implementation detail.
+2. **Constrained optimisation with an explicit objective**, if the path's *shape* should also be
+   chosen by the solver rather than fixed exogenously: minimise a stated objective (least
+   cumulative cost, path smoothness, proximity to a reference NGFS trajectory, a cap on
+   maximum year-over-year price change, or some documented combination) subject to hitting the
+   temperature/budget target. This is a genuinely harder numerical problem than a root-find — it
+   needs a real optimiser (not bisection/Brent), an explicit objective the user can see and the
+   GUI can label, and its own convergence/feasibility diagnostics.
+
+**Recommendation: build (1) first.** It is the buildable, honestly-scoped version — a real 1-D
+root-find, cheap, and consistent with this platform's "toy but honest" discipline. (2) is a
+documented future extension, not part of this task's scope, and should not be described as "a
+1-D root-find" anywhere it's mentioned.
+
+- **Monotonicity is now an empirical precondition, checked per scenario, not assumed.** Before
+  accepting a scaling-factor root as the answer, the back-solve must verify the forward map
+  (scale factor → terminal temperature) is monotone over the search bracket for *this* scenario's
+  recycling mode, leakage pattern, and elasticities — if it isn't, the root-finder's bracket
+  invariant doesn't hold and the driver must say so rather than silently accepting whatever
+  root-finder output it gets.
+- The outer loop calls the (recursive-dynamic, Phase 7.1) engine forward each iteration, scaling
+  the fixed-shape path by the trial multiplier. Cost: a handful of forward solves — cheap on the
+  small build.
+- **Guardrails (carry the platform's discipline):** if no scale factor within a sane bound hits
+  the target (e.g. the target is infeasible given the economy's structure, or the empirical
+  monotonicity check fails), the solver **reports infeasibility (or non-monotonicity) clearly**
+  rather than returning a garbage price — the same "never return meaningless numbers" rule as
+  Engine 1's well-posedness guard.
 
 ### Design placement
 - **Depends on:** Phase 7.1 (recursive-dynamic wrapper) and 7.3 (FaIR climate module). The
   climate module slot already exists as a contract; FaIR is its first implementation.
-- **New component:** a `TemperatureTarget` scenario option + a `back_solve` driver that wraps
-  the forward run in the root-finder. Emits, alongside the usual `ResultSet`, the **implied
-  carbon-price path** and the **resulting temperature path** — both provenance-tagged.
+- **New component:** a `TemperatureTarget` scenario option carrying **both** the target (peak/end
+  temperature or cumulative-emissions budget) **and** a required `path_shape` reference (an NGFS
+  scenario's own price trajectory, or a documented parametric shape — e.g. constant real growth
+  rate — with its parameters) — the shape is not optional or inferred, since it's what makes the
+  problem a 1-D root-find at all. A `back_solve` driver wraps the forward run in the root-finder,
+  scaling `path_shape` by the trial multiplier each iteration, and runs the empirical
+  monotonicity check before accepting a root. Emits, alongside the usual `ResultSet`, the
+  **implied scale factor and resulting carbon-price path** and the **resulting temperature
+  path** — both provenance-tagged, including which `path_shape` was used and why.
 - **Reuses everything else:** the engines, the shock vocabulary (the back-solved price becomes a
   `CarbonPrice` time path), the result schema.
 
 ### Testing & validation
-- **Round-trip identity (the key test):** back-solve a price path for target T*, then run
-  forward with that exact path — the forward temperature must equal T* to tolerance. This is the
-  CGE-replication analogue: it proves the inverter and the forward model are mutually consistent.
-- **Monotonicity:** a stricter target ⇒ a higher implied carbon price, everywhere.
-- **Feasibility guard:** an impossible target raises/reports infeasible, never returns numbers.
+- **Round-trip identity (the key test):** back-solve a scale factor for target T* against a fixed
+  `path_shape`, then run forward with the resulting price path — the forward temperature must
+  equal T* to tolerance. This is the CGE-replication analogue: it proves the inverter and the
+  forward model are mutually consistent.
+- **Empirical monotonicity, checked not assumed:** verify (and test, per scenario configuration —
+  recycling mode, elasticities) that scaling `path_shape` up strictly lowers the resulting
+  terminal temperature over the search bracket; the test suite should include at least one
+  documented case (e.g. a recycling mode or elasticity setting) where monotonicity is checked and
+  holds, so the guard is exercised, not just present in code.
+- **Feasibility / non-monotonicity guard:** an impossible target, or a scenario configuration
+  where the monotonicity check fails, raises/reports clearly and never returns a fabricated
+  scale factor.
 - **Climate emulator sanity:** FaIR reproduces a known emissions→temperature response (e.g. a
   published SSP scenario's temperature) within tolerance — the climate module's own known-answer.
 - **NGFS cross-check:** the implied price path for a target should be in the ballpark of NGFS
@@ -165,9 +221,15 @@ Monotonicity is what makes the inversion easy.
   honesty as the EXIOBASE live gate).
 
 ### Effort & difficulty
-**~1–2 wk on top of Phase 7.1 + 7.3.** The inversion itself is small (a root-find loop); the
-prerequisites (recursive dynamics + FaIR) are the real work, and were already in the Phase 7
-plan. **Difficulty: medium.**
+**~2–3 wk on top of Phase 7.1 + 7.3** (revised from ~1–2 wk — review P1: the corrected design
+needs a documented `path_shape` mechanism, an empirical monotonicity check with its own test
+coverage, and infeasibility/non-monotonicity reporting, none of which existed in the original
+"just a root-find loop" framing). The scale-factor root-find itself is still small; the added
+work is making the shape choice and the monotonicity precondition explicit and tested rather than
+assumed. The prerequisites (recursive dynamics + FaIR) remain the larger cost and were already in
+the Phase 7 plan. **Difficulty: medium.** The constrained-optimisation alternative (letting the
+solver also choose the path shape, not just scale a fixed one) is out of scope for this task —
+documented above as a distinct, harder follow-up, not a variant of this one.
 
 ### The caveat — what this is NOT (and why)
 This back-solves the **price to hit a target**. It does **not** feed temperature back onto the

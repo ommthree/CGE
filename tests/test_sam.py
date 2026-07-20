@@ -218,29 +218,31 @@ def test_build_open_sam_both_home_regions_and_surplus_closure(small_build_io):
 
 def test_fd_by_region_discriminator_is_explicit_not_inferred(small_build_io):
     """P2 (review round 9): fd_by_region() reads the EXPLICIT final_demand_kind discriminator, not
-    a column-set-equality guess. An IOSystem with by-region-shaped columns but the aggregate kind
-    (mislabelled) is treated as aggregate; the real fixture from the adapter is labelled by_region
-    and behaves accordingly."""
+    a column-set-equality guess. The real fixture from the adapter is labelled by_region and
+    behaves accordingly. THE P1 follow-up (review round 10): the reverse mislabelling —
+    genuinely multi-column (by-region-shaped) data labelled "aggregate" — must now be REJECTED at
+    construction, not silently accepted and then routed through synthetic imputation
+    (final_demand_kind='aggregate' means exactly one column, enforced the same way 'by_region'
+    enforces completeness)."""
     from cge.contracts.data_objects import IOSystem
 
     io, _store, _bid = small_build_io
     assert io.final_demand_kind == "by_region"  # the adapter sets this explicitly
     assert io.fd_by_region() is not None
 
-    # Same data, but mislabelled as "aggregate" — the discriminator, not the shape, controls the
-    # outcome, proving fd_by_region() isn't quietly re-deriving from set(columns).
-    mislabelled = IOSystem(
-        provenance=io.provenance,
-        sectors=io.sectors,
-        regions=io.regions,
-        price_basis=io.price_basis,
-        currency=io.currency,
-        unit=io.unit,
-        A=io.A,
-        final_demand=io.final_demand,
-        final_demand_kind="aggregate",
-    )
-    assert mislabelled.fd_by_region() is None
+    # Multi-column data mislabelled "aggregate" is now rejected outright.
+    with pytest.raises(ValueError, match="final_demand_kind='aggregate' requires exactly one"):
+        IOSystem(
+            provenance=io.provenance,
+            sectors=io.sectors,
+            regions=io.regions,
+            price_basis=io.price_basis,
+            currency=io.currency,
+            unit=io.unit,
+            A=io.A,
+            final_demand=io.final_demand,
+            final_demand_kind="aggregate",
+        )
 
 
 def test_fd_by_region_rejects_incomplete_or_duplicate_columns(small_build_io):

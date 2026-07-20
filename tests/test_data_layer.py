@@ -8,6 +8,7 @@ covers the pipeline logic; only the download itself is untested offline (by desi
 import json
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from cge.contracts.data_objects import ConcordanceMap, Provenance
@@ -191,6 +192,58 @@ def test_store_roundtrip_preserves_final_demand_kind(tmp_path):
     # The aggregation preserves the by-region split when the source had it.
     assert small.final_demand_kind == "by_region"
     assert small.fd_by_region() is not None
+
+
+def test_store_migrates_pre_schema_build_missing_final_demand_kind(tmp_path):
+    """THE P1 regression (review round 10): a build saved BEFORE final_demand_kind existed has no
+    such key in its meta.json; BuildMeta defaults the missing field to "aggregate", which would
+    silently misroute a genuinely by-region build through the synthetic import-share imputation.
+    The store must detect this from the on-disk parquet's own shape (unambiguous: it was written
+    once at build time) and correct it in memory on load, with a visible warning."""
+    import warnings
+
+    store = DataStore(tmp_path)
+    written = build_test(store=store)
+    meta_path = store.builds_dir / written["full"] / "meta.json"
+    raw = json.loads(meta_path.read_text())
+    assert raw["final_demand_kind"] == "by_region"  # sanity: this build IS genuinely by-region
+    del raw["final_demand_kind"]  # simulate a pre-schema meta.json
+    meta_path.write_text(json.dumps(raw))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        io = store.load(written["full"])["IOSystem"]
+        assert io.final_demand_kind == "by_region"
+        assert io.fd_by_region() is not None
+        assert any("pre-schema build" in str(w.message) for w in caught)
+
+
+def test_store_does_not_migrate_genuine_legacy_aggregate_build(tmp_path):
+    """A genuinely single-column (legacy) aggregate build must NOT be reclassified — the migration
+    only fires when the on-disk shape unambiguously matches the by-region signature (one column
+    per region); a single-column build is left as aggregate with no warning."""
+    import warnings
+
+    from cge.contracts.data_objects import Classification
+    from cge.data.metadata import BuildMeta
+    from cge.data.store.store import DataStore as _DataStore
+
+    meta = BuildMeta(
+        build_id="legacy",
+        source="t",
+        source_version="v",
+        reference_year=2020,
+        licence="n/a",
+        retrieved="2026-01-01",
+    )  # final_demand_kind defaults to "aggregate"
+    regions = Classification(name="r", kind="region", labels=["A", "B"])
+    fd = pd.DataFrame({"final_demand": [1.0, 2.0]}, index=["A:s1", "B:s1"])
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        kind = _DataStore._migrate_final_demand_kind("legacy", meta, fd, regions)
+        assert kind == "aggregate"
+        assert len(caught) == 0
 
 
 def test_structural_guard_rejects_broken_build():

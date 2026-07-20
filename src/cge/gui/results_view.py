@@ -191,7 +191,9 @@ def has_welfare(result: ResultSet) -> bool:
 
 
 def welfare_table(result: ResultSet) -> pd.DataFrame:
-    """Per region: welfare change and carbon revenue (share of benchmark GDP) — the GE-specific
+    """Per region: welfare change and carbon revenue (share of THAT REGION's own benchmark GDP —
+    review P2 round 10: the multi-region emitter previously divided by global benchmark GDP,
+    understating the share for any region smaller than the whole economy) — the GE-specific
     outputs Engines 1-2 cannot produce (review P2: previously only reachable via download)."""
     df = result.data
     sel = df["variable"].isin(_WELFARE_VARS) & (df["sector"] == _ECONOMY_SECTOR)
@@ -199,7 +201,10 @@ def welfare_table(result: ResultSet) -> pd.DataFrame:
     keep = [c for c in _WELFARE_VARS if c in wide.columns]
     wide = wide[keep].reset_index()
     return wide.rename(
-        columns={"welfare_change": "Welfare Δ", "carbon_revenue": "Carbon revenue (share of GDP)"}
+        columns={
+            "welfare_change": "Welfare Δ",
+            "carbon_revenue": "Carbon revenue (share of own region's GDP)",
+        }
     )
 
 

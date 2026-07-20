@@ -45,7 +45,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.5.2"
+VERSION = "0.5.3"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor the single institution as a sector.
@@ -59,8 +59,10 @@ ASSUMPTIONS = {
     "scope": (
         "single region, one representative household; revenue recycling supported "
         "(none/lump_sum/labour_tax_cut, the last two equivalent with one household). This is the "
-        "CLOSED variant; an OPEN variant (Armington/CET) runs when the SAM carries a ROW account. "
-        "True multiple regions are a later sub-phase."
+        "CLOSED variant; an OPEN variant (Armington/CET + a rest-of-world account) runs when the "
+        "SAM carries a ROW account, and a true MULTI-REGION variant (bilateral trade among "
+        "several region-tagged households) runs when the SAM carries multiple households — see "
+        "OPEN_ASSUMPTIONS / MULTI_ASSUMPTIONS for those variants' own scope text."
     ),
     "carbon_price": "per-unit emissions cost wedge τ·e[i] in the zero-profit condition",
     "revenue_recycling": (
@@ -1086,12 +1088,22 @@ def _emit_open(records, cal, base, st, year: int) -> None:
     for f_idx, factor in enumerate(cal.factors):
         records.append(_rec("factor_price_change", factor, year, st.w[f_idx] / base.w[f_idx] - 1.0))
     records.append(_rec("exchange_rate_change", "__economy__", year, st.er / base.er - 1.0))
-    # Real GDP — the SAME contract as the closed model (review P2): CPI-numéraire expenditure on the
-    # composite good, Σ pq_i·FD_i. Prices are in CPI units (Π pq^γ=1 pinned), so this expenditure
-    # aggregate is already real. Using the unweighted Σ FD instead would be a different (Laspeyres)
-    # metric under the same name — and would drift from the closed model's gdp_change_real.
-    real_gdp = float(np.dot(st.pq, st.FD))
-    real_gdp_base = float(np.dot(base.pq, base.FD))
+    # Real GDP — expenditure-side: consumption + net exports (review P1: Σ pq_i·FD_i alone is
+    # household CONSUMPTION, not GDP; it only coincides with GDP when the current account is zero.
+    # With non-zero foreign savings — which this model explicitly supports via the ROW capital
+    # transfer er·Sf — GDP = C + (X − M), valued at their respective CPI-numéraire prices: exports
+    # and imports both trade at the world price in domestic currency, er·pworld = er (pworld=1), so
+    # X = er·Σ E_i and M = er·Σ M_i. Prices are in CPI units (Π pq^γ=1 pinned), so this expenditure
+    # aggregate is already real. Reproduced and verified: a balanced-deficit SAM's consumption-only
+    # figure diverges from the correct C+X−M change (the prior code silently used the special case
+    # Sf=0 as if it were the general identity — the existing GDP==welfare test only exercised a
+    # zero-current-account fixture).
+    consumption = float(np.dot(st.pq, st.FD))
+    consumption_base = float(np.dot(base.pq, base.FD))
+    net_exports = st.er * float(st.E.sum() - st.M.sum())
+    net_exports_base = base.er * float(base.E.sum() - base.M.sum())
+    real_gdp = consumption + net_exports
+    real_gdp_base = consumption_base + net_exports_base
     records.append(_rec("gdp_change_real", "__economy__", year, real_gdp / real_gdp_base - 1.0))
     u = float(np.prod(np.power(st.FD, cal.gamma)))
     u_base = float(np.prod(np.power(base.FD, cal.gamma)))
@@ -1290,7 +1302,9 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
 
 def _emit_multi(records, cal, base, st, year: int) -> None:
     """Emit multi-region results, region-tagged: per (region, sector) price/volume/import/export
-    change, per-region factor prices, real GDP, welfare and carbon revenue."""
+    change, per-region factor prices, real_consumption_change (a base-price household-consumption
+    index — NOT production-side GDP, see the comment at its emission below), welfare, and carbon
+    revenue (as a share of that region's OWN benchmark GDP)."""
     for ri, region in enumerate(cal.regions):
         for si, sector in enumerate(cal.sectors):
             records.append(
@@ -1348,8 +1362,16 @@ def _emit_multi(records, cal, base, st, year: int) -> None:
         u = float(np.prod(np.power(st.FD[ri], cal.gamma[ri])))
         u_base = float(np.prod(np.power(base.FD[ri], cal.gamma[ri])))
         records.append(_rec_r("welfare_change", "__economy__", region, year, u / u_base - 1.0))
+        # carbon_revenue is a SHARE OF THIS REGION'S OWN benchmark GDP (review P2: dividing by
+        # cal.gdp0 — GLOBAL benchmark GDP — understates the share for any region smaller than the
+        # whole economy; e.g. on the toy fixture North has 53.16% of global GDP, so a "5.00%"
+        # figure divided by global GDP is actually 9.41% of North's own GDP). Regional benchmark
+        # GDP = that region's factor income at benchmark, cal.F0[:, ri, :].sum() (F0 is [f,r,s]).
+        regional_gdp0 = float(cal.F0[:, ri, :].sum())
         records.append(
-            _rec_r("carbon_revenue", "__economy__", region, year, st.carbon_revenue[ri] / cal.gdp0)
+            _rec_r(
+                "carbon_revenue", "__economy__", region, year, st.carbon_revenue[ri] / regional_gdp0
+            )
         )
 
 

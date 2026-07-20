@@ -92,10 +92,13 @@ def render() -> None:
         st.subheader("Macroeconomic aggregates")
         if is_cge:
             st.caption(
-                "GDP and welfare are **native CGE equilibrium outputs** — not a post-hoc roll-up. "
-                "The household's CD consumer price index is the **numéraire**, so *real* GDP is in "
-                "CPI units and there is **no separate inflation/deflator** (a wage-numéraire "
-                "nominal figure is shown for reference). Shown as percent."
+                "GDP and welfare are **native CGE equilibrium outputs** — not a post-hoc roll-up — "
+                "for the **closed and open** economy variants. The household's CD consumer price "
+                "index is the **numéraire**, so *real* GDP is in CPI units and there is **no "
+                "separate inflation/deflator** (a wage-numéraire nominal figure is shown for "
+                "reference). The **multi-region** variant instead reports "
+                "**real_consumption_change** — a base-price household-consumption index, "
+                "explicitly *not* production-side GDP (see the model doc). Shown as percent."
             )
         else:
             st.caption(
@@ -111,6 +114,10 @@ def render() -> None:
             "GDP Δ (real)",
             "GDP Δ (nominal, wage-numéraire)",
             "deflator (inflation)",
+            # THE P2 regression (review round 10): this column was missing from the conversion
+            # loop, so the multi-region CGE's consumption index displayed as a raw fraction
+            # (e.g. 0.0015) while the caption above claims every value shown is a percent.
+            "Real consumption Δ (multi-region; NOT GDP)",
         ):
             if c in gdp.columns:
                 gdp[c] = (gdp[c] * 100).round(2)

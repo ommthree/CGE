@@ -161,7 +161,8 @@ def test_has_welfare_and_welfare_table():
     result = _toy_open_result()
     assert rv.has_welfare(result)
     table = rv.welfare_table(result)
-    assert {"region", "year", "Welfare Δ", "Carbon revenue (share of GDP)"} <= set(table.columns)
+    cols = {"region", "year", "Welfare Δ", "Carbon revenue (share of own region's GDP)"}
+    assert cols <= set(table.columns)
     assert len(table) > 0
 
 
@@ -169,3 +170,44 @@ def test_welfare_table_multi_region_has_one_row_per_region():
     result = _toy_multi_result()
     table = rv.welfare_table(result)
     assert set(table["region"]) == {"N", "S"}
+
+
+def test_multi_region_carbon_revenue_is_share_of_own_regional_gdp():
+    """THE P2 regression (review round 10): multi-region carbon_revenue must be a share of that
+    REGION's own benchmark GDP, not global benchmark GDP — on the toy fixture North has ~53.16%
+    of global GDP, so a bug dividing by global GDP instead would understate North's true revenue
+    share by exactly that factor. Recompute st.carbon_revenue directly and compare against both
+    denominators to pin which one the engine actually used."""
+    from cge.data.sam.toy_multi import REGIONS, SECTORS, toy_multi_sam
+    from cge.engines.cge_static import model_multi as MM
+    from cge.engines.cge_static.calibrate_multi import calibrate_multi
+    from cge.engines.cge_static.engine import CGEStaticEngine
+    from cge.engines.cge_static.solver import solve
+
+    cal = calibrate_multi(toy_multi_sam(), regions=REGIONS, sectors=SECTORS, factors=["CAP", "LAB"])
+    cc = np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3  # carbon price on North's dirty sector only
+    sol = solve(
+        lambda z: MM.residuals(cal, z, carbon_cost=cc, recycling="lump_sum"),
+        MM.initial_guess(cal) * 1.03,
+        prefer="scipy",
+    )
+    st = MM.unpack_state(cal, sol.x, carbon_cost=cc, recycling="lump_sum")
+
+    north_gdp0 = float(cal.F0[:, 0, :].sum())
+    global_gdp0 = cal.gdp0
+    assert north_gdp0 < global_gdp0  # sanity: North is not the whole economy
+
+    expected_share_of_own_gdp = st.carbon_revenue[0] / north_gdp0
+    share_of_global_gdp = st.carbon_revenue[0] / global_gdp0
+    # The two denominators must actually differ on this fixture, or the test is vacuous.
+    assert abs(expected_share_of_own_gdp - share_of_global_gdp) > 1e-6
+
+    result = CGEStaticEngine().run(
+        data={"SAM": toy_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}},
+        shocks=[CarbonPrice(price=1.0)],
+        years=[2020],
+    )
+    d = result.data
+    emitted = d[(d["variable"] == "carbon_revenue") & (d["region"] == "N")]["value"].iloc[0]
+    assert abs(emitted - expected_share_of_own_gdp) < 1e-6

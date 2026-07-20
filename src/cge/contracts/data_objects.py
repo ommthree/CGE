@@ -146,6 +146,19 @@ class IOSystem(_DataObject):
                     f"do not exactly match the region labels {sorted(self.regions.labels)} — "
                     "a region's final-demand column is missing or an extra column is present"
                 )
+        # Symmetric enforcement for "aggregate" (review P1, round 10): a genuinely multi-column
+        # (by-region-shaped) table mislabelled "aggregate" was previously accepted without
+        # complaint — the validator only ever checked the by_region shape — and then silently
+        # routed through the imputation path via fd_by_region() returning None. "aggregate" now
+        # means exactly one column, enforced the same way "by_region" enforces completeness.
+        if self.final_demand_kind == "aggregate" and not self.final_demand.empty:
+            fd_cols = list(self.final_demand.columns)
+            if len(fd_cols) != 1:
+                raise ValueError(
+                    f"IOSystem.final_demand_kind='aggregate' requires exactly one column; got "
+                    f"{len(fd_cols)} ({sorted(fd_cols)}) — if this is genuinely a per-region "
+                    "final-demand table, set final_demand_kind='by_region' instead"
+                )
         return self
 
     @property

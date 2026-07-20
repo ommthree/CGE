@@ -636,3 +636,122 @@ structure; the missing-satellite gate and recycling-default fix are behavior-cha
 **Remaining (deferred, larger effort, unchanged from round 8):** an IOSystem-driven multi-region SAM
 build (the multi-region model still requires a supplied SAM); per-cell (rather than uniform) trade
 elasticities; a live-EXIOBASE SAM build for all three CGE variants.
+
+## Tenth review round (2026-07) — GDP net exports, disconnected regions, metadata migration (fixed)
+
+A follow-up independent review of the round-9 fixes (HEAD `b72dd75`) found no new P0, but three
+current-implementation P1s, one Phase-7 design P1 in the roadmap, and several P2/P3s. Fixed in the
+reviewer's own recommended order: open-economy GDP accounting → disconnected/tiny-route
+validation → metadata migration → regional revenue denominator + GUI scaling → the Phase-7
+inverse-design and roadmap consistency work.
+
+### P1 (fixed)
+
+- **Open-economy "real GDP" reported household consumption only, omitting net exports.**
+  `_emit_open()` defined `gdp_change_real` as `Σ pq·FD` — exactly household consumption — which
+  equals expenditure-side GDP only when the current account is zero. With the non-zero-foreign-
+  savings closure this model explicitly supports, the correct identity is
+  `GDP = consumption + (exports − imports)`, valued at the CPI-numéraire prices (`er·ΣE − er·ΣM`).
+  Reproduced on a balanced-deficit SAM: the consumption-only figure and the correct
+  expenditure-GDP figure diverged (baseline GDP = 1.0 exactly, matching the review's own check).
+  The existing `gdp_change_real == welfare_change` test used only a zero-current-account fixture,
+  so it silently codified the special case as if it were the general identity — its docstring now
+  says so explicitly, and two new tests (deficit and surplus fixtures) pin the corrected identity.
+  Fixed in `_emit_open` and documented in `docs/models/cge-static.md` §8.
+- **Sparse-route packing was non-identifying under a disconnected regional trade graph, and the
+  `>0` active-route threshold treated numerical dust as genuine trade.** Reproduced both exactly:
+  a perfectly-balanced 2-region SAM with no trade link at all had an (numerically delicate) exact
+  rank of 11/12, with the smallest singular value six orders of magnitude below the rest, and
+  scaling the whole disconnected region's price vector by 1.7× left every residual unchanged to
+  within 1e-15 — a genuine free direction a tolerance-based solver could accept as converged. A
+  route with a trade value of `1e-10` of GDP (aggregation/RAS noise, not real trade) produced a
+  Jacobian condition number of ~1.6e12, with perturbing that route's price by 1.7× leaving the
+  residual at only 1.3e-12 — below typical solver tolerance. Fixed with two additions to
+  `calibrate_multi.py`: **(1)** `ROUTE_MATERIALITY_THRESHOLD` (a GDP-share threshold, since
+  benchmark flows are GDP-normalised) replaces the bare `>0` check in `active_routes`; **(2)** a
+  new `connected_components` property (union-find over `active_routes`) is checked at calibration
+  time, and `calibrate_multi` now **rejects** a disconnected region-trade graph outright — a single
+  global numéraire and one globally-dropped factor equation are only a valid closure for a
+  connected graph; per-component closures are a documented future refinement, not implemented.
+  New `toy_multi_sparse_sam`-adjacent fixtures and 3 regression tests (disconnected rejection,
+  connected-components partitioning, materiality-dust rejection via the connectivity gate).
+- **Stored by-region builds could silently migrate to "aggregate" on load.**
+  `BuildMeta.final_demand_kind` defaults to `"aggregate"` for any `meta.json` written before the
+  field existed, so a genuinely by-region build predating the schema would load with the wrong
+  kind — reproduced by removing the field from a real build's stored metadata. Separately,
+  `IOSystem` validated the `by_region` shape but not `aggregate`'s, so a genuinely multi-column
+  table mislabelled `"aggregate"` was silently accepted and routed through synthetic imputation —
+  reproduced, and the existing test that explicitly asserted this "worked" was flipped to assert
+  rejection instead. Fixed: `IOSystem` now enforces exactly one column for `"aggregate"` (symmetric
+  with the existing `by_region` completeness check); `DataStore._migrate_final_demand_kind` detects
+  the on-disk parquet's unambiguous shape (multi-column matching `regions.labels` exactly) at load
+  time and corrects the in-memory kind with a visible warning, rather than writing back to
+  `meta.json` outside the crash-safe `save()` swap path. A genuinely single-column legacy build is
+  left untouched with no warning.
+- **[roadmap] The proposed temperature-target inversion (7.3b) was underdetermined as written.**
+  `docs/energy-and-temperature-plan.md` and the roadmap described a "1-D root-find per period" to
+  recover an entire multi-year carbon-price path from a single terminal temperature/carbon-budget
+  target — one scalar constraint cannot determine a path with one degree of freedom per period,
+  and per-year temperatures are dynamically coupled through cumulative emissions and climate
+  inertia (not independent scalar roots); price→emissions monotonicity is also an empirical
+  property under recycling/leakage/substitution/rebound, not a guarantee. Corrected the design:
+  a genuine 1-D root-find requires solving for **one scalar that scales a predetermined,
+  documented price-path shape** (an NGFS trajectory or a parametric form), with an *empirically
+  checked* (not assumed) monotonicity precondition before accepting a root; choosing the path shape
+  itself via optimisation is documented as a distinct, harder, out-of-scope follow-up. Both
+  `docs/energy-and-temperature-plan.md` and `roadmap.md`'s 7.3b entry rewritten; effort revised
+  1–2wk → 2–3wk to reflect the added design/testing surface.
+
+### P2 (fixed)
+
+- **Multi-region carbon revenue was divided by GLOBAL benchmark GDP, not the region's own.**
+  `_emit_multi` divided `st.carbon_revenue[ri]` by `cal.gdp0` (global); on the toy fixture North
+  has 53.16% of global GDP (reproduced exactly), so a "5.00%" figure was actually 9.41% of North's
+  own GDP. Fixed to divide by `cal.F0[:, ri, :].sum()` (that region's own benchmark GDP); GUI
+  column relabelled "share of own region's GDP" for clarity. New regression test recomputes
+  `st.carbon_revenue` directly and confirms the emitted figure matches the regional-GDP-normalised
+  value, not the global one.
+- **Multi-region `real_consumption_change` displayed 100× too small in the GUI.** The Results
+  page's percent-conversion loop listed the closed/open GDP columns but not
+  `"Real consumption Δ (multi-region; NOT GDP)"`, so it rendered as a raw fraction (e.g. `0.0015`)
+  while the caption claimed every value shown is a percent. Fixed by adding the column to the
+  conversion loop; also corrected the caption's claim that GDP is native for "all CGE variants"
+  (multi-region reports consumption, not GDP). New `AppTest` regression confirms the *displayed*
+  dataframe value is percent-scaled, not the raw fraction (verified it fails without the fix).
+- **[roadmap] "Inflation" was promised without an identified nominal closure.** Phase 5d's standard
+  scenario output set listed "inflation" as a per-run output, but the model fixes the household CPI
+  as numéraire with no money-demand equation, central-bank rule, or fixed money stock — the
+  missing ingredient for identifying an absolute price level — and 5d's own scope (government,
+  investment, energy nest) doesn't add one. Corrected to a "relative cost-of-living / GDP-deflator
+  index," consistent with §4b.2's existing correct statement that the CGE tier has no separate
+  inflation/deflator output.
+- **[roadmap] The live multi-region data path was acknowledged but owned by no numbered task.**
+  Added **§5.1b** (3–5 wk) with an explicit scope (IOSystem-driven multi-region SAM builder,
+  satellite alignment, FD attribution reusing the by-region machinery, trade-materiality handling
+  reusing `ROUTE_MATERIALITY_THRESHOLD`, topology validation reusing `connected_components`, and a
+  live-data replication gate), dependencies, and DoD — sequenced as a prerequisite for Phase 7b.
+- **[roadmap] Two phase headers didn't reconcile with their own task-estimate totals.** Phase 5d
+  said "4–8 wk" against task estimates summing to 8–12 wk; Phase 8 said "8–14 wk" against 8a+8b
+  summing to ~13–23 wk. Corrected both headers to their true solo-FTE totals, added an explicit
+  FTE-vs-elapsed-time note (parallel workstreams reduce calendar time for a team, never total
+  solo work), and recomputed every downstream cumulative-milestone row in §4's table.
+
+### P3 (fixed)
+
+- `engine.py`'s closed-variant `ASSUMPTIONS["scope"]` (embedded in every closed-run manifest) still
+  said "True multiple regions are a later sub-phase" — now points to the OPEN/MULTI variants that
+  already exist. `docs/overview.md` still said the open-economy/multi-region CGE "is still ahead"
+  and separately claimed CGE calibration uses "a real EXIOBASE build" (the offline test MRIO, per
+  `cge-static.md`'s own correct statement). `roadmap.md`'s §5.3 bullet said elasticity sweeps were
+  "the remaining credibility work" despite the same subsection's header marking them done (and
+  `armington_sensitivity_sweep` genuinely being implemented and tested). The multi-region emitter's
+  own docstring still said it emits "real GDP" (it emits `real_consumption_change`, explicitly not
+  GDP). All corrected.
+
+**Verification:** 298 pytest passed / 5 skipped; `cge validate` 51/51; ruff check + format clean;
+`git diff --check` clean. Engine version bumped `0.5.2` → `0.5.3` (GDP formula, connectivity
+rejection, materiality threshold, and regional revenue denominator are all behavior-changing).
+**Remaining (deferred, larger effort, unchanged):** an IOSystem-driven multi-region SAM build (now
+explicitly owned as roadmap §5.1b); per-cell (rather than uniform) trade elasticities;
+per-connected-component numéraire/Walras closures (documented, not implemented — disconnected
+regions must currently be run as separate single-economy calibrations).

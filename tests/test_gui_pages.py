@@ -67,6 +67,56 @@ def test_results_page_renders_trade_factor_welfare_sections_for_open_cge():
     assert "Welfare & carbon revenue" in headers
 
 
+_CGE_MULTI_RESULTS_SETUP = """
+import streamlit as st
+from cge.scenarios.loader import Scenario
+from cge.contracts.shocks import CarbonPrice
+from cge.runner import run_scenario
+sc = Scenario(name="t", engine="cge_static", years=[2020], shocks=[CarbonPrice(price=50.0)])
+st.session_state["last_result"] = run_scenario(sc, data_source="toy_cge_multi")
+st.session_state["last_scenario"] = sc
+"""
+
+
+def test_results_page_multi_region_consumption_is_percent_scaled():
+    """THE P2 regression (review round 10): the macro table's "Real consumption Δ (multi-region;
+    NOT GDP)" column was missing from the percent-conversion loop, so it displayed as a raw
+    fraction (e.g. 0.0015) instead of a percent (0.15) despite the page caption claiming every
+    value shown is a percent. Render the page and check the actual dataframe values."""
+    from cge.gui import results_view as rv
+
+    src = f"from cge.gui.pages import results\n{_CGE_MULTI_RESULTS_SETUP}\nresults.render()\n"
+    at = AppTest.from_string(src, default_timeout=60)
+    at.run()
+    assert not at.exception, (
+        f"results page raised: {[getattr(e, 'value', e) for e in at.exception]}"
+    )
+    result = at.session_state["last_result"]
+    raw = rv.macro_gdp_table(result)
+    col = "Real consumption Δ (multi-region; NOT GDP)"
+    assert col in raw.columns
+    raw_value = float(raw[col].iloc[0])
+
+    # Find the rendered macro-aggregates dataframe among the page's dataframe elements and check
+    # its value for this column is the raw fraction × 100 (percent-scaled), not the raw fraction.
+    displayed = None
+    for df_element in at.dataframe:
+        value = df_element.value
+        if col in getattr(value, "columns", []):
+            displayed = value
+            break
+    assert displayed is not None, "macro aggregates dataframe not found on the rendered page"
+    displayed_value = float(displayed[col].iloc[0])
+    # The page rounds to 2 decimal places after scaling to percent; compare with that tolerance.
+    assert abs(displayed_value - round(raw_value * 100, 2)) < 1e-9, (
+        f"expected percent-scaled {round(raw_value * 100, 2)}, got {displayed_value} — "
+        "the column is not being converted to percent"
+    )
+    # And pin the actual bug this regresses: the displayed value must NOT equal the raw fraction
+    # (i.e. it must not be off by a factor of 100).
+    assert abs(displayed_value - raw_value) > 1e-3
+
+
 def test_run_page_energy_price_branch_renders():
     """Exercise the Run page's energy-price controls: set the shock count to 1 so the carrier /
     change / coverage widgets render, then trigger a run — the combined carbon+energy scenario

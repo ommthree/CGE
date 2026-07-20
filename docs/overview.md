@@ -120,8 +120,9 @@ lacks, so it is an optional, clearly-illustrative overlay, never a headline.
 A small static computable general equilibrium model: Leontief intermediates, Cobb-Douglas value
 added and household demand, factor markets, CPI numéraire — the general-equilibrium feedback and
 input substitution Engines 1–2 structurally cannot do. It **calibrates to a balanced SAM built from
-a real EXIOBASE build** and passes the standard CGE battery — **benchmark replication** (to machine
-precision), **homogeneity**, and **Walras' law**. It does the thing that makes a CGE worth the
+an EXIOBASE-shaped build** (the offline pymrio test MRIO used in CI, *not yet* a live EXIOBASE
+download — see `docs/models/cge-static.md` §5a and roadmap §5.1b) and passes the standard CGE
+battery — **benchmark replication** (to machine precision), **homogeneity**, and **Walras' law**. It does the thing that makes a CGE worth the
 trouble: **carbon-tax revenue recycling** (lump-sum / labour-tax-cut), showing the **revenue-
 recycling effect** (recycling offsets the welfare loss) and **sectoral reallocation** from dirty to
 clean — not just a shrinking economy. "Toy but honest": *precise about structure, indicative about
@@ -236,10 +237,12 @@ CGE and nature extensions are the next work.**
 | 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | ⬜ [roadmap](../roadmap.md) |
 | 7 — Pathway stack | NGFS-driven dynamics + FaIR climate | ⬜ [roadmap](../roadmap.md) |
 
-The completed work is the minimum viable version of the original ask (cost + volume + a
-general-equilibrium CGE pilot with revenue recycling, on real data, with a GUI). The remaining
-economics — the open-economy/multi-region CGE and the nature/pathway extensions — is still ahead.
-Full plan and honest feasibility assessment: [`roadmap.md`](../roadmap.md).
+The completed work is the minimum viable version of the original ask, and then some (cost +
+volume + a general-equilibrium CGE pilot with revenue recycling — closed, open, **and true
+multi-region bilateral trade** — on real data, with a GUI). The remaining economics — the
+macroeconomic closure (government, investment, energy nest — Phase 5d), the nature/pathway
+extensions, and a live-EXIOBASE multi-region SAM build (§5.1b) — is still ahead. Full plan and
+honest feasibility assessment: [`roadmap.md`](../roadmap.md).
 
 ---
 

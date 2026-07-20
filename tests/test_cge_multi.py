@@ -5,8 +5,10 @@ imports/exports), homogeneity, and cross-region carbon leakage.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 
+from cge.contracts.data_objects import SAM
 from cge.contracts.shocks import CarbonPrice
 from cge.data.sam.balance import is_balanced
 from cge.data.sam.toy_multi import (
@@ -326,3 +328,125 @@ def test_multi_sparse_topology_replicates_and_solves_uniquely():
     assert np.allclose(st.M, cal.M0, atol=1e-6)
     assert np.allclose(st.EX, cal.EX0, atol=1e-6)
     assert MM.n_unknowns(cal) == 2 * cal.nr * cal.ns + len(cal.active_routes) + cal.nf * cal.nr
+
+
+# -- Disconnected regions + route-materiality dust (round-10 review follow-up) -------------------
+def _disconnected_two_region_sam():
+    """A perfectly balanced 2-region SAM with each region internally valid but NO trade link at
+    all between them — active_routes is empty, so the region graph is disconnected."""
+    regions, sectors = ["N", "S"], ["BRD", "MIL"]
+    accounts = []
+    for r in regions:
+        accounts += [f"a_{r}_{s}" for s in sectors] + [f"c_{r}_{s}" for s in sectors]
+    accounts += [f"{f}_{r}" for r in regions for f in ("CAP", "LAB")] + [
+        f"HOH_{r}" for r in regions
+    ]
+    m = pd.DataFrame(0.0, index=accounts, columns=accounts)
+    domestic = {(r, s): 100.0 for r in regions for s in sectors}
+    inter = {(r, "MIL", "BRD"): 15.0 for r in regions} | {(r, "BRD", "MIL"): 10.0 for r in regions}
+    for r in regions:
+        for s in sectors:
+            m.loc[f"a_{r}_{s}", f"c_{r}_{s}"] = domestic[(r, s)]
+    for (r, com, act), v in inter.items():
+        m.loc[f"c_{r}_{com}", f"a_{r}_{act}"] = v
+    for r in regions:
+        for s in sectors:
+            output = domestic[(r, s)]
+            intermediates = sum(m.loc[f"c_{r}_{c}", f"a_{r}_{s}"] for c in sectors)
+            va = output - intermediates
+            m.loc[f"CAP_{r}", f"a_{r}_{s}"] = va / 2.0
+            m.loc[f"LAB_{r}", f"a_{r}_{s}"] = va / 2.0
+    for r in regions:
+        for s in sectors:
+            com = f"c_{r}_{s}"
+            supply, uses = m[com].sum(), m.loc[com].sum()
+            m.loc[com, f"HOH_{r}"] = supply - uses
+    for r in regions:
+        m.loc[f"HOH_{r}", f"CAP_{r}"] = m.loc[f"CAP_{r}", :].sum()
+        m.loc[f"HOH_{r}", f"LAB_{r}"] = m.loc[f"LAB_{r}", :].sum()
+    from cge.contracts.data_objects import Provenance
+
+    prov = Provenance(
+        source="test", source_version="v", licence="n/a", reference_year=0, retrieved="2026-01-01"
+    )
+    return SAM(provenance=prov, accounts=accounts, matrix=m), regions, sectors
+
+
+def test_multi_disconnected_regions_rejected_at_calibration():
+    """THE P1 regression: a disconnected region-trade graph must be REJECTED at calibration, not
+    silently solved with a genuinely underdetermined price level for the unlinked region(s). A
+    single global numéraire + one globally-dropped factor equation only identify a CONNECTED trade
+    network — reproduced: scaling the whole unlinked region's price vector by 1.7x left every
+    residual unchanged (a real singular direction, not just numerical delicacy)."""
+    sam, regions, sectors = _disconnected_two_region_sam()
+    with pytest.raises(ValueError, match="disconnected"):
+        calibrate_multi(sam, regions=regions, sectors=sectors, factors=_FACTORS)
+
+
+def test_multi_connected_components_partitions_correctly():
+    """connected_components reports exactly one component for the dense and sparse toy fixtures
+    (genuinely connected trade networks) — the positive-control complement to the disconnected
+    rejection test above."""
+    dense_cal = _cal()
+    assert len(dense_cal.connected_components) == 1
+
+    sparse_cal = calibrate_multi(
+        toy_multi_sparse_sam(),
+        regions=SPARSE_REGIONS,
+        sectors=SPARSE_SECTORS,
+        factors=_FACTORS,
+    )
+    assert len(sparse_cal.connected_components) == 1
+
+
+def test_multi_route_materiality_threshold_excludes_numerical_dust():
+    """THE P1 regression: a route with a trade value of ~1e-10 of GDP (numerical dust from
+    upstream aggregation/RAS noise, not genuine trade) must NOT be treated as active — a bare
+    ``>0`` check would pack a price unknown for it, producing a near-singular Jacobian (condition
+    number ~1e12) where perturbing that route's price leaves residuals far below typical solver
+    tolerance."""
+    regions, sectors = ["N", "S"], ["BRD", "MIL"]
+    accounts = []
+    for r in regions:
+        accounts += [f"a_{r}_{s}" for s in sectors] + [f"c_{r}_{s}" for s in sectors]
+    accounts += [f"{f}_{r}" for r in regions for f in ("CAP", "LAB")] + [
+        f"HOH_{r}" for r in regions
+    ]
+    m = pd.DataFrame(0.0, index=accounts, columns=accounts)
+    domestic = {(r, s): 100.0 for r in regions for s in sectors}
+    dust = 1e-10
+    exports = {("N", "S", "BRD"): dust, ("S", "N", "BRD"): dust}  # symmetric, already balanced
+    inter = {(r, "MIL", "BRD"): 15.0 for r in regions} | {(r, "BRD", "MIL"): 10.0 for r in regions}
+    for r in regions:
+        for s in sectors:
+            m.loc[f"a_{r}_{s}", f"c_{r}_{s}"] = domestic[(r, s)]
+    for (o, d, s), v in exports.items():
+        m.loc[f"a_{o}_{s}", f"c_{d}_{s}"] = v
+    for (r, com, act), v in inter.items():
+        m.loc[f"c_{r}_{com}", f"a_{r}_{act}"] = v
+    for r in regions:
+        for s in sectors:
+            output = domestic[(r, s)] + sum(exports.get((r, d, s), 0.0) for d in regions if d != r)
+            intermediates = sum(m.loc[f"c_{r}_{c}", f"a_{r}_{s}"] for c in sectors)
+            va = output - intermediates
+            m.loc[f"CAP_{r}", f"a_{r}_{s}"] = va / 2.0
+            m.loc[f"LAB_{r}", f"a_{r}_{s}"] = va / 2.0
+    for r in regions:
+        for s in sectors:
+            com = f"c_{r}_{s}"
+            supply, uses = m[com].sum(), m.loc[com].sum()
+            m.loc[com, f"HOH_{r}"] = supply - uses
+    for r in regions:
+        m.loc[f"HOH_{r}", f"CAP_{r}"] = m.loc[f"CAP_{r}", :].sum()
+        m.loc[f"HOH_{r}", f"LAB_{r}"] = m.loc[f"LAB_{r}", :].sum()
+    from cge.contracts.data_objects import Provenance
+
+    prov = Provenance(
+        source="test", source_version="v", licence="n/a", reference_year=0, retrieved="2026-01-01"
+    )
+    sam = SAM(provenance=prov, accounts=accounts, matrix=m)
+    # The dust-only trade also makes the region graph disconnected under the materiality
+    # threshold, so this correctly raises via the connectivity gate — pinning that a dust route
+    # does not count as a real link either.
+    with pytest.raises(ValueError, match="disconnected"):
+        calibrate_multi(sam, regions=regions, sectors=sectors, factors=_FACTORS)

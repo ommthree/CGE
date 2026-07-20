@@ -34,6 +34,18 @@ from cge.engines.cge_static.calibrate_open import _elast_vector
 DEFAULT_ARMINGTON_ELAST = 2.0
 DEFAULT_CET_ELAST = 2.0
 
+# Materiality threshold for "does this route genuinely trade" (review P1, round 10): benchmark
+# flows are GDP-normalised (divided by total global value added — see calibrate_multi below), so
+# this is a *share of global GDP*, comparable across builds. A route below this is treated as
+# structurally zero even if its raw SAM cell is a nonzero float — numerical noise from a prior
+# aggregation/RAS-balancing step can leave a route at ~1e-10 of GDP, which is not "trade" in any
+# economic sense but IS enough to make `> 0` pack a price unknown for it. That unknown is then
+# almost entirely unconstrained (the residual system's sensitivity to it is only as large as the
+# route's own tiny share), producing a near-singular Jacobian (condition number in the 1e12 range)
+# that a tolerance-based solver can accept as "converged" while the route's price is actually free
+# to many significant figures.
+ROUTE_MATERIALITY_THRESHOLD = 1e-6
+
 
 @dataclass(frozen=True)
 class MultiCalibratedModel:
@@ -94,23 +106,65 @@ class MultiCalibratedModel:
 
     @property
     def active_routes(self) -> list[tuple[int, int, int]]:
-        """Ordered ``(o, s, d)`` triples for routes with genuine benchmark trade — ``M0[d,s,o] > 0``
-        (equivalently ``EX0[o,s,d] > 0``; the two coincide at a balanced benchmark). A route absent
-        from this list has **no** price unknown and **no** clearing residual (review P1): packing an
-        unknown for a structurally-zero route left its price undetermined — perturbing it by 1.5
-        left every residual at machine-zero, a genuine rank deficiency (Jacobian rank dropped by
-        exactly the number of zero routes), so the solver's "convergence" on a sparse SAM did not
-        pin a unique equilibrium. Real SAMs are commonly sparse (most region pairs don't trade every
-        good), so we pack only active routes rather than rejecting sparse topology outright."""
+        """Ordered ``(o, s, d)`` triples for routes with genuine (materially above-threshold)
+        benchmark trade — ``M0[d,s,o] > ROUTE_MATERIALITY_THRESHOLD`` (equivalently
+        ``EX0[o,s,d]``; the two coincide at a balanced benchmark, both GDP-normalised). A route
+        absent from this list has **no** price unknown and **no** clearing residual (review P1):
+        packing an unknown for a structurally-zero route left its price undetermined — perturbing
+        it left every residual at machine-zero, a genuine rank deficiency, so the solver's
+        "convergence" on a sparse SAM did not pin a unique equilibrium. Real SAMs are commonly
+        sparse (most region pairs don't trade every good), so we pack only active routes rather
+        than rejecting sparse topology outright. The threshold (not a bare ``> 0``) additionally
+        excludes numerical dust — a route at ~1e-10 of GDP from upstream aggregation/RAS noise is
+        not "trade" in any economic sense, but a bare `>0` check would pack a price unknown for it
+        anyway, producing a near-singular (condition number ~1e12) Jacobian that a tolerance-based
+        solver can accept as converged while that route's price is actually free (round-10
+        follow-up review)."""
         routes = []
         for oi in range(self.nr):
             for di in range(self.nr):
                 if oi == di:
                     continue
                 for si in range(self.ns):
-                    if self.M0[di, si, oi] > 0 or self.EX0[oi, si, di] > 0:
+                    if (
+                        self.M0[di, si, oi] > ROUTE_MATERIALITY_THRESHOLD
+                        or self.EX0[oi, si, di] > ROUTE_MATERIALITY_THRESHOLD
+                    ):
                         routes.append((oi, si, di))
         return routes
+
+    @property
+    def connected_components(self) -> list[set[int]]:
+        """Partition the ``nr`` regions into connected components under `active_routes` (undirected
+        connectivity — a route in either direction links the two regions). A single global
+        numéraire and a single globally-dropped factor-market equation are only a valid closure
+        when the region graph is **connected**: two regions with no active trade route between
+        them (directly or via a chain of intermediaries) are, mathematically, two independent
+        economies glued into one residual system with one numéraire and one dropped equation too
+        few between them — the extra region's overall price level is genuinely underdetermined,
+        not just numerically delicate (review P1, round 10: reproduced a disconnected 2-region SAM
+        where scaling one region's entire price vector by 1.7× left every residual unchanged to
+        within 1e-15, i.e. a real (not just near-) singular direction the Jacobian's
+        default-tolerance rank check can fail to flag)."""
+        parent = list(range(self.nr))
+
+        def find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(i: int, j: int) -> None:
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[ri] = rj
+
+        for oi, _si, di in self.active_routes:
+            union(oi, di)
+        groups: dict[int, set[int]] = {}
+        for ri in range(self.nr):
+            groups.setdefault(find(ri), set()).add(ri)
+        return list(groups.values())
 
 
 def calibrate_multi(
@@ -222,7 +276,7 @@ def calibrate_multi(
 
     foreign_savings = M0.sum(axis=(1, 2)) - EX0.sum(axis=(1, 2))  # [r]
 
-    return MultiCalibratedModel(
+    model = MultiCalibratedModel(
         regions=list(regions),
         sectors=list(sectors),
         factors=list(factors),
@@ -252,6 +306,27 @@ def calibrate_multi(
         F0=F0,
         INT0=INT0,
     )
+
+    # A single global numéraire + a single globally-dropped factor-market equation is only a valid
+    # closure when the region graph is CONNECTED (review P1, round 10). Two or more regions with no
+    # active trade route linking them (directly or via intermediaries) are, mathematically, distinct
+    # economies sharing one residual system with one numéraire and one dropped equation too few
+    # between them — each additional component's overall price level is genuinely underdetermined,
+    # not merely numerically delicate. Reject rather than silently solve a system with an
+    # unidentified direction; per-component numéraire/Walras closures are a documented refinement
+    # (roadmap), not yet implemented.
+    components = model.connected_components
+    if len(components) > 1:
+        named = [sorted(model.regions[i] for i in comp) for comp in components]
+        raise ValueError(
+            f"multi-region SAM's region-trade graph is disconnected into {len(components)} "
+            f"components ({named}); a single global numéraire and one globally-dropped factor "
+            "market only identify a connected trade network. Each disconnected group needs its "
+            "own numéraire/Walras closure (not yet implemented) — supply a SAM where every region "
+            "reaches every other region via active trade routes, or split the disconnected groups "
+            "into separate single-economy runs."
+        )
+    return model
 
 
 def _calibrate_arm(D0, M0, Q0, arm):

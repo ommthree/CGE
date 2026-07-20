@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.5.2)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.5.3)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -311,10 +311,13 @@ It **replicates its benchmark to machine precision** and produces the signature 
 a carbon price on the dirty sector causes **carbon leakage** — its domestic output falls, its
 **imports rise** (substitution to foreign supply) and its **exports fall** (lost competitiveness),
 while the clean sector expands and exports more. The engine emits `import_change`, `export_change`
-and `exchange_rate_change` alongside the usual outputs; `gdp_change_real` is CPI-weighted expenditure
-$pq\cdot FD$ (the same real-GDP contract as the closed model). An **Armington elasticity sensitivity
-sweep** (`armington_sensitivity_sweep`) returns the low/central/high leakage envelope. Validation:
-`open_benchmark_replication`, `open_carbon_price_causes_leakage`.
+and `exchange_rate_change` alongside the usual outputs; `gdp_change_real` is the **full
+expenditure-side identity** $pq\cdot FD + er\cdot(\Sigma E - \Sigma M)$ — CPI-weighted household
+consumption **plus net exports** (review P1: an earlier version used $pq\cdot FD$ alone, which is
+household consumption, not GDP — the two coincide only when the current account is zero, which is
+the closed model's case but not the open model's whenever foreign savings `Sf≠0`). An **Armington
+elasticity sensitivity sweep** (`armington_sensitivity_sweep`) returns the low/central/high leakage
+envelope. Validation: `open_benchmark_replication`, `open_carbon_price_causes_leakage`.
 
 ## 8a. Multi-region (true bilateral trade)
 
@@ -345,10 +348,25 @@ algebraically; one global CPI numéraire; one factor market dropped by Walras). 
 benchmark trade gets **no** price unknown and **no** clearing residual — packing one unconditionally
 for every possible directed route (as an earlier version did) left the system rank-deficient by
 exactly the number of zero-trade routes, since nothing in the Armington/CET duals reads a
-zero-share route's price anyway (`cal.active_routes`, `model_multi.py`). Foreign savings per region
-``Sf[r]=ΣM−ΣE`` is fixed at benchmark and globally zero-sum (financed by household capital
-transfers); there is no exchange rate and no external rest-of-world — trade is entirely among the
-build's own regions.
+zero-share route's price anyway (`cal.active_routes`, `model_multi.py`). "Genuine" trade means
+above `ROUTE_MATERIALITY_THRESHOLD` (a GDP-share threshold, since benchmark flows are
+GDP-normalised) — a bare `>0` check would treat numerical dust from upstream aggregation/RAS noise
+(e.g. a route at ~1e-10 of GDP) as active, producing a near-singular Jacobian that a
+tolerance-based solver could accept as converged while that route's price is actually free.
+Foreign savings per region ``Sf[r]=ΣM−ΣE`` is fixed at benchmark and globally zero-sum (financed by
+household capital transfers); there is no exchange rate and no external rest-of-world — trade is
+entirely among the build's own regions.
+
+**Connectivity requirement (review P1, 2026-07).** A single global numéraire and a single
+globally-dropped factor-market equation are only a valid closure when the region-trade graph is
+**connected** under `active_routes`. Two or more regions with no active route linking them
+(directly or via intermediaries) are, mathematically, distinct economies sharing one residual
+system with one numéraire and one dropped equation too few between them — each additional
+component's overall price level is genuinely underdetermined, not merely numerically delicate.
+`calibrate_multi` checks `cal.connected_components` and **rejects** a disconnected SAM outright,
+naming the disconnected groups. Per-component numéraire/Walras closures (so disconnected regions
+could still be calibrated in one call) are a documented refinement, not yet implemented — for now,
+disconnected groups must be run as separate single-economy calibrations.
 
 It **replicates its benchmark to machine precision** — every bilateral import and export returns to
 the SAM values (`multi_region_benchmark_replication`, plus the universal post-calibration

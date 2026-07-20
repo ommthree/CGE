@@ -445,6 +445,41 @@ class DataStore:
         d = self.builds_dir / build_id
         return BuildMeta.model_validate_json((d / "meta.json").read_text())
 
+    @staticmethod
+    def _migrate_final_demand_kind(
+        build_id: str, meta: BuildMeta, final_demand: pd.DataFrame, regions: Classification
+    ) -> str:
+        """Detect and correct a pre-schema build silently defaulting to ``"aggregate"`` (review
+        P1, round 10): ``BuildMeta.final_demand_kind`` defaults to ``"aggregate"`` for any
+        ``meta.json`` written before the field existed, even if the build's ``final_demand``
+        parquet is genuinely by-region (multi-column, one per region) — the stored kind and the
+        stored shape can disagree, and silently trusting the (wrong) stored kind would route a
+        genuinely-measured build through the synthetic import-share imputation.
+
+        The on-disk parquet's column shape is unambiguous evidence here (it was written once at
+        build time and never changes), so when the metadata says ``"aggregate"`` but the columns
+        exactly match ``regions.labels`` (the by-region signature), correct to ``"by_region"``
+        in memory on every load — cheap and deterministic, so it doesn't need write-back to
+        ``meta.json`` (avoiding a bespoke unguarded write outside the crash-safe ``save()`` swap
+        path). A stored ``"by_region"`` kind whose shape has since gone wrong is left to
+        ``IOSystem``'s own validator to reject loudly, rather than silently reinterpreted here."""
+        stored = meta.final_demand_kind
+        if stored == "aggregate" and not final_demand.empty:
+            cols = list(final_demand.columns)
+            if len(cols) > 1 and set(cols) == set(regions.labels):
+                import warnings
+
+                warnings.warn(
+                    f"build {build_id!r}: meta.json says final_demand_kind='aggregate' but its "
+                    f"final_demand has one column per region ({sorted(cols)}) — this is a "
+                    "pre-schema build from before final_demand_kind existed; treating it as "
+                    "'by_region' for this load (matches the stored data's actual shape). Rebuild "
+                    "to persist the corrected metadata permanently.",
+                    stacklevel=2,
+                )
+                return "by_region"
+        return stored
+
     def load(self, build_id: str) -> dict:
         """Return harmonised data objects for a build, keyed by type name — the exact
         shape engines expect from the runner's ``data`` argument."""
@@ -463,6 +498,7 @@ class DataStore:
             else pd.DataFrame()
         )
         sectors, regions = _classifications_from_labels(list(A.columns))
+        fd_kind = self._migrate_final_demand_kind(build_id, meta, final_demand, regions)
         io = IOSystem(
             provenance=prov,
             sectors=sectors,
@@ -472,7 +508,7 @@ class DataStore:
             unit=meta.monetary_unit,
             A=A,
             final_demand=final_demand,
-            final_demand_kind=meta.final_demand_kind,
+            final_demand_kind=fd_kind,
             value_added=value_added,
         )
 
