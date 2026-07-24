@@ -66,6 +66,11 @@ class MultiModelState:
     F: np.ndarray  # [f, r, s] factor demand
     income: np.ndarray  # [r]
     carbon_revenue: np.ndarray  # [r]
+    # Government accounts (Phase 5d.1) — zeros when cal.has_government is False (pre-5d.1
+    # behaviour preserved exactly; same convention as the closed/open models).
+    GD: np.ndarray  # [r, s] government final demand
+    gov_income: np.ndarray  # [r] government income (benchmark tax + own-region carbon revenue)
+    fiscal_balance: np.ndarray  # [r] income − spending (≡0 under balanced_budget)
 
 
 def _va_unit_cost(cal: MultiCalibratedModel, w: np.ndarray) -> np.ndarray:
@@ -236,11 +241,20 @@ def derive_multi_state(
     carbon_cost: np.ndarray | None = None,
     recycling: str = "lump_sum",
     strict: bool = False,
+    gov_closure: str = "balanced_budget",
 ) -> MultiModelState:
     """Close the multi-region model at prices (pd, pq, pe, w): derive all quantities and per-region
     income. ``carbon_cost`` is [r,s]. Income per region = factor income + Sf transfer + recycled
     carbon revenue. ``strict`` raises on a diverging recycling fixed point (k≥1) at the accepted
-    equilibrium; non-strict clamps it (keeps the residual continuous during the solve)."""
+    equilibrium; non-strict clamps it (keeps the residual continuous during the solve).
+
+    **Government accounts (Phase 5d.1, ``cal.has_government``):** the closed/open design, one
+    government per region. Each region's household pays its benchmark direct tax
+    (rate_r·factor income_r); each region's GOVERNMENT collects its own region's carbon revenue
+    and spends tax+revenue on its own CD demand vector under ``balanced_budget``. The per-region
+    fixed point is exact because ``_quantities`` is block-diagonal in demand per region at fixed
+    prices (region r's output depends only on region r's demand): gov_income_r =
+    (T_r + R0_r)/(1 − kg_r)."""
     nr, ns = cal.nr, cal.ns
     cc = np.zeros((nr, ns)) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pv = _va_unit_cost(cal, w)
@@ -250,24 +264,56 @@ def derive_multi_state(
     # bilateral prices is exactly the benchmark Sf at benchmark; here we hold Sf at its calibrated
     # nominal level, consistent with the fixed-Sf closure). Recycled carbon revenue adds k·I.
     factor_income = (w * cal.endowment).sum(axis=0)  # [r]
-    base_income = factor_income + cal.foreign_savings  # [r]
-    income = base_income.copy()
-    if recycling != "none" and np.any(cc != 0.0):
-        FD_unit = cal.gamma / pq  # per-unit-income FD
-        _, Zc, *_ = _quantities(cal, pd, pq, pe, pz, FD_unit)
-        k = (cc * Zc).sum(axis=1)  # [r]
-        if strict and np.any(k >= 1.0 - 1e-12):
-            bad = int(np.argmax(k))
-            raise ValueError(
-                f"multi-region recycling fixed point diverges in region "
-                f"{cal.regions[bad]}: carbon revenue ≥ income (k={k[bad]:.6g} ≥ 1). Lower the "
-                "carbon price."
-            )
-        k = np.clip(k, None, 1.0 - 1e-9)
-        income = base_income / (1.0 - k)
+    recycles = recycling != "none" and np.any(cc != 0.0)
 
-    FD = cal.gamma * income[:, None] / pq
-    Q, Z, D, EX, M = _quantities(cal, pd, pq, pe, pz, FD)
+    if not cal.has_government:
+        # Pre-5d.1 behaviour, unchanged: revenue recycles straight to each region's household.
+        base_income = factor_income + cal.foreign_savings  # [r]
+        income = base_income.copy()
+        if recycles:
+            FD_unit = cal.gamma / pq  # per-unit-income FD
+            _, Zc, *_ = _quantities(cal, pd, pq, pe, pz, FD_unit)
+            k = (cc * Zc).sum(axis=1)  # [r]
+            if strict and np.any(k >= 1.0 - 1e-12):
+                bad = int(np.argmax(k))
+                raise ValueError(
+                    f"multi-region recycling fixed point diverges in region "
+                    f"{cal.regions[bad]}: carbon revenue ≥ income (k={k[bad]:.6g} ≥ 1). Lower the "
+                    "carbon price."
+                )
+            k = np.clip(k, None, 1.0 - 1e-9)
+            income = base_income / (1.0 - k)
+        FD = cal.gamma * income[:, None] / pq
+        GD = np.zeros((nr, ns))
+        gov_income = np.zeros(nr)
+    else:
+        if gov_closure != "balanced_budget":
+            raise ValueError(
+                f"unsupported gov_closure {gov_closure!r} (5d.1 only implements "
+                "'balanced_budget'; 'deficit_financed' is Phase 5d.7)"
+            )
+        # Household per region: factor income + Sf − direct tax; no carbon revenue in it.
+        tax = cal.gov_tax_rate0 * factor_income  # [r]
+        income = factor_income + cal.foreign_savings - tax
+        FD = cal.gamma * income[:, None] / pq
+        if recycles:
+            _, z_fd, *_ = _quantities(cal, pd, pq, pe, pz, FD)
+            r0 = (cc * z_fd).sum(axis=1)  # [r] revenue from (price-fixed) household demand
+            _, z_g, *_ = _quantities(cal, pd, pq, pe, pz, cal.gov_gamma / pq)
+            kg = (cc * z_g).sum(axis=1)  # [r] marginal revenue per unit of own-gov spending
+        else:
+            r0, kg = np.zeros(nr), np.zeros(nr)
+        if strict and np.any(kg >= 1.0 - 1e-12):
+            bad = int(np.argmax(kg))
+            raise ValueError(
+                f"multi-region government recycling fixed point diverges in region "
+                f"{cal.regions[bad]} (kg={kg[bad]:.6g} ≥ 1); lower the carbon price."
+            )
+        kg = np.clip(kg, None, 1.0 - 1e-9)
+        gov_income = (tax + r0) / (1.0 - kg)  # [r]
+        GD = cal.gov_gamma * gov_income[:, None] / pq
+
+    Q, Z, D, EX, M = _quantities(cal, pd, pq, pe, pz, FD + GD)
     carbon_revenue = (cc * Z).sum(axis=1)  # [r]
     va_cost = cal.va_share * pv * Z
     F = _factor_demand(cal, w, pv, va_cost)
@@ -286,6 +332,9 @@ def derive_multi_state(
         F=F,
         income=income,
         carbon_revenue=carbon_revenue,
+        GD=GD,
+        gov_income=gov_income,
+        fiscal_balance=np.zeros(nr),  # balanced_budget by construction
     )
 
 

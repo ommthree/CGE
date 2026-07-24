@@ -616,3 +616,219 @@ def test_sensitivity_sweep_rejects_unordered_bands():
             [CarbonPrice(price=0.1)],
             elasticities=(4.0, 2.0, 1.5),
         )
+
+
+# -- government account (Phase 5d.1, open variant) ----------------------------
+def _gov_open_sam():
+    """toy_open_sam plus a GOV account with a real benchmark fiscal flow: an 18.1 direct tax (10%
+    of factor income 181) funds government purchases of c_BRD (10) and c_MIL (8.1); household
+    demand shrinks by exactly what GOV buys, so every other cell — production, trade, factors —
+    is untouched and the SAM stays balanced. gov_gamma deliberately differs from household gamma."""
+    sam = toy_open_sam()
+    acc = list(sam.accounts) + ["GOV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["GOV", "HOH"] = 18.1
+    m.loc["c_BRD", "GOV"] = 10.0
+    m.loc["c_MIL", "GOV"] = 8.1
+    m.loc["c_BRD", "HOH"] -= 10.0  # 77 → 67
+    m.loc["c_MIL", "HOH"] -= 8.1  # 104 → 95.9
+    return sam.model_copy(update={"accounts": acc, "matrix": m})
+
+
+def _cal_gov(**kw):
+    return calibrate_open(
+        _gov_open_sam(),
+        sectors=_SECTORS,
+        factors=_FACTORS,
+        institutions={"household": "HOH", "government": "GOV"},
+        **kw,
+    )
+
+
+def test_open_gov_calibrates():
+    cal = _cal_gov()
+    assert cal.has_government
+    assert cal.gov_income0 == pytest.approx(18.1 / 181.0)
+    assert cal.gov_tax_rate0 == pytest.approx(0.1)
+    assert np.allclose(cal.gov_gamma, [10.0 / 18.1, 8.1 / 18.1])
+    assert not np.allclose(cal.gov_gamma, cal.gamma)
+    # Q0 includes government demand (67+15+10=92 for c_BRD before normalisation).
+    assert np.allclose(cal.Q0 * 181.0, [92.0, 128.0])
+
+
+def test_open_gov_benchmark_replicates():
+    """Tier 1: prices/er = 1 and every calibrated quantity — including GD0 — reproduced."""
+    cal = _cal_gov()
+    _sol, st = _solve(cal)
+    assert np.allclose(_sol.x, 1.0, atol=1e-7)
+    assert np.allclose(st.Z, cal.Z0, atol=1e-6)
+    assert np.allclose(st.FD, cal.FD0, atol=1e-6)
+    assert np.allclose(st.GD, cal.GD0, atol=1e-6)
+    assert st.gov_income == pytest.approx(cal.gov_income0, rel=1e-6)
+    assert st.fiscal_balance == pytest.approx(0.0)
+
+
+def test_open_gov_homogeneity():
+    """Tier 1: the tax is a RATE on factor income, so scaling the endowment k× leaves prices/er
+    unchanged and scales all reals — including government demand — by k."""
+    from dataclasses import replace
+
+    cal = _cal_gov()
+    _sol, st = _solve(cal)
+    k = 2.5
+    cal_k = replace(
+        cal,
+        endowment=cal.endowment * k,
+        Z0=cal.Z0 * k,
+        D0=cal.D0 * k,
+        E0=cal.E0 * k,
+        M0=cal.M0 * k,
+        Q0=cal.Q0 * k,
+        FD0=cal.FD0 * k,
+        F0=cal.F0 * k,
+        INT0=cal.INT0 * k,
+        foreign_savings=cal.foreign_savings * k,
+        arm_scale=cal.arm_scale,
+        cet_scale=cal.cet_scale,
+    )
+    _sol_k, st_k = _solve(cal_k)
+    assert np.allclose(_sol.x, _sol_k.x, atol=1e-7)
+    assert np.allclose(st_k.Z, k * st.Z, atol=1e-6)
+    assert np.allclose(st_k.GD, k * st.GD, atol=1e-6)
+
+
+def test_open_gov_carbon_revenue_goes_to_government():
+    """Under a carbon shock the government (not the household) collects the revenue: household
+    income is factor income + er·Sf − tax exactly, and gov income = tax + revenue exactly."""
+    cal = _cal_gov()
+    cc = 0.2 * _EMISSIONS
+    ns, nf = len(cal.sectors), len(cal.factors)
+    sol = solve(
+        lambda z: MO.residuals(cal, z, carbon_cost=cc, recycling="lump_sum"),
+        MO.initial_guess(cal) * 1.04,
+        prefer="scipy",
+    )
+    st = MO.derive_open_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns : 2 * ns],
+        sol.x[2 * ns : 2 * ns + nf],
+        float(sol.x[-1]),
+        carbon_cost=cc,
+        recycling="lump_sum",
+        strict=True,  # also exercises the strict gov income-identity check
+    )
+    factor_income = float(np.dot(st.w, cal.endowment))
+    expected_hh = factor_income + st.er * cal.foreign_savings - cal.gov_tax_rate0 * factor_income
+    assert st.income == pytest.approx(expected_hh, rel=1e-9)
+    assert st.gov_income == pytest.approx(
+        cal.gov_tax_rate0 * factor_income + st.carbon_revenue, rel=1e-9
+    )
+    assert st.gov_income > cal.gov_income0  # revenue on top of the benchmark tax
+    assert st.fiscal_balance == pytest.approx(0.0)
+
+
+def test_open_gov_walras_and_trade_balance_under_shock():
+    """Tier 1 re-proof: with the government active and a carbon shock, the dropped factor market
+    still clears and the trade balance still holds at the accepted equilibrium."""
+    cal = _cal_gov()
+    cc = 0.2 * _EMISSIONS
+    ns, nf = len(cal.sectors), len(cal.factors)
+    sol = solve(
+        lambda z: MO.residuals(cal, z, carbon_cost=cc, recycling="lump_sum", drop_factor=0),
+        MO.initial_guess(cal) * 1.04,
+        prefer="scipy",
+    )
+    st = MO.derive_open_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns : 2 * ns],
+        sol.x[2 * ns : 2 * ns + nf],
+        float(sol.x[-1]),
+        carbon_cost=cc,
+        recycling="lump_sum",
+    )
+    excess = float(st.F[0, :].sum()) - cal.endowment[0]
+    assert abs(excess) < 1e-6
+    trade = st.er * float(st.M.sum() - st.E.sum()) - st.er * cal.foreign_savings
+    assert abs(trade) < 1e-6
+
+
+def test_open_gov_unsupported_closure_rejected():
+    cal = _cal_gov()
+    ns, nf = len(cal.sectors), len(cal.factors)
+    with pytest.raises(ValueError, match="unsupported gov_closure"):
+        MO.derive_open_state(
+            cal,
+            np.ones(ns),
+            np.ones(ns),
+            np.ones(nf),
+            1.0,
+            carbon_cost=0.2 * _EMISSIONS,
+            recycling="lump_sum",
+            gov_closure="deficit_financed",
+        )
+
+
+def test_open_gov_trade_flows_rejected():
+    """A GOV↔ROW flow (government foreign borrowing/trade) has no modelled counterpart — rejected
+    at calibration, not silently mis-calibrated."""
+    sam = _gov_open_sam()
+    m = sam.matrix.copy()
+    m.loc["GOV", "ROW"] = 3.0
+    bad = sam.model_copy(update={"matrix": m})
+    with pytest.raises(ValueError, match="government trade are not yet modelled"):
+        calibrate_open(
+            bad,
+            sectors=_SECTORS,
+            factors=_FACTORS,
+            institutions={"household": "HOH", "government": "GOV"},
+        )
+
+
+def test_engine_open_gov_sam_emits_fiscal_variables():
+    """End-to-end: an open SAM carrying GOV dispatches to the open variant, emits fiscal_balance
+    (≡0) + gov_spending, and records the government keys in the manifest; a no-GOV open run does
+    not emit them."""
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": _gov_open_sam(), "carbon_cost_share": {"BRD": 0.2, "MIL": 0.05}},
+        shocks=[CarbonPrice(price=0.5)],
+        years=[2020],
+    )
+    d = res.data
+    fb = d[d["variable"] == "fiscal_balance"]["value"]
+    gs = d[d["variable"] == "gov_spending"]["value"]
+    assert len(fb) == 1 and abs(float(fb.iloc[0])) < 1e-9
+    assert len(gs) == 1 and float(gs.iloc[0]) > 18.1 / 181.0  # benchmark tax + carbon revenue
+    assert res.manifest.assumptions["government_account"] == "GOV"
+    assert res.manifest.assumptions["gov_closure"] == "balanced_budget"
+    assert res.manifest.assumptions["gov_benchmark_tax_share_of_factor_income"] == pytest.approx(
+        0.1
+    )
+
+    plain = eng.run(
+        data={"SAM": toy_open_sam(), "carbon_cost_share": {"BRD": 0.2, "MIL": 0.05}},
+        shocks=[CarbonPrice(price=0.5)],
+        years=[2020],
+    )
+    assert not (plain.data["variable"] == "fiscal_balance").any()
+    assert plain.manifest.assumptions["government_account"] == "none"
+
+
+def test_engine_open_gov_zero_shock_replicates():
+    """The open replication gate covers GD: a zero-price run on the GOV SAM reproduces the
+    benchmark (all changes ~0; gov_spending at its benchmark level)."""
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": _gov_open_sam(), "carbon_cost_share": {"BRD": 0.2, "MIL": 0.05}},
+        shocks=[CarbonPrice(price=0.0)],
+        years=[2020],
+    )
+    d = res.data
+    for v in ("price_change", "volume_change", "gdp_change_real"):
+        vals = d[d["variable"] == v]["value"].to_numpy()
+        assert np.allclose(vals, 0.0, atol=1e-6), v
+    gs = float(d[d["variable"] == "gov_spending"]["value"].iloc[0])
+    assert gs == pytest.approx(18.1 / 181.0, rel=1e-6)

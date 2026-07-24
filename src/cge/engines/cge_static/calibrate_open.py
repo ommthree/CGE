@@ -86,10 +86,20 @@ class OpenCalibratedModel:
     FD0: np.ndarray  # [i] household final demand (on Q)
     F0: np.ndarray  # [f, i] factor demand
     INT0: np.ndarray  # [j, i] intermediate use of composite j by activity i
+    # Government account (Phase 5d.1; None ⇒ no government declared — pre-5d.1 behaviour, carbon
+    # revenue recycles straight to the household). Mirrors the closed model's fields exactly.
+    gov_gamma: np.ndarray | None = None  # [i] government CD demand share over composites (→1)
+    gov_income0: float = 0.0  # benchmark government income (GDP-normalised)
+    GD0: np.ndarray | None = None  # [i] benchmark government demand on Q (GDP-normalised)
+    gov_tax_rate0: float = 0.0  # benchmark household→government tax as a rate on factor income
 
     @property
     def gdp0(self) -> float:
         return float(self.F0.sum())
+
+    @property
+    def has_government(self) -> bool:
+        return self.gov_gamma is not None
 
 
 def calibrate_open(
@@ -100,19 +110,45 @@ def calibrate_open(
     arm_elast: float | np.ndarray = DEFAULT_ARMINGTON_ELAST,
     cet_elast: float | np.ndarray = DEFAULT_CET_ELAST,
     va_elast: float | np.ndarray = 1.0,
+    institutions: dict[str, str] | None = None,
 ) -> OpenCalibratedModel:
     """Calibrate the open CGE from a balanced open SAM with ``a_<s>``/``c_<s>`` activity/commodity
     accounts, factors, one household, and a ``ROW`` account. ``va_elast`` is the value-added
-    substitution elasticity σ_va (1 ⇒ Cobb-Douglas, the default; ≠ 1 ⇒ CES)."""
+    substitution elasticity σ_va (1 ⇒ Cobb-Douglas, the default; ≠ 1 ⇒ CES).
+
+    ``institutions`` (Phase 5d.1) mirrors the closed calibration exactly: a role→account mapping
+    with ``"household"`` required (if the dict is given) and ``"government"`` optional. Omitted ⇒
+    exactly one non-activity/commodity/factor/ROW account, treated as the household (pre-5d.1
+    behaviour, unchanged). A government buys **composite commodities** (its ``c_<s>`` column
+    cells) and is financed by a household→government direct tax, stored as a rate on factor
+    income. Government trade (GOV↔ROW flows), production/factor taxes and government→household
+    transfers are rejected explicitly (documented 5d follow-ups)."""
     m = sam.matrix
     act = [f"a_{s}" for s in sectors]
     com = [f"c_{s}" for s in sectors]
-    hoh = [
-        a for a in sam.accounts if a not in act and a not in com and a not in factors and a != "ROW"
-    ]
-    if len(hoh) != 1:
-        raise ValueError(f"open calibration expects exactly one household account, got {hoh}")
-    household = hoh[0]
+    if institutions is None:
+        hoh = [
+            a
+            for a in sam.accounts
+            if a not in act and a not in com and a not in factors and a != "ROW"
+        ]
+        if len(hoh) != 1:
+            raise ValueError(f"open calibration expects exactly one household account, got {hoh}")
+        household = hoh[0]
+        government = None
+    else:
+        if "household" not in institutions:
+            raise ValueError("institutions must name a 'household' role")
+        household = institutions["household"]
+        government = institutions.get("government")
+        known = {household, "ROW"} | ({government} if government else set())
+        unnamed = [
+            a
+            for a in sam.accounts
+            if a not in act and a not in com and a not in factors and a not in known
+        ]
+        if unnamed:
+            raise ValueError(f"institutions did not account for SAM accounts {unnamed}")
     ns = len(sectors)
 
     # Benchmark flows (prices = 1 ⇒ money = quantity).
@@ -124,14 +160,51 @@ def calibrate_open(
     INT0 = np.array([[m.loc[com[j], act[i]] for i in range(ns)] for j in range(ns)], dtype=float)
     F0 = np.array([[m.loc[f, act[i]] for i in range(ns)] for f in factors], dtype=float)
     FD0 = np.array([m.loc[com[i], household] for i in range(ns)], dtype=float)
-    # Composite USE of commodity i = Σ_activities of commodity i (row-sum over activities) + FD_i.
-    Q0 = INT0.sum(axis=1) + FD0
+    GD0 = None
+    gov_tax0 = 0.0
+    if government is not None:
+        GD0 = np.array([m.loc[com[i], government] for i in range(ns)], dtype=float)
+        gov_tax0 = float(m.loc[government, household])
+        # Same 5d.1 discipline as the closed model: the ONLY supported benchmark government flows
+        # are commodity purchases (the GD0 column) financed by a household direct tax. Anything
+        # else would enter without a modelled counterpart and silently break Walras.
+        bad_receipts = {
+            a: float(m.loc[government, a])
+            for a in act + com + list(factors) + ["ROW"]
+            if abs(float(m.loc[government, a])) > 1e-9
+        }
+        if bad_receipts:
+            raise ValueError(
+                f"government account receives from accounts {sorted(bad_receipts)}: "
+                "production/factor taxes and government trade are not yet modelled (Phase 5d "
+                "follow-up); 5d.1 supports only a household→government benchmark transfer."
+            )
+        bad_outlays = {
+            a: float(m.loc[a, government])
+            for a in [household, "ROW", *act, *factors]
+            if abs(float(m.loc[a, government])) > 1e-9
+        }
+        if bad_outlays:
+            raise ValueError(
+                f"government account pays accounts {sorted(bad_outlays)}: transfers and "
+                "non-commodity outlays are not yet modelled (Phase 5d follow-up); the government "
+                "may only buy composite commodities (its c_<s> column)."
+            )
+        if abs(gov_tax0 - float(GD0.sum())) > 1e-6 * max(1.0, gov_tax0):
+            raise ValueError(
+                f"government account is unbalanced: benchmark receipts {gov_tax0:.6g} ≠ spending "
+                f"{float(GD0.sum()):.6g}; check the government column/row."
+            )
+    # Composite USE of commodity i = Σ_activities (row-sum) + household + government demand.
+    Q0 = INT0.sum(axis=1) + FD0 + (GD0 if GD0 is not None else 0.0)
 
     # Normalise by GDP (scale-free; keeps solver residuals meaningful — same as the closed model).
     scale = float(F0.sum())
     if scale <= 0:
         raise ValueError("open SAM has non-positive total value added; cannot calibrate")
     D0, E0, M0, Z0, INT0, F0, FD0, Q0 = (a / scale for a in (D0, E0, M0, Z0, INT0, F0, FD0, Q0))
+    if GD0 is not None:
+        GD0, gov_tax0 = GD0 / scale, gov_tax0 / scale
 
     if float(Z0.min()) <= 0 or float(Q0.min()) <= 0:
         raise ValueError("open SAM has non-positive activity output or composite supply")
@@ -226,6 +299,18 @@ def calibrate_open(
             "does not balance the current account. Check the SAM's ROW row/column."
         )
 
+    # Government parameters (Phase 5d.1 — mirrors the closed calibration): CD demand shares from
+    # the benchmark government column (falling back to the household's gamma when zero, so a
+    # zero-column government still has a well-defined spending mix for recycled revenue), and the
+    # benchmark direct tax as a RATE on factor income (replication + homogeneity both survive).
+    gov_gamma = None
+    gov_income0 = 0.0
+    gov_tax_rate0 = 0.0
+    if GD0 is not None:
+        gov_income0 = float(GD0.sum())
+        gov_gamma = GD0 / gov_income0 if gov_income0 > 0 else gamma.copy()
+        gov_tax_rate0 = gov_tax0 / float(endowment.sum())
+
     return OpenCalibratedModel(
         sectors=list(sectors),
         factors=list(factors),
@@ -254,4 +339,8 @@ def calibrate_open(
         FD0=FD0,
         F0=F0,
         INT0=INT0,
+        gov_gamma=gov_gamma,
+        gov_income0=gov_income0,
+        GD0=GD0,
+        gov_tax_rate0=gov_tax_rate0,
     )

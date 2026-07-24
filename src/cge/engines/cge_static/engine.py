@@ -20,12 +20,12 @@ validation suite); the open and multi-region variants additionally show carbon l
 multi-region variant clears every bilateral trade route and factor market under shock, not just at
 the benchmark. A **non-zero current account** is supported (foreign savings enter household income
 as the ROW capital transfer er·Sf in the open model, or a bilateral capital transfer per region in
-the multi-region model). A **government account** (Phase 5d.1) is supported in the CLOSED variant:
-a ``GOV`` SAM account makes government a real institution — it collects carbon revenue (and an
-optional benchmark household→government direct tax) and spends on its own calibrated demand vector
-under a balanced budget, with ``fiscal_balance``/``gov_spending`` emitted. Government in the
-open/multi-region variants, investment/savings, and an energy nest remain reopened Phase 5 debt
-tracked as roadmap Phase 5d.
+the multi-region model). A **government account** (Phase 5d.1) is supported in ALL THREE variants:
+a ``GOV`` SAM account (closed/open) or one ``GOV_<r>`` per region (multi-region) makes government
+a real institution — it collects carbon revenue (and an optional benchmark household→government
+direct tax, stored as a rate on factor income) and spends on its own calibrated demand vector
+under a balanced budget, with ``fiscal_balance``/``gov_spending`` emitted. Investment/savings and
+an energy nest remain reopened Phase 5 debt tracked as roadmap Phase 5d.
 
 Data contract (``data`` dict): either a ``SAM`` supplied directly (validated: aligned, finite,
 non-negative, balanced) with an optional per-sector dimensionless ``carbon_cost_share``, OR an
@@ -49,7 +49,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -69,10 +69,11 @@ ASSUMPTIONS = {
     "scope": (
         "single region, one representative household; revenue recycling supported "
         "(none/lump_sum/labour_tax_cut, the last two equivalent with one household). An optional "
-        "GOVERNMENT account (Phase 5d.1, closed variant only): a GOV SAM account makes government "
-        "a real institution collecting carbon revenue (+ an optional benchmark direct tax) and "
-        "spending on its own calibrated demand vector under a balanced budget — see the "
-        "government_account/gov_closure keys. This is the CLOSED variant; an OPEN variant "
+        "GOVERNMENT account (Phase 5d.1, all variants): a GOV SAM account (GOV_<r> per region in "
+        "the multi-region variant) makes government a real institution collecting carbon revenue "
+        "(+ an optional benchmark direct tax) and spending on its own calibrated demand vector "
+        "under a balanced budget — see the government_account/gov_closure keys. This is the "
+        "CLOSED variant; an OPEN variant "
         "(Armington/CET + a rest-of-world account) runs when the SAM carries a ROW account, and a "
         "true MULTI-REGION variant (bilateral trade among several region-tagged households) runs "
         "when the SAM carries multiple households — see OPEN_ASSUMPTIONS / MULTI_ASSUMPTIONS for "
@@ -766,6 +767,9 @@ def _assert_open_replicates(cal, base, x0: np.ndarray) -> None:
         "final demand FD": (base.FD, cal.FD0),
         "factor demand F": (base.F, cal.F0),
     }
+    if cal.has_government:
+        # Benchmark government demand must reproduce its SAM column too (Phase 5d.1).
+        checks["government demand GD"] = (base.GD, cal.GD0)
     _raise_if_not_replicating(checks, "open")
 
 
@@ -781,6 +785,9 @@ def _assert_multi_replicates(cal, base, x0: np.ndarray) -> None:
         "final demand FD": (base.FD, cal.FD0),
         "factor demand F": (base.F, cal.F0),
     }
+    if cal.has_government:
+        # Benchmark government demand must reproduce its SAM columns too (Phase 5d.1).
+        checks["government demand GD"] = (base.GD, cal.GD0)
     _raise_if_not_replicating(checks, "multi-region")
 
 
@@ -815,7 +822,10 @@ def _validate_open_sam(sam: SAM, sectors: list[str], factors: list[str]) -> None
     households = [
         a
         for a in sam.accounts
-        if not a.startswith(("a_", "c_")) and a not in factors and a != "ROW"
+        if not a.startswith(("a_", "c_"))
+        and a not in factors
+        and a != "ROW"
+        and a != _GOV_ACCOUNT  # GOV is an institution by name (Phase 5d.1), not a household
     ]
     if len(households) != 1:
         raise ValueError(f"open SAM expects exactly one household account, got {households}")
@@ -1033,6 +1043,19 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     if recycling_defaulted:
         recycling = "lump_sum"  # the open economy also circulates carbon revenue to the household
 
+    # Government account (Phase 5d.1): same by-name convention as the closed variant. The
+    # household is the unique remaining institution (validated in _validate_open_sam).
+    institutions = None
+    if _GOV_ACCOUNT in sam.accounts:
+        hoh = next(
+            a
+            for a in sam.accounts
+            if not a.startswith(("a_", "c_"))
+            and a not in factors
+            and a not in ("ROW", _GOV_ACCOUNT)
+        )
+        institutions = {"household": hoh, "government": _GOV_ACCOUNT}
+
     cal = calibrate_open(
         sam,
         sectors=sectors,
@@ -1040,6 +1063,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         va_elast=data.get("va_elast", 1.0),
         arm_elast=data.get("armington_elast", 2.0),
         cet_elast=data.get("cet_elast", 2.0),
+        institutions=institutions,
     )
 
     def _solve_year(cc):
@@ -1123,6 +1147,12 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             "solver_statuses": sorted(statuses),
             "solver_max_residual_norm": resid_max,
             "foreign_savings": float(cal.foreign_savings),
+            # Government account (Phase 5d.1) — same keys as the closed variant's manifest.
+            "government_account": _GOV_ACCOUNT if cal.has_government else "none",
+            "gov_closure": "balanced_budget" if cal.has_government else "n/a (no government)",
+            "gov_benchmark_tax_share_of_factor_income": (
+                round(float(cal.gov_tax_rate0), 12) if cal.has_government else 0.0
+            ),
             "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
             # SAM credibility surface when the open SAM was built from an IOSystem (None when a SAM
@@ -1162,8 +1192,10 @@ def _emit_open(records, cal, base, st, year: int) -> None:
     # figure diverges from the correct C+X−M change (the prior code silently used the special case
     # Sf=0 as if it were the general identity — the existing GDP==welfare test only exercised a
     # zero-current-account fixture).
-    consumption = float(np.dot(st.pq, st.FD))
-    consumption_base = float(np.dot(base.pq, base.FD))
+    # C + G + (X − M): household consumption, government consumption (zero without a GOV account —
+    # Phase 5d.1), and net exports, all at CPI-numéraire prices.
+    consumption = float(np.dot(st.pq, st.FD + st.GD))
+    consumption_base = float(np.dot(base.pq, base.FD + base.GD))
     net_exports = st.er * float(st.E.sum() - st.M.sum())
     net_exports_base = base.er * float(base.E.sum() - base.M.sum())
     real_gdp = consumption + net_exports
@@ -1173,6 +1205,12 @@ def _emit_open(records, cal, base, st, year: int) -> None:
     u_base = float(np.prod(np.power(base.FD, cal.gamma)))
     records.append(_rec("welfare_change", "__economy__", year, u / u_base - 1.0))
     records.append(_rec("carbon_revenue", "__economy__", year, st.carbon_revenue / cal.gdp0))
+    # Government account (Phase 5d.1): same emission convention as the closed variant — only when
+    # a government exists, so no-government output stays byte-identical to pre-5d.1.
+    if cal.has_government:
+        records.append(_rec("fiscal_balance", "__economy__", year, st.fiscal_balance / cal.gdp0))
+        gov_spend = float(np.dot(st.pq, st.GD))
+        records.append(_rec("gov_spending", "__economy__", year, gov_spend / cal.gdp0))
 
 
 def _ratio(x: float, x0: float) -> float:
@@ -1275,6 +1313,9 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     if recycling_defaulted:
         recycling = "lump_sum"
 
+    # Government accounts (Phase 5d.1): GOV_<r> per region, by the same naming convention as
+    # HOH_<r>. calibrate_multi enforces the all-regions-or-none rule and the flow restrictions.
+    has_gov_accounts = any(a.startswith("GOV_") for a in sam.accounts)
     cal = calibrate_multi(
         sam,
         regions=regions,
@@ -1283,6 +1324,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         arm_elast=data.get("armington_elast", 2.0),
         cet_elast=data.get("cet_elast", 2.0),
         va_elast=data.get("va_elast", 1.0),
+        government=has_gov_accounts,
     )
 
     def _solve_year(cc):
@@ -1353,6 +1395,14 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             "foreign_savings_by_region": [
                 round(float(v), 12) for v in cal.foreign_savings.tolist()
             ],
+            # Government accounts (Phase 5d.1) — same convention as closed/open, per region.
+            "government_account": "GOV_<r> per region" if cal.has_government else "none",
+            "gov_closure": "balanced_budget" if cal.has_government else "n/a (no government)",
+            "gov_benchmark_tax_share_of_factor_income_by_region": (
+                [round(float(v), 12) for v in cal.gov_tax_rate0.tolist()]
+                if cal.has_government
+                else []
+            ),
             "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
             "inputs": [
@@ -1437,6 +1487,24 @@ def _emit_multi(records, cal, base, st, year: int) -> None:
                 "carbon_revenue", "__economy__", region, year, st.carbon_revenue[ri] / regional_gdp0
             )
         )
+        # Government accounts (Phase 5d.1): per-region fiscal balance (≡0 under balanced_budget)
+        # and government spending, as shares of the region's OWN benchmark GDP (consistent with
+        # carbon_revenue above). Emitted only when governments exist, so no-government output
+        # stays byte-identical to pre-5d.1.
+        if cal.has_government:
+            records.append(
+                _rec_r(
+                    "fiscal_balance",
+                    "__economy__",
+                    region,
+                    year,
+                    st.fiscal_balance[ri] / regional_gdp0,
+                )
+            )
+            gov_spend = float(np.dot(st.pq[ri], st.GD[ri]))
+            records.append(
+                _rec_r("gov_spending", "__economy__", region, year, gov_spend / regional_gdp0)
+            )
 
 
 def _multi_carbon_share(data: dict, regions: list[str], sectors: list[str]):

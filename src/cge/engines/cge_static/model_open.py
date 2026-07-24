@@ -59,6 +59,11 @@ class OpenModelState:
     F: np.ndarray  # factor demand [f, i]
     income: float
     carbon_revenue: float
+    # Government account (Phase 5d.1) — zero/empty when cal.has_government is False (pre-5d.1
+    # behaviour preserved exactly; see the closed model's ModelState for the same convention).
+    GD: np.ndarray  # government final demand on the composite [i]
+    gov_income: float  # government income (benchmark tax + carbon revenue)
+    fiscal_balance: float  # income − spending (≡0 under balanced_budget)
 
 
 def _va_unit_cost(cal: OpenCalibratedModel, w: np.ndarray) -> np.ndarray:
@@ -130,6 +135,7 @@ def derive_open_state(
     carbon_cost: np.ndarray | None = None,
     recycling: str = "lump_sum",
     strict: bool = False,
+    gov_closure: str = "balanced_budget",
 ) -> OpenModelState:
     """Close the open model at prices (pd, pq, w, er): derive all quantities by CES/CET duals.
 
@@ -139,7 +145,14 @@ def derive_open_state(
     abort a solve that starts at benchmark prices (review P2). So in non-strict mode we **clamp**
     the income multiplier to a large-but-finite value (steering the solver away smoothly) instead
     of raising. On the **final accepted equilibrium** the engine calls with ``strict=True``, which
-    raises if k≥1 — so a genuinely infeasible equilibrium is still refused, never returned."""
+    raises if k≥1 — so a genuinely infeasible equilibrium is still refused, never returned.
+
+    **Government account (Phase 5d.1, ``cal.has_government``):** exactly the closed model's
+    design, with the open income identity. The household pays the benchmark direct tax
+    (rate·factor income) and keeps the er·Sf transfer; the GOVERNMENT collects carbon revenue and
+    spends tax+revenue on its own CD demand vector under ``balanced_budget``. Z is linear in the
+    total demand vector at fixed prices, so the government fixed point solves in closed form:
+    gov_income = (T + R0)/(1 − kg), R0 = cc·Z(FD), kg = cc·Z(gov_gamma/pq)."""
     ns = len(cal.sectors)
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pm = er * np.ones(ns)  # world import price 1
@@ -154,30 +167,66 @@ def derive_open_state(
     # system in FD, Z = ratio·Z), so the recycling fixed point solves in closed form: writing
     # base = factor_income + er·Sf and Z = I·z_unit, I = base + k·I ⇒ I = base/(1−k), guarded k < 1.
     factor_income = float(np.dot(w, cal.endowment))
-    base_income = factor_income + er * cal.foreign_savings
-    if recycling != "none" and np.any(cc != 0.0):
-        _, z_unit, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq)
-        k = float(cc @ z_unit)
-        if strict and k >= 1.0 - 1e-12:
+    recycles = recycling != "none" and np.any(cc != 0.0)
+
+    if not cal.has_government:
+        # Pre-5d.1 behaviour, unchanged: carbon revenue recycles straight to the household.
+        base_income = factor_income + er * cal.foreign_savings
+        if recycles:
+            _, z_unit, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq)
+            k = float(cc @ z_unit)
+            if strict and k >= 1.0 - 1e-12:
+                raise ValueError(
+                    f"open recycling fixed point diverges: carbon revenue ≥ income (k={k:.6g} ≥ 1) "
+                    "at the equilibrium; the recycled transfer would exceed factor income. Lower "
+                    "the carbon price."
+                )
+            # Non-strict: a smooth positive floor on (1−k) keeps income finite and the residual
+            # C¹-continuous with a restoring gradient when a trial point has k≥1 (review P2); it is
+            # the identity for a real equilibrium (1−k well above the floor).
+            income = base_income / _safe_denom(1.0 - k)
+        else:
+            income = base_income
+        FD = cal.gamma * income / pq
+        GD = np.zeros(ns)
+        gov_income = 0.0
+    else:
+        if gov_closure != "balanced_budget":
             raise ValueError(
-                f"open recycling fixed point diverges: carbon revenue ≥ income (k={k:.6g} ≥ 1) "
-                "at the equilibrium; the recycled transfer would exceed factor income. Lower the "
+                f"unsupported gov_closure {gov_closure!r} (5d.1 only implements "
+                "'balanced_budget'; 'deficit_financed' is Phase 5d.7)"
+            )
+        # Household: factor income + er·Sf − direct tax; carbon revenue no longer enters it.
+        tax = cal.gov_tax_rate0 * factor_income
+        income = factor_income + er * cal.foreign_savings - tax
+        FD = cal.gamma * income / pq
+        if recycles:
+            _, z_fd, *_ = _quantities(cal, pd, pq, pm, pe, pz, FD)
+            r0 = float(cc @ z_fd)  # revenue from (price-fixed) household demand alone
+            _, z_unit_g, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gov_gamma * 1.0 / pq)
+            kg = float(cc @ z_unit_g)  # marginal revenue per unit of government spending
+        else:
+            r0, kg = 0.0, 0.0
+        if strict and kg >= 1.0 - 1e-12:
+            raise ValueError(
+                f"open government recycling fixed point diverges (kg={kg:.6g} ≥ 1); lower the "
                 "carbon price."
             )
-        # Non-strict: a smooth positive floor on (1−k) keeps income finite and the residual
-        # C¹-continuous with a restoring gradient when a trial point has k≥1 (review P2); it is the
-        # identity for a real equilibrium (1−k well above the floor).
-        income = base_income / _safe_denom(1.0 - k)
-    else:
-        income = base_income
-    FD = cal.gamma * income / pq
-    Q, Z, D, E, M = _quantities(cal, pd, pq, pm, pe, pz, FD)
+        gov_income = (tax + r0) / _safe_denom(1.0 - kg)
+        GD = cal.gov_gamma * gov_income / pq
+
+    Q, Z, D, E, M = _quantities(cal, pd, pq, pm, pe, pz, FD + GD)
     carbon_revenue = float(cc @ Z)
     # Independent check of the income identity we just solved (cheap; catches any regression in the
     # linearity assumption above). Only in strict mode — the non-strict clamp deliberately violates
     # the identity to steer the solver, so checking it there would defeat the smooth-penalty design.
     if strict:
-        resid = income - (base_income + (carbon_revenue if recycling != "none" else 0.0))
+        if not cal.has_government:
+            resid = income - (
+                factor_income + er * cal.foreign_savings + (carbon_revenue if recycles else 0.0)
+            )
+        else:
+            resid = gov_income - (cal.gov_tax_rate0 * factor_income + carbon_revenue)
         if abs(resid) > 1e-9 * max(1.0, abs(income)):  # pragma: no cover - guards the closed form
             raise ValueError(f"open income identity not satisfied (residual {resid:.3e}).")
     # Factor demand (Shephard on VA cost).
@@ -198,6 +247,9 @@ def derive_open_state(
         F=F,
         income=income,
         carbon_revenue=carbon_revenue,
+        GD=GD,
+        gov_income=gov_income,
+        fiscal_balance=0.0,  # balanced_budget: spending exhausts income by construction
     )
 
 

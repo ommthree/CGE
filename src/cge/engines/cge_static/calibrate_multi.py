@@ -87,10 +87,22 @@ class MultiCalibratedModel:
     FD0: np.ndarray  # [r, s] household final demand
     F0: np.ndarray  # [f, r, s] factor demand
     INT0: np.ndarray  # [r, j, i] intermediate use
+    # Government accounts (Phase 5d.1; None ⇒ no governments declared — pre-5d.1 behaviour). One
+    # ``GOV_<r>`` account PER REGION (all-or-nothing: a partial layout is rejected — mixing
+    # government and household revenue routing across regions is more likely a mistake than a
+    # design). Mirrors the closed/open models' fields, one entry per region.
+    gov_gamma: np.ndarray | None = None  # [r, s] government CD demand shares (sum→1 per region)
+    gov_income0: np.ndarray | None = None  # [r] benchmark government income (GDP-normalised)
+    GD0: np.ndarray | None = None  # [r, s] benchmark government demand (GDP-normalised)
+    gov_tax_rate0: np.ndarray | None = None  # [r] benchmark tax rate on regional factor income
 
     @property
     def gdp0(self) -> float:
         return float(self.F0.sum())
+
+    @property
+    def has_government(self) -> bool:
+        return self.gov_gamma is not None
 
     @property
     def nr(self) -> int:
@@ -176,11 +188,18 @@ def calibrate_multi(
     arm_elast: float = DEFAULT_ARMINGTON_ELAST,
     cet_elast: float = DEFAULT_CET_ELAST,
     va_elast: float = 1.0,
+    government: bool = False,
 ) -> MultiCalibratedModel:
     """Calibrate the multi-region CGE from a globally-balanced multi-region SAM with
     ``a_<r>_<s>``/``c_<r>_<s>`` activity/commodity accounts, per-region factors ``<f>_<r>`` and
     households ``HOH_<r>``. Elasticities are scalars applied to every region-sector (a per-cell
-    vector is a later refinement)."""
+    vector is a later refinement).
+
+    ``government=True`` (Phase 5d.1) reads one ``GOV_<r>`` account per region (by convention,
+    like ``HOH_<r>`` — all regions must have one): each region's government buys its OWN region's
+    composites (its ``c_<r>_<s>`` column) financed by a ``HOH_<r>``→``GOV_<r>`` direct tax,
+    stored as a rate on that region's factor income. Cross-region government flows, production/
+    factor taxes and transfers are rejected explicitly (5d follow-ups)."""
     m = sam.matrix
     nr, ns = len(regions), len(sectors)
 
@@ -213,9 +232,56 @@ def calibrate_multi(
         dtype=float,
     )
     FD0 = np.array([[m.loc[c(r, s), f"HOH_{r}"] for s in sectors] for r in regions], dtype=float)
-    # Composite use of commodity s in region r = Σ_i INT0[r, s, i] + FD (s used by each activity i).
-    # INT0[r,j,i] is composite j used by activity i, so use of commodity s = INT0[r,s,:].sum().
-    Q0 = INT0.sum(axis=2) + FD0
+    GD0 = None
+    gov_tax0 = None
+    if government:
+        missing = [f"GOV_{r}" for r in regions if f"GOV_{r}" not in sam.accounts]
+        if missing:
+            raise ValueError(
+                f"government=True needs a GOV_<r> account for every region; missing {missing} "
+                "(a partial government layout is rejected — all regions or none)."
+            )
+        GD0 = np.array(
+            [[m.loc[c(r, s), f"GOV_{r}"] for s in sectors] for r in regions], dtype=float
+        )
+        gov_tax0 = np.array([m.loc[f"GOV_{r}", f"HOH_{r}"] for r in regions], dtype=float)
+        # 5d.1 discipline (same as closed/open): the ONLY supported government flows are own-region
+        # commodity purchases financed by the own household's direct tax. Check every other cell in
+        # each GOV row/column is zero.
+        for ri, r in enumerate(regions):
+            g = f"GOV_{r}"
+            own_com = {c(r, s) for s in sectors}
+            bad_in = [
+                a
+                for a in sam.accounts
+                if a != f"HOH_{r}" and abs(float(m.loc[g, a])) > 1e-9 and a != g
+            ]
+            bad_out = [
+                a
+                for a in sam.accounts
+                if a not in own_com and abs(float(m.loc[a, g])) > 1e-9 and a != g
+            ]
+            if bad_in:
+                raise ValueError(
+                    f"{g} receives from accounts {bad_in}: only a HOH_{r}→{g} direct tax is "
+                    "modelled (Phase 5d follow-up for production/factor taxes, cross-region "
+                    "flows)."
+                )
+            if bad_out:
+                raise ValueError(
+                    f"{g} pays accounts {bad_out}: a region's government may only buy its own "
+                    "region's composites (its c_<r>_<s> column); transfers and cross-region "
+                    "purchases are Phase 5d follow-ups."
+                )
+            if abs(gov_tax0[ri] - float(GD0[ri].sum())) > 1e-6 * max(1.0, gov_tax0[ri]):
+                raise ValueError(
+                    f"{g} is unbalanced: benchmark receipts {gov_tax0[ri]:.6g} ≠ spending "
+                    f"{float(GD0[ri].sum()):.6g}."
+                )
+    # Composite use of commodity s in region r = Σ_i INT0[r, s, i] + FD (s used by each activity i)
+    # + government demand (Phase 5d.1). INT0[r,j,i] is composite j used by activity i, so use of
+    # commodity s = INT0[r,s,:].sum().
+    Q0 = INT0.sum(axis=2) + FD0 + (GD0 if GD0 is not None else 0.0)
 
     # Normalise by global GDP.
     scale = float(F0.sum())
@@ -224,6 +290,8 @@ def calibrate_multi(
     D0, EX0, M0, Z0, INT0, F0, FD0, Q0 = (
         arr / scale for arr in (D0, EX0, M0, Z0, INT0, F0, FD0, Q0)
     )
+    if GD0 is not None:
+        GD0, gov_tax0 = GD0 / scale, gov_tax0 / scale
 
     if float(Z0.min()) <= 0 or float(Q0.min()) <= 0 or float(D0.min()) <= 0:
         raise ValueError("multi-region SAM has non-positive output / composite / domestic sales")
@@ -276,6 +344,21 @@ def calibrate_multi(
 
     foreign_savings = M0.sum(axis=(1, 2)) - EX0.sum(axis=(1, 2))  # [r]
 
+    # Government parameters (Phase 5d.1): per-region CD demand shares (falling back to that
+    # region's household gamma for a zero column) and the benchmark tax as a RATE on the region's
+    # own factor income (replication + homogeneity both survive; same as closed/open).
+    gov_gamma = None
+    gov_income0 = None
+    gov_tax_rate0 = None
+    if GD0 is not None:
+        gov_income0 = GD0.sum(axis=1)  # [r]
+        gov_gamma = np.where(
+            (gov_income0 > 0)[:, None],
+            GD0 / np.where(gov_income0 > 0, gov_income0, 1.0)[:, None],
+            gamma,
+        )
+        gov_tax_rate0 = gov_tax0 / endowment.sum(axis=0)  # [r] tax / regional factor income
+
     model = MultiCalibratedModel(
         regions=list(regions),
         sectors=list(sectors),
@@ -305,6 +388,10 @@ def calibrate_multi(
         FD0=FD0,
         F0=F0,
         INT0=INT0,
+        gov_gamma=gov_gamma,
+        gov_income0=gov_income0,
+        GD0=GD0,
+        gov_tax_rate0=gov_tax_rate0,
     )
 
     # A single global numéraire + a single globally-dropped factor-market equation is only a valid

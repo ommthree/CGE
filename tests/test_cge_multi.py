@@ -450,3 +450,179 @@ def test_multi_route_materiality_threshold_excludes_numerical_dust():
     # does not count as a real link either.
     with pytest.raises(ValueError, match="disconnected"):
         calibrate_multi(sam, regions=regions, sectors=sectors, factors=_FACTORS)
+
+
+# -- government accounts (Phase 5d.1, multi-region variant) -------------------
+def _gov_multi_sam():
+    """toy_multi_sam plus one GOV_<r> per region, each with a real benchmark fiscal flow: a 10%
+    direct tax on the region's factor income (N: 16.8 of 168; S: 14.8 of 148) funds government
+    purchases of the region's OWN composites; household demand shrinks by exactly what each GOV
+    buys, so production/trade/factor cells are untouched and the SAM stays globally balanced."""
+    sam = toy_multi_sam()
+    acc = list(sam.accounts) + ["GOV_N", "GOV_S"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["GOV_N", "HOH_N"] = 16.8
+    m.loc["c_N_BRD", "GOV_N"] = 10.0
+    m.loc["c_N_MIL", "GOV_N"] = 6.8
+    m.loc["c_N_BRD", "HOH_N"] -= 10.0  # 72 → 62
+    m.loc["c_N_MIL", "HOH_N"] -= 6.8  # 96 → 89.2
+    m.loc["GOV_S", "HOH_S"] = 14.8
+    m.loc["c_S_BRD", "GOV_S"] = 8.0
+    m.loc["c_S_MIL", "GOV_S"] = 6.8
+    m.loc["c_S_BRD", "HOH_S"] -= 8.0  # 98 → 90
+    m.loc["c_S_MIL", "HOH_S"] -= 6.8  # 50 → 43.2
+    return sam.model_copy(update={"accounts": acc, "matrix": m})
+
+
+def _cal_gov(**kw):
+    return calibrate_multi(
+        _gov_multi_sam(),
+        regions=REGIONS,
+        sectors=SECTORS,
+        factors=_FACTORS,
+        government=True,
+        **kw,
+    )
+
+
+def test_multi_gov_calibrates():
+    cal = _cal_gov()
+    gdp = 168.0 + 148.0
+    assert cal.has_government
+    assert np.allclose(cal.gov_income0, [16.8 / gdp, 14.8 / gdp])
+    assert np.allclose(cal.gov_tax_rate0, [0.1, 0.1])
+    assert np.allclose(cal.gov_gamma[0], [10.0 / 16.8, 6.8 / 16.8])
+    assert np.allclose(cal.gov_gamma[1], [8.0 / 14.8, 6.8 / 14.8])
+
+
+def test_multi_gov_benchmark_replicates():
+    """Tier 1: prices = 1 and every calibrated quantity — bilateral trade and GD0 included —
+    reproduced with the per-region governments active."""
+    cal = _cal_gov()
+    sol, st = _solve(cal)
+    assert np.allclose(sol.x, 1.0, atol=1e-7)
+    assert np.allclose(st.Z, cal.Z0, atol=1e-7)
+    assert np.allclose(st.FD, cal.FD0, atol=1e-7)
+    assert np.allclose(st.GD, cal.GD0, atol=1e-7)
+    assert np.allclose(st.gov_income, cal.gov_income0, atol=1e-9)
+    assert np.allclose(st.fiscal_balance, 0.0)
+
+
+def test_multi_gov_revenue_goes_to_own_region_government():
+    """Under a carbon shock each region's government (not its household) collects that region's
+    revenue: household income = factor income + Sf − tax exactly, and per-region gov income =
+    tax + own-region revenue exactly."""
+    cal = _cal_gov()
+    cc = np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3  # price North's BRD only
+    sol, st = _solve(cal, carbon_cost=cc)
+    factor_income = (st.w * cal.endowment).sum(axis=0)
+    expected_hh = factor_income + cal.foreign_savings - cal.gov_tax_rate0 * factor_income
+    assert np.allclose(st.income, expected_hh, atol=1e-9)
+    expected_gov = cal.gov_tax_rate0 * factor_income + st.carbon_revenue
+    assert np.allclose(st.gov_income, expected_gov, atol=1e-9)
+    assert st.carbon_revenue[0] > 0  # North collected revenue
+    assert st.carbon_revenue[1] == pytest.approx(0.0, abs=1e-12)  # South priced nothing
+    assert st.gov_income[1] == pytest.approx(
+        cal.gov_tax_rate0[1] * factor_income[1], rel=1e-9
+    )  # South's government runs on its tax alone
+
+
+def test_multi_gov_walras_under_shock():
+    """Tier 1 re-proof: the globally-dropped factor market still clears with the per-region
+    governments active under a carbon shock."""
+    cal = _cal_gov()
+    cc = np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3
+    sol = solve(
+        lambda z: MM.residuals(cal, z, carbon_cost=cc, recycling="lump_sum", drop_factor=0),
+        MM.initial_guess(cal) * 1.03,
+        prefer="scipy",
+    )
+    st = MM.unpack_state(cal, sol.x, carbon_cost=cc, recycling="lump_sum", strict=False)
+    excess = float(st.F[0, 0, :].sum()) - cal.endowment[0, 0]
+    assert abs(excess) < 1e-6
+
+
+def test_multi_gov_partial_layout_rejected():
+    """All regions or none: a SAM with GOV_N but no GOV_S is rejected at calibration."""
+    sam = toy_multi_sam()
+    acc = list(sam.accounts) + ["GOV_N"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    bad = sam.model_copy(update={"accounts": acc, "matrix": m})
+    with pytest.raises(ValueError, match="every region; missing .*GOV_S"):
+        calibrate_multi(bad, regions=REGIONS, sectors=SECTORS, factors=_FACTORS, government=True)
+
+
+def test_multi_gov_cross_region_purchase_rejected():
+    """A region's government buying ANOTHER region's composite is rejected (5d follow-up)."""
+    sam = _gov_multi_sam()
+    m = sam.matrix.copy()
+    m.loc["c_S_BRD", "GOV_N"] = 2.0  # North's government buying South's composite
+    bad = sam.model_copy(update={"matrix": m})
+    with pytest.raises(ValueError, match="may only buy its own"):
+        calibrate_multi(bad, regions=REGIONS, sectors=SECTORS, factors=_FACTORS, government=True)
+
+
+def test_engine_multi_gov_sam_emits_fiscal_variables():
+    """End-to-end: a multi-region SAM carrying GOV_<r> accounts dispatches to the multi variant,
+    emits per-region fiscal_balance (≡0) + gov_spending (shares of the region's OWN GDP), and
+    records the government keys in the manifest; a no-GOV run does not emit them."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": _gov_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}},
+        shocks=[CarbonPrice(price=0.5)],
+        years=[2020],
+    )
+    d = res.data
+    fb = d[d["variable"] == "fiscal_balance"]
+    gs = d[d["variable"] == "gov_spending"]
+    assert set(fb["region"]) == {"N", "S"} and np.allclose(fb["value"], 0.0, atol=1e-9)
+    assert set(gs["region"]) == {"N", "S"}
+    # Benchmark tax is 10% of each region's own GDP. North's spending clearly exceeds it (carbon
+    # revenue on top of the tax); South collects no carbon revenue, so its share stays NEAR 10% —
+    # not exactly, because the tax is a rate on CURRENT factor income, which moves a little under
+    # the shock through trade (general equilibrium) — and well below North's.
+    gs_n = float(gs[gs["region"] == "N"]["value"].iloc[0])
+    gs_s = float(gs[gs["region"] == "S"]["value"].iloc[0])
+    assert gs_n > 0.11  # tax (10%) + a material carbon-revenue share
+    assert gs_s == pytest.approx(0.1, rel=5e-2)
+    assert gs_s < gs_n
+    assert res.manifest.assumptions["government_account"] == "GOV_<r> per region"
+    assert res.manifest.assumptions["gov_closure"] == "balanced_budget"
+    assert res.manifest.assumptions[
+        "gov_benchmark_tax_share_of_factor_income_by_region"
+    ] == pytest.approx([0.1, 0.1])
+
+    plain = eng.run(
+        data={"SAM": toy_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}},
+        shocks=[CarbonPrice(price=0.5)],
+        years=[2020],
+    )
+    assert not (plain.data["variable"] == "fiscal_balance").any()
+    assert plain.manifest.assumptions["government_account"] == "none"
+
+
+def test_engine_multi_gov_zero_shock_replicates():
+    """The multi replication gate covers GD: a zero-price run on the GOV SAM reproduces the
+    benchmark (all changes ~0; per-region gov_spending at its benchmark share)."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": _gov_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}},
+        shocks=[CarbonPrice(price=0.0)],
+        years=[2020],
+    )
+    d = res.data
+    for v in ("price_change", "volume_change", "real_consumption_change"):
+        vals = d[d["variable"] == v]["value"].to_numpy()
+        assert np.allclose(vals, 0.0, atol=1e-6), v
+    gs = d[d["variable"] == "gov_spending"]
+    for region in ("N", "S"):
+        val = float(gs[gs["region"] == region]["value"].iloc[0])
+        assert val == pytest.approx(0.1, rel=1e-6)  # 10% of own-region GDP at benchmark

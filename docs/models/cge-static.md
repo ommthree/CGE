@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.6.0)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.6.1)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -40,17 +40,17 @@ re-allocates; the model reports the new equilibrium relative to the benchmark.
 (capital + labour; elasticity σ_va, default 1 = Cobb-Douglas), Cobb-Douglas household demand, fixed
 factor endowments, CPI numéraire, a carbon price as a per-unit emissions cost wedge, and
 **carbon-revenue recycling** (lump-sum / labour-tax-cut). A **government account** (Phase 5d.1,
-§4b) is supported in the closed variant: a `GOV` SAM account makes government a real institution
-that collects carbon revenue (and an optional benchmark direct tax) and spends on its own
-calibrated demand vector under a **balanced budget**. An **open-economy variant** (§8) adds
-Armington imports and CET exports with a rest-of-world account — chosen automatically when the SAM
-carries a `ROW` account.
+§4b) is supported in **all three variants**: a `GOV` SAM account (closed/open) or one `GOV_<r>`
+per region (multi-region) makes government a real institution that collects carbon revenue (and an
+optional benchmark direct tax) and spends on its own calibrated demand vector under a **balanced
+budget**. An **open-economy variant** (§8) adds Armington imports and CET exports with a
+rest-of-world account — chosen automatically when the SAM carries a `ROW` account.
 
 **Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today);
-the government account in the **open/multi-region** variants (closed only today — §4b), a
-**deficit-financed government closure** (Phase 5d.7 — today's government cannot run a
-deficit/surplus: `fiscal_balance` ≡ 0 by construction), **production/factor taxes and
-government→household transfers** (a benchmark SAM carrying them is rejected explicitly); a
+a **deficit-financed government closure** (Phase 5d.7 — today's government cannot run a
+deficit/surplus: `fiscal_balance` ≡ 0 by construction), **production/factor taxes,
+government→household transfers, government trade (GOV↔ROW), and cross-region government
+purchases** (a benchmark SAM carrying them is rejected explicitly); a
 **genuine energy nest** (KL–E–M — energy is a plain Leontief/CES intermediate today, not a
 separable nest a carbon price can shift substitution within); **savings/investment** (no
 capital-accumulation mechanism, so Phase 7's recursive-dynamic wrapper has nothing real to update
@@ -182,11 +182,13 @@ CPI-numéraire units) and `gdp_change_nominal_wage` (a wage-numéraire nominal r
 to the CPI numéraire); and per-factor `factor_price_change` (incl. the capital rental rate). There
 is **no `deflator`** output (the CPI is the numéraire — see §4).
 
-### 4b. Government account (Phase 5d.1 — closed variant)
+### 4b. Government account (Phase 5d.1 — all variants)
 
 A `GOV` account in the SAM makes government a real institution rather than a same-period
 pass-through. The engine recognises it **by name** (the same explicit-account convention as `ROW`
-for the open variant); the remaining non-sector/non-factor account is the household.
+for the open variant); the remaining non-sector/non-factor account is the household. The equations
+below are stated for the closed variant; the **open** and **multi-region** generalisations follow
+at the end of this section.
 
 **Calibration.** The government column calibrates a Cobb-Douglas demand vector
 $\gamma^g_i = GD^0_i / \sum_k GD^0_k$ (falling back to the household's $\gamma$ when the benchmark
@@ -227,6 +229,23 @@ records `government_account`, `gov_closure`, and the benchmark tax share. A zero
 `GOV` run is **provably equivalent** to the no-government lump-sum run in prices and quantities
 (the fallback $\gamma^g=\gamma$ makes total demand identical — tested); only the institutional
 attribution differs.
+
+**Open variant:** identical design over the composite commodities. Household income becomes
+$I^{hh} = Y + er\,S_f - t_0 Y$ (the household keeps the ROW capital transfer; the tax rate applies
+to factor income only); the government fixed point is unchanged. Government trade (GOV↔ROW flows)
+is rejected at calibration — the government buys composites (which already contain imports via
+Armington), it does not trade directly.
+
+**Multi-region variant:** one `GOV_<r>` **per region, all-or-nothing** (a partial layout is
+rejected as a probable mistake — it would silently mix government and household revenue routing
+across regions). Each region's government collects **its own region's** carbon revenue plus its
+own household's direct tax (a rate on that region's factor income) and buys **its own region's
+composites only** (cross-region government purchases rejected). The per-region fixed point
+$G_r = (T_r + R_{0,r})/(1-k_{g,r})$ is exact because regional output depends only on regional
+demand at fixed prices (the composite market is block-diagonal per region; trade linkages run
+through prices, not through cross-region demand quantities). `fiscal_balance`/`gov_spending` are
+emitted per region as shares of that region's **own** benchmark GDP, consistent with
+`carbon_revenue`.
 
 ## 5. Calibration
 

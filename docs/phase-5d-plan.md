@@ -1,11 +1,11 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: 5d.1 IN PROGRESS — closed-variant government account landed** (engine v0.6.0: the
-`institutions` calibration parameter, a `GOV` SAM account with balanced-budget closure, an
-optional benchmark direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs,
-Tier 1 re-proved incl. the degenerate-equivalence and homogeneity-under-tax tests — see
-`docs/models/cge-static.md` §4b). Remaining in 5d.1: the open/multi-region variants. 5d.2–5d.7
-not started. This is the detailed implementation plan for Phase 5d, reopened Phase 5
+**Status: 5d.1 COMPLETE — government account in all three variants** (engine v0.6.1: the
+`institutions` calibration parameter, a `GOV` SAM account — `GOV_<r>` per region in multi — with
+balanced-budget closure, an optional benchmark direct tax as a rate on factor income,
+`fiscal_balance`/`gov_spending` outputs, Tier 1 re-proved per variant incl. degenerate
+equivalence, homogeneity-under-tax, and Walras-under-shock — see `docs/models/cge-static.md` §4b).
+The `deficit_financed` closure remains reserved for 5d.7 as planned. 5d.2–5d.7 not started. This is the detailed implementation plan for Phase 5d, reopened Phase 5
 debt (see `roadmap.md` §Phase 5 correction note and `docs/phase-5-plan.md`'s status header). Phase
 5's original §2/§3 design called for a government/fiscal account, savings/investment with capital
 accumulation, and a genuine KL-E-M energy nest; none of these existed in the implemented model
