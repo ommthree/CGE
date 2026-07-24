@@ -58,6 +58,9 @@ class ModelState:
     # Labour market (Phase 5d.4). 0 under the default full-employment closure; positive when a
     # wage floor binds (labour supply exceeds employed labour F[LAB]).
     unemployment: float = 0.0
+    # Adaptation/transition investment (Phase 5d.6). Nominal adaptation spending, part of the total
+    # investment ID (it crowds out ordinary investment under savings_driven — same total, split).
+    adaptation_investment: float = 0.0
 
 
 def _va_unit_cost(cal: CalibratedModel, w: np.ndarray) -> np.ndarray:
@@ -155,6 +158,8 @@ def derive_state(
     gov_closure: str = "balanced_budget",
     inv_closure: str = "savings_driven",
     labour_floor: float | None = None,
+    adapt_amount: float = 0.0,
+    adapt_gamma: np.ndarray | None = None,
 ) -> ModelState:
     """Close the model at equilibrium prices (p, w): compute VA cost, outputs, demands and income.
 
@@ -225,6 +230,33 @@ def derive_state(
         )
     s = cal.sav_rate0 if cal.has_investment else 0.0
 
+    # Adaptation/transition investment (Phase 5d.6): an exogenous nominal amount ``adapt_amount``
+    # earmarked to the ``adapt_gamma`` sectoral composition, financed from the SAME investment
+    # budget — so it CROWDS OUT ordinary investment (same total, different split), not a free lunch.
+    # It appears as a fixed re-allocation demand d_adapt = A·(adapt_gamma − inv_gamma)/p, which is
+    # nominally ZERO-SUM (p·d_adapt = A·(1−1) = 0), added to ID's income-proportional part. Only
+    # meaningful under savings_driven with an investment account; the engine gates that.
+    if adapt_amount > 0.0:
+        if not cal.has_investment:
+            raise ValueError(
+                "adaptation investment needs a savings-investment account (Phase 5d.2) to crowd "
+                "out; none is present."
+            )
+        if inv_closure != "savings_driven":
+            raise ValueError(
+                f"adaptation investment is only modelled under the savings_driven closure (it "
+                f"crowds out ordinary investment from the same savings pool); got {inv_closure!r}."
+            )
+        if adapt_gamma is None:
+            raise ValueError("adaptation investment needs a sectoral composition adapt_gamma.")
+    adapt_active = cal.has_investment and adapt_amount > 0.0 and adapt_gamma is not None
+    if adapt_active:
+        d_adapt = adapt_amount * (adapt_gamma - cal.inv_gamma) / p  # [i]; p·d_adapt = 0
+        c_adapt = float(cc_eff @ (leontief @ d_adapt)) if recycles else 0.0
+    else:
+        d_adapt = np.zeros(ns)
+        c_adapt = 0.0
+
     # Labour-market closure (Phase 5d.4). Default: flexible wage, full employment — factor income
     # values labour at the full fixed endowment. Wage-floor alternative: when a floor is configured
     # and binds (the residual system pins w[LAB]=floor; see ``residuals``), the household earns only
@@ -267,10 +299,13 @@ def derive_state(
                 k = float(cc_eff @ (leontief @ u)) if recycles else 0.0
                 if strict and k >= 1.0 - 1e-12:
                     raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
-                income = factor_income / _safe_denom(1.0 - k)
+                # Adaptation adds a fixed zero-sum re-allocation to investment demand: it generates
+                # carbon revenue c_adapt that recycles into income but does NOT change the total
+                # investment budget (p·d_adapt = 0).
+                income = (factor_income + c_adapt) / _safe_denom(1.0 - k)
                 savings = s * income
                 FD = (1.0 - s) * income * demand_per_income
-                ID = savings * cal.inv_gamma / p
+                ID = savings * cal.inv_gamma / p + d_adapt
             else:  # fixed_real
                 ID = cal.INV0.copy()
                 p_inv = float(np.dot(p, ID))
@@ -311,7 +346,9 @@ def derive_state(
             elif inv_closure == "savings_driven":
                 savings = s * income
                 FD = (1.0 - s) * income * demand_per_income
-                ID = savings * cal.inv_gamma / p
+                # Adaptation crowds out ordinary investment (zero-sum re-allocation d_adapt); the
+                # household's income is already fixed by the tax here, so only ID's split moves.
+                ID = savings * cal.inv_gamma / p + d_adapt
             else:  # fixed_real
                 ID = cal.INV0.copy()
                 savings = float(np.dot(p, ID))
@@ -363,11 +400,19 @@ def derive_state(
     FD, GD, ID, X, F, income, gov_income, savings, fiscal_balance = result
     carbon_revenue = float(cc_eff @ X)  # cc_eff = cc (flat) or energy-weighted (nest)
     # Savings-investment identity check (strict mode; Phase 5d.2 Tier 2): under savings_driven,
-    # nominal investment must equal household savings exactly.
+    # nominal investment must equal household savings exactly. Adaptation (Phase 5d.6) preserves
+    # this exactly — d_adapt is nominally zero-sum, so p·ID = savings still, by construction.
     if strict and cal.has_investment and inv_closure == "savings_driven":
         resid = float(np.dot(p, ID)) - savings
         if abs(resid) > 1e-9 * max(1.0, abs(savings)):  # pragma: no cover - guards the closed form
             raise ValueError(f"savings-investment identity not satisfied (residual {resid:.3e}).")
+    # Adaptation crowding-out guard (Phase 5d.6): the earmarked adaptation cannot exceed the total
+    # investment budget, or ordinary investment would go negative (a nonsensical over-earmark).
+    if strict and adapt_active and adapt_amount > savings + 1e-12:
+        raise ValueError(
+            f"adaptation investment ({adapt_amount:.6g}) exceeds total investment ({savings:.6g}); "
+            "it cannot crowd out more than the whole budget. Lower the adaptation amount."
+        )
     # Unemployment (Phase 5d.4): labour supply less employed labour (0 unless a floor binds).
     unemployment = 0.0
     if lab is not None:
@@ -388,6 +433,7 @@ def derive_state(
         ID=ID,
         savings=savings,
         unemployment=unemployment,
+        adaptation_investment=adapt_amount if adapt_active else 0.0,
     )
 
 
@@ -401,6 +447,8 @@ def residuals(
     gov_closure: str = "balanced_budget",
     inv_closure: str = "savings_driven",
     labour_floor: float | None = None,
+    adapt_amount: float = 0.0,
+    adapt_gamma: np.ndarray | None = None,
 ) -> np.ndarray:
     """Equilibrium residual vector F(z) for z = [p (ns), w (nf)].
 
@@ -450,6 +498,8 @@ def residuals(
         gov_closure=gov_closure,
         inv_closure=inv_closure,
         labour_floor=labour_floor,
+        adapt_amount=adapt_amount,
+        adapt_gamma=adapt_gamma,
     )
 
     res = []

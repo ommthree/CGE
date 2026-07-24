@@ -1558,3 +1558,153 @@ def test_engine_energy_nest_end_to_end_and_manifest():
         years=[2020],
     )
     assert plain.manifest.assumptions["production_structure"] == "flat Leontief intermediates"
+
+
+# -- adaptation / transition investment (Phase 5d.6) --------------------------
+def _solve_adapt(cal, adapt_amount, adapt_gamma, cc=None, recycling="lump_sum"):
+    ns = len(cal.sectors)
+    cc = np.zeros(ns) if cc is None else cc
+    sol = solve(
+        lambda z: M.residuals(
+            cal,
+            z,
+            carbon_cost=cc,
+            recycling=recycling,
+            adapt_amount=adapt_amount,
+            adapt_gamma=adapt_gamma,
+        ),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    st = M.derive_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns:],
+        carbon_cost=cc,
+        recycling=recycling,
+        strict=True,
+        adapt_amount=adapt_amount,
+        adapt_gamma=adapt_gamma,
+    )
+    return sol, st
+
+
+def test_adaptation_crowds_out_total_investment_unchanged():
+    """THE 5d.6 identity: adaptation is financed from the same savings pool, so total nominal
+    investment is UNCHANGED (crowding out, not a free lunch) — p·ID = savings still holds, and the
+    savings-investment identity (5d.2) is preserved exactly."""
+    cal = _cal_inv()
+    _s0, st0 = _solve_state(cal)  # no adaptation
+    total0 = float(np.dot(st0.p, st0.ID))
+    # Earmark 0.02 (GDP share) to a MIL-heavy adaptation composition.
+    _s1, st1 = _solve_adapt(cal, 0.02, np.array([0.1, 0.9]))
+    total1 = float(np.dot(st1.p, st1.ID))
+    assert total1 == pytest.approx(st1.savings, rel=1e-9)  # S = I preserved
+    assert st1.adaptation_investment == pytest.approx(0.02)
+    # Total investment is essentially unchanged (only its COMPOSITION moved) — savings barely move
+    # because prices barely move at this small earmark.
+    assert total1 == pytest.approx(total0, rel=5e-3)
+
+
+def test_adaptation_shifts_investment_composition():
+    """A MIL-heavy adaptation earmark shifts the investment mix toward MIL, displacing the
+    (BRD-heavy) ordinary investment composition."""
+    cal = _cal_inv()
+    _s0, st0 = _solve_state(cal)
+    _s1, st1 = _solve_adapt(cal, 0.03, np.array([0.0, 1.0]))  # all adaptation into MIL
+    mil = 1
+    assert st1.ID[mil] / st1.ID.sum() > st0.ID[mil] / st0.ID.sum()
+
+
+def test_adaptation_over_earmark_rejected():
+    """Adaptation cannot exceed the total investment budget (ordinary investment would go
+    negative) — strict mode refuses it."""
+    cal = _cal_inv()
+    with pytest.raises(ValueError, match="exceeds total investment"):
+        # benchmark investment ~0.15; earmark far more.
+        _solve_adapt(cal, 0.5, np.array([0.5, 0.5]))
+
+
+def test_adaptation_needs_investment_account():
+    """Adaptation requires a savings-investment account to crowd out; without one it's rejected."""
+    cal = _cal()  # no SAVINV account
+    ns = len(cal.sectors)
+    with pytest.raises(ValueError, match="needs a savings-investment account"):
+        M.derive_state(
+            cal,
+            np.ones(ns),
+            np.ones(len(cal.factors)),
+            recycling="lump_sum",
+            adapt_amount=0.02,
+            adapt_gamma=np.array([0.5, 0.5]),
+        )
+
+
+def test_adaptation_only_under_savings_driven():
+    """Adaptation is only modelled under savings_driven (it crowds out from the savings pool);
+    fixed_real is rejected."""
+    cal = _cal_inv()
+    ns = len(cal.sectors)
+    with pytest.raises(ValueError, match="only modelled under the savings_driven"):
+        M.derive_state(
+            cal,
+            np.ones(ns),
+            np.ones(len(cal.factors)),
+            recycling="lump_sum",
+            inv_closure="fixed_real",
+            adapt_amount=0.02,
+            adapt_gamma=np.array([0.5, 0.5]),
+        )
+
+
+def test_zero_adaptation_is_bit_identical():
+    """A zero (or absent) adaptation earmark leaves the equilibrium identical to the pre-5d.6
+    savings-driven run."""
+    cal = _cal_inv()
+    _s0, st0 = _solve_state(cal, cc=0.15 * _EMISSIONS)
+    _s1, st1 = _solve_adapt(cal, 0.0, None, cc=0.15 * _EMISSIONS)
+    assert np.allclose(st0.X, st1.X, atol=1e-10)
+    assert st1.adaptation_investment == 0.0
+
+
+def test_engine_adaptation_emits_two_investment_lines():
+    """End-to-end: an adaptation run emits `adaptation_investment` + `ordinary_investment` (summing
+    to total investment), records the earmark in the manifest, and a no-adaptation run emits
+    neither."""
+    eng = registry.get("cge_static")
+    data = {
+        "SAM": _inv_sam(),
+        "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5},
+        "adaptation_investment": {"MIL": 0.02},
+    }
+    res = eng.run(data=data, shocks=[CarbonPrice(price=0.1)], years=[2020])
+    d = res.data
+    inv = float(d[d["variable"] == "investment"]["value"].iloc[0])
+    adapt = float(d[d["variable"] == "adaptation_investment"]["value"].iloc[0])
+    other = float(d[d["variable"] == "ordinary_investment"]["value"].iloc[0])
+    assert adapt == pytest.approx(0.02)
+    assert (adapt + other) == pytest.approx(inv, rel=1e-9)  # crowding out
+    assert res.manifest.assumptions["adaptation_investment_share_of_gdp"] == pytest.approx(0.02)
+    assert res.manifest.assumptions["adaptation_crowds_out_ordinary_investment"] is True
+
+    plain = eng.run(
+        data={"SAM": _inv_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+        shocks=[CarbonPrice(price=0.1)],
+        years=[2020],
+    )
+    assert not (plain.data["variable"] == "adaptation_investment").any()
+    assert plain.manifest.assumptions["adaptation_investment_share_of_gdp"] == 0.0
+
+
+def test_engine_adaptation_rejected_without_savinv():
+    eng = registry.get("cge_static")
+    with pytest.raises(ValueError, match="savings-investment account"):
+        eng.run(
+            data={
+                "SAM": toy_sam(),
+                "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5},
+                "adaptation_investment": {"MIL": 0.02},
+            },
+            shocks=[CarbonPrice(price=0.1)],
+            years=[2020],
+        )

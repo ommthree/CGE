@@ -1,6 +1,6 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: 5d.1–5d.5 COMPLETE** (engine v0.9.2). 5d.1: government
+**Status: 5d.1–5d.5 COMPLETE; 5d.6 closed-variant COMPLETE** (engine v0.9.3). 5d.1: government
 account in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure, benchmark
 direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs — `docs/models/
 cge-static.md` §4b; `deficit_financed` reserved for 5d.7 as planned). 5d.2: savings-investment
@@ -41,8 +41,14 @@ electricity. **Open variant** (v0.9.1): same nest over the Armington COMPOSITE i
 zero-profit `pz=px`; benchmark replication/homogeneity/Walras/trade-balance re-proved, Tier-2 sign
 test holds. **Multi-region variant** (v0.9.2): one energy nest PER REGION over that region's
 composite flows; benchmark replication/homogeneity/Walras re-proved, per-region Tier-2 sign test
-holds. The energy nest is now in **all three variants** — 5d.5 COMPLETE. 5d.6–5d.7 not started.
-This is the
+holds. The energy nest is now in **all three variants** — 5d.5 COMPLETE. 5d.6: adaptation/
+transition investment (closed variant, §4g) — an exogenous `adaptation_investment` earmark
+(dict[sector, GDP-share]) that CROWDS OUT ordinary investment from the same savings pool. Modelled
+as a nominally ZERO-SUM re-allocation `A·(adapt_gamma − inv_gamma)/p` added to ID (p·d_adapt = 0),
+so total investment = savings is preserved exactly (the 5d.2 identity holds), only the composition
+moves. Emits `adaptation_investment` + `ordinary_investment` (summing to total). savings_driven +
+SAVINV-account only (rejected otherwise); strict guard on over-earmark (A > savings). Open/multi
++ endogenous adaptation = follow-ups. 5d.7 not started. This is the
 detailed implementation plan for Phase 5d, reopened Phase 5
 debt (see `roadmap.md` §Phase 5 correction note and `docs/phase-5-plan.md`'s status header). Phase
 5's original §2/§3 design called for a government/fiscal account, savings/investment with capital

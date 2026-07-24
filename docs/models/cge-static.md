@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.2)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.3)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -52,9 +52,10 @@ investment, not consumption). A **labour-market closure choice** (Phase 5d.4, §
 adds a wage floor with involuntary `unemployment` as an alternative to the default flexible-wage /
 full-employment closure. A **genuine energy nest** (KL-E-M, Phase 5d.5, §4f, all variants) makes
 energy a separable, substitutable input, so a carbon price shifts substitution within the energy
-bundle (opt-in via `energy_sectors`). An **open-economy variant** (§8) adds Armington imports and
-CET exports with a rest-of-world account — chosen automatically when the SAM carries a `ROW`
-account.
+bundle (opt-in via `energy_sectors`). An optional **adaptation/transition investment** earmark
+(Phase 5d.6, §4g, closed variant) crowds out ordinary investment from the same savings pool. An
+**open-economy variant** (§8) adds Armington imports and CET exports with a rest-of-world account
+— chosen automatically when the SAM carries a `ROW` account.
 
 **Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today);
 a **deficit-financed government closure** (Phase 5d.7 —
@@ -64,8 +65,9 @@ today's government cannot run a deficit/surplus: `fiscal_balance` ≡ 0 by const
 explicitly); the **recursive-dynamic loop** (5d.3, §4d, provides the capital-accumulation
 *identity*; the multi-year
 wrapper that calls it year-over-year is Phase 7.1); the **wage-floor closure in the open/multi
-variants** and a **wage-curve** alternative (§4e is closed-variant, wage-floor only); heterogeneous
-households; and a distortionary labour-tax wedge (so the
+variants** and a **wage-curve** alternative (§4e is closed-variant, wage-floor only); **adaptation
+investment in the open/multi variants** and **endogenous** adaptation (§4g is closed-variant,
+exogenous earmark only); heterogeneous households; and a distortionary labour-tax wedge (so the
 "double-dividend" channel that would distinguish labour-tax-cut from lump-sum recycling in a
 *single*-household model). Roadmap Phase 5.2 originally specified the government account,
 investment, and energy nest — they were dropped rather than carried forward, and are now tracked as
@@ -428,6 +430,29 @@ composite intermediate flows, so a regional carbon price shifts substitution wit
 energy bundle. Benchmark replication, homogeneity and Walras re-proved; the Tier-2 sign test holds
 per region (a carbon price on one region's fossil sector contracts that region's fossil output and
 expands its electricity). The energy nest is now available in **all three variants**.
+
+### 4g. Adaptation & transition investment (Phase 5d.6 — closed variant)
+
+A scenario can earmark **adaptation/transition capital expenditure** (`adaptation_investment`, a
+`dict[sector, float]` of shares of benchmark GDP with a sectoral composition) — e.g. retrofitting
+or energy-efficiency investment. The economics that matters is **crowding out**: adaptation is
+financed from the **same savings pool** as ordinary investment (under the `savings_driven`
+closure), so it displaces ordinary investment rather than adding to it — not a free lunch.
+
+Mechanically, adaptation is a **nominally zero-sum re-allocation** of the investment budget: with
+an earmarked amount $A$ and composition $\gamma^a$, investment demand becomes
+$ID = S\cdot\gamma^v/p + A\,(\gamma^a - \gamma^v)/p$, where the second term satisfies
+$p\cdot A(\gamma^a-\gamma^v)/p = A(1-1) = 0$. So total nominal investment $p\cdot ID = S$ is
+**unchanged** (the savings-investment identity of §4c holds exactly), only its composition moves —
+which is precisely the crowding-out. (The re-allocation still generates its own carbon revenue,
+which recycles through the income fixed point, so the equilibrium adjusts consistently.) A
+strict-mode guard refuses an over-earmark ($A > S$, which would drive ordinary investment
+negative). New outputs: `adaptation_investment` and `ordinary_investment` (GDP shares, summing to
+total investment — so a report reads "X on adaptation, Y of ordinary investment displaced"). The
+manifest records the earmark. **Closed variant, `savings_driven` only** (adaptation needs a
+savings pool to crowd out); rejected loudly otherwise. Endogenous adaptation (chosen by the model
+on cost-benefit grounds) is out of scope — this is an exogenous scenario input. The open/multi
+generalisation is a documented follow-up.
 
 ## 5. Calibration
 

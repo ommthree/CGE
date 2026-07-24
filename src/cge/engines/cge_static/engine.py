@@ -35,9 +35,11 @@ via a regime-switch) with involuntary ``unemployment``, alongside the default fl
 full-employment closure. A **KL-E-M energy nest** (Phase 5d.5, all three variants) makes energy a
 separable, substitutable input (opt-in via ``energy_sectors``), so a carbon price shifts
 substitution within the energy bundle rather than only across sectors — the shared CES algebra is
-in ``energy_nest.py`` (one nest per region in the multi-region variant). The capital-accumulation
-identity (5d.3) lives in ``capital.py`` (a standalone module for Phase 7.1, not wired into the
-solve).
+in ``energy_nest.py`` (one nest per region in the multi-region variant). An optional
+**adaptation/transition investment** earmark (Phase 5d.6, closed variant, via
+``adaptation_investment``) crowds out ordinary investment from the same savings pool. The
+capital-accumulation identity (5d.3) lives in ``capital.py`` (a standalone module for Phase 7.1,
+not wired into the solve).
 
 Data contract (``data`` dict): either a ``SAM`` supplied directly (validated: aligned, finite,
 non-negative, balanced) with an optional per-sector dimensionless ``carbon_cost_share``, OR an
@@ -61,7 +63,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.2"
+VERSION = "0.9.3"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -245,6 +247,42 @@ MULTI_ASSUMPTIONS = {
 }
 
 
+def _adaptation_spec(data: dict, sectors: list[str], cal, inv_closure: str):
+    """Parse ``data['adaptation_investment']`` (Phase 5d.6) into ``(amount, gamma)`` for the model.
+
+    The value is a ``dict[sector, float]`` of adaptation/transition capex **as a share of benchmark
+    GDP** (the same normalisation as every other reported quantity — the benchmark GDP is 1 after
+    calibration). Returns the total nominal amount and the normalised sectoral composition
+    (``gamma``, summing to 1). Absent ⇒ ``(0.0, None)`` (no adaptation, pre-5d.6 behaviour).
+
+    Adaptation crowds out ordinary investment from the same savings pool, so it needs a
+    savings-investment account and the ``savings_driven`` closure — rejected loudly otherwise, not
+    silently ignored."""
+    spec = data.get("adaptation_investment")
+    if not spec:
+        return 0.0, None
+    unknown = [s for s in spec if s not in sectors]
+    if unknown:
+        raise ValueError(f"adaptation_investment sectors {unknown} are not in {sectors}")
+    vec = np.array([float(spec.get(s, 0.0)) for s in sectors])
+    if np.any(vec < 0) or not np.all(np.isfinite(vec)):
+        raise ValueError("adaptation_investment values must be finite and non-negative")
+    amount = float(vec.sum())
+    if amount <= 0:
+        return 0.0, None
+    if not cal.has_investment:
+        raise ValueError(
+            "adaptation_investment needs a savings-investment account (a SAVINV SAM account, "
+            "Phase 5d.2) to crowd out; none is present."
+        )
+    if inv_closure != "savings_driven":
+        raise ValueError(
+            f"adaptation_investment is only modelled under the savings_driven closure; got "
+            f"{inv_closure!r} (it crowds out ordinary investment from the same savings pool)."
+        )
+    return amount, vec / amount
+
+
 def _carbon_cost_share(data: dict, sectors: list[str]) -> np.ndarray | None:
     """Per-sector **dimensionless carbon cost-share** supplied directly (the toy pilot path).
 
@@ -364,6 +402,9 @@ class CGEStaticEngine:
         labour_floor = data.get("labour_floor")
         if labour_floor is not None and (not np.isfinite(labour_floor) or float(labour_floor) <= 0):
             raise ValueError(f"labour_floor must be a positive wage; got {labour_floor!r}.")
+        # Adaptation/transition investment (Phase 5d.6): an exogenous, sector-tagged capex earmark
+        # that crowds out ordinary investment from the same savings pool (under savings_driven).
+        adapt_amount, adapt_gamma = _adaptation_spec(data, sectors, cal, inv_closure)
         ns = len(sectors)
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
@@ -443,6 +484,8 @@ class CGEStaticEngine:
                 recycling=recycling,
                 inv_closure=inv_closure,
                 labour_floor=labour_floor,
+                adapt_amount=adapt_amount,
+                adapt_gamma=adapt_gamma,
             )
             floor_ever_bound = floor_ever_bound or floor_applied is not None
             backends.add(sol.backend)
@@ -459,6 +502,8 @@ class CGEStaticEngine:
                 strict=True,
                 inv_closure=inv_closure,
                 labour_floor=floor_applied,
+                adapt_amount=adapt_amount,
+                adapt_gamma=adapt_gamma,
             )
             _emit(records, cal, base, st, year)
 
@@ -511,6 +556,10 @@ class CGEStaticEngine:
                 ),
                 "labour_floor": float(labour_floor) if labour_floor is not None else None,
                 "labour_floor_bound": floor_ever_bound,
+                # Adaptation/transition investment (Phase 5d.6): the earmarked capex (GDP share)
+                # that crowds out ordinary investment. 0 when none.
+                "adaptation_investment_share_of_gdp": round(adapt_amount, 12),
+                "adaptation_crowds_out_ordinary_investment": adapt_amount > 0.0,
                 "solver_backends": sorted(backends),
                 "solver_statuses": sorted(statuses),
                 # The strongest numerical convergence evidence: max ‖F(x)‖∞ over all solves. The
@@ -766,7 +815,16 @@ def _infer_sectors(sam: SAM, factors: list[str]) -> list[str]:
     ]
 
 
-def _solve(cal, *, carbon_cost, recycling="none", inv_closure="savings_driven", labour_floor=None):
+def _solve(
+    cal,
+    *,
+    carbon_cost,
+    recycling="none",
+    inv_closure="savings_driven",
+    labour_floor=None,
+    adapt_amount=0.0,
+    adapt_gamma=None,
+):
     # prefer='scipy' explicitly: the CGE model residual is numeric-only (it evaluates the Leontief
     # inverse and Cobb-Douglas cost functions with numpy), so it cannot build a symbolic Pyomo
     # model. Auto-selecting IPOPT when its binary is present would therefore FAIL (review P1). A
@@ -780,31 +838,26 @@ def _solve(cal, *, carbon_cost, recycling="none", inv_closure="savings_driven", 
     # returning the floor so the caller reports the resulting unemployment. This avoids a genuine
     # mixed-complementarity solver — the scipy backend can't do MCP — while giving the right
     # economics for the documented case.
-    sol = solve(
-        lambda z: M.residuals(
-            cal, z, carbon_cost=carbon_cost, recycling=recycling, inv_closure=inv_closure
-        ),
-        M.initial_guess(cal),
-        prefer="scipy",
-    )
+    def _resid(z, floor):
+        return M.residuals(
+            cal,
+            z,
+            carbon_cost=carbon_cost,
+            recycling=recycling,
+            inv_closure=inv_closure,
+            labour_floor=floor,
+            adapt_amount=adapt_amount,
+            adapt_gamma=adapt_gamma,
+        )
+
+    sol = solve(lambda z: _resid(z, None), M.initial_guess(cal), prefer="scipy")
     if labour_floor is None or "LAB" not in cal.factors:
         return sol, None
     lab = cal.factors.index("LAB")
     w_lab = float(sol.x[len(cal.sectors) + lab])
     if w_lab >= labour_floor - 1e-12:
         return sol, None  # floor is slack — full employment stands
-    floor_sol = solve(
-        lambda z: M.residuals(
-            cal,
-            z,
-            carbon_cost=carbon_cost,
-            recycling=recycling,
-            inv_closure=inv_closure,
-            labour_floor=labour_floor,
-        ),
-        M.initial_guess(cal),
-        prefer="scipy",
-    )
+    floor_sol = solve(lambda z: _resid(z, labour_floor), M.initial_guess(cal), prefer="scipy")
     return floor_sol, labour_floor
 
 
@@ -860,6 +913,16 @@ def _emit(records, cal, base, st, year: int) -> None:
         inv_spend = float(np.dot(st.p, st.ID))
         records.append(_rec("investment", "__economy__", year, inv_spend / cal.gdp0))
         records.append(_rec("savings", "__economy__", year, st.savings / cal.gdp0))
+    # Adaptation/transition investment (Phase 5d.6): the earmarked adaptation capex AND the
+    # ordinary investment it displaced (total − adaptation), both as GDP shares — so a report
+    # shows "X on adaptation, Y of ordinary investment crowded out". Emitted only when adaptation
+    # is active, so an ordinary run stays byte-identical.
+    if st.adaptation_investment > 1e-12:
+        records.append(
+            _rec("adaptation_investment", "__economy__", year, st.adaptation_investment / cal.gdp0)
+        )
+        other = float(np.dot(st.p, st.ID)) - st.adaptation_investment
+        records.append(_rec("ordinary_investment", "__economy__", year, other / cal.gdp0))
     # Labour market (Phase 5d.4): the unemployment RATE (unemployed labour ÷ labour endowment),
     # emitted only when a wage floor actually binds — a no-floor / full-employment run stays
     # byte-identical to pre-5d.4 output.
