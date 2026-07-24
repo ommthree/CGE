@@ -147,6 +147,30 @@ def _safe_denom(x: float) -> float:
     return _DENOM_FLOOR * (1.0 + softplus)
 
 
+def _hh_demand(income, demand_per_income, s, cal, p, inv_closure, d_adapt, strict):
+    """Household consumption ``FD``, investment demand ``ID`` and nominal ``savings`` given a fixed
+    household income (used by the government branches, where income is pinned by the tax/fiscal
+    closure rather than by a recycling fixed point). Factors out the shared savings/investment
+    split so ``balanced_budget`` and ``deficit_financed`` don't duplicate it."""
+    ns = len(cal.sectors)
+    if not cal.has_investment:
+        return income * demand_per_income, np.zeros(ns), 0.0
+    if inv_closure == "savings_driven":
+        savings = s * income
+        FD = (1.0 - s) * income * demand_per_income
+        ID = savings * cal.inv_gamma / p + d_adapt  # adaptation re-allocation (Phase 5d.6)
+        return FD, ID, savings
+    # fixed_real
+    ID = cal.INV0.copy()
+    savings = float(np.dot(p, ID))
+    if strict and income - savings <= 0:
+        raise ValueError(
+            f"fixed_real investment ({savings:.6g}) exceeds household disposable income "
+            f"({income:.6g}); no consumption left."
+        )
+    return (income - savings) * demand_per_income, ID, savings
+
+
 def derive_state(
     cal: CalibratedModel,
     p: np.ndarray,
@@ -180,9 +204,9 @@ def derive_state(
 
     **With a government account (Phase 5d.1, ``cal.has_government`` True):** the government, not
     the household, collects R (plus the benchmark direct tax ``gov_tax_rate0·factor_income``) and
-    spends it on its own Cobb-Douglas demand vector ``gov_gamma``. Under ``balanced_budget`` (the
-    only closure 5d.1 implements; ``deficit_financed`` is 5d.7), government spending exactly
-    exhausts government income each period, so ``fiscal_balance ≡ 0`` and total final demand is
+    spends it on its own Cobb-Douglas demand vector ``gov_gamma``. Under ``balanced_budget``
+    (default), government spending exactly exhausts government income each period, so
+    ``fiscal_balance ≡ 0`` and total final demand is
     ``FD + GD`` — the household's income no longer includes carbon revenue at all (it goes to
     government instead), which is the intended generalisation: recycling is now a real
     institutional transfer, not a same-period pass-through to the same account that pays the tax.
@@ -329,49 +353,69 @@ def derive_state(
             gov_income = 0.0
             fiscal_balance = 0.0
         else:
-            if gov_closure != "balanced_budget":
+            if gov_closure not in ("balanced_budget", "deficit_financed"):
                 raise ValueError(
-                    f"unsupported gov_closure {gov_closure!r} (5d.1 only implements "
-                    "'balanced_budget'; 'deficit_financed' is Phase 5d.7)"
+                    f"unsupported gov_closure {gov_closure!r}; 5d.1/5d.7 implement "
+                    "'balanced_budget' and 'deficit_financed'."
                 )
-            # Household income is factor income net of the benchmark direct tax — carbon revenue no
-            # longer passes through it. The tax is levied as a RATE on factor income (rate·w·FF),
-            # so the benchmark government replicates exactly and homogeneity survives (calibrate).
+            # Household income is factor income net of the benchmark direct tax. The tax is a RATE
+            # on factor income (rate·w·FF), so the benchmark government replicates and homogeneity
+            # survives. Under deficit_financed the household ALSO absorbs the fiscal residual
+            # (below), keeping the closed economy's circular flow intact.
             tax = cal.gov_tax_rate0 * factor_income
-            income = factor_income - tax
-            if not cal.has_investment:
-                FD = income * demand_per_income
-                ID = np.zeros(ns)
-                savings = 0.0
-            elif inv_closure == "savings_driven":
-                savings = s * income
-                FD = (1.0 - s) * income * demand_per_income
-                # Adaptation crowds out ordinary investment (zero-sum re-allocation d_adapt); the
-                # household's income is already fixed by the tax here, so only ID's split moves.
-                ID = savings * cal.inv_gamma / p + d_adapt
-            else:  # fixed_real
-                ID = cal.INV0.copy()
-                savings = float(np.dot(p, ID))
-                if strict and income - savings <= 0:
-                    raise ValueError(
-                        f"fixed_real investment ({savings:.6g}) exceeds household disposable "
-                        f"income ({income:.6g}); no consumption left."
-                    )
-                FD = (income - savings) * demand_per_income
-            gov_demand_per_income = cal.gov_gamma / p  # GD = gov_income · gov_demand_per_income
-            if recycles:
-                # Revenue from the (price-fixed) household + investment demand.
-                r0 = float(cc_eff @ (leontief @ (FD + ID)))
-                kg = float(cc_eff @ (leontief @ gov_demand_per_income))  # marginal from Σgov spend
-            else:
-                r0, kg = 0.0, 0.0
-            if strict and kg >= 1.0 - 1e-12:
-                raise ValueError(
-                    f"government revenue-recycling fixed point diverges (kg={kg:.3f} ≥ 1)"
+            gov_demand_per_income = cal.gov_gamma / p
+
+            if gov_closure == "balanced_budget":
+                # Government spending exactly exhausts its income each period (fiscal_balance ≡ 0);
+                # the household is poorer by exactly the tax, no fiscal residual to absorb.
+                income = factor_income - tax
+                FD, ID, savings = _hh_demand(
+                    income, demand_per_income, s, cal, p, inv_closure, d_adapt, strict
                 )
-            gov_income = (tax + r0) / _safe_denom(1.0 - kg)
-            GD = gov_income * gov_demand_per_income
-            fiscal_balance = 0.0  # balanced_budget: spending exhausts income, by construction
+                if recycles:
+                    r0 = float(cc_eff @ (leontief @ (FD + ID)))
+                    kg = float(cc_eff @ (leontief @ gov_demand_per_income))
+                else:
+                    r0, kg = 0.0, 0.0
+                if strict and kg >= 1.0 - 1e-12:
+                    raise ValueError(
+                        f"government revenue-recycling fixed point diverges (kg={kg:.3f} ≥ 1)"
+                    )
+                gov_income = (tax + r0) / _safe_denom(1.0 - kg)
+                GD = gov_income * gov_demand_per_income
+                fiscal_balance = 0.0
+            else:  # deficit_financed (Phase 5d.7)
+                # Government spends a FIXED REAL amount (its benchmark real level gov_income0·γ^g),
+                # regardless of revenue; the gap fiscal_balance = income − spending is REPORTED (not
+                # closed — a static model has no debt accumulation, that is Phase 7.1). To keep the
+                # closed economy's circular flow intact, the household absorbs the residual, so
+                # I = factor_income + R − p·GD (R = carbon revenue). R is linear in demand which is
+                # linear in I, so this is a standard fixed point solved in closed form.
+                GD = cal.gov_income0 * cal.gov_gamma  # fixed real quantity (price-independent)
+                p_gd = float(np.dot(p, GD))  # nominal government spending
+                # Household income fixed point: I = FI + R − p_gd, with R = cc_eff·L·(FD+ID+GD) and
+                # FD+ID linear in I. Solve I = (FI − p_gd + c_gd)/(1 − k), where k is the marginal
+                # revenue per unit household income and c_gd the (fixed) revenue from GD + d_adapt.
+                if recycles:
+                    u = (
+                        ((1.0 - s) * cal.gamma + s * cal.inv_gamma) / p
+                        if cal.has_investment
+                        else (demand_per_income)
+                    )
+                    k = float(cc_eff @ (leontief @ u))
+                    c_gd = float(cc_eff @ (leontief @ (GD + d_adapt)))
+                else:
+                    k, c_gd = 0.0, 0.0
+                if strict and k >= 1.0 - 1e-12:
+                    raise ValueError(
+                        f"deficit-financed income fixed point diverges (k={k:.3f} ≥ 1)"
+                    )
+                income = (factor_income - p_gd + c_gd) / _safe_denom(1.0 - k)
+                FD, ID, savings = _hh_demand(
+                    income, demand_per_income, s, cal, p, inv_closure, d_adapt, strict
+                )
+                gov_income = tax + float(cc_eff @ (leontief @ (FD + ID + GD)))
+                fiscal_balance = gov_income - p_gd
 
         X = leontief @ (FD + GD + ID)  # goods-market clearing
         # Total VA payment per sector = pv · (VA quantity). VA quantity per unit output is

@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.3)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.4)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -58,8 +58,9 @@ bundle (opt-in via `energy_sectors`). An optional **adaptation/transition invest
 — chosen automatically when the SAM carries a `ROW` account.
 
 **Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today);
-a **deficit-financed government closure** (Phase 5d.7 —
-today's government cannot run a deficit/surplus: `fiscal_balance` ≡ 0 by construction),
+a **flexible-trade-balance closure** (Phase 5d.7 — the open/multi variants fix `Sf` and let `er`
+adjust; the alternative fixes `er` and lets `Sf` adjust to a trade-balance target — the remaining
+5d.7 piece; the `deficit_financed` government closure is done, §4b);
 **production/factor taxes, government→household transfers, government savings, government trade
 (GOV↔ROW), and cross-region government purchases** (a benchmark SAM carrying them is rejected
 explicitly); the **recursive-dynamic loop** (5d.3, §4d, provides the capital-accumulation
@@ -226,11 +227,19 @@ clearing becomes $X = (I-ax)^{-1}(FD + GD)$; **no new unknowns or residual equat
 $GD$ is an algebraic function of $(p,w)$ exactly like $FD$, so the system stays square in $(p,w)$
 and Walras' law is re-proved unchanged (tested).
 
-**Closure.** `balanced_budget` (the only closure implemented): spending exactly exhausts income
-each period, so `fiscal_balance` $\equiv 0$ — emitted anyway so the identity is visible and a
-future `deficit_financed` closure (Phase 5d.7) has its output slot. The tax being a *rate* (not a
-fixed level) is what preserves homogeneity: scaling the endowment scales government demand
-proportionally (tested).
+**Closure** (`gov_closure`, switchable by config — Phase 5d.1 / 5d.7):
+- **`balanced_budget`** (default): government spending exactly exhausts its income each period, so
+  `fiscal_balance` $\equiv 0$. The tax being a *rate* (not a fixed level) preserves homogeneity:
+  scaling the endowment scales government demand proportionally (tested).
+- **`deficit_financed`** (Phase 5d.7): government spending is fixed at its **benchmark real level**
+  ($GD = GD^0\!\cdot\!\gamma^g$, a price-independent quantity) regardless of revenue; the gap
+  $\text{fiscal\_balance} = \text{gov income} - p\cdot GD$ is **reported, not closed** — a static
+  model has no debt accumulation (that is Phase 7.1). To keep the closed economy's circular flow
+  intact, the household **absorbs the fiscal residual** (a lump-sum transfer to/from it), so
+  $I^{hh} = Y + R - p\cdot GD$ ($R$ = carbon revenue). $R$ is linear in demand which is linear in
+  $I^{hh}$, so this is a standard closed-form fixed point. At the benchmark, revenue equals fixed
+  spending so `fiscal_balance` $=0$ and the benchmark replicates; under a shock the two diverge and
+  the surplus/deficit is reported. Walras and homogeneity re-proved under this closure (tested).
 
 **Semantics, stated plainly:** with a `GOV` account, the scenario's `revenue_recycling` mode routes
 carbon revenue **to the government budget** (spent on $\gamma^g$), *not* to household income.

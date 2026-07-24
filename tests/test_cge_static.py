@@ -186,6 +186,8 @@ def test_fiscal_balance_zero_under_balanced_budget():
 
 
 def test_unsupported_gov_closure_rejected():
+    """A genuinely unsupported closure name is rejected (balanced_budget and deficit_financed are
+    the two implemented — Phase 5d.1 and 5d.7)."""
     cal = _cal_gov()
     ns = len(cal.sectors)
     with pytest.raises(ValueError, match="unsupported gov_closure"):
@@ -195,7 +197,7 @@ def test_unsupported_gov_closure_rejected():
             np.ones(len(cal.factors)),
             carbon_cost=0.2 * _EMISSIONS,
             recycling="lump_sum",
-            gov_closure="deficit_financed",
+            gov_closure="money_financed",
         )
 
 
@@ -1706,5 +1708,136 @@ def test_engine_adaptation_rejected_without_savinv():
                 "adaptation_investment": {"MIL": 0.02},
             },
             shocks=[CarbonPrice(price=0.1)],
+            years=[2020],
+        )
+
+
+# -- deficit-financed government closure (Phase 5d.7) -------------------------
+def _solve_gov_closure(cal, gov_closure, cc=None, recycling="lump_sum", drop_factor=0):
+    ns = len(cal.sectors)
+    cc = np.zeros(ns) if cc is None else cc
+    sol = solve(
+        lambda z: M.residuals(
+            cal,
+            z,
+            carbon_cost=cc,
+            recycling=recycling,
+            gov_closure=gov_closure,
+            drop_factor=drop_factor,
+        ),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    st = M.derive_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns:],
+        carbon_cost=cc,
+        recycling=recycling,
+        strict=True,
+        gov_closure=gov_closure,
+    )
+    return sol, st
+
+
+def test_deficit_financed_replicates_benchmark():
+    """Tier 1: at the benchmark (zero shock) the deficit-financed closure replicates — real
+    government spending is at its benchmark level, revenue equals it, fiscal_balance = 0."""
+    cal = _cal_gov_funded()
+    sol, st = _solve_gov_closure(cal, "deficit_financed", recycling="none")
+    assert np.allclose(sol.x, 1.0, atol=1e-8)
+    assert np.allclose(st.GD, cal.GD0, atol=1e-7)
+    assert st.fiscal_balance == pytest.approx(0.0, abs=1e-9)
+
+
+def test_deficit_financed_holds_real_spending_fixed():
+    """Under a shock, deficit_financed keeps real government spending fixed at the benchmark
+    quantity (GD == GD0), so revenue changes produce a nonzero fiscal_balance — unlike
+    balanced_budget, where spending tracks revenue and the balance is always 0."""
+    cal = _cal_gov_funded()
+    cc = 0.3 * _EMISSIONS
+    _sb, bal = _solve_gov_closure(cal, "balanced_budget", cc=cc)
+    _sd, dfc = _solve_gov_closure(cal, "deficit_financed", cc=cc)
+    assert bal.fiscal_balance == pytest.approx(0.0, abs=1e-9)  # balanced by construction
+    assert np.allclose(dfc.GD, cal.GD0, atol=1e-9)  # real spending pinned at benchmark
+    assert abs(dfc.fiscal_balance) > 1e-4  # a genuine surplus/deficit under the shock
+
+
+def test_deficit_financed_walras_holds():
+    """Tier 1 re-proof (5d.7 DoD): the closed economy still closes under deficit_financed — the
+    household absorbs the fiscal residual, so the dropped factor market clears exactly."""
+    cal = _cal_gov_funded()
+    cc = 0.3 * _EMISSIONS
+    _s, st = _solve_gov_closure(cal, "deficit_financed", cc=cc, drop_factor=0)
+    assert abs(float(st.F[0, :].sum()) - cal.endowment[0]) < 1e-7
+
+
+def test_deficit_financed_homogeneity():
+    """Tier 1: scaling the endowment k× scales real quantities by k, prices unchanged, under the
+    deficit-financed closure."""
+    from dataclasses import replace
+
+    cal = _cal_gov_funded()
+    _s, st = _solve_gov_closure(cal, "deficit_financed", recycling="none")
+    k = 2.5
+    cal_k = replace(
+        cal,
+        endowment=cal.endowment * k,
+        X0=cal.X0 * k,
+        F0=cal.F0 * k,
+        Z0=cal.Z0 * k,
+        GD0=cal.GD0 * k,
+        gov_income0=cal.gov_income0 * k,
+    )
+    _sk, st_k = _solve_gov_closure(cal_k, "deficit_financed", recycling="none")
+    assert np.allclose(_s.x, _sk.x, atol=1e-8)
+    assert np.allclose(st_k.X, k * st.X, atol=1e-6)
+
+
+def test_deficit_financed_fiscal_balance_identity():
+    """fiscal_balance = government income − government spending, exactly."""
+    cal = _cal_gov_funded()
+    cc = 0.3 * _EMISSIONS
+    _s, st = _solve_gov_closure(cal, "deficit_financed", cc=cc)
+    gov_spend = float(np.dot(st.p, st.GD))
+    assert st.fiscal_balance == pytest.approx(st.gov_income - gov_spend, rel=1e-9)
+
+
+def test_engine_deficit_financed_end_to_end():
+    """End-to-end: the deficit-financed closure is switchable by config, emits a nonzero
+    fiscal_balance under a shock, and records the closure in the manifest; balanced_budget keeps
+    fiscal_balance at 0."""
+    eng = registry.get("cge_static")
+    cs = {"BRD": 2.0, "MIL": 0.5}
+    dfc = eng.run(
+        data={"SAM": _gov_funded_sam(), "carbon_cost_share": cs, "gov_closure": "deficit_financed"},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    fb = float(dfc.data[dfc.data["variable"] == "fiscal_balance"]["value"].iloc[0])
+    assert abs(fb) > 1e-4
+    assert dfc.manifest.assumptions["gov_closure"] == "deficit_financed"
+
+    bal = eng.run(
+        data={"SAM": _gov_funded_sam(), "carbon_cost_share": cs},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    assert float(
+        bal.data[bal.data["variable"] == "fiscal_balance"]["value"].iloc[0]
+    ) == pytest.approx(0.0, abs=1e-9)
+    assert bal.manifest.assumptions["gov_closure"] == "balanced_budget"
+
+
+def test_engine_deficit_financed_rejected_without_government():
+    eng = registry.get("cge_static")
+    with pytest.raises(ValueError, match="needs a 'GOV' account"):
+        eng.run(
+            data={
+                "SAM": toy_sam(),
+                "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5},
+                "gov_closure": "deficit_financed",
+            },
+            shocks=[CarbonPrice(price=0.3)],
             years=[2020],
         )

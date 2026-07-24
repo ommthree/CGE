@@ -63,7 +63,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.3"
+VERSION = "0.9.4"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -379,6 +379,14 @@ class CGEStaticEngine:
             raise ValueError(
                 f"unsupported inv_closure {inv_closure!r}; use 'savings_driven' or 'fixed_real'."
             )
+        # Government financing closure (Phase 5d.1 / 5d.7): balanced_budget (default) or
+        # deficit_financed (fixed real government spending, the fiscal gap reported not closed).
+        gov_closure = data.get("gov_closure", "balanced_budget")
+        if gov_closure not in ("balanced_budget", "deficit_financed"):
+            raise ValueError(
+                f"unsupported gov_closure {gov_closure!r}; use 'balanced_budget' or "
+                "'deficit_financed'."
+            )
         # Energy nest (Phase 5d.5): opt-in via ``energy_sectors`` (which commodities are energy),
         # with optional per-layer elasticities. With none declared, production stays flat Leontief
         # (bit-identical to pre-5d.5).
@@ -395,6 +403,11 @@ class CGEStaticEngine:
             raise ValueError(
                 f"inv_closure={inv_closure!r} needs a {_SAVINV_ACCOUNT!r} account in the SAM; "
                 "this SAM has none, so the closure choice would silently do nothing."
+            )
+        if gov_closure != "balanced_budget" and not cal.has_government:
+            raise ValueError(
+                f"gov_closure={gov_closure!r} needs a {_GOV_ACCOUNT!r} account in the SAM; this "
+                "SAM has none, so the closure choice would silently do nothing."
             )
         # Labour-market closure (Phase 5d.4): default flexible-wage/full-employment; an optional
         # ``labour_floor`` (a wage floor, in benchmark CPI-numéraire units where the benchmark
@@ -461,9 +474,15 @@ class CGEStaticEngine:
                 "meaningful (the benchmark is full employment at wage 1 by construction)."
             )
         base_sol, _ = _solve(
-            cal, carbon_cost=np.zeros(ns), recycling="none", inv_closure=inv_closure
+            cal,
+            carbon_cost=np.zeros(ns),
+            recycling="none",
+            inv_closure=inv_closure,
+            gov_closure=gov_closure,
         )
-        base = M.derive_state(cal, base_sol.x[:ns], base_sol.x[ns:], inv_closure=inv_closure)
+        base = M.derive_state(
+            cal, base_sol.x[:ns], base_sol.x[ns:], inv_closure=inv_closure, gov_closure=gov_closure
+        )
         # Universal post-calibration replication gate (review P1): a balanced SAM can pass the
         # structural validators yet not conform to the implemented model (e.g. an unsupported
         # household↔commodity loop), in which case the benchmark does not reproduce the SAM and
@@ -483,6 +502,7 @@ class CGEStaticEngine:
                 carbon_cost=cc,
                 recycling=recycling,
                 inv_closure=inv_closure,
+                gov_closure=gov_closure,
                 labour_floor=labour_floor,
                 adapt_amount=adapt_amount,
                 adapt_gamma=adapt_gamma,
@@ -501,6 +521,7 @@ class CGEStaticEngine:
                 recycling=recycling,
                 strict=True,
                 inv_closure=inv_closure,
+                gov_closure=gov_closure,
                 labour_floor=floor_applied,
                 adapt_amount=adapt_amount,
                 adapt_gamma=adapt_gamma,
@@ -535,7 +556,7 @@ class CGEStaticEngine:
                 # `recycling_mode` routes carbon revenue TO THE GOVERNMENT BUDGET (spent on
                 # gov_gamma under balanced_budget), not to household income.
                 "government_account": _GOV_ACCOUNT if cal.has_government else "none",
-                "gov_closure": "balanced_budget" if cal.has_government else "n/a (no government)",
+                "gov_closure": gov_closure if cal.has_government else "n/a (no government)",
                 "gov_benchmark_tax_share_of_factor_income": (
                     round(float(cal.gov_tax_rate0), 12) if cal.has_government else 0.0
                 ),
@@ -821,6 +842,7 @@ def _solve(
     carbon_cost,
     recycling="none",
     inv_closure="savings_driven",
+    gov_closure="balanced_budget",
     labour_floor=None,
     adapt_amount=0.0,
     adapt_gamma=None,
@@ -845,6 +867,7 @@ def _solve(
             carbon_cost=carbon_cost,
             recycling=recycling,
             inv_closure=inv_closure,
+            gov_closure=gov_closure,
             labour_floor=floor,
             adapt_amount=adapt_amount,
             adapt_gamma=adapt_gamma,

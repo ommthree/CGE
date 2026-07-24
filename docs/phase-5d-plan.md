@@ -1,6 +1,6 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: 5d.1–5d.5 COMPLETE; 5d.6 closed-variant COMPLETE** (engine v0.9.3). 5d.1: government
+**Status: 5d.1–5d.5 COMPLETE; 5d.6 closed COMPLETE; 5d.7 government-closure COMPLETE** (engine v0.9.4). 5d.1: government
 account in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure, benchmark
 direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs — `docs/models/
 cge-static.md` §4b; `deficit_financed` reserved for 5d.7 as planned). 5d.2: savings-investment
@@ -48,7 +48,14 @@ as a nominally ZERO-SUM re-allocation `A·(adapt_gamma − inv_gamma)/p` added t
 so total investment = savings is preserved exactly (the 5d.2 identity holds), only the composition
 moves. Emits `adaptation_investment` + `ordinary_investment` (summing to total). savings_driven +
 SAVINV-account only (rejected otherwise); strict guard on over-earmark (A > savings). Open/multi
-+ endogenous adaptation = follow-ups. 5d.7 not started. This is the
++ endogenous adaptation = follow-ups. 5d.7: the **deficit-financed government closure** (§4b) —
+`gov_closure='deficit_financed'`: government spends a FIXED REAL amount (benchmark level GD0·γ^g)
+regardless of revenue; the household absorbs the fiscal residual so the closed economy stays
+closed; `fiscal_balance = gov_income − p·GD` reported (not closed — no debt accumulation, that's
+7.1). Benchmark replicates (revenue = fixed spending at benchmark); under shock the gap is a real
+surplus/deficit. Tier-1 (replication/homogeneity/Walras) re-proved. The **flexible-trade-balance
+closure** (fix er / flexible Sf targeting a trade-balance level, open/multi — a new
+unknown/equation swap) is the remaining 5d.7 piece. This is the
 detailed implementation plan for Phase 5d, reopened Phase 5
 debt (see `roadmap.md` §Phase 5 correction note and `docs/phase-5-plan.md`'s status header). Phase
 5's original §2/§3 design called for a government/fiscal account, savings/investment with capital
