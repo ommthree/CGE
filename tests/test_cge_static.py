@@ -944,3 +944,251 @@ def test_open_ces_va_replicates():
             cal, sol.x[:2], sol.x[2:4], sol.x[4:6], float(sol.x[6]), recycling="lump_sum"
         )
         assert np.allclose(st.Z, cal.Z0, atol=1e-6), f"open σ={sigma} failed replication"
+
+
+# -- savings-investment account (Phase 5d.2) ----------------------------------
+def _inv_sam():
+    """The toy SAM plus a SAVINV account: the household saves 27.15 (15% of income 181), which
+    finances investment purchases of BRD (20) and MIL (7.15). Household demand shrinks by exactly
+    what SAVINV buys, so sector totals and the balance are untouched. inv_gamma is deliberately
+    BRD-heavy (capital-goods-like), different from the household's gamma."""
+    import pandas as pd
+
+    sam = toy_sam()
+    acc = list(sam.accounts) + ["SAVINV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["SAVINV", "HOH"] = 27.15
+    m.loc["BRD", "SAVINV"] = 20.0
+    m.loc["MIL", "SAVINV"] = 7.15
+    m.loc["BRD", "HOH"] -= 20.0  # 76 → 56
+    m.loc["MIL", "HOH"] -= 7.15  # 105 → 97.85
+    return sam.model_copy(update={"accounts": acc, "matrix": m})
+
+
+def _gov_inv_sam():
+    """Toy SAM + GOV + SAVINV together: an 18.1 tax funds government purchases (BRD 10, MIL 8.1);
+    the household then saves 16.29 (10% of its 162.9 disposable income), financing investment
+    (BRD 9, MIL 7.29). Both institutional accounts balance; the SAM stays balanced."""
+    import pandas as pd
+
+    sam = toy_sam()
+    acc = list(sam.accounts) + ["GOV", "SAVINV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["GOV", "HOH"] = 18.1
+    m.loc["BRD", "GOV"] = 10.0
+    m.loc["MIL", "GOV"] = 8.1
+    m.loc["SAVINV", "HOH"] = 16.29
+    m.loc["BRD", "SAVINV"] = 9.0
+    m.loc["MIL", "SAVINV"] = 7.29
+    m.loc["BRD", "HOH"] -= 19.0  # 76 → 57
+    m.loc["MIL", "HOH"] -= 15.39  # 105 → 89.61
+    return sam.model_copy(update={"accounts": acc, "matrix": m})
+
+
+def _cal_inv():
+    return calibrate(
+        _inv_sam(),
+        sectors=_SECTORS,
+        factors=_FACTORS,
+        institutions={"household": "HOH", "savings_investment": "SAVINV"},
+    )
+
+
+def _cal_gov_inv():
+    return calibrate(
+        _gov_inv_sam(),
+        sectors=_SECTORS,
+        factors=_FACTORS,
+        institutions={
+            "household": "HOH",
+            "government": "GOV",
+            "savings_investment": "SAVINV",
+        },
+    )
+
+
+def _solve_state(cal, cc=None, recycling="lump_sum", inv_closure="savings_driven", drop_factor=0):
+    ns = len(cal.sectors)
+    cc = np.zeros(ns) if cc is None else cc
+    sol = solve(
+        lambda z: M.residuals(
+            cal,
+            z,
+            carbon_cost=cc,
+            recycling=recycling,
+            inv_closure=inv_closure,
+            drop_factor=drop_factor,
+        ),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    st = M.derive_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns:],
+        carbon_cost=cc,
+        recycling=recycling,
+        strict=True,
+        inv_closure=inv_closure,
+    )
+    return sol, st
+
+
+def test_savinv_calibrates():
+    cal = _cal_inv()
+    assert cal.has_investment and not cal.has_government
+    assert cal.sav_rate0 == pytest.approx(0.15)  # 27.15 / 181 disposable
+    assert np.allclose(cal.inv_gamma, [20.0 / 27.15, 7.15 / 27.15])
+    assert not np.allclose(cal.inv_gamma, cal.gamma)  # composition genuinely differs
+
+
+def test_savinv_with_government_calibrates():
+    cal = _cal_gov_inv()
+    assert cal.has_investment and cal.has_government
+    assert cal.gov_tax_rate0 == pytest.approx(0.1)
+    assert cal.sav_rate0 == pytest.approx(0.1)  # 16.29 / 162.9 disposable (net of tax)
+
+
+def test_savinv_benchmark_replicates_under_both_closures():
+    """Tier 1: the benchmark reproduces the SAM exactly — prices 1, FD0 and INV0 — under BOTH
+    investment closures (they coincide at the benchmark by construction)."""
+    for closure in ("savings_driven", "fixed_real"):
+        for cal in (_cal_inv(), _cal_gov_inv()):
+            sol, st = _solve_state(cal, recycling="none", inv_closure=closure)
+            assert np.allclose(sol.x, 1.0, atol=1e-8), closure
+            assert np.allclose(st.FD, cal.FD0, atol=1e-6), closure
+            assert np.allclose(st.ID, cal.INV0, atol=1e-6), closure
+            assert np.allclose(st.X, cal.X0, atol=1e-6), closure
+
+
+def test_savings_investment_identity_under_shock():
+    """Tier 2 (the 5d.2 identity): under savings_driven, nominal investment == household savings
+    to 1e-9, at a shocked equilibrium, with and without a government."""
+    cc = 0.15 * _EMISSIONS
+    for cal in (_cal_inv(), _cal_gov_inv()):
+        _sol, st = _solve_state(cal, cc=cc)
+        assert float(np.dot(st.p, st.ID)) == pytest.approx(st.savings, rel=1e-9)
+        assert st.savings == pytest.approx(cal.sav_rate0 * st.income, rel=1e-9)
+
+
+def test_fixed_real_closure_holds_investment_quantity():
+    """Under fixed_real the investment QUANTITY vector stays at INV0 under a shock; household
+    savings adjust residually (= p·INV0, which moves with prices). Under savings_driven the
+    quantities move — the closures genuinely differ post-shock."""
+    cal = _cal_inv()
+    cc = 0.15 * _EMISSIONS
+    _s1, fixed = _solve_state(cal, cc=cc, inv_closure="fixed_real")
+    _s2, driven = _solve_state(cal, cc=cc, inv_closure="savings_driven")
+    assert np.allclose(fixed.ID, cal.INV0, atol=1e-9)  # quantities pinned
+    assert fixed.savings == pytest.approx(float(np.dot(fixed.p, fixed.ID)), rel=1e-9)
+    assert not np.allclose(driven.ID, cal.INV0, atol=1e-6)  # savings_driven moved
+
+
+def test_savinv_homogeneity_savings_driven():
+    """Tier 1: the savings rate is a RATE, so scaling the endowment k× scales investment demand
+    by k with prices unchanged (savings_driven; fixed_real is intentionally NOT homogeneous in
+    the endowment alone — its INV0 quantity anchor stays fixed by design)."""
+    cal = _cal_inv()
+    _sol, st = _solve_state(cal, recycling="none")
+    k = 2.5
+    cal_k = replace(cal, endowment=cal.endowment * k, X0=cal.X0 * k, F0=cal.F0 * k, Z0=cal.Z0 * k)
+    _sol_k, st_k = _solve_state(cal_k, recycling="none")
+    assert np.allclose(_sol.x, _sol_k.x, atol=1e-8)
+    assert np.allclose(st_k.ID, k * st.ID, atol=1e-8)
+
+
+def test_savinv_walras_under_shock():
+    """Tier 1 re-proof: the dropped factor market still clears with investment (and government)
+    active under a carbon shock, under both closures."""
+    cc = 0.15 * _EMISSIONS
+    for closure in ("savings_driven", "fixed_real"):
+        for cal in (_cal_inv(), _cal_gov_inv()):
+            _sol, st = _solve_state(cal, cc=cc, inv_closure=closure, drop_factor=0)
+            excess = float(st.F[0, :].sum()) - cal.endowment[0]
+            assert abs(excess) < 1e-6, closure
+
+
+def test_savinv_unbalanced_rejected():
+    import pandas as pd
+
+    sam = toy_sam()
+    acc = list(sam.accounts) + ["SAVINV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["SAVINV", "HOH"] = 10.0
+    m.loc["BRD", "SAVINV"] = 7.0  # spends less than it collects
+    bad = sam.model_copy(update={"accounts": acc, "matrix": m})
+    with pytest.raises(ValueError, match="savings-investment account is unbalanced"):
+        calibrate(
+            bad,
+            sectors=_SECTORS,
+            factors=_FACTORS,
+            institutions={"household": "HOH", "savings_investment": "SAVINV"},
+        )
+
+
+def test_unsupported_inv_closure_rejected():
+    cal = _cal_inv()
+    with pytest.raises(ValueError, match="unsupported inv_closure"):
+        M.derive_state(
+            cal,
+            np.ones(len(cal.sectors)),
+            np.ones(len(cal.factors)),
+            inv_closure="golden_rule",
+        )
+
+
+def test_engine_savinv_emits_investment_and_manifest():
+    """End-to-end: a SAM carrying SAVINV emits investment + savings (equal under savings_driven),
+    records the closure + savings rate in the manifest, and a no-SAVINV run emits neither."""
+    eng = registry.get("cge_static")
+    data = {"SAM": _inv_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}}
+    res = eng.run(data=data, shocks=[CarbonPrice(price=0.15)], years=[2020])
+    d = res.data
+    inv = d[d["variable"] == "investment"]["value"]
+    sav = d[d["variable"] == "savings"]["value"]
+    assert len(inv) == 1 and len(sav) == 1
+    assert float(inv.iloc[0]) == pytest.approx(float(sav.iloc[0]), rel=1e-9)  # S = I visible
+    assert res.manifest.assumptions["savings_investment_account"] == "SAVINV"
+    assert res.manifest.assumptions["inv_closure"] == "savings_driven"
+    assert res.manifest.assumptions["benchmark_savings_rate_of_disposable_income"] == pytest.approx(
+        0.15
+    )
+
+    plain = eng.run(
+        data={"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+        shocks=[CarbonPrice(price=0.15)],
+        years=[2020],
+    )
+    assert not (plain.data["variable"] == "investment").any()
+    assert plain.manifest.assumptions["savings_investment_account"] == "none"
+
+
+def test_engine_inv_closure_switch_changes_results():
+    """The two closures are switchable by config and genuinely differ under a shock (Tier 3:
+    closures switchable, each solvable). fixed_real without a SAVINV account is rejected."""
+    eng = registry.get("cge_static")
+    data = {"SAM": _inv_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}}
+    driven = eng.run(data=data, shocks=[CarbonPrice(price=0.15)], years=[2020])
+    fixed = eng.run(
+        data={**data, "inv_closure": "fixed_real"},
+        shocks=[CarbonPrice(price=0.15)],
+        years=[2020],
+    )
+    assert fixed.manifest.assumptions["inv_closure"] == "fixed_real"
+    inv_d = float(driven.data[driven.data["variable"] == "investment"]["value"].iloc[0])
+    inv_f = float(fixed.data[fixed.data["variable"] == "investment"]["value"].iloc[0])
+    assert inv_d != pytest.approx(inv_f, rel=1e-6)  # the closure genuinely matters
+
+    with pytest.raises(ValueError, match="needs a 'SAVINV' account"):
+        eng.run(
+            data={
+                "SAM": toy_sam(),
+                "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5},
+                "inv_closure": "fixed_real",
+            },
+            shocks=[CarbonPrice(price=0.15)],
+            years=[2020],
+        )

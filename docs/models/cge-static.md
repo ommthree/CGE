@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.6.1)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.7.0)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -43,18 +43,23 @@ factor endowments, CPI numéraire, a carbon price as a per-unit emissions cost w
 §4b) is supported in **all three variants**: a `GOV` SAM account (closed/open) or one `GOV_<r>`
 per region (multi-region) makes government a real institution that collects carbon revenue (and an
 optional benchmark direct tax) and spends on its own calibrated demand vector under a **balanced
-budget**. An **open-economy variant** (§8) adds Armington imports and CET exports with a
-rest-of-world account — chosen automatically when the SAM carries a `ROW` account.
+budget**. A **savings-investment account** (Phase 5d.2, §4c) is supported in the **closed**
+variant: a `SAVINV` SAM account turns household savings (a calibrated rate on disposable income)
+into investment demand with its own sectoral composition, under a **savings-driven** (default) or
+**fixed-real** closure. An **open-economy variant** (§8) adds Armington imports and CET exports
+with a rest-of-world account — chosen automatically when the SAM carries a `ROW` account.
 
 **Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today);
-a **deficit-financed government closure** (Phase 5d.7 — today's government cannot run a
-deficit/surplus: `fiscal_balance` ≡ 0 by construction), **production/factor taxes,
-government→household transfers, government trade (GOV↔ROW), and cross-region government
-purchases** (a benchmark SAM carrying them is rejected explicitly); a
-**genuine energy nest** (KL–E–M — energy is a plain Leontief/CES intermediate today, not a
-separable nest a carbon price can shift substitution within); **savings/investment** (no
-capital-accumulation mechanism, so Phase 7's recursive-dynamic wrapper has nothing real to update
-between years); heterogeneous households; and a distortionary labour-tax wedge (so the
+the savings-investment account in the **open/multi-region** variants (closed only today — the
+open/multi generalisation routes foreign savings into the investment pool instead of household
+income, a genuine closure change); a **deficit-financed government closure** (Phase 5d.7 —
+today's government cannot run a deficit/surplus: `fiscal_balance` ≡ 0 by construction),
+**production/factor taxes, government→household transfers, government savings, government trade
+(GOV↔ROW), and cross-region government purchases** (a benchmark SAM carrying them is rejected
+explicitly); a **genuine energy nest** (KL–E–M — energy is a plain Leontief/CES intermediate
+today, not a separable nest a carbon price can shift substitution within); **capital
+accumulation** (5d.2 gives investment as a demand flow; the capital-stock identity Phase 7.1
+needs is 5d.3, next); heterogeneous households; and a distortionary labour-tax wedge (so the
 "double-dividend" channel that would distinguish labour-tax-cut from lump-sum recycling in a
 *single*-household model). Roadmap Phase 5.2 originally specified the government account,
 investment, and energy nest — they were dropped rather than carried forward, and are now tracked as
@@ -247,6 +252,41 @@ through prices, not through cross-region demand quantities). `fiscal_balance`/`g
 emitted per region as shares of that region's **own** benchmark GDP, consistent with
 `carbon_revenue`.
 
+### 4c. Savings and investment (Phase 5d.2 — closed variant)
+
+A `SAVINV` account (recognised by name, like `GOV`) makes investment a genuine final-demand
+component instead of everything being consumed. Its column calibrates the investment composition
+$\gamma^v_i = INV^0_i/\sum_k INV^0_k$ (typically capital-goods-heavy, unlike consumption); its
+single supported receipt is household savings, converted to a **rate on disposable income**
+$s = S^0/(Y^0 - T^0)$ — the same rate-not-level logic as the direct tax, so replication and
+homogeneity both survive. Coexists freely with the government account (§4b).
+
+**Closures** (`inv_closure`, switchable by config, both tested):
+
+- **`savings_driven`** (default, the original Phase 5 spec): the household saves $s\cdot I^{hh}$;
+  nominal investment equals savings **exactly** — the savings-investment identity is substituted
+  in closed form, $ID_i = \gamma^v_i\,(s I^{hh})/p_i$, so the system stays **square in $(p,w)$
+  with no new unknowns** (the phase plan's anticipated +1 unknown/+1 equation never materialises;
+  the identity holds by construction and is re-verified at every strict evaluation).
+- **`fixed_real`**: the investment *quantity* vector is pinned at its benchmark $INV^0$;
+  household savings adjust residually to finance it ($S = p\cdot INV^0$, consumption income
+  $I^{hh} - p\cdot INV^0$; a strict-mode guard refuses an equilibrium with nothing left to
+  consume). Intentionally **not** homogeneous in the endowment alone — the quantity anchor is the
+  point of the closure.
+
+Goods-market clearing becomes $X = (I-ax)^{-1}(FD + GD + ID)$; expenditure GDP becomes
+$\sum_i p_i(FD_i + GD_i + ID_i)$ — C+G+I, the closed-economy expenditure identity. With a
+government, its revenue base $R_0$ includes investment demand. Savings carry **no utility** in
+this static model (standard static-CGE treatment): welfare is still CD utility over consumption
+only, and the savings *rate* is a calibrated constant, not an intertemporal choice — the
+capital-accumulation identity that makes investment mean something across periods is Phase 5d.3.
+New outputs: `investment` and `savings` (shares of benchmark GDP; equal under `savings_driven` by
+construction — emitted so the identity is visible, like `fiscal_balance`). The manifest records
+`savings_investment_account`, `inv_closure`, and the benchmark savings rate. **Closed variant
+only**: the open/multi generalisation must also re-route foreign savings ($er\cdot S_f$) from
+household income into the savings pool — a genuine closure change, not a mechanical extension —
+and is the remaining 5d.2 work.
+
 ## 5. Calibration
 
 At the benchmark all prices are 1, so parameters read straight off the balanced SAM
@@ -259,8 +299,8 @@ identity** $\sum_j ax_{ji} + va_i = 1$ holds exactly, which is why the benchmark
 topology (e.g. an offsetting household↔commodity loop), which the structural validators accept but
 the model cannot reproduce — every reported change would then be measured against a wrong benchmark.
 So after calibration the engine derives the state at benchmark prices and **asserts every calibrated
-quantity is reproduced** ($X/FD/F$ closed, plus $GD$ when a government account is present;
-$Z/D/E/M/Q/FD/F$ open) to $10^{-6}$, refusing the run otherwise. The run manifest's SAM fingerprint is **canonicalised by account label** so two economies
+quantity is reproduced** ($X/FD/F$ closed, plus $GD$/$ID$ when government/savings-investment
+accounts are present; $Z/D/E/M/Q/FD/F$ open) to $10^{-6}$, refusing the run otherwise. The run manifest's SAM fingerprint is **canonicalised by account label** so two economies
 with permuted axes but an identical numeric block get distinct identities.
 
 **Scale normalisation.** All benchmark levels are divided by benchmark GDP before calibration, so

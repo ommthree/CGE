@@ -60,6 +60,12 @@ class CalibratedModel:
     # benchmark government replicates exactly AND homogeneity survives (a fixed *level* would not
     # scale with the economy; a fixed *rate* does).
     gov_tax_rate0: float = 0.0
+    # Savings-investment account (Phase 5d.2; optional — None means no account was declared and
+    # the model behaves exactly as before: no savings, no investment demand). Financed by a
+    # household savings RATE on disposable income (same rate-not-level logic as the tax).
+    inv_gamma: np.ndarray | None = None  # [i] investment demand composition (sums→1)
+    INV0: np.ndarray | None = None  # [i] benchmark investment demand (GDP-normalised)
+    sav_rate0: float = 0.0  # benchmark household savings rate on disposable income
 
     @property
     def gdp0(self) -> float:
@@ -69,6 +75,10 @@ class CalibratedModel:
     @property
     def has_government(self) -> bool:
         return self.gov_gamma is not None
+
+    @property
+    def has_investment(self) -> bool:
+        return self.inv_gamma is not None
 
 
 def calibrate(
@@ -82,8 +92,11 @@ def calibrate(
     """Calibrate the pilot CGE from a balanced ``sam``. ``sectors`` and ``factors`` name the SAM
     accounts to treat as activities/commodities and factors.
 
-    ``institutions`` (Phase 5d.1) maps a role to a SAM account name — ``"household"`` (required if
-    the dict is given) and, optionally, ``"government"``. When omitted (the default), every
+    ``institutions`` (Phase 5d.1/5d.2) maps a role to a SAM account name — ``"household"``
+    (required if the dict is given) and, optionally, ``"government"`` and
+    ``"savings_investment"``. The savings-investment account's column is investment demand by
+    sector; its single supported receipt is household savings, converted to a savings **rate on
+    disposable income** (``sav_rate0``). When omitted (the default), every
     non-sector/non-factor account must be exactly one account, treated as the household — this is
     the pre-5d.1 behaviour, preserved unchanged so every existing single-household SAM/fixture
     calibrates identically. When a ``"government"`` account is named, its column (demand for each
@@ -107,12 +120,14 @@ def calibrate(
             )
         household = hoh[0]
         government = None
+        savinv = None
     else:
         if "household" not in institutions:
             raise ValueError("institutions must name a 'household' role")
         household = institutions["household"]
         government = institutions.get("government")
-        known = {household} | ({government} if government else set())
+        savinv = institutions.get("savings_investment")
+        known = {household} | {x for x in (government, savinv) if x}
         unnamed = [
             a for a in sam.accounts if a not in sectors and a not in factors and a not in known
         ]
@@ -135,7 +150,7 @@ def calibrate(
         # production/factor taxes and government→household transfers are documented 5d follow-ups.
         bad_receipts = {
             a: float(m.loc[government, a])
-            for a in sectors + factors
+            for a in sectors + factors + ([savinv] if savinv else [])
             if abs(float(m.loc[government, a])) > 1e-9
         }
         if bad_receipts:
@@ -144,17 +159,51 @@ def calibrate(
                 "production/factor taxes are not yet modelled (Phase 5d follow-up); 5d.1 supports "
                 "only a household→government benchmark transfer."
             )
-        transfers_out = float(m.loc[household, government])
-        if abs(transfers_out) > 1e-9:
+        bad_outlays = [
+            a
+            for a in [household] + ([savinv] if savinv else [])
+            if abs(float(m.loc[a, government])) > 1e-9
+        ]
+        if bad_outlays:
             raise ValueError(
-                "government→household transfers in the benchmark SAM are not yet modelled "
-                "(Phase 5d follow-up); the government account may only buy commodities."
+                f"government pays accounts {bad_outlays}: transfers and government savings are "
+                "not yet modelled (Phase 5d follow-up; the balanced_budget closure has no surplus "
+                "to save); the government account may only buy commodities."
             )
         if abs(gov_tax0 - float(GD0.sum())) > 1e-6 * max(1.0, gov_tax0):
             raise ValueError(
                 f"government account is unbalanced: benchmark receipts {gov_tax0:.6g} ≠ spending "
                 f"{float(GD0.sum()):.6g}. A balanced SAM with only the supported flows cannot "
                 "produce this; check the government column/row."
+            )
+    INV0 = None
+    sav0 = 0.0
+    if savinv is not None:
+        # Savings-investment account (Phase 5d.2): its column is investment demand by sector; its
+        # single supported receipt is household savings (cell [savinv, household]). Anything else
+        # (sector/factor receipts, transfers out to institutions) has no modelled counterpart.
+        INV0 = np.array([m.loc[i, savinv] for i in sectors], dtype=float)
+        sav0 = float(m.loc[savinv, household])
+        bad_receipts = {
+            a: float(m.loc[savinv, a])
+            for a in sectors + factors
+            if abs(float(m.loc[savinv, a])) > 1e-9
+        }
+        if bad_receipts:
+            raise ValueError(
+                f"savings-investment account receives from sectors/factors "
+                f"{sorted(bad_receipts)}: only household savings are modelled (Phase 5d "
+                "follow-up for retained earnings / foreign savings in the closed model)."
+            )
+        if abs(float(m.loc[household, savinv])) > 1e-9:
+            raise ValueError(
+                "savings-investment→household transfers are not modelled; the account may only "
+                "buy commodities (investment demand)."
+            )
+        if abs(sav0 - float(INV0.sum())) > 1e-6 * max(1.0, sav0):
+            raise ValueError(
+                f"savings-investment account is unbalanced: savings {sav0:.6g} ≠ investment "
+                f"{float(INV0.sum()):.6g}; check the account's row/column."
             )
     # Normalise all levels by GDP so magnitudes are O(1): a CGE is homogeneous of degree zero, so
     # the *level* scale is arbitrary and results are relative changes. Real EXIOBASE flows are
@@ -166,6 +215,8 @@ def calibrate(
     Z0, F0, FD0 = Z0 / scale, F0 / scale, FD0 / scale
     if GD0 is not None:
         GD0, gov_tax0 = GD0 / scale, gov_tax0 / scale
+    if INV0 is not None:
+        INV0, sav0 = INV0 / scale, sav0 / scale
     X0 = Z0.sum(axis=0) + F0.sum(axis=0)  # output = Σ intermediate cost + Σ value added
 
     # Reject degenerate benchmarks before dividing by them (review robustness): a zero-output
@@ -232,6 +283,18 @@ def calibrate(
         # would not survive an endowment rescaling; a fixed rate does).
         gov_tax_rate0 = gov_tax0 / float(endowment.sum())
 
+    # Investment composition + household savings rate (Phase 5d.2). The rate is on DISPOSABLE
+    # income (factor income net of the benchmark tax) — the same rate-not-level logic as the tax,
+    # so replication and homogeneity both survive. A zero-column account falls back to the
+    # household's gamma for the composition (no 0/0), with a zero savings rate.
+    inv_gamma = None
+    sav_rate0 = 0.0
+    if INV0 is not None:
+        inv_total = float(INV0.sum())
+        inv_gamma = INV0 / inv_total if inv_total > 0 else gamma.copy()
+        disposable0 = float(endowment.sum()) - gov_tax0
+        sav_rate0 = sav0 / disposable0
+
     return CalibratedModel(
         sectors=list(sectors),
         factors=list(factors),
@@ -251,4 +314,7 @@ def calibrate(
         gov_income0=gov_income0,
         GD0=GD0,
         gov_tax_rate0=gov_tax_rate0,
+        inv_gamma=inv_gamma,
+        INV0=INV0,
+        sav_rate0=sav_rate0,
     )

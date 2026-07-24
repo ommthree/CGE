@@ -52,6 +52,9 @@ class ModelState:
     GD: np.ndarray  # government final demand [i]
     gov_income: float  # government income (its share of carbon revenue, + benchmark gov_income0)
     fiscal_balance: float  # government income − government spending (≡0 under balanced_budget)
+    # Savings-investment account (Phase 5d.2). Zeros when cal.has_investment is False.
+    ID: np.ndarray  # investment final demand [i]
+    savings: float  # household savings (= nominal investment under savings_driven)
 
 
 def _va_unit_cost(cal: CalibratedModel, w: np.ndarray) -> np.ndarray:
@@ -111,6 +114,7 @@ def derive_state(
     recycling: str = "none",
     strict: bool = False,
     gov_closure: str = "balanced_budget",
+    inv_closure: str = "savings_driven",
 ) -> ModelState:
     """Close the model at equilibrium prices (p, w): compute VA cost, outputs, demands and income.
 
@@ -141,14 +145,27 @@ def derive_state(
     consumption only — government-provided goods carry no utility here, a documented 5d.1 scope
     choice.
 
+    **Savings and investment (Phase 5d.2, ``cal.has_investment``):** a savings-investment account
+    turns part of household income into investment demand ``ID`` with its own sectoral composition
+    ``inv_gamma``, under one of two closures:
+    - ``savings_driven`` (default, the original Phase 5 spec): the household saves the calibrated
+      rate ``s`` of disposable income; nominal investment = savings exactly (the S=I identity is
+      substituted in closed form, so the system stays square with NO new unknowns — the identity
+      holds by construction and is verified in strict mode);
+    - ``fixed_real``: the investment *quantity* vector is fixed at its benchmark ``INV0``;
+      household savings adjust residually to finance it (consumption income = I − p·INV0).
+    Savings carry no utility in this static model (standard static-CGE treatment): reported
+    welfare is CD utility over consumption ``FD`` only.
+
     Because R depends on X which depends on income which depends on R, the fixed point is solved in
     closed form. Without government: with FD = γ·I/p and X = (I−ax)⁻¹·FD,
     R = I·(cc·(I−ax)⁻¹·(γ/p)), so I = factor_income / (1 − k) where k is the marginal-revenue
-    coefficient. With government: household income is factor income net of the benchmark tax
-    (T = gov_tax_rate0·factor_income), fixed given prices — so only gov_income has a fixed point:
-    gov_income = T + R, R = gov_income·kg + R0 where kg = cc·(I−ax)⁻¹·(gov_gamma/p) is government
-    spending's own marginal-revenue coefficient and R0 = cc·(I−ax)⁻¹·FD is the revenue generated
-    by (fixed) household demand alone — so gov_income = (T + R0) / (1 − kg)."""
+    coefficient (with investment, the per-unit-income demand vector becomes
+    ((1−s)γ + s·inv_gamma)/p under savings_driven, or gains a fixed INV0 part under fixed_real —
+    both still linear in income, so the same closed form applies). With government: household
+    income is factor income net of the benchmark tax, fixed given prices — so only gov_income has
+    a fixed point: gov_income = (T + R0) / (1 − kg), R0 the revenue from the (price-fixed)
+    household + investment demand, kg government spending's own marginal-revenue coefficient."""
     ns = len(cal.sectors)
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pv = _va_unit_cost(cal, w)
@@ -157,23 +174,62 @@ def derive_state(
     leontief = np.linalg.inv(np.eye(ns) - cal.ax)  # (I − ax)⁻¹, small and dense
     demand_per_income = cal.gamma / p  # FD = I · demand_per_income
     recycles = recycling != "none"
+    if cal.has_investment and inv_closure not in ("savings_driven", "fixed_real"):
+        raise ValueError(
+            f"unsupported inv_closure {inv_closure!r}; 5d.2 implements 'savings_driven' "
+            "(default) and 'fixed_real'."
+        )
+    s = cal.sav_rate0 if cal.has_investment else 0.0
 
     if not cal.has_government:
-        # Pre-5d.1 behaviour, bit-for-bit unchanged: carbon revenue recycles straight to the
-        # household. k = extra revenue generated per unit of household income; 0 when there are no
-        # emissions/tax. ``none`` is rejected by the engine (it does not close), so any mode
-        # reaching here recycles.
-        k = float(cc @ (leontief @ demand_per_income)) if recycles else 0.0
-        if strict and k >= 1.0 - 1e-12:
-            # Runaway recycling (revenue ≥ income) AT THE ACCEPTED EQUILIBRIUM — refuse rather than
-            # return numbers (review P2).
-            raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
-        # A trial price vector during the solve can hit k≥1 even when a valid equilibrium (k<1)
-        # exists elsewhere; in non-strict (exploratory) mode use a SMOOTH floor on (1−k): identity
-        # for 1−k ≥ δ, asymptotes to δ as 1−k → −∞, keeping income finite and the residual
-        # C¹-continuous — not a flat plateau.
-        income = factor_income / _safe_denom(1.0 - k)
-        FD = income * demand_per_income
+        # Pre-5d.1/5d.2 behaviour when no accounts are declared, bit-for-bit unchanged: carbon
+        # revenue recycles straight to the household. With an investment account, the fixed point
+        # is the same shape — demand is still linear in income:
+        #   savings_driven: per-unit-income demand u = ((1−s)γ + s·inv_gamma)/p, I = FI/(1−k);
+        #   fixed_real: demand = γ(I − p·INV0)/p + INV0, so R = k·(I − pI0) + cInv and
+        #     I = (FI − k·pI0 + cInv)/(1−k) with pI0 = p·INV0, cInv = cc·L·INV0.
+        if not cal.has_investment:
+            k = float(cc @ (leontief @ demand_per_income)) if recycles else 0.0
+            if strict and k >= 1.0 - 1e-12:
+                # Runaway recycling (revenue ≥ income) AT THE ACCEPTED EQUILIBRIUM — refuse rather
+                # than return numbers (review P2).
+                raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
+            # A trial price vector during the solve can hit k≥1 even when a valid equilibrium
+            # (k<1) exists elsewhere; in non-strict (exploratory) mode use a SMOOTH floor on
+            # (1−k): identity for 1−k ≥ δ, asymptotes to δ as 1−k → −∞, keeping income finite and
+            # the residual C¹-continuous — not a flat plateau.
+            income = factor_income / _safe_denom(1.0 - k)
+            FD = income * demand_per_income
+            ID = np.zeros(ns)
+            savings = 0.0
+        elif inv_closure == "savings_driven":
+            u = ((1.0 - s) * cal.gamma + s * cal.inv_gamma) / p
+            k = float(cc @ (leontief @ u)) if recycles else 0.0
+            if strict and k >= 1.0 - 1e-12:
+                raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
+            income = factor_income / _safe_denom(1.0 - k)
+            savings = s * income
+            FD = (1.0 - s) * income * demand_per_income
+            ID = savings * cal.inv_gamma / p
+        else:  # fixed_real
+            ID = cal.INV0.copy()
+            p_inv = float(np.dot(p, ID))
+            if recycles:
+                k = float(cc @ (leontief @ demand_per_income))
+                c_inv = float(cc @ (leontief @ ID))
+            else:
+                k, c_inv = 0.0, 0.0
+            if strict and k >= 1.0 - 1e-12:
+                raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
+            income = (factor_income - k * p_inv + c_inv) / _safe_denom(1.0 - k)
+            savings = p_inv  # residual saving that finances the fixed real investment
+            if strict and income - p_inv <= 0:
+                raise ValueError(
+                    f"fixed_real investment ({p_inv:.6g}) exceeds household income "
+                    f"({income:.6g}); no consumption left. Lower the shock or use "
+                    "savings_driven."
+                )
+            FD = (income - p_inv) * demand_per_income
         GD = np.zeros(ns)
         gov_income = 0.0
         fiscal_balance = 0.0
@@ -188,10 +244,27 @@ def derive_state(
         # the benchmark government replicates exactly and homogeneity survives (see calibrate).
         tax = cal.gov_tax_rate0 * factor_income
         income = factor_income - tax
-        FD = income * demand_per_income
+        if not cal.has_investment:
+            FD = income * demand_per_income
+            ID = np.zeros(ns)
+            savings = 0.0
+        elif inv_closure == "savings_driven":
+            savings = s * income
+            FD = (1.0 - s) * income * demand_per_income
+            ID = savings * cal.inv_gamma / p
+        else:  # fixed_real
+            ID = cal.INV0.copy()
+            savings = float(np.dot(p, ID))
+            if strict and income - savings <= 0:
+                raise ValueError(
+                    f"fixed_real investment ({savings:.6g}) exceeds household disposable income "
+                    f"({income:.6g}); no consumption left."
+                )
+            FD = (income - savings) * demand_per_income
         gov_demand_per_income = cal.gov_gamma / p  # GD = gov_income · gov_demand_per_income
         if recycles:
-            r0 = float(cc @ (leontief @ FD))  # revenue generated by (fixed) household demand
+            # Revenue from the (price-fixed) household + investment demand.
+            r0 = float(cc @ (leontief @ (FD + ID)))
             kg = float(cc @ (leontief @ gov_demand_per_income))  # marginal revenue from Σgov spend
         else:
             r0, kg = 0.0, 0.0
@@ -201,8 +274,14 @@ def derive_state(
         GD = gov_income * gov_demand_per_income
         fiscal_balance = 0.0  # balanced_budget: spending exactly exhausts income, by construction
 
-    X = leontief @ (FD + GD)  # goods-market clearing
+    X = leontief @ (FD + GD + ID)  # goods-market clearing
     carbon_revenue = float(cc @ X)
+    # Savings-investment identity check (strict mode; Phase 5d.2 Tier 2): under savings_driven,
+    # nominal investment must equal household savings exactly.
+    if strict and cal.has_investment and inv_closure == "savings_driven":
+        resid = float(np.dot(p, ID)) - savings
+        if abs(resid) > 1e-9 * max(1.0, abs(savings)):  # pragma: no cover - guards the closed form
+            raise ValueError(f"savings-investment identity not satisfied (residual {resid:.3e}).")
     # Factor demand (Shephard on the value-added cost va_share·pv·X). CD or CES per sector.
     va_cost = cal.va_share * pv * X  # [i] total VA payment per sector
     F = _factor_demand(cal, w, pv, va_cost)  # [f,i]
@@ -219,6 +298,8 @@ def derive_state(
         fiscal_balance=fiscal_balance,
         carbon_revenue=carbon_revenue,
         factor_income=factor_income,
+        ID=ID,
+        savings=savings,
     )
 
 
@@ -230,6 +311,7 @@ def residuals(
     recycling: str = "none",
     drop_factor: int = 0,
     gov_closure: str = "balanced_budget",
+    inv_closure: str = "savings_driven",
 ) -> np.ndarray:
     """Equilibrium residual vector F(z) for z = [p (ns), w (nf)].
 
@@ -242,10 +324,14 @@ def residuals(
       artifact of pinning the arithmetic Σγp while reporting the geometric Πp^γ; review P1).
 
     ``recycling`` selects how carbon revenue is returned (see ``derive_state``); ``gov_closure``
-    selects the government's financing closure when ``cal.has_government`` (Phase 5d.1) — the
-    government account adds no new unknown/equation here: ``balanced_budget`` makes government
-    demand ``GD`` an algebraic function of prices exactly like household demand ``FD``, so the
-    system stays square in ``(p, w)`` with no new residual line.
+    selects the government's financing closure when ``cal.has_government`` (Phase 5d.1);
+    ``inv_closure`` selects the savings-investment closure when ``cal.has_investment`` (Phase
+    5d.2: ``savings_driven`` or ``fixed_real``). Neither account adds a new unknown/equation:
+    government demand ``GD`` and investment demand ``ID`` are both algebraic functions of prices
+    exactly like household demand ``FD`` (the savings-investment identity is substituted in
+    closed form), so the system stays square in ``(p, w)`` with no new residual line — the
+    square-count re-derivation the phase plan required is therefore trivial: the count is
+    unchanged, verified by the existing square-system test.
 
     ``z`` accepts an object-dtype array (pyomo vars) so the same residual builds the IPOPT model;
     it uses only +, −, ×, ÷ and np.dot-free elementwise algebra where that matters.
@@ -263,6 +349,7 @@ def residuals(
         carbon_cost=cc,
         recycling=recycling,
         gov_closure=gov_closure,
+        inv_closure=inv_closure,
     )
 
     res = []

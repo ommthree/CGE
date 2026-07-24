@@ -24,8 +24,13 @@ the multi-region model). A **government account** (Phase 5d.1) is supported in A
 a ``GOV`` SAM account (closed/open) or one ``GOV_<r>`` per region (multi-region) makes government
 a real institution — it collects carbon revenue (and an optional benchmark household→government
 direct tax, stored as a rate on factor income) and spends on its own calibrated demand vector
-under a balanced budget, with ``fiscal_balance``/``gov_spending`` emitted. Investment/savings and
-an energy nest remain reopened Phase 5 debt tracked as roadmap Phase 5d.
+under a balanced budget, with ``fiscal_balance``/``gov_spending`` emitted. A **savings-investment
+account** (Phase 5d.2, closed variant) is supported via a ``SAVINV`` SAM account: household
+savings (a calibrated rate on disposable income) become investment demand with its own sectoral
+composition, under a ``savings_driven`` (default) or ``fixed_real`` closure, with
+``investment``/``savings`` emitted. Savings-investment in the open/multi variants, capital
+accumulation (5d.3) and an energy nest (5d.5) remain reopened Phase 5 debt tracked as roadmap
+Phase 5d.
 
 Data contract (``data`` dict): either a ``SAM`` supplied directly (validated: aligned, finite,
 non-negative, balanced) with an optional per-sector dimensionless ``carbon_cost_share``, OR an
@@ -49,7 +54,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -60,6 +65,11 @@ _DEFAULT_FACTORS = ("CAP", "LAB")
 # several ``HOH_<r>`` select multi-region). Closed variant only for now; a GOV account in an
 # open/multi-region SAM is rejected by those variants' own account validation.
 _GOV_ACCOUNT = "GOV"
+
+# The savings-investment institution (Phase 5d.2), also recognised by name. Closed variant only
+# for now (open/multi generalisation — where foreign savings route into the investment pool
+# instead of household income — is the remaining 5d.2 work).
+_SAVINV_ACCOUNT = "SAVINV"
 
 ASSUMPTIONS = {
     "model": (
@@ -268,23 +278,34 @@ class CGEStaticEngine:
             inp.sectors,
             [f for f in _DEFAULT_FACTORS if f in inp.sam.accounts],
         )
-        # Government account (Phase 5d.1): a ``GOV`` account makes the government a real
-        # institution — it collects carbon revenue (and any benchmark direct tax) and spends it on
-        # its own calibrated demand vector under a balanced budget, instead of the revenue passing
-        # straight through household income. The household is the remaining institution.
+        # Government account (Phase 5d.1) and savings-investment account (Phase 5d.2), both
+        # recognised by name: GOV collects carbon revenue (and any benchmark direct tax) and
+        # spends on its own calibrated demand vector under a balanced budget; SAVINV turns
+        # household savings into investment demand under the chosen closure. The household is the
+        # remaining institution.
+        special = {_GOV_ACCOUNT, _SAVINV_ACCOUNT} & set(sam.accounts)
         institutions = None
-        if _GOV_ACCOUNT in sam.accounts:
+        if special:
             others = [
                 a
                 for a in sam.accounts
-                if a not in sectors and a not in factors and a != _GOV_ACCOUNT
+                if a not in sectors and a not in factors and a not in special
             ]
             if len(others) != 1:
                 raise ValueError(
-                    f"a SAM with a {_GOV_ACCOUNT!r} account needs exactly one household account "
-                    f"besides it; got {others}"
+                    f"a SAM with {sorted(special)} accounts needs exactly one household account "
+                    f"besides them; got {others}"
                 )
-            institutions = {"household": others[0], "government": _GOV_ACCOUNT}
+            institutions = {"household": others[0]}
+            if _GOV_ACCOUNT in special:
+                institutions["government"] = _GOV_ACCOUNT
+            if _SAVINV_ACCOUNT in special:
+                institutions["savings_investment"] = _SAVINV_ACCOUNT
+        inv_closure = data.get("inv_closure", "savings_driven")
+        if inv_closure not in ("savings_driven", "fixed_real"):
+            raise ValueError(
+                f"unsupported inv_closure {inv_closure!r}; use 'savings_driven' or 'fixed_real'."
+            )
         cal = calibrate(
             sam,
             sectors=sectors,
@@ -292,6 +313,11 @@ class CGEStaticEngine:
             va_elast=data.get("va_elast", 1.0),
             institutions=institutions,
         )
+        if inv_closure != "savings_driven" and not cal.has_investment:
+            raise ValueError(
+                f"inv_closure={inv_closure!r} needs a {_SAVINV_ACCOUNT!r} account in the SAM; "
+                "this SAM has none, so the closure choice would silently do nothing."
+            )
         ns = len(sectors)
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
@@ -335,8 +361,8 @@ class CGEStaticEngine:
             recycling_defaulted = True
 
         # Benchmark solve (zero shock) — the replication point, and the base for % changes.
-        base_sol = _solve(cal, carbon_cost=np.zeros(ns), recycling="none")
-        base = M.derive_state(cal, base_sol.x[:ns], base_sol.x[ns:])
+        base_sol = _solve(cal, carbon_cost=np.zeros(ns), recycling="none", inv_closure=inv_closure)
+        base = M.derive_state(cal, base_sol.x[:ns], base_sol.x[ns:], inv_closure=inv_closure)
         # Universal post-calibration replication gate (review P1): a balanced SAM can pass the
         # structural validators yet not conform to the implemented model (e.g. an unsupported
         # household↔commodity loop), in which case the benchmark does not reproduce the SAM and
@@ -350,14 +376,20 @@ class CGEStaticEngine:
         resid_max: float = base_sol.residual_norm
         for year in years:
             cc, _prov = cc_by_year[year]
-            sol = _solve(cal, carbon_cost=cc, recycling=recycling)
+            sol = _solve(cal, carbon_cost=cc, recycling=recycling, inv_closure=inv_closure)
             backends.add(sol.backend)
             statuses.add(sol.status)
             resid_max = max(resid_max, sol.residual_norm)
             # strict=True: the recycling k<1 feasibility guard applies to the accepted equilibrium
             # only; residual evaluations inside _solve ran non-strict to keep the solve continuous.
             st = M.derive_state(
-                cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling=recycling, strict=True
+                cal,
+                sol.x[:ns],
+                sol.x[ns:],
+                carbon_cost=cc,
+                recycling=recycling,
+                strict=True,
+                inv_closure=inv_closure,
             )
             _emit(records, cal, base, st, year)
 
@@ -390,6 +422,14 @@ class CGEStaticEngine:
                 "gov_closure": "balanced_budget" if cal.has_government else "n/a (no government)",
                 "gov_benchmark_tax_share_of_factor_income": (
                     round(float(cal.gov_tax_rate0), 12) if cal.has_government else 0.0
+                ),
+                # Savings-investment account (Phase 5d.2): which account (or none), the active
+                # closure, and the benchmark savings rate — runs differing only in the investment
+                # closure must differ in assumptions.
+                "savings_investment_account": (_SAVINV_ACCOUNT if cal.has_investment else "none"),
+                "inv_closure": inv_closure if cal.has_investment else "n/a (no investment)",
+                "benchmark_savings_rate_of_disposable_income": (
+                    round(float(cal.sav_rate0), 12) if cal.has_investment else 0.0
                 ),
                 "solver_backends": sorted(backends),
                 "solver_statuses": sorted(statuses),
@@ -641,16 +681,20 @@ def _infer_sectors(sam: SAM, factors: list[str]) -> list[str]:
     # variant dispatch): a government with a zero benchmark row receives nothing from factors, so
     # the receives-from-factors test alone would misclassify it as a zero-output sector.
     institutions = [a for a in non_factor if any(sam.matrix.loc[a, f] != 0 for f in factors)]
-    return [a for a in non_factor if a not in institutions and a != _GOV_ACCOUNT]
+    return [
+        a for a in non_factor if a not in institutions and a not in (_GOV_ACCOUNT, _SAVINV_ACCOUNT)
+    ]
 
 
-def _solve(cal, *, carbon_cost, recycling="none"):
+def _solve(cal, *, carbon_cost, recycling="none", inv_closure="savings_driven"):
     # prefer='scipy' explicitly: the CGE model residual is numeric-only (it evaluates the Leontief
     # inverse and Cobb-Douglas cost functions with numpy), so it cannot build a symbolic Pyomo
     # model. Auto-selecting IPOPT when its binary is present would therefore FAIL (review P1). A
     # symbolic residual to enable IPOPT is a documented follow-up; scipy solves the small model.
     return solve(
-        lambda z: M.residuals(cal, z, carbon_cost=carbon_cost, recycling=recycling),
+        lambda z: M.residuals(
+            cal, z, carbon_cost=carbon_cost, recycling=recycling, inv_closure=inv_closure
+        ),
         M.initial_guess(cal),
         prefer="scipy",
     )
@@ -667,14 +711,15 @@ def _emit(records, cal, base, st, year: int) -> None:
     # (see model.residuals). So all prices are expressed in CPI units and there is **no separate
     # deflator to report** — the CPI is fixed to 1 by definition, and a "deflator" derived from it
     # would be a mechanical numéraire artifact, not inflation (review P1). We therefore report:
-    #   • gdp_change_real — the real (CPI-numéraire) change in expenditure-side GDP = Σ p·(FD+GD):
-    #     household consumption PLUS government consumption (Phase 5d.1 — with a government
-    #     account, household FD alone is C, not GDP; GD is zero without one, preserving the old
-    #     value exactly). Prices are in CPI units, so this aggregate is already real;
+    #   • gdp_change_real — the real (CPI-numéraire) change in expenditure-side GDP =
+    #     Σ p·(FD+GD+ID): household consumption + government consumption (Phase 5d.1) +
+    #     investment (Phase 5d.2 — C+G+I, the closed-economy expenditure identity; GD/ID are zero
+    #     without the accounts, preserving the old value exactly). Prices are in CPI units, so
+    #     this aggregate is already real;
     #   • gdp_change_nominal_in_factor_units — the same aggregate valued with a factor price as the
     #     unit of account, so a "money" magnitude is still available for readers who want one.
-    real_gdp = float(np.dot(st.p, st.FD + st.GD))
-    real_gdp_base = float(np.dot(base.p, base.FD + base.GD))
+    real_gdp = float(np.dot(st.p, st.FD + st.GD + st.ID))
+    real_gdp_base = float(np.dot(base.p, base.FD + base.GD + base.ID))
     records.append(_rec("gdp_change_real", "__economy__", year, real_gdp / real_gdp_base - 1.0))
     # A factor-price-numéraire nominal GDP (unit of account = labour), for a "nominal" reference
     # that is NOT mechanically tied to the CPI numéraire.
@@ -700,6 +745,13 @@ def _emit(records, cal, base, st, year: int) -> None:
         records.append(_rec("fiscal_balance", "__economy__", year, st.fiscal_balance / cal.gdp0))
         gov_spend = float(np.dot(st.p, st.GD))
         records.append(_rec("gov_spending", "__economy__", year, gov_spend / cal.gdp0))
+    # Savings-investment account (Phase 5d.2): nominal investment and household savings as shares
+    # of benchmark GDP (equal by construction under savings_driven — the identity is emitted so
+    # it is visible and pinned, like fiscal_balance). Emitted only when the account exists.
+    if cal.has_investment:
+        inv_spend = float(np.dot(st.p, st.ID))
+        records.append(_rec("investment", "__economy__", year, inv_spend / cal.gdp0))
+        records.append(_rec("savings", "__economy__", year, st.savings / cal.gdp0))
 
 
 def _rec(variable: str, sector: str, year: int, value: float) -> dict:
@@ -750,6 +802,9 @@ def _assert_closed_replicates(cal, base, x0: np.ndarray) -> None:
         # The benchmark government must reproduce its SAM column too (Phase 5d.1): tax-funded
         # spending at benchmark prices equals the calibrated GD0 exactly, or the run is refused.
         checks["government demand GD"] = (base.GD, cal.GD0)
+    if cal.has_investment:
+        # Likewise the benchmark investment column (Phase 5d.2), under either closure.
+        checks["investment demand ID"] = (base.ID, cal.INV0)
     _raise_if_not_replicating(checks, "closed")
 
 

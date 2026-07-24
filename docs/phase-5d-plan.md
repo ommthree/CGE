@@ -1,11 +1,17 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: 5d.1 COMPLETE — government account in all three variants** (engine v0.6.1: the
-`institutions` calibration parameter, a `GOV` SAM account — `GOV_<r>` per region in multi — with
-balanced-budget closure, an optional benchmark direct tax as a rate on factor income,
-`fiscal_balance`/`gov_spending` outputs, Tier 1 re-proved per variant incl. degenerate
-equivalence, homogeneity-under-tax, and Walras-under-shock — see `docs/models/cge-static.md` §4b).
-The `deficit_financed` closure remains reserved for 5d.7 as planned. 5d.2–5d.7 not started. This is the detailed implementation plan for Phase 5d, reopened Phase 5
+**Status: 5d.1 COMPLETE; 5d.2 closed-variant landed** (engine v0.7.0). 5d.1: government account
+in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure, benchmark direct
+tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs — `docs/models/
+cge-static.md` §4b; `deficit_financed` reserved for 5d.7 as planned). 5d.2: savings-investment
+account in the closed variant (`SAVINV`, savings rate on disposable income, `savings_driven` +
+`fixed_real` closures both switchable and tested, S=I identity verified at every strict
+evaluation, `investment`/`savings` outputs — §4c). **Notably the plan's anticipated +1
+unknown/+1 equation never materialises**: both closures substitute the savings-investment
+identity in closed form, so the system stays square in (p,w) — the §0.3 square-count risk is
+discharged trivially. Remaining in 5d.2: the open/multi generalisation (foreign savings must
+re-route from household income into the savings pool — a genuine closure change). 5d.3–5d.7 not
+started. This is the detailed implementation plan for Phase 5d, reopened Phase 5
 debt (see `roadmap.md` §Phase 5 correction note and `docs/phase-5-plan.md`'s status header). Phase
 5's original §2/§3 design called for a government/fiscal account, savings/investment with capital
 accumulation, and a genuine KL-E-M energy nest; none of these existed in the implemented model
