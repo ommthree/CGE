@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.1)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.2)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -50,7 +50,7 @@ composition, under a **savings-driven** (default) or **fixed-real** closure; in 
 multi-region variants the foreign-savings inflow re-routes into the investment pool (financing
 investment, not consumption). A **labour-market closure choice** (Phase 5d.4, §4e, closed variant)
 adds a wage floor with involuntary `unemployment` as an alternative to the default flexible-wage /
-full-employment closure. A **genuine energy nest** (KL-E-M, Phase 5d.5, §4f, closed & open) makes
+full-employment closure. A **genuine energy nest** (KL-E-M, Phase 5d.5, §4f, all variants) makes
 energy a separable, substitutable input, so a carbon price shifts substitution within the energy
 bundle (opt-in via `energy_sectors`). An **open-economy variant** (§8) adds Armington imports and
 CET exports with a rest-of-world account — chosen automatically when the SAM carries a `ROW`
@@ -61,8 +61,8 @@ a **deficit-financed government closure** (Phase 5d.7 —
 today's government cannot run a deficit/surplus: `fiscal_balance` ≡ 0 by construction),
 **production/factor taxes, government→household transfers, government savings, government trade
 (GOV↔ROW), and cross-region government purchases** (a benchmark SAM carrying them is rejected
-explicitly); the **energy nest in the multi-region variant** (§4f covers closed + open); the
-**recursive-dynamic loop** (5d.3, §4d, provides the capital-accumulation *identity*; the multi-year
+explicitly); the **recursive-dynamic loop** (5d.3, §4d, provides the capital-accumulation
+*identity*; the multi-year
 wrapper that calls it year-over-year is Phase 7.1); the **wage-floor closure in the open/multi
 variants** and a **wage-curve** alternative (§4e is closed-variant, wage-floor only); heterogeneous
 households; and a distortionary labour-tax wedge (so the
@@ -373,7 +373,7 @@ reported as not binding). **Closed variant only**; a wage-curve alternative (wag
 unemployment with a calibrated elasticity, Blanchflower–Oswald-style) and the open/multi
 generalisation are documented follow-ups — the floor's regime-switch is exact and simple first.
 
-### 4f. Energy nest: KL-E-M production (Phase 5d.5 — closed & open variants)
+### 4f. Energy nest: KL-E-M production (Phase 5d.5 — all variants)
 
 By default production is **flat**: intermediates are fixed-proportion Leontief and energy is just
 another intermediate row, so a carbon price can only shift output *across* sectors. The **energy
@@ -421,8 +421,13 @@ raises the composite energy price), and the price-responsive $A(p)$ feeds the op
 composite-market solve $Q=(I-A(p)\,\mathrm{diag}(\text{ratio}))^{-1}(FD+GD+ID)$ and the CET
 zero-profit $pz_i = px_i$ (the nest's output unit cost). Benchmark replication, homogeneity,
 Walras and the trade balance all re-proved with the nest active; the Tier-2 sign test holds (a
-fossil carbon price contracts fossil output and expands electricity). **The multi-region variant
-is the remaining 5d.5 work** (one energy nest per region, over that region's composite flows).
+fossil carbon price contracts fossil output and expands electricity).
+
+**Multi-region variant.** One energy nest **per region**, each calibrated over that region's own
+composite intermediate flows, so a regional carbon price shifts substitution within *that region's*
+energy bundle. Benchmark replication, homogeneity and Walras re-proved; the Tier-2 sign test holds
+per region (a carbon price on one region's fossil sector contracts that region's fossil output and
+expands its electricity). The energy nest is now available in **all three variants**.
 
 ## 5. Calibration
 

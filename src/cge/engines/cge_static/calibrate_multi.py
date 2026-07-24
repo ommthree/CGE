@@ -30,6 +30,12 @@ import numpy as np
 
 from cge.contracts.data_objects import SAM
 from cge.engines.cge_static.calibrate_open import _elast_vector
+from cge.engines.cge_static.energy_nest import (
+    DEFAULT_ENERGY_ELAST,
+    DEFAULT_KL_E_ELAST,
+    DEFAULT_KLE_M_ELAST,
+    calibrate_energy_nest,
+)
 
 DEFAULT_ARMINGTON_ELAST = 2.0
 DEFAULT_CET_ELAST = 2.0
@@ -102,6 +108,10 @@ class MultiCalibratedModel:
     inv_gamma: np.ndarray | None = None  # [r, s] investment demand composition (sum→1 per region)
     INV0: np.ndarray | None = None  # [r, s] benchmark investment demand (GDP-normalised)
     sav_rate0: np.ndarray | None = None  # [r] savings rate on regional disposable income
+    # Energy nest (Phase 5d.5; None ⇒ flat Leontief production, bit-identical to pre-5d.5). ONE
+    # EnergyNest per region — each region's nest is calibrated over that region's own composite
+    # intermediate flows, so a carbon price shifts substitution within each region's energy bundle.
+    energy_nests: list | None = None  # list[EnergyNest] of length nr, or None
 
     @property
     def gdp0(self) -> float:
@@ -114,6 +124,10 @@ class MultiCalibratedModel:
     @property
     def has_investment(self) -> bool:
         return self.inv_gamma is not None
+
+    @property
+    def has_energy_nest(self) -> bool:
+        return self.energy_nests is not None
 
     @property
     def nr(self) -> int:
@@ -201,6 +215,8 @@ def calibrate_multi(
     va_elast: float = 1.0,
     government: bool = False,
     savings_investment: bool = False,
+    energy_sectors: list[str] | None = None,
+    energy_elasticities: dict[str, float] | None = None,
 ) -> MultiCalibratedModel:
     """Calibrate the multi-region CGE from a globally-balanced multi-region SAM with
     ``a_<r>_<s>``/``c_<r>_<s>`` activity/commodity accounts, per-region factors ``<f>_<r>`` and
@@ -464,6 +480,32 @@ def calibrate_multi(
         disposable0 = endowment.sum(axis=0) - (gov_tax0 if gov_tax0 is not None else 0.0)
         sav_rate0 = sav0 / disposable0  # [r]
 
+    # Energy nest (Phase 5d.5): ONE nest per region, calibrated over that region's own composite
+    # intermediate flows (INT0[r] is [j,i], VA0[r] is [i], Z0[r] is [i]). Opt-in; with no
+    # energy_sectors declared production stays flat Leontief (bit-identical to pre-5d.5).
+    energy_nests = None
+    if energy_sectors:
+        unknown = [e for e in energy_sectors if e not in sectors]
+        if unknown:
+            raise ValueError(f"energy_sectors {unknown} are not in the sector list {sectors}")
+        e_idx = np.array([sectors.index(e) for e in energy_sectors], dtype=int)
+        el = energy_elasticities or {}
+        kle_m = el.get("kle_m", DEFAULT_KLE_M_ELAST)
+        kl_e = el.get("kl_e", DEFAULT_KL_E_ELAST)
+        en = el.get("energy", DEFAULT_ENERGY_ELAST)
+        energy_nests = [
+            calibrate_energy_nest(
+                INT0[ri],
+                VA0[ri],
+                Z0[ri],
+                e_idx,
+                kle_m_elast=kle_m,
+                kl_e_elast=kl_e,
+                energy_elast=en,
+            )
+            for ri in range(nr)
+        ]
+
     model = MultiCalibratedModel(
         regions=list(regions),
         sectors=list(sectors),
@@ -500,6 +542,7 @@ def calibrate_multi(
         inv_gamma=inv_gamma,
         INV0=INV0,
         sav_rate0=sav_rate0,
+        energy_nests=energy_nests,
     )
 
     # A single global numéraire + a single globally-dropped factor-market equation is only a valid

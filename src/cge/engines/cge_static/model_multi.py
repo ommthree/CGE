@@ -160,7 +160,35 @@ def _cet_price(cal: MultiCalibratedModel, pd: np.ndarray, pe: np.ndarray) -> np.
     return pz
 
 
-def _quantities(cal, pd, pq, pe, pz, FD):
+def _intermediate_coeffs(cal, pq, pv, cc):
+    """Per-region intermediate coefficients ``a[r]`` (each [s,i] — composite s per unit output i in
+    region r), value-added (KL) quantity per unit output ``va_qty[r,i]``, and effective per-output
+    carbon cost ``cc_eff[r,i]``. Flat model: fixed ``cal.ax[r]`` + ``cal.va_share`` + cc_eff=cc.
+    Energy nest (Phase 5d.5): each region's nest substitutes over its own COMPOSITE prices pq[r]
+    (imports included), the carbon cost attaching to the region's energy composites; cc_eff[r,i] =
+    Σ_{j∈energy} cc[r,j]·a_energy[r,j,i], linear in output so the per-region recycling/government
+    fixed points carry over unchanged."""
+    nr, ns = cal.nr, cal.ns
+    if not cal.has_energy_nest:
+        return cal.ax, cal.va_share, cc
+    from cge.engines.cge_static.energy_nest import nest_demands
+
+    a = np.zeros((nr, ns, ns))  # a[r, s, i] = composite s per unit output i in region r
+    va_qty = np.zeros((nr, ns))
+    cc_eff = np.zeros((nr, ns))
+    for ri in range(nr):
+        nest = cal.energy_nests[ri]
+        energy_use, materials_use, kl_qty = nest_demands(nest, pq[ri], pv[ri], cc[ri], np.ones(ns))
+        for k, j in enumerate(nest.energy_idx):
+            a[ri, j, :] += energy_use[k, :]
+            cc_eff[ri] += cc[ri, j] * energy_use[k, :]
+        for k, j in enumerate(nest.mat_idx):
+            a[ri, j, :] += materials_use[k, :]
+        va_qty[ri] = kl_qty
+    return a, va_qty, cc_eff
+
+
+def _quantities(cal, pd, pq, pe, pz, FD, *, pv=None, carbon_cost=None):
     """Given prices and per-region final demand FD[r,s], solve for composite supply Q, output Z, the
     domestic split D, bilateral import demand M[d,s,o] and export supply EX[o,s,d].
 
@@ -212,11 +240,14 @@ def _quantities(cal, pd, pq, pe, pz, FD):
 
     # Domestic consistency: Z[r,s] = (sD[r,s]/sZd[r,s]) · Q[r,s].
     ratio = sD / sZd  # [r,s]
+    # Intermediate coefficients: fixed Leontief cal.ax, or the price-responsive energy-nest demands
+    # per region (Phase 5d.5). a[r] is [s,i] — composite s per unit output i in region r.
+    a = cal.ax if not cal.has_energy_nest else _intermediate_coeffs(cal, pq, pv, carbon_cost)[0]
     # Composite market per region (block-diagonal — intermediates are within-region):
-    #   Q[r,s] = Σ_i ax[r,s,i]·ratio[r,i]·Q[r,i] + FD[r,s].
+    #   Q[r,s] = Σ_i a[r,s,i]·ratio[r,i]·Q[r,i] + FD[r,s].
     Q = np.zeros((nr, ns))
     for ri in range(nr):
-        coeff = cal.ax[ri] * ratio[ri][None, :]  # ax[r,s,i]·ratio[r,i] → [s,i]
+        coeff = a[ri] * ratio[ri][None, :]  # a[r,s,i]·ratio[r,i] → [s,i]
         Q[ri] = np.linalg.solve(np.eye(ns) - coeff, FD[ri])
     Z = ratio * Q
     D = sD * Q
@@ -281,11 +312,14 @@ def derive_multi_state(
         )
     s = cal.sav_rate0 if cal.has_investment else np.zeros(nr)
     sf = cal.foreign_savings  # [r] fixed nominal capital-account inflow
+    # Effective per-output carbon cost (Phase 5d.5): cc for the flat model, energy-weighted per
+    # region for the nest. Revenue and every recycling/government coefficient use cc_eff·Z.
+    cc_eff = _intermediate_coeffs(cal, pq, pv, cc)[2]
 
     def _k_of(demand):
         """Per-region marginal carbon revenue of a demand array [r,s] (exact: block-diagonal)."""
-        _, z_d, *_ = _quantities(cal, pd, pq, pe, pz, demand)
-        return (cc * z_d).sum(axis=1)
+        _, z_d, *_ = _quantities(cal, pd, pq, pe, pz, demand, pv=pv, carbon_cost=cc)
+        return (cc_eff * z_d).sum(axis=1)
 
     if not cal.has_government:
         if not cal.has_investment:
@@ -397,9 +431,11 @@ def derive_multi_state(
         gov_income = (tax + r0) / (1.0 - kg)  # [r]
         GD = cal.gov_gamma * gov_income[:, None] / pq
 
-    Q, Z, D, EX, M = _quantities(cal, pd, pq, pe, pz, FD + GD + ID)
-    carbon_revenue = (cc * Z).sum(axis=1)  # [r]
-    va_cost = cal.va_share * pv * Z
+    Q, Z, D, EX, M = _quantities(cal, pd, pq, pe, pz, FD + GD + ID, pv=pv, carbon_cost=cc)
+    carbon_revenue = (cc_eff * Z).sum(axis=1)  # [r] (cc_eff = cc flat, energy-weighted for nest)
+    # VA quantity per unit output: va_share (flat) or the price-responsive KL quantity (nest).
+    va_qty = cal.va_share if not cal.has_energy_nest else _intermediate_coeffs(cal, pq, pv, cc)[1]
+    va_cost = va_qty * pv * Z
     F = _factor_demand(cal, w, pv, va_cost)
     return MultiModelState(
         pd=pd,
@@ -475,11 +511,23 @@ def residuals(
     # 1. Armington price identity: pq = CES cost of (pd_d, {pe[o,s,d]}).  [nr·ns]
     pq_id = _armington_price(cal, pd, pe)
     res.extend((pq - pq_id).ravel().tolist())
-    # 2. Zero-profit: pz(pd,pe) = Σ_j ax[r,j,i]·pq[r,j] + va_share·pv + cc.  [nr·ns]
-    for ri in range(nr):
-        for ii in range(ns):
-            intermediate = float(np.dot(cal.ax[ri, :, ii], pq[ri]))
-            res.append(pz[ri, ii] - (intermediate + cal.va_share[ri, ii] * pv[ri, ii] + cc[ri, ii]))
+    # 2. Zero-profit: pz(pd,pe) = input cost. Flat: Σ_j ax[r,j,i]·pq[r,j] + va·pv + cc. Energy nest
+    # (Phase 5d.5): the nest's per-region output unit cost over composite prices (carbon on the
+    # region's energy composites).  [nr·ns]
+    if cal.has_energy_nest:
+        from cge.engines.cge_static.energy_nest import nest_unit_cost
+
+        for ri in range(nr):
+            px_r = nest_unit_cost(cal.energy_nests[ri], pq[ri], pv[ri], cc[ri])
+            for ii in range(ns):
+                res.append(pz[ri, ii] - px_r[ii])
+    else:
+        for ri in range(nr):
+            for ii in range(ns):
+                intermediate = float(np.dot(cal.ax[ri, :, ii], pq[ri]))
+                res.append(
+                    pz[ri, ii] - (intermediate + cal.va_share[ri, ii] * pv[ri, ii] + cc[ri, ii])
+                )
     # 3. Bilateral goods-market clearing: import demand = export supply on each ACTIVE route only
     # (review P1: a route with zero benchmark trade got a free price unknown and no way to pin it —
     # Jacobian rank-deficient by exactly the number of zero routes; see cal.active_routes).

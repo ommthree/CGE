@@ -783,3 +783,197 @@ def test_engine_multi_savinv_emits_investment():
     )
     assert not (plain.data["variable"] == "investment").any()
     assert plain.manifest.assumptions["savings_investment_account"] == "none"
+
+
+# -- energy nest (Phase 5d.5, multi-region variant) ---------------------------
+def _energy_multi_sam():
+    """A 2-region × 3-sector multi-region SAM: DIRTY (fossil) and CLEAN (electricity) are energy
+    commodities used by MFG in each region; electricity generation uses some fossil. Both regions
+    trade MFG and DIRTY; globally balanced with per-region capital transfers."""
+    from cge.contracts.data_objects import Provenance
+
+    R = ["N", "S"]
+    Sc = ["DIRTY", "CLEAN", "MFG"]
+    acc = []
+    for r in R:
+        acc += [f"a_{r}_{s}" for s in Sc] + [f"c_{r}_{s}" for s in Sc]
+    for r in R:
+        acc += [f"CAP_{r}", f"LAB_{r}", f"HOH_{r}"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    dom = {
+        ("N", "DIRTY"): 25.0,
+        ("N", "CLEAN"): 35.0,
+        ("N", "MFG"): 60.0,
+        ("S", "DIRTY"): 30.0,
+        ("S", "CLEAN"): 28.0,
+        ("S", "MFG"): 55.0,
+    }
+    exp = {
+        ("N", "S", "MFG"): 10.0,
+        ("S", "N", "MFG"): 9.0,
+        ("N", "S", "DIRTY"): 5.0,
+        ("S", "N", "DIRTY"): 6.0,
+    }
+    inter = {
+        ("N", "DIRTY", "MFG"): 12.0,
+        ("N", "CLEAN", "MFG"): 8.0,
+        ("N", "DIRTY", "CLEAN"): 3.0,
+        ("S", "DIRTY", "MFG"): 13.0,
+        ("S", "CLEAN", "MFG"): 7.0,
+        ("S", "DIRTY", "CLEAN"): 4.0,
+    }
+    for r in R:
+        for s in Sc:
+            m.loc[f"a_{r}_{s}", f"c_{r}_{s}"] = dom[(r, s)]
+    for (o, d, s), v in exp.items():
+        m.loc[f"a_{o}_{s}", f"c_{d}_{s}"] = v
+    for (r, com, act), v in inter.items():
+        m.loc[f"c_{r}_{com}", f"a_{r}_{act}"] = v
+    for r in R:
+        for s in Sc:
+            out = dom[(r, s)] + sum(exp.get((r, d, s), 0.0) for d in R if d != r)
+            ii = sum(m.loc[f"c_{r}_{c}", f"a_{r}_{s}"] for c in Sc)
+            va = out - ii
+            m.loc[f"CAP_{r}", f"a_{r}_{s}"] = va / 2.0
+            m.loc[f"LAB_{r}", f"a_{r}_{s}"] = va / 2.0
+    for r in R:
+        for s in Sc:
+            com = f"c_{r}_{s}"
+            m.loc[com, f"HOH_{r}"] = m[com].sum() - m.loc[com].sum()
+    for r in R:
+        m.loc[f"HOH_{r}", f"CAP_{r}"] = m.loc[f"CAP_{r}", :].sum()
+        m.loc[f"HOH_{r}", f"LAB_{r}"] = m.loc[f"LAB_{r}", :].sum()
+    ca = {}
+    for r in R:
+        ex = sum(m.loc[f"a_{r}_{s}", f"c_{d}_{s}"] for d in R if d != r for s in Sc)
+        im = sum(m.loc[f"a_{o}_{s}", f"c_{r}_{s}"] for o in R if o != r for s in Sc)
+        ca[r] = ex - im
+    tot = sum(v for v in ca.values() if v > 0)
+    if tot > 0:
+        for lender in R:
+            if ca[lender] <= 0:
+                continue
+            for borrower in R:
+                if ca[borrower] >= 0:
+                    continue
+                m.loc[f"HOH_{borrower}", f"HOH_{lender}"] += (-ca[borrower]) * (ca[lender] / tot)
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=0, retrieved="2026-07-24"
+    )
+    return SAM(provenance=prov, accounts=acc, matrix=m)
+
+
+_ENERGY_MULTI_R = ["N", "S"]
+_ENERGY_MULTI_S = ["DIRTY", "CLEAN", "MFG"]
+
+
+def _cal_energy_multi(**kw):
+    return calibrate_multi(
+        _energy_multi_sam(),
+        regions=_ENERGY_MULTI_R,
+        sectors=_ENERGY_MULTI_S,
+        factors=_FACTORS,
+        energy_sectors=["DIRTY", "CLEAN"],
+        **kw,
+    )
+
+
+def _solve_energy_multi(cal, cc=None, recycling="lump_sum", drop_factor=0):
+    cc = np.zeros((cal.nr, cal.ns)) if cc is None else cc
+    sol = solve(
+        lambda z: MM.residuals(
+            cal, z, carbon_cost=cc, recycling=recycling, drop_factor=drop_factor
+        ),
+        MM.initial_guess(cal) * 1.02,
+        prefer="scipy",
+    )
+    st = MM.unpack_state(cal, sol.x, carbon_cost=cc, recycling=recycling)
+    return sol, st
+
+
+def test_multi_no_energy_sectors_is_flat_bit_identical():
+    cal = calibrate_multi(
+        _energy_multi_sam(), regions=_ENERGY_MULTI_R, sectors=_ENERGY_MULTI_S, factors=_FACTORS
+    )
+    assert not cal.has_energy_nest
+    _s, st = _solve_energy_multi(cal, recycling="none")
+    assert np.allclose(st.Z, cal.Z0, atol=1e-6)
+
+
+def test_multi_energy_nest_calibrates_one_per_region():
+    cal = _cal_energy_multi()
+    assert cal.has_energy_nest
+    assert len(cal.energy_nests) == cal.nr  # one nest per region
+    assert cal.energy_nests[0].energy_idx.tolist() == [0, 1]
+
+
+def test_multi_energy_sectors_must_exist():
+    with pytest.raises(ValueError, match="not in the sector list"):
+        calibrate_multi(
+            _energy_multi_sam(),
+            regions=_ENERGY_MULTI_R,
+            sectors=_ENERGY_MULTI_S,
+            factors=_FACTORS,
+            energy_sectors=["GAS"],
+        )
+
+
+def test_multi_energy_nest_benchmark_replicates():
+    """Tier 1: with per-region nests active and zero shocks, the benchmark reproduces the SAM to
+    machine precision."""
+    cal = _cal_energy_multi()
+    sol, st = _solve_energy_multi(cal, recycling="none")
+    assert np.allclose(sol.x, 1.0, atol=1e-6)
+    assert np.allclose(st.Z, cal.Z0, atol=1e-6)
+    assert np.allclose(st.FD, cal.FD0, atol=1e-6)
+    assert np.allclose(st.F, cal.F0, atol=1e-6)
+
+
+def test_multi_energy_nest_walras_under_shock():
+    """Tier 1: with the nest active and a fossil carbon shock in one region, every factor market
+    (incl. the globally-dropped one) still clears."""
+    cal = _cal_energy_multi()
+    cc = np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3  # North's fossil sector
+    _s, st = _solve_energy_multi(cal, cc=cc, drop_factor=0)
+    for fi in range(cal.nf):
+        for ri in range(cal.nr):
+            assert abs(float(st.F[fi, ri, :].sum()) - cal.endowment[fi, ri]) < 1e-6
+
+
+def test_multi_carbon_price_substitutes_within_region_energy():
+    """Tier 2 (the deliverable, per region): a carbon price on North's fossil contracts North's
+    fossil output and expands North's electricity relative to it — the within-energy reallocation
+    happens in the taxed region."""
+    cal = _cal_energy_multi()
+    _b, base = _solve_energy_multi(cal)
+    cc = np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3
+    _s, shk = _solve_energy_multi(cal, cc=cc)
+    dirty, clean = _ENERGY_MULTI_S.index("DIRTY"), _ENERGY_MULTI_S.index("CLEAN")
+    assert shk.Z[0, dirty] < base.Z[0, dirty]  # North fossil contracts
+    assert (shk.Z[0, clean] / shk.Z[0, dirty]) > (base.Z[0, clean] / base.Z[0, dirty])
+
+
+def test_engine_multi_energy_nest_end_to_end():
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={
+            "SAM": _energy_multi_sam(),
+            "carbon_cost_share": {"N": {"DIRTY": 1.0}},
+            "energy_sectors": ["DIRTY", "CLEAN"],
+        },
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    assert res.manifest.assumptions["production_structure"] == "KL-E-M energy nest"
+    assert res.manifest.assumptions["energy_sectors"] == ["DIRTY", "CLEAN"]
+    d = res.data
+    dv = float(
+        d[(d["variable"] == "volume_change") & (d["sector"] == "DIRTY") & (d["region"] == "N")][
+            "value"
+        ].iloc[0]
+    )
+    assert dv < 0.0  # North fossil output contracts
