@@ -1,6 +1,6 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: 5d.1 COMPLETE; 5d.2 COMPLETE (all three variants)** (engine v0.7.1). 5d.1: government
+**Status: 5d.1, 5d.2, 5d.3 COMPLETE** (engine v0.7.1). 5d.1: government
 account in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure, benchmark
 direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs — `docs/models/
 cge-static.md` §4b; `deficit_financed` reserved for 5d.7 as planned). 5d.2: savings-investment
@@ -13,7 +13,12 @@ closure change** (identified in the plan) landed too: foreign savings re-route f
 income into the investment pool (SAM: ROW↔`SAVINV` / inter-`SAVINV` capital transfers, not
 ROW↔household / HOH↔HOH), so the open/multi identity is `p·ID = S + er·Sf` — investment and
 savings differ by exactly the capital-account inflow. Mixing the two routes is rejected at
-calibration. 5d.3–5d.7 not started. This is the detailed implementation plan for Phase 5d, reopened Phase 5
+calibration. 5d.3: the capital-accumulation identity `K_{t+1}=(1−δ)(1−r)K_t+INV` as a standalone,
+stateless, unit-tested module (`cge.engines.cge_static.capital`) — the Phase 7.1 entry point, with
+a 5%/yr depreciation default [OECD2009], an exogenous premature-retirement (stranded-asset) term,
+boundary validation, and a `benchmark_capital(cal)` adapter that extracts region-level $K_0$ from
+any variant (§4d). Deliberately NOT wired into the solve — the multi-year loop is Phase 7.1.
+5d.4–5d.7 not started. This is the detailed implementation plan for Phase 5d, reopened Phase 5
 debt (see `roadmap.md` §Phase 5 correction note and `docs/phase-5-plan.md`'s status header). Phase
 5's original §2/§3 design called for a government/fiscal account, savings/investment with capital
 accumulation, and a genuine KL-E-M energy nest; none of these existed in the implemented model

@@ -35,6 +35,10 @@ reports are citable for applied choices.
 - **[Armington1969]** Armington, P.S. (1969). A theory of demand for products
   distinguished by place of production. *IMF Staff Papers*, 16(1), 159–178. — The
   Armington import-substitution assumption (P4, P5).
+- **[OECD2009]** OECD (2009). *Measuring Capital — OECD Manual*, 2nd ed. OECD Publishing. — The
+  perpetual-inventory method and standard applied depreciation rates behind the capital-
+  accumulation identity K_{t+1}=(1−δ)K_t+INV (Phase 5d.3). Ch. 5 (the PIM), the source of the
+  ~5%/yr aggregate-capital depreciation default.
 
 ## Nature / ENCORE (Phase 6)
 

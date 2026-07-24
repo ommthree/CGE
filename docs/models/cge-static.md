@@ -57,9 +57,10 @@ today's government cannot run a deficit/surplus: `fiscal_balance` ≡ 0 by const
 **production/factor taxes, government→household transfers, government savings, government trade
 (GOV↔ROW), and cross-region government purchases** (a benchmark SAM carrying them is rejected
 explicitly); a **genuine energy nest** (KL–E–M — energy is a plain Leontief/CES intermediate
-today, not a separable nest a carbon price can shift substitution within); **capital
-accumulation** (5d.2 gives investment as a demand flow; the capital-stock identity Phase 7.1
-needs is 5d.3, next); heterogeneous households; and a distortionary labour-tax wedge (so the
+today, not a separable nest a carbon price can shift substitution within); the **recursive-dynamic
+loop** (5d.3, §4d, provides the capital-accumulation *identity*; the multi-year wrapper that calls
+it year-over-year is Phase 7.1); heterogeneous households; and a distortionary labour-tax wedge
+(so the
 "double-dividend" channel that would distinguish labour-tax-cut from lump-sum recycling in a
 *single*-household model). Roadmap Phase 5.2 originally specified the government account,
 investment, and energy nest — they were dropped rather than carried forward, and are now tracked as
@@ -307,7 +308,30 @@ of the region's own benchmark GDP.
 Across all variants, savings carry **no utility** in this static model (standard static-CGE
 treatment): welfare is still CD utility over consumption only, and the savings *rate* is a
 calibrated constant, not an intertemporal choice — the capital-accumulation identity that makes
-investment mean something across periods is Phase 5d.3.
+investment mean something across periods is §4d.
+
+### 4d. Capital accumulation (Phase 5d.3 — the Phase 7.1 entry point)
+
+5d.2's investment is a within-period demand flow; **5d.3 adds the identity that carries it across
+periods**, so the recursive-dynamic wrapper (roadmap Phase 7.1) has something real to call. It is
+deliberately a *standalone, stateless* function (`cge.engines.cge_static.capital`), **not** wired
+into the equilibrium solve — 5d.3's scope is the identity and its unit tests, not the multi-year
+loop (that is Phase 7.1's job).
+
+The perpetual-inventory law of motion [OECD2009, ch. 5]:
+$$K_{t+1} = (1-\delta)(1-r)\,K_t + INV_t$$
+where $\delta$ is the depreciation rate (default **5 %/yr**, the standard applied central value,
+overridable per scenario) and $r$ is an optional **premature-retirement** fraction — an
+*exogenous* stranded-asset write-off of the opening stock (e.g. fossil capital retired by a carbon
+shock), applied multiplicatively with depreciation. The arrays are elementwise, so the identity
+works at any granularity; 5d.3 tracks capital at **region level** (matching the single aggregate
+`CAP` factor per region), with `benchmark_capital(cal)` extracting $K_0$ from a calibrated model
+of any variant as the wrapper's starting point. Sector-specific vintage capital (needing a
+capital-mobility assumption) and **endogenous** stranding (capital exiting on expected-return
+grounds) are documented out-of-scope extensions — retirement here is a scenario input, not a
+modelled decision. Inputs are validated at the boundary (a negative stock, out-of-range $\delta$
+or $r$ raise, rather than silently producing a bad stock), mirroring the `ElasticitySet`
+validator.
 
 ## 5. Calibration
 
