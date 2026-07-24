@@ -24,6 +24,12 @@ from dataclasses import dataclass
 import numpy as np
 
 from cge.contracts.data_objects import SAM
+from cge.engines.cge_static.energy_nest import (
+    DEFAULT_ENERGY_ELAST,
+    DEFAULT_KL_E_ELAST,
+    DEFAULT_KLE_M_ELAST,
+    calibrate_energy_nest,
+)
 
 # Default trade elasticities (dimensionless), documented as literature-typical placeholders.
 DEFAULT_ARMINGTON_ELAST = 2.0  # σ: domestic↔import substitution
@@ -98,6 +104,11 @@ class OpenCalibratedModel:
     inv_gamma: np.ndarray | None = None  # [i] investment demand composition over composites (→1)
     INV0: np.ndarray | None = None  # [i] benchmark investment demand on Q (GDP-normalised)
     sav_rate0: float = 0.0  # benchmark household savings rate on disposable income
+    # Energy nest (Phase 5d.5; None ⇒ flat Leontief production, bit-identical to pre-5d.5). The
+    # intermediates are the Armington COMPOSITE commodities, so the energy nest substitutes over
+    # composite prices (imports included) — a carbon price on an energy commodity raises its
+    # composite price and shifts substitution within the energy bundle.
+    energy_nest: object | None = None  # EnergyNest | None
 
     @property
     def gdp0(self) -> float:
@@ -111,6 +122,10 @@ class OpenCalibratedModel:
     def has_investment(self) -> bool:
         return self.inv_gamma is not None
 
+    @property
+    def has_energy_nest(self) -> bool:
+        return self.energy_nest is not None
+
 
 def calibrate_open(
     sam: SAM,
@@ -121,6 +136,8 @@ def calibrate_open(
     cet_elast: float | np.ndarray = DEFAULT_CET_ELAST,
     va_elast: float | np.ndarray = 1.0,
     institutions: dict[str, str] | None = None,
+    energy_sectors: list[str] | None = None,
+    energy_elasticities: dict[str, float] | None = None,
 ) -> OpenCalibratedModel:
     """Calibrate the open CGE from a balanced open SAM with ``a_<s>``/``c_<s>`` activity/commodity
     accounts, factors, one household, and a ``ROW`` account. ``va_elast`` is the value-added
@@ -396,6 +413,26 @@ def calibrate_open(
         inv_gamma = INV0 / inv_total if inv_total > 0 else gamma.copy()
         sav_rate0 = sav0 / (float(endowment.sum()) - gov_tax0)
 
+    # Energy nest (Phase 5d.5). Opt-in; intermediates are the Armington COMPOSITE commodities, so
+    # the nest is calibrated over composite intermediate flows (INT0) exactly like the closed model
+    # over its intermediate flows. Reproduces the benchmark (Tier-1 replication).
+    energy_nest = None
+    if energy_sectors:
+        unknown = [e for e in energy_sectors if e not in sectors]
+        if unknown:
+            raise ValueError(f"energy_sectors {unknown} are not in the sector list {sectors}")
+        e_idx = np.array([sectors.index(e) for e in energy_sectors], dtype=int)
+        el = energy_elasticities or {}
+        energy_nest = calibrate_energy_nest(
+            INT0,
+            VA0,
+            Z0,
+            e_idx,
+            kle_m_elast=el.get("kle_m", DEFAULT_KLE_M_ELAST),
+            kl_e_elast=el.get("kl_e", DEFAULT_KL_E_ELAST),
+            energy_elast=el.get("energy", DEFAULT_ENERGY_ELAST),
+        )
+
     return OpenCalibratedModel(
         sectors=list(sectors),
         factors=list(factors),
@@ -431,4 +468,5 @@ def calibrate_open(
         inv_gamma=inv_gamma,
         INV0=INV0,
         sav_rate0=sav_rate0,
+        energy_nest=energy_nest,
     )

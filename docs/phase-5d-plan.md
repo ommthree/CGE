@@ -1,6 +1,6 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: 5d.1, 5d.2, 5d.3, 5d.4 COMPLETE; 5d.5 closed-variant COMPLETE** (engine v0.9.0). 5d.1: government
+**Status: 5d.1, 5d.2, 5d.3, 5d.4 COMPLETE; 5d.5 closed & open COMPLETE** (engine v0.9.1). 5d.1: government
 account in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure, benchmark
 direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs — `docs/models/
 cge-static.md` §4b; `deficit_financed` reserved for 5d.7 as planned). 5d.2: savings-investment
@@ -36,7 +36,11 @@ the fixed Leontief inverse becomes a price-responsive `(I−A(p))⁻¹`, with an
 carbon cost `ĉ_i=Σ_e cc_e·a_ei(p)` keeping the recycling/government fixed points linear/unchanged.
 Tier-1 (replication/homogeneity/Walras) green; the Tier-2 DELIVERABLE proven: a fossil carbon
 price shifts a sector's fossil/electricity ratio down, contracts fossil output, expands
-electricity. Open/multi energy nest = remaining 5d.5 work. 5d.6–5d.7 not started. This is the
+electricity. **Open variant** (v0.9.1): same nest over the Armington COMPOSITE intermediate prices
+(imports included); the price-responsive A(p) feeds the composite-market solve and the CET
+zero-profit `pz=px`; benchmark replication/homogeneity/Walras/trade-balance re-proved, Tier-2 sign
+test holds. Multi-region energy nest (one nest per region) = remaining 5d.5 work. 5d.6–5d.7 not
+started. This is the
 detailed implementation plan for Phase 5d, reopened Phase 5
 debt (see `roadmap.md` §Phase 5 correction note and `docs/phase-5-plan.md`'s status header). Phase
 5's original §2/§3 design called for a government/fiscal account, savings/investment with capital

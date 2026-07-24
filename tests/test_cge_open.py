@@ -978,3 +978,149 @@ def test_engine_open_savinv_emits_investment():
     assert res.manifest.assumptions["benchmark_savings_rate_of_disposable_income"] == pytest.approx(
         18.1 / 181.0
     )
+
+
+# -- energy nest (Phase 5d.5, open variant) -----------------------------------
+def _energy_open_sam():
+    """A 3-sector open SAM with two energy commodities (DIRTY fossil, CLEAN electricity) used by
+    MFG; electricity generation uses some fossil. Each sector trades; aggregate trade balanced."""
+    S = ["DIRTY", "CLEAN", "MFG"]
+    act = [f"a_{s}" for s in S]
+    com = [f"c_{s}" for s in S]
+    acc = act + com + ["CAP", "LAB", "HOH", "ROW"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    dsales = {"DIRTY": 30.0, "CLEAN": 40.0, "MFG": 70.0}
+    exports = {"DIRTY": 10.0, "CLEAN": 5.0, "MFG": 15.0}
+    imports = {"DIRTY": 8.0, "CLEAN": 12.0, "MFG": 10.0}  # aggregate 30 = 30
+    for s in S:
+        m.loc[f"a_{s}", f"c_{s}"] = dsales[s]
+        m.loc[f"a_{s}", "ROW"] = exports[s]
+        m.loc["ROW", f"c_{s}"] = imports[s]
+    m.loc["c_DIRTY", "a_MFG"] = 12.0
+    m.loc["c_CLEAN", "a_MFG"] = 8.0
+    m.loc["c_DIRTY", "a_CLEAN"] = 4.0
+    for s in S:
+        out = dsales[s] + exports[s]
+        ii = sum(m.loc[f"c_{c}", f"a_{s}"] for c in S)
+        va = out - ii
+        m.loc["CAP", f"a_{s}"] = va / 2.0
+        m.loc["LAB", f"a_{s}"] = va / 2.0
+    for s in S:
+        m.loc[f"c_{s}", "HOH"] = m[f"c_{s}"].sum() - m.loc[f"c_{s}"].sum()
+    m.loc["HOH", "CAP"] = m.loc["CAP", act].sum()
+    m.loc["HOH", "LAB"] = m.loc["LAB", act].sum()
+    sf = sum(imports.values()) - sum(exports.values())
+    if sf >= 0:
+        m.loc["HOH", "ROW"] = sf
+    else:
+        m.loc["ROW", "HOH"] = -sf
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=0, retrieved="2026-07-24"
+    )
+    return SAM(provenance=prov, accounts=acc, matrix=m)
+
+
+_ENERGY_OPEN_S = ["DIRTY", "CLEAN", "MFG"]
+
+
+def _cal_energy_open(**kw):
+    return calibrate_open(
+        _energy_open_sam(),
+        sectors=_ENERGY_OPEN_S,
+        factors=_FACTORS,
+        energy_sectors=["DIRTY", "CLEAN"],
+        **kw,
+    )
+
+
+def _solve_energy_open(cal, cc=None, drop_factor=0):
+    ns, nf = len(cal.sectors), len(cal.factors)
+    cc = np.zeros(ns) if cc is None else cc
+    sol = solve(
+        lambda z: MO.residuals(
+            cal, z, carbon_cost=cc, recycling="lump_sum", drop_factor=drop_factor
+        ),
+        MO.initial_guess(cal) * 1.02,
+        prefer="scipy",
+    )
+    st = MO.derive_open_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns : 2 * ns],
+        sol.x[2 * ns : 2 * ns + nf],
+        float(sol.x[-1]),
+        carbon_cost=cc,
+        recycling="lump_sum",
+        strict=True,
+    )
+    return sol, st
+
+
+def test_open_no_energy_sectors_is_flat_bit_identical():
+    cal = calibrate_open(_energy_open_sam(), sectors=_ENERGY_OPEN_S, factors=_FACTORS)
+    assert not cal.has_energy_nest
+    _s, st = _solve_energy_open(cal)
+    assert np.allclose(st.Z, cal.Z0, atol=1e-7)
+
+
+def test_open_energy_nest_calibrates():
+    cal = _cal_energy_open()
+    assert cal.has_energy_nest
+    assert cal.energy_nest.energy_idx.tolist() == [0, 1]
+
+
+def test_open_energy_sectors_must_exist():
+    with pytest.raises(ValueError, match="not in the sector list"):
+        calibrate_open(
+            _energy_open_sam(), sectors=_ENERGY_OPEN_S, factors=_FACTORS, energy_sectors=["GAS"]
+        )
+
+
+def test_open_energy_nest_benchmark_replicates():
+    """Tier 1: with the nest active, the open benchmark reproduces the SAM to machine precision."""
+    cal = _cal_energy_open()
+    sol, st = _solve_energy_open(cal)
+    assert np.allclose(sol.x, 1.0, atol=1e-7)
+    assert np.allclose(st.Z, cal.Z0, atol=1e-7)
+    assert np.allclose(st.FD, cal.FD0, atol=1e-7)
+    assert np.allclose(st.F, cal.F0, atol=1e-7)
+
+
+def test_open_energy_nest_walras_and_trade_under_shock():
+    """Tier 1: with the nest and a fossil carbon shock, the dropped factor market and the trade
+    balance both still clear."""
+    cal = _cal_energy_open()
+    cc = np.array([0.3, 0.0, 0.0])
+    _s, st = _solve_energy_open(cal, cc=cc, drop_factor=0)
+    assert abs(float(st.F[0, :].sum()) - cal.endowment[0]) < 1e-6
+    trade = float(st.M.sum() - st.E.sum()) - cal.foreign_savings
+    assert abs(trade) < 1e-6
+
+
+def test_open_carbon_price_expands_clean_relative_to_dirty():
+    """Tier 2 (the deliverable, open variant): a fossil carbon price contracts fossil output and
+    expands electricity relative to it — the within-energy reallocation, in the open economy."""
+    cal = _cal_energy_open()
+    _b, base = _solve_energy_open(cal)
+    _s, shk = _solve_energy_open(cal, cc=np.array([0.3, 0.0, 0.0]))
+    dirty, clean = _ENERGY_OPEN_S.index("DIRTY"), _ENERGY_OPEN_S.index("CLEAN")
+    assert shk.Z[dirty] < base.Z[dirty]
+    assert (shk.Z[clean] / shk.Z[dirty]) > (base.Z[clean] / base.Z[dirty])
+
+
+def test_engine_open_energy_nest_end_to_end():
+    """The open dispatch (ROW account) accepts energy_sectors and records the nested structure."""
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={
+            "SAM": _energy_open_sam(),
+            "carbon_cost_share": {"DIRTY": 1.0, "CLEAN": 0.0, "MFG": 0.0},
+            "energy_sectors": ["DIRTY", "CLEAN"],
+        },
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    assert res.manifest.assumptions["production_structure"] == "KL-E-M energy nest"
+    d = res.data
+    dv = float(d[(d["variable"] == "volume_change") & (d["sector"] == "DIRTY")]["value"].iloc[0])
+    assert dv < 0.0  # fossil output contracts

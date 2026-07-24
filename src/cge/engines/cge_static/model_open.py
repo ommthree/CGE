@@ -171,6 +171,11 @@ def derive_open_state(
     pe = er * np.ones(ns)  # world export price 1
     pv = _va_unit_cost(cal, w)
     pz = _cet_price(cal, pd, pe)
+    # Effective per-output carbon cost (Phase 5d.5): cc for the flat model, energy-weighted for the
+    # nest. Carbon revenue and all recycling/government marginal-revenue coefficients use cc_eff·Z,
+    # so they stay linear in output whether or not the nest is active. The nest reads pv for its
+    # KL-vs-energy split. _quantities() below is passed pv/cc so its A(p) matches.
+    cc_eff = _intermediate_coeffs(cal, pq, pv, cc)[2]
 
     # Household income: factor income + (WITHOUT a savings-investment account) the net ROW capital
     # transfer + recycled carbon revenue. Foreign savings Sf is a fixed foreign-currency inflow
@@ -193,8 +198,10 @@ def derive_open_state(
             # Pre-5d behaviour, unchanged: er·Sf and recycled revenue both go to the household.
             base_income = factor_income + sf
             if recycles:
-                _, z_unit, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq)
-                k = float(cc @ z_unit)
+                _, z_unit, *_ = _quantities(
+                    cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq, pv=pv, carbon_cost=cc
+                )
+                k = float(cc_eff @ z_unit)
                 if strict and k >= 1.0 - 1e-12:
                     raise ValueError(
                         f"open recycling fixed point diverges: carbon revenue ≥ income "
@@ -217,10 +224,10 @@ def derive_open_state(
             u = ((1.0 - s) * cal.gamma + s * cal.inv_gamma) / pq
             id_sf = cal.inv_gamma * sf / pq  # the Sf-financed part of investment demand
             if recycles:
-                _, z_u, *_ = _quantities(cal, pd, pq, pm, pe, pz, u)
-                k = float(cc @ z_u)
-                _, z_sf, *_ = _quantities(cal, pd, pq, pm, pe, pz, id_sf)
-                c0 = float(cc @ z_sf)
+                _, z_u, *_ = _quantities(cal, pd, pq, pm, pe, pz, u, pv=pv, carbon_cost=cc)
+                k = float(cc_eff @ z_u)
+                _, z_sf, *_ = _quantities(cal, pd, pq, pm, pe, pz, id_sf, pv=pv, carbon_cost=cc)
+                c0 = float(cc_eff @ z_sf)
             else:
                 k, c0 = 0.0, 0.0
             if strict and k >= 1.0 - 1e-12:
@@ -233,10 +240,12 @@ def derive_open_state(
             ID = cal.INV0.copy()
             p_inv = float(np.dot(pq, ID))
             if recycles:
-                _, z_unit, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq)
-                k = float(cc @ z_unit)
-                _, z_id, *_ = _quantities(cal, pd, pq, pm, pe, pz, ID)
-                c_inv = float(cc @ z_id)
+                _, z_unit, *_ = _quantities(
+                    cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq, pv=pv, carbon_cost=cc
+                )
+                k = float(cc_eff @ z_unit)
+                _, z_id, *_ = _quantities(cal, pd, pq, pm, pe, pz, ID, pv=pv, carbon_cost=cc)
+                c_inv = float(cc_eff @ z_id)
             else:
                 k, c_inv = 0.0, 0.0
             if strict and k >= 1.0 - 1e-12:
@@ -283,10 +292,12 @@ def derive_open_state(
                 )
             FD = (income - savings) * cal.gamma / pq
         if recycles:
-            _, z_fd, *_ = _quantities(cal, pd, pq, pm, pe, pz, FD + ID)
-            r0 = float(cc @ z_fd)  # revenue from the (price-fixed) household+investment demand
-            _, z_unit_g, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gov_gamma * 1.0 / pq)
-            kg = float(cc @ z_unit_g)  # marginal revenue per unit of government spending
+            _, z_fd, *_ = _quantities(cal, pd, pq, pm, pe, pz, FD + ID, pv=pv, carbon_cost=cc)
+            r0 = float(cc_eff @ z_fd)  # revenue from the (price-fixed) household+investment demand
+            _, z_unit_g, *_ = _quantities(
+                cal, pd, pq, pm, pe, pz, cal.gov_gamma * 1.0 / pq, pv=pv, carbon_cost=cc
+            )
+            kg = float(cc_eff @ z_unit_g)  # marginal revenue per unit of government spending
         else:
             r0, kg = 0.0, 0.0
         if strict and kg >= 1.0 - 1e-12:
@@ -297,8 +308,8 @@ def derive_open_state(
         gov_income = (tax + r0) / _safe_denom(1.0 - kg)
         GD = cal.gov_gamma * gov_income / pq
 
-    Q, Z, D, E, M = _quantities(cal, pd, pq, pm, pe, pz, FD + GD + ID)
-    carbon_revenue = float(cc @ Z)
+    Q, Z, D, E, M = _quantities(cal, pd, pq, pm, pe, pz, FD + GD + ID, pv=pv, carbon_cost=cc)
+    carbon_revenue = float(cc_eff @ Z)  # cc_eff = cc (flat) or energy-weighted (nest)
     # Independent check of the income identity we just solved (cheap; catches any regression in the
     # linearity assumption above). Only in strict mode — the non-strict clamp deliberately violates
     # the identity to steer the solver, so checking it there would defeat the smooth-penalty design.
@@ -318,8 +329,12 @@ def derive_open_state(
                 raise ValueError(
                     f"open savings-investment identity not satisfied (residual {resid_si:.3e})."
                 )
-    # Factor demand (Shephard on VA cost).
-    va_cost = cal.va_share * pv * Z
+    # Factor demand (Shephard on VA cost). VA quantity per unit output is va_share (flat) or the
+    # price-responsive KL quantity per output from the nest (Phase 5d.5).
+    va_qty_per_z = (
+        cal.va_share if not cal.has_energy_nest else _intermediate_coeffs(cal, pq, pv, cc)[1]
+    )
+    va_cost = va_qty_per_z * pv * Z
     F = _factor_demand(cal, w, pv, va_cost)
     return OpenModelState(
         pd=pd,
@@ -344,19 +359,50 @@ def derive_open_state(
     )
 
 
-def _quantities(cal, pd, pq, pm, pe, pz, FD):
+def _intermediate_coeffs(cal, pq, pv, carbon_cost):
+    """Intermediate-demand coefficient matrix ``a[j,i]`` (composite j per unit activity output i),
+    the value-added (KL) quantity per unit output, and the effective per-output carbon cost.
+
+    Flat model: fixed ``cal.ax`` and ``cal.va_share`` (price-independent, bit-identical to
+    pre-5d.5), cc_eff = cc. Energy nest (Phase 5d.5): intermediates are the Armington COMPOSITE
+    commodities, so the nest substitutes over composite prices (imports included) and the carbon
+    cost attaches to the energy composites; a(p), the KL quantity, and cc_eff are all
+    price-responsive — cc_eff[i] = Σ_{j∈energy} cc[j]·a_energy[j,i], a linear functional of
+    output, so the recycling/government fixed points carry over unchanged."""
+    ns = len(cal.sectors)
+    cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
+    if not cal.has_energy_nest:
+        return cal.ax, cal.va_share, cc
+    from cge.engines.cge_static.energy_nest import nest_demands
+
+    nest = cal.energy_nest
+    energy_use, materials_use, kl_qty = nest_demands(nest, pq, pv, cc, np.ones(ns))
+    a = np.zeros((ns, ns))  # a[j, i] = composite commodity j per unit output i
+    cc_eff = np.zeros(ns)
+    for k, j in enumerate(nest.energy_idx):
+        a[j, :] += energy_use[k, :]
+        cc_eff += cc[j] * energy_use[k, :]
+    for k, j in enumerate(nest.mat_idx):
+        a[j, :] += materials_use[k, :]
+    return a, kl_qty, cc_eff
+
+
+def _quantities(cal, pd, pq, pm, pe, pz, FD, *, pv=None, carbon_cost=None):
     """Given prices and final demand, solve for composite Q, output Z, and the D/E/M splits.
 
-    Composite market: Q_i = Σ_j ax[i,j] Z_j + FD_i.  Domestic sales D are shared between supplying
-    Q (Armington) and coming from Z (CET); at equilibrium the CET domestic supply equals the
-    Armington domestic demand. Using the CES/CET Shephard shares (functions of prices only), write
-    D_i = s^Q_i Q_i (Armington domestic input per composite) and D_i = s^Z_i Z_i (CET domestic
-    output per activity output), so Z_i = (s^Q_i / s^Z_i) Q_i. Then the composite market is linear
-    in Q:  Q = ax^T diag(s^Q/s^Z) Q + FD."""
+    Composite market: Q_i = Σ_j a[i,j] Z_j + FD_i, with ``a`` the intermediate-demand coefficients
+    (fixed Leontief, or the price-responsive energy-nest demands — see ``_intermediate_coeffs``;
+    ``pv`` and ``carbon_cost`` are only read when the nest is active). Domestic sales D are shared
+    between supplying Q (Armington) and coming from Z (CET); at equilibrium the CET domestic supply
+    equals the Armington domestic demand. Using the CES/CET Shephard shares (functions of prices
+    only), write D_i = s^Q_i Q_i (Armington domestic input per composite) and D_i = s^Z_i Z_i (CET
+    domestic output per activity output), so Z_i = (s^Q_i / s^Z_i) Q_i. Then the composite market is
+    linear in Q: Q = a^T diag(s^Q/s^Z) Q + FD."""
     ns = len(FD)
     sigma = cal.arm_elast
     omega = cal.cet_elast
     A, B = cal.arm_scale, cal.cet_scale
+    ax = cal.ax if not cal.has_energy_nest else _intermediate_coeffs(cal, pq, pv, carbon_cost)[0]
     # Armington (Shephard on the composite cost fn): per unit composite Q,
     #   D/Q = (1/A)(pq·A)^σ δ^σ pd^{-σ};  M/Q = (1/A)(pq·A)^σ (1-δ)^σ pm^{-σ}.
     sQ = (1.0 / A) * np.power(pq * A, sigma) * cal.arm_share_d**sigma * np.power(pd, -sigma)
@@ -377,8 +423,8 @@ def _quantities(cal, pd, pq, pm, pe, pz, FD):
     # Z in terms of Q via domestic-sales consistency: D = sQ·Q (Armington) = sZd·Z (CET) ⇒
     # Z = (sQ/sZd)·Q.
     ratio = sQ / sZd  # [i]
-    # Composite market: Q_i = Σ_j ax[i,j] Z_j + FD_i = Σ_j ax[i,j] ratio_j Q_j + FD_i.
-    coeff = cal.ax * ratio[None, :]  # ax[i,j]·ratio[j]
+    # Composite market: Q_i = Σ_j a[i,j] Z_j + FD_i = Σ_j a[i,j] ratio_j Q_j + FD_i.
+    coeff = ax * ratio[None, :]  # a[i,j]·ratio[j] (a = fixed Leontief or price-responsive nest)
     Q = np.linalg.solve(np.eye(ns) - coeff, FD)
     Z = ratio * Q
     D = sQ * Q
@@ -415,12 +461,20 @@ def residuals(
     # Armington price identity: pq = CES cost of (pd, pm).  [ns rows]
     pq_id = _armington_price(cal, pd, pm)
     res.extend((pq - pq_id).tolist())
-    # Zero-profit: activity output price pz(pd,pe) = intermediate composite cost + VA + carbon.
-    # [ns rows]
+    # Zero-profit: activity output price pz(pd,pe) = input cost. Flat: Σ_j ax[j,i]·pq_j + va·pv +
+    # cc. Energy nest (Phase 5d.5): the input cost is the nest's output unit cost over composite
+    # prices (carbon attaches to the energy composites inside the nest). [ns rows]
     pz = _cet_price(cal, pd, pe)
-    for i in range(ns):
-        intermediate = sum(cal.ax[j, i] * pq[j] for j in range(ns))
-        res.append(pz[i] - (intermediate + cal.va_share[i] * pv[i] + cc[i]))
+    if cal.has_energy_nest:
+        from cge.engines.cge_static.energy_nest import nest_unit_cost
+
+        px = nest_unit_cost(cal.energy_nest, pq, pv, cc)
+        for i in range(ns):
+            res.append(pz[i] - px[i])
+    else:
+        for i in range(ns):
+            intermediate = sum(cal.ax[j, i] * pq[j] for j in range(ns))
+            res.append(pz[i] - (intermediate + cal.va_share[i] * pv[i] + cc[i]))
     # NB: composite-market clearing Q_i = Σ_j ax[i,j] Z_j + FD_i is NOT an independent residual — it
     # is solved *algebraically* inside _quantities() (Q = (I − ax·diag(ratio))⁻¹ FD, Z = ratio·Q),
     # so (Q − (ax·Z + FD)) ≡ 0 by construction and would be a tautological row (review P2). The

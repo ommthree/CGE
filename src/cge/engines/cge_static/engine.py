@@ -32,12 +32,12 @@ closure, with ``investment``/``savings`` emitted. In the open/multi variants the
 inflow re-routes into the investment pool (financing investment, not consumption). A **labour-
 market closure** (Phase 5d.4, closed variant) adds an optional ``labour_floor`` (a wage floor,
 via a regime-switch) with involuntary ``unemployment``, alongside the default flexible-wage /
-full-employment closure. A **KL-E-M energy nest** (Phase 5d.5, closed variant) makes energy a
-separable, substitutable input (opt-in via ``energy_sectors``), so a carbon price shifts
+full-employment closure. A **KL-E-M energy nest** (Phase 5d.5, closed & open variants) makes energy
+a separable, substitutable input (opt-in via ``energy_sectors``), so a carbon price shifts
 substitution within the energy bundle rather than only across sectors — the shared CES algebra is
 in ``energy_nest.py``. The capital-accumulation identity (5d.3) lives in ``capital.py`` (a
-standalone module for Phase 7.1, not wired into the solve). The energy nest in the open/multi
-variants remains reopened Phase 5 debt tracked as roadmap Phase 5d.
+standalone module for Phase 7.1, not wired into the solve). The energy nest in the multi-region
+variant remains reopened Phase 5 debt tracked as roadmap Phase 5d.
 
 Data contract (``data`` dict): either a ``SAM`` supplied directly (validated: aligned, finite,
 non-negative, balanced) with an optional per-sector dimensionless ``carbon_cost_share``, OR an
@@ -61,7 +61,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -136,6 +136,28 @@ def _va_nest_description(va_elast: np.ndarray) -> str:
         "CES value added (non-unitary σ_va ⇒ capital/labour substitution as relative factor "
         "prices move; the values are in the 'va_elast' key)"
     )
+
+
+def _energy_manifest(cal, sectors: list[str]) -> dict:
+    """Energy-nest manifest keys (Phase 5d.5), shared by every variant: flat Leontief production or
+    the KL-E-M nest with the named energy commodities + its elasticities. Two runs differing only
+    in the nest / its elasticities must therefore differ in assumptions."""
+    if not cal.has_energy_nest:
+        return {
+            "production_structure": "flat Leontief intermediates",
+            "energy_sectors": [],
+            "energy_nest_elasticities": None,
+        }
+    nest = cal.energy_nest
+    return {
+        "production_structure": "KL-E-M energy nest",
+        "energy_sectors": [sectors[j] for j in nest.energy_idx.tolist()],
+        "energy_nest_elasticities": {
+            "kle_m": round(float(nest.kle_m_elast[0]), 12),
+            "kl_e": round(float(nest.kl_e_elast[0]), 12),
+            "energy": round(float(nest.energy_elast[0]), 12),
+        },
+    }
 
 
 # Assumptions for the OPEN-economy variant. It shares the solver rule and reference but has a
@@ -456,26 +478,8 @@ class CGEStaticEngine:
                 # description reflects the CALIBRATED nest, not a hardcoded 'Cobb-Douglas' (P2).
                 "va_elast": [round(float(v), 12) for v in cal.va_elast.tolist()],
                 "value_added_nest": _va_nest_description(cal.va_elast),
-                # Energy nest (Phase 5d.5): flat Leontief production, or the KL-E-M nest with the
-                # named energy commodities. Two runs differing only in the nest / its elasticities
-                # must differ in assumptions.
-                "production_structure": (
-                    "KL-E-M energy nest" if cal.has_energy_nest else "flat Leontief intermediates"
-                ),
-                "energy_sectors": (
-                    [sectors[j] for j in cal.energy_nest.energy_idx.tolist()]
-                    if cal.has_energy_nest
-                    else []
-                ),
-                "energy_nest_elasticities": (
-                    {
-                        "kle_m": round(float(cal.energy_nest.kle_m_elast[0]), 12),
-                        "kl_e": round(float(cal.energy_nest.kl_e_elast[0]), 12),
-                        "energy": round(float(cal.energy_nest.energy_elast[0]), 12),
-                    }
-                    if cal.has_energy_nest
-                    else None
-                ),
+                # Energy nest (Phase 5d.5): flat Leontief or the KL-E-M nest (shared helper).
+                **_energy_manifest(cal, sectors),
                 "recycling_mode": recycling,
                 "recycling_defaulted_from_none": recycling_defaulted,
                 # Government account (Phase 5d.1): which account (or none), its closure, and the
@@ -1246,6 +1250,8 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         arm_elast=data.get("armington_elast", 2.0),
         cet_elast=data.get("cet_elast", 2.0),
         institutions=institutions,
+        energy_sectors=data.get("energy_sectors"),  # Phase 5d.5 (opt-in KL-E-M nest)
+        energy_elasticities=data.get("energy_elasticities"),
     )
     if inv_closure != "savings_driven" and not cal.has_investment:
         raise ValueError(
@@ -1333,6 +1339,8 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             "cet_elasticity": [round(float(v), 12) for v in cal.cet_elast.tolist()],
             "va_elast": [round(float(v), 12) for v in cal.va_elast.tolist()],
             "value_added_nest": _va_nest_description(cal.va_elast),
+            # Energy nest (Phase 5d.5): flat Leontief or the KL-E-M nest (shared helper).
+            **_energy_manifest(cal, sectors),
             "solver_backends": sorted(backends),
             "solver_statuses": sorted(statuses),
             "solver_max_residual_norm": resid_max,
