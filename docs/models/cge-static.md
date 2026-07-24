@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.8.0)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.0)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -50,20 +50,22 @@ composition, under a **savings-driven** (default) or **fixed-real** closure; in 
 multi-region variants the foreign-savings inflow re-routes into the investment pool (financing
 investment, not consumption). A **labour-market closure choice** (Phase 5d.4, §4e, closed variant)
 adds a wage floor with involuntary `unemployment` as an alternative to the default flexible-wage /
-full-employment closure. An **open-economy variant** (§8) adds Armington imports and CET exports
-with a rest-of-world account — chosen automatically when the SAM carries a `ROW` account.
+full-employment closure. A **genuine energy nest** (KL-E-M, Phase 5d.5, §4f, closed variant) makes
+energy a separable, substitutable input, so a carbon price shifts substitution within the energy
+bundle (opt-in via `energy_sectors`). An **open-economy variant** (§8) adds Armington imports and
+CET exports with a rest-of-world account — chosen automatically when the SAM carries a `ROW`
+account.
 
 **Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today);
 a **deficit-financed government closure** (Phase 5d.7 —
 today's government cannot run a deficit/surplus: `fiscal_balance` ≡ 0 by construction),
 **production/factor taxes, government→household transfers, government savings, government trade
 (GOV↔ROW), and cross-region government purchases** (a benchmark SAM carrying them is rejected
-explicitly); a **genuine energy nest** (KL–E–M — energy is a plain Leontief/CES intermediate
-today, not a separable nest a carbon price can shift substitution within); the **recursive-dynamic
-loop** (5d.3, §4d, provides the capital-accumulation *identity*; the multi-year wrapper that calls
-it year-over-year is Phase 7.1); the **wage-floor closure in the open/multi variants** and a
-**wage-curve** alternative (§4e is closed-variant, wage-floor only); heterogeneous households; and
-a distortionary labour-tax wedge (so the
+explicitly); the **energy nest in the open/multi variants** (§4f is closed-variant); the
+**recursive-dynamic loop** (5d.3, §4d, provides the capital-accumulation *identity*; the multi-year
+wrapper that calls it year-over-year is Phase 7.1); the **wage-floor closure in the open/multi
+variants** and a **wage-curve** alternative (§4e is closed-variant, wage-floor only); heterogeneous
+households; and a distortionary labour-tax wedge (so the
 "double-dividend" channel that would distinguish labour-tax-cut from lump-sum recycling in a
 *single*-household model). Roadmap Phase 5.2 originally specified the government account,
 investment, and energy nest — they were dropped rather than carried forward, and are now tracked as
@@ -370,6 +372,49 @@ byte-identical to pre-5d.4). The manifest records `labour_closure`, `labour_floo
 reported as not binding). **Closed variant only**; a wage-curve alternative (wage responds to
 unemployment with a calibrated elasticity, Blanchflower–Oswald-style) and the open/multi
 generalisation are documented follow-ups — the floor's regime-switch is exact and simple first.
+
+### 4f. Energy nest: KL-E-M production (Phase 5d.5 — closed variant)
+
+By default production is **flat**: intermediates are fixed-proportion Leontief and energy is just
+another intermediate row, so a carbon price can only shift output *across* sectors. The **energy
+nest** makes energy a separable, substitutable input, so a carbon price shifts substitution
+*within* the energy bundle (toward electricity, away from fossil) — the single highest-value item
+in Phase 5d, and what a credible carbon-price response needs. Opt-in via `energy_sectors` (which
+commodities are energy, explicit — not string-matched); with none declared production is exactly
+the flat pilot (bit-identical).
+
+**The nest** [Hosoe2010, standard KL-E-M], per sector $i$, is a three-level CES (the shared CES
+algebra lives in `energy_nest.py`, called from all three model variants):
+$$
+X_i = A_i\big[\delta_i\,\mathrm{KLE}_i^{\rho_i} + (1-\delta_i)\,\mathrm{M}_i^{\rho_i}\big]^{1/\rho_i},
+\quad
+\mathrm{KLE}_i = \big[\delta^{kl}_i\,\mathrm{KL}_i^{\rho^{kl}_i} + (1-\delta^{kl}_i)\,E_i^{\rho^{kl}_i}\big]^{1/\rho^{kl}_i},
+\quad
+E_i = \big[\textstyle\sum_e \delta^e_{ei}\,E_{ei}^{\rho^e_i}\big]^{1/\rho^e_i}
+$$
+$\mathrm{KL}_i$ is the existing value-added composite (unchanged); $\mathrm{M}_i$ is a Leontief
+aggregate of the non-energy intermediates (fixed proportions, as today). Each CES layer is
+calibrated $\delta_k \propto v_k^{1/\sigma}$ from benchmark value shares (the Armington/CET
+convention), so **the benchmark reproduces exactly** (Tier-1 replication holds to machine
+precision — tested). Elasticity defaults (overridable per build): $\sigma_{\mathrm{KLE,M}}=0.5$,
+$\sigma_{\mathrm{KL,E}}=0.5$, $\sigma_{\mathrm{energy}}=1.5$ (energy commodities substitute more
+easily than the outer nests).
+
+**Carbon-price mechanism (the deliverable).** The carbon cost attaches to the **energy
+commodities** — it raises the effective energy price $pq_e + cc_e$ *inside* the nest, inducing
+substitution toward $\mathrm{KL}$ (away from energy) and, within $E_i$, toward the less-taxed
+energy commodity. Verified as the Tier-2 sign test: under a fossil carbon price, a manufacturing
+sector's fossil/electricity input ratio falls, fossil output contracts, and electricity output
+*expands* — the within-energy reallocation a flat model cannot produce.
+
+**Integration.** Intermediate demand is now price-responsive, so the fixed Leontief inverse
+$(I-A)^{-1}$ becomes a price-dependent $(I-A(p))^{-1}$ built from the nest's Shephard demands;
+goods-market clearing $X=(I-A(p))^{-1}(FD+GD+ID)$ and factor demand (keyed off the KL quantity)
+carry over unchanged in form. Carbon revenue is $\hat{c}\cdot X$ with an **effective per-output
+carbon cost** $\hat c_i = \sum_{e}cc_e\,a_{ei}(p)$ (a linear functional of output), so the existing
+recycling/government fixed points are unchanged. Homogeneity and Walras re-proved with the nest
+active. The manifest records `production_structure`, `energy_sectors`, and the nest elasticities.
+**Closed variant only**; the open/multi-region generalisation is the remaining 5d.5 work.
 
 ## 5. Calibration
 

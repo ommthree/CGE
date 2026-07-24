@@ -32,9 +32,12 @@ closure, with ``investment``/``savings`` emitted. In the open/multi variants the
 inflow re-routes into the investment pool (financing investment, not consumption). A **labour-
 market closure** (Phase 5d.4, closed variant) adds an optional ``labour_floor`` (a wage floor,
 via a regime-switch) with involuntary ``unemployment``, alongside the default flexible-wage /
-full-employment closure. The capital-accumulation identity (5d.3) lives in ``capital.py`` (a
-standalone module for Phase 7.1, not wired into the solve); an energy nest (5d.5) remains reopened
-Phase 5 debt tracked as roadmap Phase 5d.
+full-employment closure. A **KL-E-M energy nest** (Phase 5d.5, closed variant) makes energy a
+separable, substitutable input (opt-in via ``energy_sectors``), so a carbon price shifts
+substitution within the energy bundle rather than only across sectors — the shared CES algebra is
+in ``energy_nest.py``. The capital-accumulation identity (5d.3) lives in ``capital.py`` (a
+standalone module for Phase 7.1, not wired into the solve). The energy nest in the open/multi
+variants remains reopened Phase 5 debt tracked as roadmap Phase 5d.
 
 Data contract (``data`` dict): either a ``SAM`` supplied directly (validated: aligned, finite,
 non-negative, balanced) with an optional per-sector dimensionless ``carbon_cost_share``, OR an
@@ -58,7 +61,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -314,12 +317,17 @@ class CGEStaticEngine:
             raise ValueError(
                 f"unsupported inv_closure {inv_closure!r}; use 'savings_driven' or 'fixed_real'."
             )
+        # Energy nest (Phase 5d.5): opt-in via ``energy_sectors`` (which commodities are energy),
+        # with optional per-layer elasticities. With none declared, production stays flat Leontief
+        # (bit-identical to pre-5d.5).
         cal = calibrate(
             sam,
             sectors=sectors,
             factors=factors,
             va_elast=data.get("va_elast", 1.0),
             institutions=institutions,
+            energy_sectors=data.get("energy_sectors"),
+            energy_elasticities=data.get("energy_elasticities"),
         )
         if inv_closure != "savings_driven" and not cal.has_investment:
             raise ValueError(
@@ -448,6 +456,26 @@ class CGEStaticEngine:
                 # description reflects the CALIBRATED nest, not a hardcoded 'Cobb-Douglas' (P2).
                 "va_elast": [round(float(v), 12) for v in cal.va_elast.tolist()],
                 "value_added_nest": _va_nest_description(cal.va_elast),
+                # Energy nest (Phase 5d.5): flat Leontief production, or the KL-E-M nest with the
+                # named energy commodities. Two runs differing only in the nest / its elasticities
+                # must differ in assumptions.
+                "production_structure": (
+                    "KL-E-M energy nest" if cal.has_energy_nest else "flat Leontief intermediates"
+                ),
+                "energy_sectors": (
+                    [sectors[j] for j in cal.energy_nest.energy_idx.tolist()]
+                    if cal.has_energy_nest
+                    else []
+                ),
+                "energy_nest_elasticities": (
+                    {
+                        "kle_m": round(float(cal.energy_nest.kle_m_elast[0]), 12),
+                        "kl_e": round(float(cal.energy_nest.kl_e_elast[0]), 12),
+                        "energy": round(float(cal.energy_nest.energy_elast[0]), 12),
+                    }
+                    if cal.has_energy_nest
+                    else None
+                ),
                 "recycling_mode": recycling,
                 "recycling_defaulted_from_none": recycling_defaulted,
                 # Government account (Phase 5d.1): which account (or none), its closure, and the

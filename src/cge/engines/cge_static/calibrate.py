@@ -27,6 +27,12 @@ import numpy as np
 
 from cge.contracts.data_objects import SAM
 from cge.engines.cge_static.calibrate_open import _elast_vector
+from cge.engines.cge_static.energy_nest import (
+    DEFAULT_ENERGY_ELAST,
+    DEFAULT_KL_E_ELAST,
+    DEFAULT_KLE_M_ELAST,
+    calibrate_energy_nest,
+)
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,10 @@ class CalibratedModel:
     inv_gamma: np.ndarray | None = None  # [i] investment demand composition (sums→1)
     INV0: np.ndarray | None = None  # [i] benchmark investment demand (GDP-normalised)
     sav_rate0: float = 0.0  # benchmark household savings rate on disposable income
+    # Energy nest (Phase 5d.5; optional — None means flat Leontief production, bit-identical to
+    # pre-5d.5). When active, production is the nested KL-E-M structure (see energy_nest.py) and a
+    # carbon price shifts substitution within the energy bundle rather than only across sectors.
+    energy_nest: object | None = None  # EnergyNest | None
 
     @property
     def gdp0(self) -> float:
@@ -75,6 +85,10 @@ class CalibratedModel:
     @property
     def has_government(self) -> bool:
         return self.gov_gamma is not None
+
+    @property
+    def has_energy_nest(self) -> bool:
+        return self.energy_nest is not None
 
     @property
     def has_investment(self) -> bool:
@@ -88,6 +102,8 @@ def calibrate(
     factors: list[str],
     va_elast: float | np.ndarray = 1.0,
     institutions: dict[str, str] | None = None,
+    energy_sectors: list[str] | None = None,
+    energy_elasticities: dict[str, float] | None = None,
 ) -> CalibratedModel:
     """Calibrate the pilot CGE from a balanced ``sam``. ``sectors`` and ``factors`` name the SAM
     accounts to treat as activities/commodities and factors.
@@ -295,6 +311,27 @@ def calibrate(
         disposable0 = float(endowment.sum()) - gov_tax0
         sav_rate0 = sav0 / disposable0
 
+    # Energy nest (Phase 5d.5). Opt-in: with no energy_sectors declared, production stays flat
+    # Leontief (energy_nest = None) and the model is bit-identical to pre-5d.5. When declared, the
+    # KL-E-M nest calibrates from the same benchmark flows (Z0/VA0/X0, GDP-normalised) so it
+    # reproduces the benchmark exactly (energy_nest.py holds the shared CES calibration).
+    energy_nest = None
+    if energy_sectors:
+        unknown = [e for e in energy_sectors if e not in sectors]
+        if unknown:
+            raise ValueError(f"energy_sectors {unknown} are not in the sector list {sectors}")
+        e_idx = np.array([sectors.index(e) for e in energy_sectors], dtype=int)
+        el = energy_elasticities or {}
+        energy_nest = calibrate_energy_nest(
+            Z0,
+            VA0,
+            X0,
+            e_idx,
+            kle_m_elast=el.get("kle_m", DEFAULT_KLE_M_ELAST),
+            kl_e_elast=el.get("kl_e", DEFAULT_KL_E_ELAST),
+            energy_elast=el.get("energy", DEFAULT_ENERGY_ELAST),
+        )
+
     return CalibratedModel(
         sectors=list(sectors),
         factors=list(factors),
@@ -317,4 +354,5 @@ def calibrate(
         inv_gamma=inv_gamma,
         INV0=INV0,
         sav_rate0=sav_rate0,
+        energy_nest=energy_nest,
     )

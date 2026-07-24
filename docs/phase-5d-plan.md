@@ -1,6 +1,6 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: 5d.1, 5d.2, 5d.3, 5d.4 COMPLETE** (engine v0.8.0). 5d.1: government
+**Status: 5d.1, 5d.2, 5d.3, 5d.4 COMPLETE; 5d.5 closed-variant COMPLETE** (engine v0.9.0). 5d.1: government
 account in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure, benchmark
 direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs — `docs/models/
 cge-static.md` §4b; `deficit_financed` reserved for 5d.7 as planned). 5d.2: savings-investment
@@ -27,7 +27,17 @@ contraction reusing the six income branches) keeps it exact. Walras re-proved: t
 clears at the pinned-wage solution (the flagged Tier-1 check). Floor never applied to the benchmark
 (full employment at wage 1); floor ≥ 1 rejected. A slack floor is byte-identical to full
 employment. Wage-curve alternative + open/multi generalisation are documented follow-ups.
-5d.5–5d.7 not started. This is the detailed implementation plan for Phase 5d, reopened Phase 5
+5d.5: the KL-E-M energy nest (closed variant, §4f) — the shared CES algebra in `energy_nest.py`
+(unit-tested standalone first, like `capital.py`), opt-in via `energy_sectors`. Production goes
+from flat Leontief to a 3-level CES (outer KLE-vs-materials, middle KL-vs-energy, inner
+CES-over-energy-commodities); each layer calibrated δ∝v^{1/σ} so the benchmark replicates to
+machine precision. Carbon cost attaches to the energy commodities (raising their in-nest price);
+the fixed Leontief inverse becomes a price-responsive `(I−A(p))⁻¹`, with an effective per-output
+carbon cost `ĉ_i=Σ_e cc_e·a_ei(p)` keeping the recycling/government fixed points linear/unchanged.
+Tier-1 (replication/homogeneity/Walras) green; the Tier-2 DELIVERABLE proven: a fossil carbon
+price shifts a sector's fossil/electricity ratio down, contracts fossil output, expands
+electricity. Open/multi energy nest = remaining 5d.5 work. 5d.6–5d.7 not started. This is the
+detailed implementation plan for Phase 5d, reopened Phase 5
 debt (see `roadmap.md` §Phase 5 correction note and `docs/phase-5-plan.md`'s status header). Phase
 5's original §2/§3 design called for a government/fiscal account, savings/investment with capital
 accumulation, and a genuine KL-E-M energy nest; none of these existed in the implemented model

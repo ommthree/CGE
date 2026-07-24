@@ -1378,3 +1378,183 @@ def test_engine_slack_floor_is_byte_identical_to_no_floor():
     assert len(merged) == len(plain.data) == len(slack.data)
     assert np.allclose(merged["value_p"], merged["value_s"], atol=1e-12)
     assert slack.manifest.assumptions["labour_floor_bound"] is False
+
+
+# -- energy nest (Phase 5d.5) -------------------------------------------------
+def _energy_sam():
+    """A 3-sector SAM with two energy commodities: DIRTY (fossil) and CLEAN (electricity), both
+    used by MFG (manufacturing); electricity generation also uses some fossil. Hand-balanced."""
+    import pandas as pd
+
+    acc = ["DIRTY", "CLEAN", "MFG", "CAP", "LAB", "HOH"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc["DIRTY", "MFG"] = 15.0  # MFG buys fossil energy
+    m.loc["CLEAN", "MFG"] = 10.0  # MFG buys electricity
+    m.loc["DIRTY", "CLEAN"] = 5.0  # electricity generation uses some fossil
+    m.loc["CAP", "DIRTY"] = 10.0
+    m.loc["LAB", "DIRTY"] = 10.0
+    m.loc["CAP", "CLEAN"] = 12.0
+    m.loc["LAB", "CLEAN"] = 13.0
+    m.loc["CAP", "MFG"] = 25.0
+    m.loc["LAB", "MFG"] = 25.0
+    for s in ("DIRTY", "CLEAN", "MFG"):
+        m.loc[s, "HOH"] = m[s].sum() - m.loc[s].sum()  # final demand = supply − intermediate use
+    m.loc["HOH", "CAP"] = m.loc["CAP", ["DIRTY", "CLEAN", "MFG"]].sum()
+    m.loc["HOH", "LAB"] = m.loc["LAB", ["DIRTY", "CLEAN", "MFG"]].sum()
+    from cge.contracts.data_objects import SAM, Provenance
+
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=0, retrieved="2026-07-24"
+    )
+    return SAM(provenance=prov, accounts=acc, matrix=m)
+
+
+_ENERGY_SECTORS = ["DIRTY", "CLEAN", "MFG"]
+
+
+def _cal_energy(**kw):
+    return calibrate(
+        _energy_sam(),
+        sectors=_ENERGY_SECTORS,
+        factors=_FACTORS,
+        energy_sectors=["DIRTY", "CLEAN"],
+        **kw,
+    )
+
+
+def _solve_energy(cal, cc=None, recycling="lump_sum", drop_factor=0):
+    ns = len(cal.sectors)
+    cc = np.zeros(ns) if cc is None else cc
+    sol = solve(
+        lambda z: M.residuals(cal, z, carbon_cost=cc, recycling=recycling, drop_factor=drop_factor),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    st = M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling=recycling)
+    return sol, st
+
+
+def test_no_energy_sectors_is_flat_leontief_bit_identical():
+    """Regression-safety: calibrating the SAME SAM with no energy_sectors gives a model with no
+    nest, and its benchmark solve matches the calibrated flat quantities exactly."""
+    cal = calibrate(_energy_sam(), sectors=_ENERGY_SECTORS, factors=_FACTORS)
+    assert not cal.has_energy_nest
+    _s, st = _solve_energy(cal, recycling="none")
+    assert np.allclose(st.X, cal.X0, atol=1e-7)
+
+
+def test_energy_nest_calibrates_and_activates():
+    cal = _cal_energy()
+    assert cal.has_energy_nest
+    assert cal.energy_nest.energy_idx.tolist() == [0, 1]  # DIRTY, CLEAN
+    assert cal.energy_nest.mat_idx.tolist() == [2]  # MFG is a material for others
+
+
+def test_energy_sectors_must_exist():
+    with pytest.raises(ValueError, match="not in the sector list"):
+        calibrate(_energy_sam(), sectors=_ENERGY_SECTORS, factors=_FACTORS, energy_sectors=["GAS"])
+
+
+def test_energy_nest_benchmark_replicates():
+    """Tier 1 (non-negotiable): with the nest active and zero shocks, the benchmark reproduces the
+    SAM to machine precision — prices 1, output/final-demand/factor demand all at their calibrated
+    values."""
+    cal = _cal_energy()
+    sol, st = _solve_energy(cal, recycling="none")
+    assert np.allclose(sol.x, 1.0, atol=1e-8)
+    assert np.allclose(st.X, cal.X0, atol=1e-7)
+    assert np.allclose(st.FD, cal.FD0, atol=1e-7)
+    assert np.allclose(st.F, cal.F0, atol=1e-7)
+
+
+def test_energy_nest_homogeneity():
+    """Tier 1: scaling the endowment k× scales real output by k with prices unchanged, nest on."""
+    cal = _cal_energy()
+    _s, st = _solve_energy(cal, recycling="none")
+    k = 2.5
+    cal_k = replace(cal, endowment=cal.endowment * k, X0=cal.X0 * k, F0=cal.F0 * k, Z0=cal.Z0 * k)
+    _sk, st_k = _solve_energy(cal_k, recycling="none")
+    assert np.allclose(_s.x, _sk.x, atol=1e-7)
+    assert np.allclose(st_k.X, k * st.X, atol=1e-6)
+
+
+def test_energy_nest_walras_under_shock():
+    """Tier 1: with the nest active and a carbon shock, the dropped factor market still clears."""
+    cal = _cal_energy()
+    cc = np.array([0.3, 0.0, 0.0])  # carbon on fossil only
+    _s, st = _solve_energy(cal, cc=cc, drop_factor=0)
+    excess = float(st.F[0, :].sum()) - cal.endowment[0]
+    assert abs(excess) < 1e-7
+
+
+def test_carbon_price_substitutes_within_energy_toward_electricity():
+    """THE Tier-2 deliverable of 5d.5: a carbon price on fossil energy shifts MFG's energy mix
+    AWAY from fossil and TOWARD electricity — the within-energy substitution a flat model cannot
+    produce."""
+    from cge.engines.cge_static.energy_nest import nest_demands
+
+    cal = _cal_energy()
+    cc = np.array([0.3, 0.0, 0.0])  # carbon only on DIRTY (fossil), not CLEAN (electricity)
+    _b, base = _solve_energy(cal)
+    _s, shk = _solve_energy(cal, cc=cc)
+    mfg = _ENERGY_SECTORS.index("MFG")
+    eu_base, _, _ = nest_demands(
+        cal.energy_nest, base.p, M._va_unit_cost(cal, base.w), np.zeros(3), base.X
+    )
+    eu_shk, _, _ = nest_demands(cal.energy_nest, shk.p, M._va_unit_cost(cal, shk.w), cc, shk.X)
+    # energy sub-index 0 = DIRTY, 1 = CLEAN.
+    ratio_base = eu_base[0, mfg] / eu_base[1, mfg]
+    ratio_shk = eu_shk[0, mfg] / eu_shk[1, mfg]
+    assert ratio_shk < ratio_base  # fossil/electricity ratio falls — substituted toward electricity
+
+
+def test_carbon_price_expands_clean_relative_to_dirty():
+    """The cross-sector counterpart: fossil output falls and electricity output rises (the low-
+    carbon energy source expands under a carbon price)."""
+    cal = _cal_energy()
+    cc = np.array([0.3, 0.0, 0.0])
+    _b, base = _solve_energy(cal)
+    _s, shk = _solve_energy(cal, cc=cc)
+    dirty, clean = _ENERGY_SECTORS.index("DIRTY"), _ENERGY_SECTORS.index("CLEAN")
+    assert shk.X[dirty] < base.X[dirty]  # fossil contracts
+    # electricity rises relative to fossil (clean-share of energy output grows).
+    assert (shk.X[clean] / shk.X[dirty]) > (base.X[clean] / base.X[dirty])
+
+
+def test_energy_nest_collects_carbon_revenue():
+    """Carbon revenue is positive under a fossil carbon price and recycles (the nest's cc_eff is a
+    proper energy-weighted per-output cost)."""
+    cal = _cal_energy()
+    cc = np.array([0.3, 0.0, 0.0])
+    _s, shk = _solve_energy(cal, cc=cc)
+    assert shk.carbon_revenue > 0.0
+
+
+def test_engine_energy_nest_end_to_end_and_manifest():
+    """End-to-end: an energy-nest run records the nested production structure + energy sectors in
+    the manifest, contracts fossil output and expands electricity; a no-nest run on the same SAM
+    reports flat Leontief."""
+    eng = registry.get("cge_static")
+    cs = {"DIRTY": 1.0, "CLEAN": 0.0, "MFG": 0.0}
+    res = eng.run(
+        data={"SAM": _energy_sam(), "carbon_cost_share": cs, "energy_sectors": ["DIRTY", "CLEAN"]},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    assert res.manifest.assumptions["production_structure"] == "KL-E-M energy nest"
+    assert res.manifest.assumptions["energy_sectors"] == ["DIRTY", "CLEAN"]
+    d = res.data
+    dirty_v = float(
+        d[(d["variable"] == "volume_change") & (d["sector"] == "DIRTY")]["value"].iloc[0]
+    )
+    clean_v = float(
+        d[(d["variable"] == "volume_change") & (d["sector"] == "CLEAN")]["value"].iloc[0]
+    )
+    assert dirty_v < 0.0 < clean_v  # fossil contracts, electricity expands
+
+    plain = eng.run(
+        data={"SAM": _energy_sam(), "carbon_cost_share": cs},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    assert plain.manifest.assumptions["production_structure"] == "flat Leontief intermediates"

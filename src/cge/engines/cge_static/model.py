@@ -80,7 +80,8 @@ def _va_unit_cost(cal: CalibratedModel, w: np.ndarray) -> np.ndarray:
 
 def _factor_demand(cal: CalibratedModel, w: np.ndarray, pv: np.ndarray, va_cost: np.ndarray):
     """Factor demand F[f,i] by Shephard's lemma on the VA cost. CD: F = β·va_cost/w; CES:
-    F = va_cost·(1/av)·(pv·av)^σ·δ^σ·w^{-σ}. ``va_cost`` = va_share·pv·X is total VA payment."""
+    F = va_cost·(1/av)·(pv·av)^σ·δ^σ·w^{-σ}. ``va_cost`` = pv·(VA quantity) is total VA payment
+    (VA quantity = va_share·X in the flat model, or the KL quantity from the energy nest)."""
     ns, nf = len(cal.sectors), len(cal.factors)
     F = np.empty((nf, ns))
     for i in range(ns):
@@ -92,6 +93,41 @@ def _factor_demand(cal: CalibratedModel, w: np.ndarray, pv: np.ndarray, va_cost:
             unit = (1.0 / cal.av[i]) * (pv[i] * cal.av[i]) ** s * d**s * w ** (-s)
             F[:, i] = unit * (va_cost[i] / pv[i])  # va_cost/pv = VA quantity
     return F
+
+
+def _leontief_and_va(cal: CalibratedModel, p: np.ndarray, pv: np.ndarray, cc: np.ndarray):
+    """Return ``(leontief, va_qty_per_x, cc_eff)`` — the (I − A(p))⁻¹ intermediate-inverse, the
+    value-added (KL) quantity per unit output, and an **effective per-output carbon cost**.
+
+    **Flat model** (no energy nest): A = the fixed Leontief ``cal.ax``, VA quantity per unit output
+    = ``cal.va_share``, and cc_eff = cc (the carbon cost is already a per-output add-on) — all
+    price-independent and bit-identical to the pre-5d.5 code.
+
+    **Energy nest** (Phase 5d.5): intermediate demand is price-responsive (energy substitutes as
+    its carbon-inclusive price moves), so A(p)[j,i] = intermediate use of commodity j per unit
+    output i comes from ``nest_demands`` at unit output; VA quantity per unit output = the KL
+    quantity per unit output. The carbon cost attaches to the *energy commodities* (it raises their
+    price inside the nest), so the carbon revenue per unit of a sector's output is
+    cc_eff[i] = Σ_{j∈energy} cc[j]·a_energy[j,i] — a linear functional of output, so the existing
+    recycling/government fixed points (using cc_eff @ leontief @ demand) carry over unchanged."""
+    ns = len(cal.sectors)
+    if not cal.has_energy_nest:
+        leontief = np.linalg.inv(np.eye(ns) - cal.ax)
+        return leontief, cal.va_share, cc
+    from cge.engines.cge_static.energy_nest import nest_demands
+
+    nest = cal.energy_nest
+    unit_x = np.ones(ns)
+    energy_use, materials_use, kl_qty = nest_demands(nest, p, pv, cc, unit_x)  # per unit output
+    a = np.zeros((ns, ns))  # A(p)[j, i] = commodity j per unit output i
+    cc_eff = np.zeros(ns)
+    for k, j in enumerate(nest.energy_idx):
+        a[j, :] += energy_use[k, :]
+        cc_eff += cc[j] * energy_use[k, :]  # carbon revenue per unit output from energy commodity j
+    for k, j in enumerate(nest.mat_idx):
+        a[j, :] += materials_use[k, :]
+    leontief = np.linalg.inv(np.eye(ns) - a)
+    return leontief, kl_qty, cc_eff
 
 
 # Smooth positive floor on the recycling denominator (1−k). Identity for x ≫ δ, asymptotes to δ as
@@ -174,7 +210,12 @@ def derive_state(
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pv = _va_unit_cost(cal, w)
 
-    leontief = np.linalg.inv(np.eye(ns) - cal.ax)  # (I − ax)⁻¹, small and dense
+    # (I − A(p))⁻¹ and VA quantity per unit output. Flat model: fixed Leontief + va_share. Energy
+    # nest (Phase 5d.5): both price-responsive (energy substitutes as the carbon-inclusive energy
+    # price moves) — computed from the nest's Shephard demands, so goods-market clearing and factor
+    # demand stay consistent. cc is zero here for the flat model's recycling coefficients; the
+    # nest reads the actual carbon cost so substitution responds to it (see below).
+    leontief, va_qty_per_x, cc_eff = _leontief_and_va(cal, p, pv, cc)
     demand_per_income = cal.gamma / p  # FD = I · demand_per_income
     recycles = recycling != "none"
     if cal.has_investment and inv_closure not in ("savings_driven", "fixed_real"):
@@ -208,7 +249,7 @@ def derive_state(
             #   fixed_real: demand = γ(I − p·INV0)/p + INV0, so R = k·(I − pI0) + cInv and
             #     I = (FI − k·pI0 + cInv)/(1−k) with pI0 = p·INV0, cInv = cc·L·INV0.
             if not cal.has_investment:
-                k = float(cc @ (leontief @ demand_per_income)) if recycles else 0.0
+                k = float(cc_eff @ (leontief @ demand_per_income)) if recycles else 0.0
                 if strict and k >= 1.0 - 1e-12:
                     # Runaway recycling (revenue ≥ income) AT THE ACCEPTED EQUILIBRIUM — refuse
                     # rather than return numbers (review P2).
@@ -223,7 +264,7 @@ def derive_state(
                 savings = 0.0
             elif inv_closure == "savings_driven":
                 u = ((1.0 - s) * cal.gamma + s * cal.inv_gamma) / p
-                k = float(cc @ (leontief @ u)) if recycles else 0.0
+                k = float(cc_eff @ (leontief @ u)) if recycles else 0.0
                 if strict and k >= 1.0 - 1e-12:
                     raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
                 income = factor_income / _safe_denom(1.0 - k)
@@ -234,8 +275,8 @@ def derive_state(
                 ID = cal.INV0.copy()
                 p_inv = float(np.dot(p, ID))
                 if recycles:
-                    k = float(cc @ (leontief @ demand_per_income))
-                    c_inv = float(cc @ (leontief @ ID))
+                    k = float(cc_eff @ (leontief @ demand_per_income))
+                    c_inv = float(cc_eff @ (leontief @ ID))
                 else:
                     k, c_inv = 0.0, 0.0
                 if strict and k >= 1.0 - 1e-12:
@@ -283,8 +324,8 @@ def derive_state(
             gov_demand_per_income = cal.gov_gamma / p  # GD = gov_income · gov_demand_per_income
             if recycles:
                 # Revenue from the (price-fixed) household + investment demand.
-                r0 = float(cc @ (leontief @ (FD + ID)))
-                kg = float(cc @ (leontief @ gov_demand_per_income))  # marginal from Σgov spend
+                r0 = float(cc_eff @ (leontief @ (FD + ID)))
+                kg = float(cc_eff @ (leontief @ gov_demand_per_income))  # marginal from Σgov spend
             else:
                 r0, kg = 0.0, 0.0
             if strict and kg >= 1.0 - 1e-12:
@@ -296,7 +337,9 @@ def derive_state(
             fiscal_balance = 0.0  # balanced_budget: spending exhausts income, by construction
 
         X = leontief @ (FD + GD + ID)  # goods-market clearing
-        va_cost = cal.va_share * pv * X  # [i] total VA payment per sector
+        # Total VA payment per sector = pv · (VA quantity). VA quantity per unit output is
+        # cal.va_share (flat) or the price-responsive KL quantity per unit output (energy nest).
+        va_cost = pv * va_qty_per_x * X  # [i]
         F = _factor_demand(cal, w, pv, va_cost)  # [f,i]
         return FD, GD, ID, X, F, income, gov_income, savings, fiscal_balance
 
@@ -318,7 +361,7 @@ def derive_state(
             factor_income = fi_new
             result = _close(factor_income)
     FD, GD, ID, X, F, income, gov_income, savings, fiscal_balance = result
-    carbon_revenue = float(cc @ X)
+    carbon_revenue = float(cc_eff @ X)  # cc_eff = cc (flat) or energy-weighted (nest)
     # Savings-investment identity check (strict mode; Phase 5d.2 Tier 2): under savings_driven,
     # nominal investment must equal household savings exactly.
     if strict and cal.has_investment and inv_closure == "savings_driven":
@@ -410,10 +453,20 @@ def residuals(
     )
 
     res = []
-    # Zero-profit: p[i] = Σ_j ax[j,i]·p[j] + va_share[i]·pv[i] + carbon cost.
-    for i in range(ns):
-        intermediate = sum(cal.ax[j, i] * p[j] for j in range(ns))
-        res.append(p[i] - (intermediate + cal.va_share[i] * state.pv[i] + cc[i]))
+    if cal.has_energy_nest:
+        # Zero-profit with the KL-E-M nest (Phase 5d.5): p[i] = px[i], the nest's output unit cost
+        # (carbon attaches to energy commodities inside the nest, not as a flat per-output add-on).
+        from cge.engines.cge_static.energy_nest import nest_unit_cost
+
+        px = nest_unit_cost(cal.energy_nest, np.asarray(p, dtype=float), state.pv, cc)
+        for i in range(ns):
+            res.append(p[i] - px[i])
+    else:
+        # Flat model: p[i] = Σ_j ax[j,i]·p[j] + va_share[i]·pv[i] + carbon cost. (Object-dtype
+        # safe for the dormant pyomo hook.)
+        for i in range(ns):
+            intermediate = sum(cal.ax[j, i] * p[j] for j in range(ns))
+            res.append(p[i] - (intermediate + cal.va_share[i] * state.pv[i] + cc[i]))
     # Factor clearing (drop one by Walras). Under a binding wage floor (Phase 5d.4), the LAB row
     # becomes the wage pin w[LAB] = floor instead of quantity-clearing — labour demand ≤ supply is
     # then slack, the gap reported as unemployment.
