@@ -50,11 +50,25 @@ class CalibratedModel:
     # ``beta``); σ ≠ 1 ⇒ CES (uses ``va_ces_share``). Per sector.
     va_elast: np.ndarray  # [i] VA substitution elasticity σ_va
     va_ces_share: np.ndarray  # [f, i] CES factor share δ_{fi} (cols sum→1); used when σ ≠ 1
+    # Government account (Phase 5d.1; optional — None means no government account was declared,
+    # and the model behaves exactly as before: 100% of any carbon revenue goes to the household).
+    gov_gamma: np.ndarray | None = None  # [i] government Cobb-Douglas demand share (sums→1)
+    gov_income0: float = 0.0  # benchmark government income (GDP-normalised, = benchmark tax)
+    GD0: np.ndarray | None = None  # [i] benchmark government final demand (GDP-normalised)
+    # Benchmark direct-tax rate on factor income: the household→government benchmark transfer as a
+    # share of benchmark factor income. The model levies tax = rate·(current factor income), so the
+    # benchmark government replicates exactly AND homogeneity survives (a fixed *level* would not
+    # scale with the economy; a fixed *rate* does).
+    gov_tax_rate0: float = 0.0
 
     @property
     def gdp0(self) -> float:
         """Benchmark GDP = total value added = total final demand."""
         return float(self.F0.sum())
+
+    @property
+    def has_government(self) -> bool:
+        return self.gov_gamma is not None
 
 
 def calibrate(
@@ -63,24 +77,85 @@ def calibrate(
     sectors: list[str],
     factors: list[str],
     va_elast: float | np.ndarray = 1.0,
+    institutions: dict[str, str] | None = None,
 ) -> CalibratedModel:
     """Calibrate the pilot CGE from a balanced ``sam``. ``sectors`` and ``factors`` name the SAM
-    accounts to treat as activities/commodities and factors; the remaining institution account is
-    the household (final demand + factor income). Assumes benchmark prices = 1.
+    accounts to treat as activities/commodities and factors.
+
+    ``institutions`` (Phase 5d.1) maps a role to a SAM account name — ``"household"`` (required if
+    the dict is given) and, optionally, ``"government"``. When omitted (the default), every
+    non-sector/non-factor account must be exactly one account, treated as the household — this is
+    the pre-5d.1 behaviour, preserved unchanged so every existing single-household SAM/fixture
+    calibrates identically. When a ``"government"`` account is named, its column (demand for each
+    sector) calibrates a Cobb-Douglas government demand vector ``gov_gamma``, and its benchmark
+    financing is read off the SAM: the single supported benchmark flow is a household→government
+    direct tax (cell ``[government, household]``), converted to a **rate on factor income**
+    (``gov_tax_rate0``) so the model's benchmark replicates and homogeneity survives. A zero
+    government row/column is the common case (no benchmark fiscal flows — the model's own
+    carbon-revenue recycling funds government post-shock; see ``model.py``). Production/factor
+    taxes and government→household transfers are rejected explicitly (5d follow-ups).
 
     ``va_elast`` is the value-added substitution elasticity σ_va (scalar or per-sector). σ = 1 is
     Cobb-Douglas (the default, preserving the pilot); σ ≠ 1 is CES, calibrated so the VA unit cost
     is still 1 at benchmark."""
     m = sam.matrix
-    hoh = [a for a in sam.accounts if a not in sectors and a not in factors]
-    if len(hoh) != 1:
-        raise ValueError(f"pilot calibration expects exactly one institution account, got {hoh}")
-    household = hoh[0]
+    if institutions is None:
+        hoh = [a for a in sam.accounts if a not in sectors and a not in factors]
+        if len(hoh) != 1:
+            raise ValueError(
+                f"pilot calibration expects exactly one institution account, got {hoh}"
+            )
+        household = hoh[0]
+        government = None
+    else:
+        if "household" not in institutions:
+            raise ValueError("institutions must name a 'household' role")
+        household = institutions["household"]
+        government = institutions.get("government")
+        known = {household} | ({government} if government else set())
+        unnamed = [
+            a for a in sam.accounts if a not in sectors and a not in factors and a not in known
+        ]
+        if unnamed:
+            raise ValueError(f"institutions did not account for SAM accounts {unnamed}")
 
     # Benchmark flows straight off the SAM (prices = 1 ⇒ money flow = quantity).
     Z0 = np.array([[m.loc[j, i] for i in sectors] for j in sectors], dtype=float)  # [j,i]
     F0 = np.array([[m.loc[f, i] for i in sectors] for f in factors], dtype=float)  # [f,i]
     FD0 = np.array([m.loc[i, household] for i in sectors], dtype=float)  # [i]
+    GD0 = None
+    gov_tax0 = 0.0
+    if government is not None:
+        GD0 = np.array([m.loc[i, government] for i in sectors], dtype=float)  # [i] gov demand
+        gov_tax0 = float(m.loc[government, household])  # household→government benchmark transfer
+        # 5d.1 models exactly ONE government financing flow at benchmark: a direct (lump-sum-like)
+        # tax on the household, levied proportionally to factor income in the model. Any other
+        # benchmark government receipt/outlay would enter without a modelled counterpart —
+        # breaking Walras silently — so reject them explicitly rather than mis-calibrate:
+        # production/factor taxes and government→household transfers are documented 5d follow-ups.
+        bad_receipts = {
+            a: float(m.loc[government, a])
+            for a in sectors + factors
+            if abs(float(m.loc[government, a])) > 1e-9
+        }
+        if bad_receipts:
+            raise ValueError(
+                f"government account receives from sectors/factors {sorted(bad_receipts)}: "
+                "production/factor taxes are not yet modelled (Phase 5d follow-up); 5d.1 supports "
+                "only a household→government benchmark transfer."
+            )
+        transfers_out = float(m.loc[household, government])
+        if abs(transfers_out) > 1e-9:
+            raise ValueError(
+                "government→household transfers in the benchmark SAM are not yet modelled "
+                "(Phase 5d follow-up); the government account may only buy commodities."
+            )
+        if abs(gov_tax0 - float(GD0.sum())) > 1e-6 * max(1.0, gov_tax0):
+            raise ValueError(
+                f"government account is unbalanced: benchmark receipts {gov_tax0:.6g} ≠ spending "
+                f"{float(GD0.sum()):.6g}. A balanced SAM with only the supported flows cannot "
+                "produce this; check the government column/row."
+            )
     # Normalise all levels by GDP so magnitudes are O(1): a CGE is homogeneous of degree zero, so
     # the *level* scale is arbitrary and results are relative changes. Real EXIOBASE flows are
     # ~1e9, where absolute solver residuals never reach a 1e-9 tolerance; unit-scaling fixes that
@@ -89,6 +164,8 @@ def calibrate(
     if scale <= 0:
         raise ValueError("SAM has non-positive total value added; cannot calibrate")
     Z0, F0, FD0 = Z0 / scale, F0 / scale, FD0 / scale
+    if GD0 is not None:
+        GD0, gov_tax0 = GD0 / scale, gov_tax0 / scale
     X0 = Z0.sum(axis=0) + F0.sum(axis=0)  # output = Σ intermediate cost + Σ value added
 
     # Reject degenerate benchmarks before dividing by them (review robustness): a zero-output
@@ -137,6 +214,24 @@ def calibrate(
     # Fixed factor endowments = total benchmark factor income.
     endowment = F0.sum(axis=1)  # [f]
 
+    # Government Cobb-Douglas demand shares (Phase 5d.1), from the SAM's government row. A
+    # benchmark with a zero government row (no pre-existing tax/transfer flows — the common case,
+    # since the model's own carbon-revenue recycling is what funds government post-shock) has no
+    # well-defined *demand composition* to calibrate; fall back to the household's own gamma so a
+    # `balanced_budget` closure with no benchmark government spending still has a sensible
+    # commodity mix to spend recycled revenue on, rather than an undefined 0/0 shares vector.
+    gov_gamma = None
+    gov_income0 = 0.0
+    gov_tax_rate0 = 0.0
+    if GD0 is not None:
+        gov_income0 = float(GD0.sum())
+        gov_gamma = GD0 / gov_income0 if gov_income0 > 0 else gamma.copy()
+        # Benchmark direct-tax RATE on factor income (endowment.sum() is benchmark factor income,
+        # = 1 after GDP normalisation). The model levies rate·(current factor income) so the
+        # benchmark replicates AND the tax scales with the economy (homogeneity — a fixed level
+        # would not survive an endowment rescaling; a fixed rate does).
+        gov_tax_rate0 = gov_tax0 / float(endowment.sum())
+
     return CalibratedModel(
         sectors=list(sectors),
         factors=list(factors),
@@ -152,4 +247,8 @@ def calibrate(
         FD0=FD0,
         va_elast=sigma_va,
         va_ces_share=va_ces_share,
+        gov_gamma=gov_gamma,
+        gov_income0=gov_income0,
+        GD0=GD0,
+        gov_tax_rate0=gov_tax_rate0,
     )

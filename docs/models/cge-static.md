@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.5.3)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.6.0)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -39,13 +39,18 @@ re-allocates; the model reports the new equilibrium relative to the benchmark.
 **In scope:** N sectors (activity/commodity), Leontief intermediates, a **CES value-added nest**
 (capital + labour; elasticity σ_va, default 1 = Cobb-Douglas), Cobb-Douglas household demand, fixed
 factor endowments, CPI numéraire, a carbon price as a per-unit emissions cost wedge, and
-**carbon-revenue recycling** (lump-sum / labour-tax-cut). An **open-economy variant** (§8) adds
+**carbon-revenue recycling** (lump-sum / labour-tax-cut). A **government account** (Phase 5d.1,
+§4b) is supported in the closed variant: a `GOV` SAM account makes government a real institution
+that collects carbon revenue (and an optional benchmark direct tax) and spends on its own
+calibrated demand vector under a **balanced budget**. An **open-economy variant** (§8) adds
 Armington imports and CET exports with a rest-of-world account — chosen automatically when the SAM
 carries a `ROW` account.
 
 **Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today);
-a **government/fiscal account** (carbon-tax revenue is collected and recycled in the same period —
-there is no balance sheet, so it cannot run a deficit/surplus or fund non-recycled spending); a
+the government account in the **open/multi-region** variants (closed only today — §4b), a
+**deficit-financed government closure** (Phase 5d.7 — today's government cannot run a
+deficit/surplus: `fiscal_balance` ≡ 0 by construction), **production/factor taxes and
+government→household transfers** (a benchmark SAM carrying them is rejected explicitly); a
 **genuine energy nest** (KL–E–M — energy is a plain Leontief/CES intermediate today, not a
 separable nest a carbon price can shift substitution within); **savings/investment** (no
 capital-accumulation mechanism, so Phase 7's recursive-dynamic wrapper has nothing real to update
@@ -53,7 +58,8 @@ between years); heterogeneous households; and a distortionary labour-tax wedge (
 "double-dividend" channel that would distinguish labour-tax-cut from lump-sum recycling in a
 *single*-household model). Roadmap Phase 5.2 originally specified the government account,
 investment, and energy nest — they were dropped rather than carried forward, and are now tracked as
-**Phase 5d** (`roadmap.md` §Phase 5).
+**Phase 5d** (`roadmap.md` §Phase 5); 5d.1's government account (closed variant) is the first
+piece landed.
 
 ## 2. Notation
 
@@ -164,13 +170,63 @@ loss is the relative-price distortion, since the revenue is returned); and (ii) 
 equilibrium prices*, adding the transfer raises utility versus not adding it. What is **not** yet
 established is a full general-equilibrium welfare *comparison against a valid no-recycling closure*:
 the `none` mode does not close (it violates Walras' law — the revenue leaks), so it is not a valid
-counterfactual, and a proper one needs a government/external account (a documented follow-up). The
+counterfactual. **With a government account (§4b) a valid comparison now exists**: routing revenue
+to government spending (the `GOV` run) versus returning it to the household (the no-`GOV` run) are
+*both* closed, Walras-consistent economies, so their welfare difference is a genuine
+general-equilibrium comparison of recycling destinations — with the caveat that household CD
+utility values household consumption only (government-provided goods carry no utility, §4b). The
 substitution signal itself is clear: output **reallocates** from the dirty to the clean sector.
 Reported outputs: `welfare_change` — the change in CD utility $U=\prod_i FD_i^{\gamma_i}$ (the
 correct welfare measure for the CD household); `carbon_revenue`; `gdp_change_real` (real GDP in
 CPI-numéraire units) and `gdp_change_nominal_wage` (a wage-numéraire nominal reference — not tied
 to the CPI numéraire); and per-factor `factor_price_change` (incl. the capital rental rate). There
 is **no `deflator`** output (the CPI is the numéraire — see §4).
+
+### 4b. Government account (Phase 5d.1 — closed variant)
+
+A `GOV` account in the SAM makes government a real institution rather than a same-period
+pass-through. The engine recognises it **by name** (the same explicit-account convention as `ROW`
+for the open variant); the remaining non-sector/non-factor account is the household.
+
+**Calibration.** The government column calibrates a Cobb-Douglas demand vector
+$\gamma^g_i = GD^0_i / \sum_k GD^0_k$ (falling back to the household's $\gamma$ when the benchmark
+column is zero — no 0/0 shares). The single supported benchmark financing flow is a
+household→government **direct tax** (cell $[GOV, HOH]$), converted to a **rate on factor income**
+$t_0 = T^0 / \sum_f FF_f$. Production/factor taxes ($GOV$ receiving from a sector or factor) and
+government→household transfers are **rejected at calibration** — they would enter without a
+modelled counterpart and break Walras silently (documented 5d follow-ups).
+
+**Model.** At prices $(p, w)$ with factor income $Y = \sum_f w_f FF_f$:
+
+$$
+T = t_0 Y,\qquad I^{hh} = Y - T,\qquad FD_i = \gamma_i I^{hh}/p_i,\qquad
+G = \frac{T + R_0}{1 - k_g},\qquad GD_i = \gamma^g_i\, G/p_i,
+$$
+
+where $R_0 = cc^\top (I{-}ax)^{-1} FD$ is the carbon revenue generated by (price-fixed) household
+demand alone and $k_g = cc^\top (I{-}ax)^{-1} (\gamma^g/p)$ is government spending's own
+marginal-revenue coefficient — the same closed-form fixed point (and the same smooth-floor
+divergence guard) as household recycling, with the government as the recipient. Goods-market
+clearing becomes $X = (I-ax)^{-1}(FD + GD)$; **no new unknowns or residual equations** are added —
+$GD$ is an algebraic function of $(p,w)$ exactly like $FD$, so the system stays square in $(p,w)$
+and Walras' law is re-proved unchanged (tested).
+
+**Closure.** `balanced_budget` (the only closure implemented): spending exactly exhausts income
+each period, so `fiscal_balance` $\equiv 0$ — emitted anyway so the identity is visible and a
+future `deficit_financed` closure (Phase 5d.7) has its output slot. The tax being a *rate* (not a
+fixed level) is what preserves homogeneity: scaling the endowment scales government demand
+proportionally (tested).
+
+**Semantics, stated plainly:** with a `GOV` account, the scenario's `revenue_recycling` mode routes
+carbon revenue **to the government budget** (spent on $\gamma^g$), *not* to household income.
+Reported `welfare_change` values **household consumption only** — government-provided goods carry
+no utility (a documented scope choice; a public-goods utility term is out of scope). Expenditure
+GDP becomes $\sum_i p_i (FD_i + GD_i)$ — consumption plus government consumption. New outputs:
+`fiscal_balance` and `gov_spending` (shares of benchmark GDP, like `carbon_revenue`); the manifest
+records `government_account`, `gov_closure`, and the benchmark tax share. A zero-benchmark-column
+`GOV` run is **provably equivalent** to the no-government lump-sum run in prices and quantities
+(the fallback $\gamma^g=\gamma$ makes total demand identical — tested); only the institutional
+attribution differs.
 
 ## 5. Calibration
 
@@ -184,8 +240,8 @@ identity** $\sum_j ax_{ji} + va_i = 1$ holds exactly, which is why the benchmark
 topology (e.g. an offsetting household↔commodity loop), which the structural validators accept but
 the model cannot reproduce — every reported change would then be measured against a wrong benchmark.
 So after calibration the engine derives the state at benchmark prices and **asserts every calibrated
-quantity is reproduced** ($X/FD/F$ closed; $Z/D/E/M/Q/FD/F$ open) to $10^{-6}$, refusing the run
-otherwise. The run manifest's SAM fingerprint is **canonicalised by account label** so two economies
+quantity is reproduced** ($X/FD/F$ closed, plus $GD$ when a government account is present;
+$Z/D/E/M/Q/FD/F$ open) to $10^{-6}$, refusing the run otherwise. The run manifest's SAM fingerprint is **canonicalised by account label** so two economies
 with permuted axes but an identical numeric block get distinct identities.
 
 **Scale normalisation.** All benchmark levels are divided by benchmark GDP before calibration, so

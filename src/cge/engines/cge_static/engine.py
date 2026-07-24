@@ -20,8 +20,12 @@ validation suite); the open and multi-region variants additionally show carbon l
 multi-region variant clears every bilateral trade route and factor market under shock, not just at
 the benchmark. A **non-zero current account** is supported (foreign savings enter household income
 as the ROW capital transfer er·Sf in the open model, or a bilateral capital transfer per region in
-the multi-region model). Government/investment/an energy nest are reopened Phase 5 debt tracked as
-roadmap Phase 5d — not yet implemented.
+the multi-region model). A **government account** (Phase 5d.1) is supported in the CLOSED variant:
+a ``GOV`` SAM account makes government a real institution — it collects carbon revenue (and an
+optional benchmark household→government direct tax) and spends on its own calibrated demand vector
+under a balanced budget, with ``fiscal_balance``/``gov_spending`` emitted. Government in the
+open/multi-region variants, investment/savings, and an energy nest remain reopened Phase 5 debt
+tracked as roadmap Phase 5d.
 
 Data contract (``data`` dict): either a ``SAM`` supplied directly (validated: aligned, finite,
 non-negative, balanced) with an optional per-sector dimensionless ``carbon_cost_share``, OR an
@@ -45,11 +49,17 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.5.3"
+VERSION = "0.6.0"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
-# account that is neither a factor nor the single institution as a sector.
+# account that is neither a factor nor an institution as a sector.
 _DEFAULT_FACTORS = ("CAP", "LAB")
+
+# A government institution is recognised BY NAME (Phase 5d.1) — the same explicit-account
+# convention the engine already uses for variant dispatch (``ROW`` selects the open variant,
+# several ``HOH_<r>`` select multi-region). Closed variant only for now; a GOV account in an
+# open/multi-region SAM is rejected by those variants' own account validation.
+_GOV_ACCOUNT = "GOV"
 
 ASSUMPTIONS = {
     "model": (
@@ -58,11 +68,15 @@ ASSUMPTIONS = {
     ),
     "scope": (
         "single region, one representative household; revenue recycling supported "
-        "(none/lump_sum/labour_tax_cut, the last two equivalent with one household). This is the "
-        "CLOSED variant; an OPEN variant (Armington/CET + a rest-of-world account) runs when the "
-        "SAM carries a ROW account, and a true MULTI-REGION variant (bilateral trade among "
-        "several region-tagged households) runs when the SAM carries multiple households — see "
-        "OPEN_ASSUMPTIONS / MULTI_ASSUMPTIONS for those variants' own scope text."
+        "(none/lump_sum/labour_tax_cut, the last two equivalent with one household). An optional "
+        "GOVERNMENT account (Phase 5d.1, closed variant only): a GOV SAM account makes government "
+        "a real institution collecting carbon revenue (+ an optional benchmark direct tax) and "
+        "spending on its own calibrated demand vector under a balanced budget — see the "
+        "government_account/gov_closure keys. This is the CLOSED variant; an OPEN variant "
+        "(Armington/CET + a rest-of-world account) runs when the SAM carries a ROW account, and a "
+        "true MULTI-REGION variant (bilateral trade among several region-tagged households) runs "
+        "when the SAM carries multiple households — see OPEN_ASSUMPTIONS / MULTI_ASSUMPTIONS for "
+        "those variants' own scope text."
     ),
     "carbon_price": "per-unit emissions cost wedge τ·e[i] in the zero-profit condition",
     "revenue_recycling": (
@@ -253,7 +267,30 @@ class CGEStaticEngine:
             inp.sectors,
             [f for f in _DEFAULT_FACTORS if f in inp.sam.accounts],
         )
-        cal = calibrate(sam, sectors=sectors, factors=factors, va_elast=data.get("va_elast", 1.0))
+        # Government account (Phase 5d.1): a ``GOV`` account makes the government a real
+        # institution — it collects carbon revenue (and any benchmark direct tax) and spends it on
+        # its own calibrated demand vector under a balanced budget, instead of the revenue passing
+        # straight through household income. The household is the remaining institution.
+        institutions = None
+        if _GOV_ACCOUNT in sam.accounts:
+            others = [
+                a
+                for a in sam.accounts
+                if a not in sectors and a not in factors and a != _GOV_ACCOUNT
+            ]
+            if len(others) != 1:
+                raise ValueError(
+                    f"a SAM with a {_GOV_ACCOUNT!r} account needs exactly one household account "
+                    f"besides it; got {others}"
+                )
+            institutions = {"household": others[0], "government": _GOV_ACCOUNT}
+        cal = calibrate(
+            sam,
+            sectors=sectors,
+            factors=factors,
+            va_elast=data.get("va_elast", 1.0),
+            institutions=institutions,
+        )
         ns = len(sectors)
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
@@ -343,6 +380,16 @@ class CGEStaticEngine:
                 "value_added_nest": _va_nest_description(cal.va_elast),
                 "recycling_mode": recycling,
                 "recycling_defaulted_from_none": recycling_defaulted,
+                # Government account (Phase 5d.1): which account (or none), its closure, and the
+                # benchmark direct-tax share of factor income — two runs differing only in the
+                # presence/size of the government must differ in assumptions. With a government,
+                # `recycling_mode` routes carbon revenue TO THE GOVERNMENT BUDGET (spent on
+                # gov_gamma under balanced_budget), not to household income.
+                "government_account": _GOV_ACCOUNT if cal.has_government else "none",
+                "gov_closure": "balanced_budget" if cal.has_government else "n/a (no government)",
+                "gov_benchmark_tax_share_of_factor_income": (
+                    round(float(cal.gov_tax_rate0), 12) if cal.has_government else 0.0
+                ),
                 "solver_backends": sorted(backends),
                 "solver_statuses": sorted(statuses),
                 # The strongest numerical convergence evidence: max ‖F(x)‖∞ over all solves. The
@@ -586,13 +633,14 @@ def _carbon_cost_by_sector(
 
 
 def _infer_sectors(sam: SAM, factors: list[str]) -> list[str]:
-    """Sectors = SAM accounts that are neither factors nor the single institution (household)."""
+    """Sectors = SAM accounts that are neither factors nor institutions (household/government)."""
     non_factor = [a for a in sam.accounts if a not in factors]
-    # The institution is the account with no value-added-style column into factors; simplest for
-    # the pilot: assume exactly one institution and take it as the last non-sector. We identify it
-    # as the account that receives from factors (a factor row pays it).
+    # The household is the account that receives from factors (a factor row pays it). A ``GOV``
+    # account is an institution BY NAME (Phase 5d.1, same convention as ``ROW``/``HOH_<r>`` for
+    # variant dispatch): a government with a zero benchmark row receives nothing from factors, so
+    # the receives-from-factors test alone would misclassify it as a zero-output sector.
     institutions = [a for a in non_factor if any(sam.matrix.loc[a, f] != 0 for f in factors)]
-    return [a for a in non_factor if a not in institutions]
+    return [a for a in non_factor if a not in institutions and a != _GOV_ACCOUNT]
 
 
 def _solve(cal, *, carbon_cost, recycling="none"):
@@ -618,12 +666,14 @@ def _emit(records, cal, base, st, year: int) -> None:
     # (see model.residuals). So all prices are expressed in CPI units and there is **no separate
     # deflator to report** — the CPI is fixed to 1 by definition, and a "deflator" derived from it
     # would be a mechanical numéraire artifact, not inflation (review P1). We therefore report:
-    #   • gdp_change_real — the real (CPI-numéraire) change in GDP = Σ p·FD (prices in CPI units,
-    #     so this expenditure aggregate is already real);
+    #   • gdp_change_real — the real (CPI-numéraire) change in expenditure-side GDP = Σ p·(FD+GD):
+    #     household consumption PLUS government consumption (Phase 5d.1 — with a government
+    #     account, household FD alone is C, not GDP; GD is zero without one, preserving the old
+    #     value exactly). Prices are in CPI units, so this aggregate is already real;
     #   • gdp_change_nominal_in_factor_units — the same aggregate valued with a factor price as the
     #     unit of account, so a "money" magnitude is still available for readers who want one.
-    real_gdp = float(np.dot(st.p, st.FD))
-    real_gdp_base = float(np.dot(base.p, base.FD))
+    real_gdp = float(np.dot(st.p, st.FD + st.GD))
+    real_gdp_base = float(np.dot(base.p, base.FD + base.GD))
     records.append(_rec("gdp_change_real", "__economy__", year, real_gdp / real_gdp_base - 1.0))
     # A factor-price-numéraire nominal GDP (unit of account = labour), for a "nominal" reference
     # that is NOT mechanically tied to the CPI numéraire.
@@ -634,11 +684,21 @@ def _emit(records, cal, base, st, year: int) -> None:
         _rec("gdp_change_nominal_wage", "__economy__", year, nom_gdp / nom_gdp_base - 1.0)
     )
     # Welfare: the change in Cobb-Douglas utility U = Π FD_i^γ_i (the correct welfare measure for a
-    # CD household — review P1: the earlier Σ FD sum is not utility).
+    # CD household — review P1: the earlier Σ FD sum is not utility). With a government account
+    # this values HOUSEHOLD consumption only — government-provided goods carry no utility (a
+    # documented 5d.1 scope choice; see model.derive_state).
     u = float(np.prod(np.power(st.FD, cal.gamma)))
     u_base = float(np.prod(np.power(base.FD, cal.gamma)))
     records.append(_rec("welfare_change", "__economy__", year, u / u_base - 1.0))
     records.append(_rec("carbon_revenue", "__economy__", year, st.carbon_revenue / cal.gdp0))
+    # Government account (Phase 5d.1): fiscal balance (≡0 under balanced_budget — emitted so the
+    # identity is visible/pinned and a future deficit_financed closure has its output slot) and
+    # government spending, as shares of benchmark GDP like carbon_revenue. Emitted ONLY when a
+    # government account exists, so no-government runs stay byte-identical to pre-5d.1 output.
+    if cal.has_government:
+        records.append(_rec("fiscal_balance", "__economy__", year, st.fiscal_balance / cal.gdp0))
+        gov_spend = float(np.dot(st.p, st.GD))
+        records.append(_rec("gov_spending", "__economy__", year, gov_spend / cal.gdp0))
 
 
 def _rec(variable: str, sector: str, year: int, value: float) -> dict:
@@ -685,6 +745,10 @@ def _assert_closed_replicates(cal, base, x0: np.ndarray) -> None:
         "final demand FD": (base.FD, cal.FD0),
         "factor demand F": (base.F, cal.F0),
     }
+    if cal.has_government:
+        # The benchmark government must reproduce its SAM column too (Phase 5d.1): tax-funded
+        # spending at benchmark prices equals the calibrated GD0 exactly, or the run is refused.
+        checks["government demand GD"] = (base.GD, cal.GD0)
     _raise_if_not_replicating(checks, "closed")
 
 

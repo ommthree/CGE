@@ -171,7 +171,11 @@ def render() -> None:
             "carbon revenue is the tax collected, as a share of benchmark GDP. Shown as percent."
         )
         wf_table = rv.welfare_table(result).copy()
-        for c in ("Welfare Δ", "Carbon revenue (share of GDP)"):
+        # NB: the column names here must track results_view.welfare_table's renames exactly — the
+        # `in columns` guard means a stale name silently skips the percent conversion and the raw
+        # fraction renders beside percent-scaled columns (this bit us when the carbon-revenue
+        # column was renamed to "share of own region's GDP" but this loop kept the old name).
+        for c in ("Welfare Δ", "Carbon revenue (share of own region's GDP)"):
             if c in wf_table.columns:
                 wf_table[c] = (wf_table[c] * 100).round(2)
         st.dataframe(wf_table, width="stretch", hide_index=True)

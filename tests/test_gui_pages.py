@@ -117,6 +117,41 @@ def test_results_page_multi_region_consumption_is_percent_scaled():
     assert abs(displayed_value - raw_value) > 1e-3
 
 
+def test_results_page_carbon_revenue_is_percent_scaled():
+    """Regression (found during 5d.1): round 10 renamed welfare_table's carbon-revenue column to
+    "Carbon revenue (share of own region's GDP)" but the results page's percent-conversion loop
+    kept the OLD name — the `in columns` guard silently skipped it, so carbon revenue rendered as
+    a raw fraction (0.05) beside percent-scaled welfare, under a caption claiming percent."""
+    from cge.gui import results_view as rv
+
+    src = f"from cge.gui.pages import results\n{_CGE_OPEN_RESULTS_SETUP}\nresults.render()\n"
+    at = AppTest.from_string(src, default_timeout=60)
+    at.run()
+    assert not at.exception, (
+        f"results page raised: {[getattr(e, 'value', e) for e in at.exception]}"
+    )
+    result = at.session_state["last_result"]
+    raw = rv.welfare_table(result)
+    col = "Carbon revenue (share of own region's GDP)"
+    assert col in raw.columns
+    raw_value = float(raw[col].iloc[0])
+    assert raw_value != 0.0  # vacuous otherwise — the fixture must actually collect revenue
+
+    displayed = None
+    for df_element in at.dataframe:
+        value = df_element.value
+        if col in getattr(value, "columns", []):
+            displayed = value
+            break
+    assert displayed is not None, "welfare dataframe not found on the rendered page"
+    displayed_value = float(displayed[col].iloc[0])
+    assert abs(displayed_value - round(raw_value * 100, 2)) < 1e-9, (
+        f"expected percent-scaled {round(raw_value * 100, 2)}, got {displayed_value} — "
+        "the carbon-revenue column is not being converted to percent"
+    )
+    assert abs(displayed_value - raw_value) > 1e-3  # must not be the raw fraction
+
+
 def test_run_page_energy_price_branch_renders():
     """Exercise the Run page's energy-price controls: set the shock count to 1 so the carrier /
     change / coverage widgets render, then trigger a run — the combined carbon+energy scenario

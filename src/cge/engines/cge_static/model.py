@@ -46,6 +46,12 @@ class ModelState:
     income: float  # household income (incl. any recycled carbon revenue)
     carbon_revenue: float  # τ·Σ e[i]·X[i] collected by government
     factor_income: float  # Σ_f w[f]·FF[f] (pre-transfer)
+    # Government account (Phase 5d.1). Zero/empty when cal.has_government is False — the pilot's
+    # pre-5d.1 behaviour (100% of carbon revenue recycled straight to the household) is preserved
+    # exactly in that case; these fields are then reported as an all-zero no-op government.
+    GD: np.ndarray  # government final demand [i]
+    gov_income: float  # government income (its share of carbon revenue, + benchmark gov_income0)
+    fiscal_balance: float  # government income − government spending (≡0 under balanced_budget)
 
 
 def _va_unit_cost(cal: CalibratedModel, w: np.ndarray) -> np.ndarray:
@@ -104,27 +110,45 @@ def derive_state(
     carbon_cost: np.ndarray | None = None,
     recycling: str = "none",
     strict: bool = False,
+    gov_closure: str = "balanced_budget",
 ) -> ModelState:
     """Close the model at equilibrium prices (p, w): compute VA cost, outputs, demands and income.
 
     **Revenue recycling.** The carbon tax collects ``R = Σ_i cc[i]·X[i]`` (cc = τ·e is the per-unit
     emissions cost). In a **closed** economy the revenue must circulate — money cannot vanish, or
-    the circular flow (and Walras' law) does not close. So the household receives R:
+    the circular flow (and Walras' law) does not close.
+
+    **No government account (``cal.has_government`` False — pre-5d.1 behaviour, unchanged):** the
+    household receives R directly:
     - ``lump_sum`` — government returns R to the household as a lump-sum transfer; income = factor
       income + R.
     - ``labour_tax_cut`` — revenue rebates a labour tax. In this **single-household** pilot the
       household owns both factors, so a labour rebate and a lump-sum transfer give the *same*
       aggregate household income and hence the same real allocation; the two modes are therefore
-      equivalent here. They diverge only once the model has heterogeneous households (a labour vs
-      capital household) or a distortionary labour-tax wedge to cut — the "double-dividend" channel
-      — a documented follow-up.
+      equivalent here.
     - ``none`` — revenue is NOT returned. This does not close a closed economy (the leaked value
-      breaks Walras' law); the engine rejects it and points the user to Engine 1 for the pure
-      price-side view, or to a recycling mode for a proper GE run.
+      breaks Walras' law); the engine rejects it.
+
+    **With a government account (Phase 5d.1, ``cal.has_government`` True):** the government, not
+    the household, collects R (plus the benchmark direct tax ``gov_tax_rate0·factor_income``) and
+    spends it on its own Cobb-Douglas demand vector ``gov_gamma``. Under ``balanced_budget`` (the
+    only closure 5d.1 implements; ``deficit_financed`` is 5d.7), government spending exactly
+    exhausts government income each period, so ``fiscal_balance ≡ 0`` and total final demand is
+    ``FD + GD`` — the household's income no longer includes carbon revenue at all (it goes to
+    government instead), which is the intended generalisation: recycling is now a real
+    institutional transfer, not a same-period pass-through to the same account that pays the tax.
+    Note the reported ``welfare`` (CD utility over household FD) therefore values HOUSEHOLD
+    consumption only — government-provided goods carry no utility here, a documented 5d.1 scope
+    choice.
 
     Because R depends on X which depends on income which depends on R, the fixed point is solved in
-    closed form: with FD = γ·I/p and X = (I−ax)⁻¹·FD, R = I·(cc·(I−ax)⁻¹·(γ/p)), so
-    I = factor_income / (1 − k) where k = cc·(I−ax)⁻¹·(γ/p) is the marginal-revenue coefficient."""
+    closed form. Without government: with FD = γ·I/p and X = (I−ax)⁻¹·FD,
+    R = I·(cc·(I−ax)⁻¹·(γ/p)), so I = factor_income / (1 − k) where k is the marginal-revenue
+    coefficient. With government: household income is factor income net of the benchmark tax
+    (T = gov_tax_rate0·factor_income), fixed given prices — so only gov_income has a fixed point:
+    gov_income = T + R, R = gov_income·kg + R0 where kg = cc·(I−ax)⁻¹·(gov_gamma/p) is government
+    spending's own marginal-revenue coefficient and R0 = cc·(I−ax)⁻¹·FD is the revenue generated
+    by (fixed) household demand alone — so gov_income = (T + R0) / (1 − kg)."""
     ns = len(cal.sectors)
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pv = _va_unit_cost(cal, w)
@@ -132,25 +156,52 @@ def derive_state(
 
     leontief = np.linalg.inv(np.eye(ns) - cal.ax)  # (I − ax)⁻¹, small and dense
     demand_per_income = cal.gamma / p  # FD = I · demand_per_income
-    # Carbon revenue is returned to the household (closed economy: it must circulate). k = extra
-    # revenue generated per unit of household income; 0 when there are no emissions/tax. ``none``
-    # is rejected by the engine (it does not close), so any mode reaching here recycles.
     recycles = recycling != "none"
-    k = float(cc @ (leontief @ demand_per_income)) if recycles else 0.0
-    if strict and k >= 1.0 - 1e-12:
-        # Runaway recycling (revenue ≥ income) AT THE ACCEPTED EQUILIBRIUM — the closed economy is
-        # ill-posed here; refuse rather than return numbers (review P2).
-        raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
-    # A trial price vector during the solve can hit k≥1 even when a valid equilibrium (k<1) exists
-    # elsewhere; raising there makes the residual discontinuously unavailable and can abort a solve
-    # that starts at benchmark prices (review P2). So in non-strict (exploratory) mode we use a
-    # SMOOTH floor on the denominator (1−k): it is the identity for 1−k ≥ δ and asymptotes to δ as
-    # 1−k → −∞, keeping income finite and the residual C¹-continuous with a gradient that steers the
-    # solver back toward the feasible region — not a flat plateau.
-    income = factor_income / _safe_denom(1.0 - k)
 
-    FD = income * demand_per_income  # Cobb-Douglas household demand
-    X = leontief @ FD  # goods-market clearing
+    if not cal.has_government:
+        # Pre-5d.1 behaviour, bit-for-bit unchanged: carbon revenue recycles straight to the
+        # household. k = extra revenue generated per unit of household income; 0 when there are no
+        # emissions/tax. ``none`` is rejected by the engine (it does not close), so any mode
+        # reaching here recycles.
+        k = float(cc @ (leontief @ demand_per_income)) if recycles else 0.0
+        if strict and k >= 1.0 - 1e-12:
+            # Runaway recycling (revenue ≥ income) AT THE ACCEPTED EQUILIBRIUM — refuse rather than
+            # return numbers (review P2).
+            raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
+        # A trial price vector during the solve can hit k≥1 even when a valid equilibrium (k<1)
+        # exists elsewhere; in non-strict (exploratory) mode use a SMOOTH floor on (1−k): identity
+        # for 1−k ≥ δ, asymptotes to δ as 1−k → −∞, keeping income finite and the residual
+        # C¹-continuous — not a flat plateau.
+        income = factor_income / _safe_denom(1.0 - k)
+        FD = income * demand_per_income
+        GD = np.zeros(ns)
+        gov_income = 0.0
+        fiscal_balance = 0.0
+    else:
+        if gov_closure != "balanced_budget":
+            raise ValueError(
+                f"unsupported gov_closure {gov_closure!r} (5d.1 only implements "
+                "'balanced_budget'; 'deficit_financed' is Phase 5d.7)"
+            )
+        # Household income is factor income net of the benchmark direct tax — carbon revenue no
+        # longer passes through it. The tax is levied as a RATE on factor income (rate·w·FF), so
+        # the benchmark government replicates exactly and homogeneity survives (see calibrate).
+        tax = cal.gov_tax_rate0 * factor_income
+        income = factor_income - tax
+        FD = income * demand_per_income
+        gov_demand_per_income = cal.gov_gamma / p  # GD = gov_income · gov_demand_per_income
+        if recycles:
+            r0 = float(cc @ (leontief @ FD))  # revenue generated by (fixed) household demand
+            kg = float(cc @ (leontief @ gov_demand_per_income))  # marginal revenue from Σgov spend
+        else:
+            r0, kg = 0.0, 0.0
+        if strict and kg >= 1.0 - 1e-12:
+            raise ValueError(f"government revenue-recycling fixed point diverges (kg={kg:.3f} ≥ 1)")
+        gov_income = (tax + r0) / _safe_denom(1.0 - kg)
+        GD = gov_income * gov_demand_per_income
+        fiscal_balance = 0.0  # balanced_budget: spending exactly exhausts income, by construction
+
+    X = leontief @ (FD + GD)  # goods-market clearing
     carbon_revenue = float(cc @ X)
     # Factor demand (Shephard on the value-added cost va_share·pv·X). CD or CES per sector.
     va_cost = cal.va_share * pv * X  # [i] total VA payment per sector
@@ -162,7 +213,10 @@ def derive_state(
         X=X,
         F=F,
         FD=FD,
+        GD=GD,
         income=income,
+        gov_income=gov_income,
+        fiscal_balance=fiscal_balance,
         carbon_revenue=carbon_revenue,
         factor_income=factor_income,
     )
@@ -175,6 +229,7 @@ def residuals(
     carbon_cost: np.ndarray | None = None,
     recycling: str = "none",
     drop_factor: int = 0,
+    gov_closure: str = "balanced_budget",
 ) -> np.ndarray:
     """Equilibrium residual vector F(z) for z = [p (ns), w (nf)].
 
@@ -186,7 +241,11 @@ def residuals(
       cost-of-living index — so the deflator relative to it is 1 by construction, not an AM-GM
       artifact of pinning the arithmetic Σγp while reporting the geometric Πp^γ; review P1).
 
-    ``recycling`` selects how carbon revenue is returned to the household (see ``derive_state``).
+    ``recycling`` selects how carbon revenue is returned (see ``derive_state``); ``gov_closure``
+    selects the government's financing closure when ``cal.has_government`` (Phase 5d.1) — the
+    government account adds no new unknown/equation here: ``balanced_budget`` makes government
+    demand ``GD`` an algebraic function of prices exactly like household demand ``FD``, so the
+    system stays square in ``(p, w)`` with no new residual line.
 
     ``z`` accepts an object-dtype array (pyomo vars) so the same residual builds the IPOPT model;
     it uses only +, −, ×, ÷ and np.dot-free elementwise algebra where that matters.
@@ -203,6 +262,7 @@ def residuals(
         np.asarray(w, dtype=float),
         carbon_cost=cc,
         recycling=recycling,
+        gov_closure=gov_closure,
     )
 
     res = []

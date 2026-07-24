@@ -79,6 +79,355 @@ def test_zero_profit_holds_at_benchmark():
         assert np.isclose(cal.ax[:, i].sum() + cal.va_share[i], 1.0)
 
 
+# -- government account (Phase 5d.1) ------------------------------------------
+def _gov_sam():
+    """The toy SAM plus a GOV account with a zero benchmark row — the common case (no
+    pre-existing tax/transfer flows; government income comes entirely from post-shock carbon
+    revenue recycling)."""
+    import pandas as pd
+
+    sam = toy_sam()
+    acc = list(sam.accounts) + ["GOV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    return sam.model_copy(update={"accounts": acc, "matrix": m})
+
+
+def _cal_gov():
+    return calibrate(
+        _gov_sam(),
+        sectors=_SECTORS,
+        factors=_FACTORS,
+        institutions={"household": "HOH", "government": "GOV"},
+    )
+
+
+def test_institutions_none_matches_pre_5d1_behaviour():
+    """Omitting ``institutions`` calibrates identically to naming just the household explicitly —
+    the regression-safety net for every pre-5d.1 caller."""
+    cal_default = calibrate(toy_sam(), sectors=_SECTORS, factors=_FACTORS)
+    cal_named = calibrate(
+        toy_sam(), sectors=_SECTORS, factors=_FACTORS, institutions={"household": "HOH"}
+    )
+    assert not cal_default.has_government
+    assert not cal_named.has_government
+    assert np.allclose(cal_default.gamma, cal_named.gamma)
+    assert np.allclose(cal_default.FD0, cal_named.FD0)
+
+
+def test_institutions_rejects_unnamed_account():
+    with pytest.raises(ValueError, match="did not account for"):
+        calibrate(_gov_sam(), sectors=_SECTORS, factors=_FACTORS, institutions={"household": "HOH"})
+
+
+def test_institutions_requires_household_role():
+    with pytest.raises(ValueError, match="must name a 'household' role"):
+        calibrate(
+            _gov_sam(), sectors=_SECTORS, factors=_FACTORS, institutions={"government": "GOV"}
+        )
+
+
+def test_government_with_zero_benchmark_row_falls_back_to_household_gamma():
+    """A GOV account with no benchmark spending has no demand composition of its own to read off
+    the SAM; it falls back to the household's gamma rather than an undefined 0/0 share."""
+    cal = _cal_gov()
+    assert cal.has_government
+    assert cal.gov_income0 == 0.0
+    assert np.allclose(cal.gov_gamma, cal.gamma)
+
+
+def test_government_benchmark_replication_holds():
+    """Zero shock: with a government account present but zero carbon revenue, the benchmark still
+    replicates exactly (government demand is zero, so this reduces to the pre-5d.1 benchmark)."""
+    cal = _cal_gov()
+    sol = solve(
+        lambda z: M.residuals(cal, z, carbon_cost=np.zeros(len(cal.sectors)), recycling="none"),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    ns = len(cal.sectors)
+    st = M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=np.zeros(ns), recycling="none")
+    assert np.allclose(sol.x, 1.0, atol=1e-8)
+    assert np.allclose(st.X, cal.X0, atol=1e-6)
+    assert pytest.approx(0.0) == st.GD
+    assert st.fiscal_balance == pytest.approx(0.0)
+
+
+def test_carbon_revenue_goes_to_government_not_household():
+    """With a government account, carbon revenue funds GOVERNMENT spending, not the household's
+    own income — the point of 5d.1 (a real institutional transfer, not a same-period pass-through
+    to the taxed account itself)."""
+    cal = _cal_gov()
+    cc = 0.2 * _EMISSIONS
+    sol = solve(
+        lambda z: M.residuals(cal, z, carbon_cost=cc, recycling="lump_sum"),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    ns = len(cal.sectors)
+    st = M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling="lump_sum")
+    assert st.income == pytest.approx(st.factor_income, rel=1e-6)  # no revenue in household income
+    assert st.gov_income > 0.0  # government collected the revenue instead
+    assert float(st.GD.sum()) > 0.0  # and spent it
+
+
+def test_fiscal_balance_zero_under_balanced_budget():
+    cal = _cal_gov()
+    cc = 0.2 * _EMISSIONS
+    sol = solve(
+        lambda z: M.residuals(cal, z, carbon_cost=cc, recycling="lump_sum"),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    ns = len(cal.sectors)
+    st = M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling="lump_sum")
+    assert st.fiscal_balance == pytest.approx(0.0, abs=1e-9)
+    assert st.gov_income == pytest.approx(float(cc @ st.X), rel=1e-6)  # income == revenue spent
+
+
+def test_unsupported_gov_closure_rejected():
+    cal = _cal_gov()
+    ns = len(cal.sectors)
+    with pytest.raises(ValueError, match="unsupported gov_closure"):
+        M.derive_state(
+            cal,
+            np.ones(ns),
+            np.ones(len(cal.factors)),
+            carbon_cost=0.2 * _EMISSIONS,
+            recycling="lump_sum",
+            gov_closure="deficit_financed",
+        )
+
+
+def test_walras_law_holds_with_government_account():
+    """Tier 1 re-proof (plan §0.1): adding the government account must not introduce a hidden
+    money leak — dropping one factor-clearing equation by Walras' law must still hold at the
+    solution."""
+    cal = _cal_gov()
+    cc = 0.2 * _EMISSIONS
+    sol = solve(
+        lambda z: M.residuals(cal, z, carbon_cost=cc, recycling="lump_sum", drop_factor=0),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    ns = len(cal.sectors)
+    st = M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling="lump_sum")
+    excess = float(st.F[0, :].sum()) - cal.endowment[0]
+    assert abs(excess) < 1e-6
+
+
+def test_zero_row_government_is_equivalent_to_household_recycling():
+    """THE degenerate-equivalence regression (plan 5d.1 DoD): a zero-benchmark-row GOV account
+    spends recycled revenue on the household's own gamma (the calibration fallback), so total
+    demand γ·R is identical to handing the household R directly — the equilibrium prices, factor
+    prices and outputs must match the no-government lump_sum run exactly; only the institutional
+    attribution (income vs gov_income; FD vs FD+GD) differs."""
+    cc = 0.2 * _EMISSIONS
+    cal_plain = _cal()
+    cal_gov = _cal_gov()
+    sol_plain, st_plain = _solve(cal_plain, carbon_cost=cc)
+    sol_gov = solve(
+        lambda z: M.residuals(cal_gov, z, carbon_cost=cc, recycling="lump_sum"),
+        M.initial_guess(cal_gov),
+        prefer="scipy",
+    )
+    ns = len(cal_gov.sectors)
+    st_gov = M.derive_state(
+        cal_gov, sol_gov.x[:ns], sol_gov.x[ns:], carbon_cost=cc, recycling="lump_sum"
+    )
+    assert np.allclose(sol_plain.x, sol_gov.x, atol=1e-8)  # same equilibrium prices
+    assert np.allclose(st_plain.X, st_gov.X, atol=1e-8)  # same outputs
+    assert np.allclose(st_plain.FD, st_gov.FD + st_gov.GD, atol=1e-8)  # same total demand
+    assert st_gov.income < st_plain.income  # but the household no longer receives the revenue
+
+
+# -- government account with a BENCHMARK fiscal flow (tax-funded spending) ----
+def _gov_funded_sam():
+    """The toy SAM rebalanced by hand around a real benchmark fiscal flow: the household pays an
+    18.1 direct tax to GOV (10% of factor income 181), which GOV spends on BRD (10) and MIL (8.1).
+    Sector totals are unchanged (household demand shrinks by exactly what GOV buys), so the rest
+    of the SAM — intermediates, value added, factor income — is untouched and still balanced.
+    gov_gamma = (10, 8.1)/18.1 deliberately differs from the household's gamma."""
+    import pandas as pd
+
+    sam = toy_sam()
+    acc = list(sam.accounts) + ["GOV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["GOV", "HOH"] = 18.1  # household→government direct tax
+    m.loc["BRD", "GOV"] = 10.0  # government demand
+    m.loc["MIL", "GOV"] = 8.1
+    m.loc["BRD", "HOH"] -= 10.0  # household demand shrinks by the same amounts: 76→66
+    m.loc["MIL", "HOH"] -= 8.1  # 105→96.9
+    return sam.model_copy(update={"accounts": acc, "matrix": m})
+
+
+def _cal_gov_funded():
+    return calibrate(
+        _gov_funded_sam(),
+        sectors=_SECTORS,
+        factors=_FACTORS,
+        institutions={"household": "HOH", "government": "GOV"},
+    )
+
+
+def test_benchmark_funded_government_calibrates():
+    cal = _cal_gov_funded()
+    assert cal.has_government
+    assert cal.gov_income0 == pytest.approx(18.1 / 181.0)
+    assert cal.gov_tax_rate0 == pytest.approx(0.1)  # 18.1 / 181 factor income
+    assert np.allclose(cal.gov_gamma, [10.0 / 18.1, 8.1 / 18.1])
+    assert not np.allclose(cal.gov_gamma, cal.gamma)  # composition genuinely differs
+
+
+def test_benchmark_funded_government_replicates():
+    """Tier 1: with a real benchmark fiscal flow (tax-funded government spending), the zero-shock
+    benchmark must still reproduce the SAM exactly — prices 1, household demand FD0, government
+    demand GD0, and a balanced budget."""
+    cal = _cal_gov_funded()
+    ns = len(cal.sectors)
+    sol = solve(
+        lambda z: M.residuals(cal, z, carbon_cost=np.zeros(ns), recycling="none"),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    st = M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=np.zeros(ns), recycling="none")
+    assert np.allclose(sol.x, 1.0, atol=1e-8)
+    assert np.allclose(st.FD, cal.FD0, atol=1e-8)
+    assert np.allclose(st.GD, cal.GD0, atol=1e-8)
+    assert np.allclose(st.X, cal.X0, atol=1e-6)
+    assert st.gov_income == pytest.approx(cal.gov_income0, rel=1e-8)
+    assert st.income == pytest.approx(1.0 - 18.1 / 181.0, rel=1e-8)  # factor income net of tax
+
+
+def test_homogeneity_with_benchmark_funded_government():
+    """Tier 1: the benchmark tax is a RATE on factor income, so scaling the endowment k× leaves
+    prices unchanged and scales all reals — including government demand — by k. A fixed tax LEVEL
+    would fail this (government's share would shrink as the economy grows)."""
+    cal = _cal_gov_funded()
+    ns = len(cal.sectors)
+
+    def _solve_gov(c):
+        sol = solve(
+            lambda z: M.residuals(c, z, carbon_cost=np.zeros(ns), recycling="none"),
+            M.initial_guess(c),
+            prefer="scipy",
+        )
+        return sol, M.derive_state(
+            c, sol.x[:ns], sol.x[ns:], carbon_cost=np.zeros(ns), recycling="none"
+        )
+
+    sol, st = _solve_gov(cal)
+    k = 2.5
+    cal_k = replace(cal, endowment=cal.endowment * k, X0=cal.X0 * k, F0=cal.F0 * k, Z0=cal.Z0 * k)
+    sol_k, st_k = _solve_gov(cal_k)
+    assert np.allclose(sol.x, sol_k.x, atol=1e-8)  # prices unchanged
+    assert np.allclose(st_k.X, k * st.X, atol=1e-6)  # reals scale
+    assert np.allclose(st_k.GD, k * st.GD, atol=1e-8)  # government demand scales too
+
+
+def test_walras_law_with_benchmark_funded_government_under_shock():
+    cal = _cal_gov_funded()
+    cc = 0.2 * _EMISSIONS
+    sol = solve(
+        lambda z: M.residuals(cal, z, carbon_cost=cc, recycling="lump_sum", drop_factor=0),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    ns = len(cal.sectors)
+    st = M.derive_state(cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling="lump_sum")
+    excess = float(st.F[0, :].sum()) - cal.endowment[0]
+    assert abs(excess) < 1e-6
+    # And the budget still balances: gov income (tax + revenue) is exactly exhausted by spending.
+    assert st.gov_income == pytest.approx(
+        cal.gov_tax_rate0 * st.factor_income + st.carbon_revenue, rel=1e-6
+    )
+
+
+def test_production_tax_in_benchmark_sam_rejected():
+    """5d.1 models only a household→government benchmark transfer; a GOV receipt from a sector
+    (a production/indirect tax) has no modelled counterpart and must be rejected, not silently
+    mis-calibrated."""
+    import pandas as pd
+
+    sam = toy_sam()
+    acc = list(sam.accounts) + ["GOV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["GOV", "BRD"] = 5.0  # a production tax — unsupported
+    bad = sam.model_copy(update={"accounts": acc, "matrix": m})
+    with pytest.raises(ValueError, match="production/factor taxes are not yet modelled"):
+        calibrate(
+            bad,
+            sectors=_SECTORS,
+            factors=_FACTORS,
+            institutions={"household": "HOH", "government": "GOV"},
+        )
+
+
+def test_gov_transfer_to_household_rejected():
+    import pandas as pd
+
+    sam = toy_sam()
+    acc = list(sam.accounts) + ["GOV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["HOH", "GOV"] = 5.0  # a government→household transfer — unsupported
+    bad = sam.model_copy(update={"accounts": acc, "matrix": m})
+    with pytest.raises(ValueError, match="transfers .* not yet modelled"):
+        calibrate(
+            bad,
+            sectors=_SECTORS,
+            factors=_FACTORS,
+            institutions={"household": "HOH", "government": "GOV"},
+        )
+
+
+# -- engine wiring for the government account (Phase 5d.1) --------------------
+def test_engine_gov_sam_emits_fiscal_variables():
+    """A SAM carrying a GOV account runs through the engine end-to-end: fiscal_balance (≡0 under
+    balanced_budget) and gov_spending are emitted, and the manifest records the government
+    closure. A no-GOV run must NOT emit them (regression: pre-5d.1 output is unchanged)."""
+    eng = registry.get("cge_static")
+    data = {"SAM": _gov_funded_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}}
+    res = eng.run(data=data, shocks=[CarbonPrice(price=0.15)], years=[2020])
+    d = res.data
+    fb = d[d["variable"] == "fiscal_balance"]["value"]
+    gs = d[d["variable"] == "gov_spending"]["value"]
+    assert len(fb) == 1 and abs(float(fb.iloc[0])) < 1e-9  # balanced budget, visibly pinned
+    assert len(gs) == 1 and float(gs.iloc[0]) > 18.1 / 181.0  # benchmark tax + carbon revenue
+    assert res.manifest.assumptions["government_account"] == "GOV"
+    assert res.manifest.assumptions["gov_closure"] == "balanced_budget"
+    assert res.manifest.assumptions["gov_benchmark_tax_share_of_factor_income"] == pytest.approx(
+        0.1
+    )
+
+    plain = eng.run(
+        data={"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+        shocks=[CarbonPrice(price=0.15)],
+        years=[2020],
+    )
+    assert not (plain.data["variable"] == "fiscal_balance").any()
+    assert not (plain.data["variable"] == "gov_spending").any()
+    assert plain.manifest.assumptions["government_account"] == "none"
+
+
+def test_engine_gov_sam_zero_shock_replicates():
+    """The engine's replication gate covers the government column too: a zero-price run on the
+    tax-funded GOV SAM reproduces the benchmark (all changes ~0)."""
+    eng = registry.get("cge_static")
+    data = {"SAM": _gov_funded_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}}
+    res = eng.run(data=data, shocks=[CarbonPrice(price=0.0)], years=[2020])
+    d = res.data
+    for v in ("price_change", "volume_change", "gdp_change_real", "gov_spending"):
+        vals = d[d["variable"] == v]["value"].to_numpy()
+        assert len(vals) > 0, v
+        if v == "gov_spending":
+            assert vals[0] == pytest.approx(18.1 / 181.0, rel=1e-6)  # benchmark level, not 0
+        else:
+            assert np.allclose(vals, 0.0, atol=1e-6), v
+
+
 # -- CGE correctness battery --------------------------------------------------
 def test_benchmark_replication():
     cal = _cal()
