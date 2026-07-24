@@ -832,3 +832,149 @@ def test_engine_open_gov_zero_shock_replicates():
         assert np.allclose(vals, 0.0, atol=1e-6), v
     gs = float(d[d["variable"] == "gov_spending"]["value"].iloc[0])
     assert gs == pytest.approx(18.1 / 181.0, rel=1e-6)
+
+
+# -- savings-investment account (Phase 5d.2, open variant) --------------------
+def _savinv_open_sam():
+    """An open SAM with a TRADE DEFICIT (Sf = 8) and a SAVINV account: the ROW capital transfer
+    routes ROW→SAVINV (foreign savings finance investment — THE 5d.2 closure change), household
+    savings are 18.1 (10% of factor income 181), and investment 26.1 = 18.1 + 8 buys c_BRD (16)
+    and c_MIL (10.1). Household income is factor income only (no Sf)."""
+    sam = _build_open_sam(
+        exports={"BRD": 20.0, "MIL": 10.0},
+        imports={"BRD": 20.0, "MIL": 18.0},  # deficit: 38 − 30 = 8
+        domestic={"BRD": 80.0, "MIL": 110.0},
+    )
+    acc = list(sam.accounts) + ["SAVINV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["HOH", "ROW"] = 0.0  # re-route the capital inflow: household loses it...
+    m.loc["SAVINV", "ROW"] = 8.0  # ...the savings-investment account receives it
+    m.loc["SAVINV", "HOH"] = 18.1
+    m.loc["c_BRD", "SAVINV"] = 16.0
+    m.loc["c_MIL", "SAVINV"] = 10.1
+    m.loc["c_BRD", "HOH"] -= 16.0  # 85 → 69
+    m.loc["c_MIL", "HOH"] -= 10.1  # 104 → 93.9
+    return sam.model_copy(update={"accounts": acc, "matrix": m})
+
+
+def _cal_savinv(**kw):
+    return calibrate_open(
+        _savinv_open_sam(),
+        sectors=_SECTORS,
+        factors=_FACTORS,
+        institutions={"household": "HOH", "savings_investment": "SAVINV"},
+        **kw,
+    )
+
+
+def _solve_savinv(cal, cc=None, inv_closure="savings_driven", drop_factor=0):
+    ns, nf = len(cal.sectors), len(cal.factors)
+    cc = np.zeros(ns) if cc is None else cc
+    sol = solve(
+        lambda z: MO.residuals(
+            cal,
+            z,
+            carbon_cost=cc,
+            recycling="lump_sum",
+            inv_closure=inv_closure,
+            drop_factor=drop_factor,
+        ),
+        MO.initial_guess(cal) * 1.04,
+        prefer="scipy",
+    )
+    st = MO.derive_open_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns : 2 * ns],
+        sol.x[2 * ns : 2 * ns + nf],
+        float(sol.x[-1]),
+        carbon_cost=cc,
+        recycling="lump_sum",
+        strict=True,
+        inv_closure=inv_closure,
+    )
+    return sol, st
+
+
+def test_open_savinv_calibrates():
+    cal = _cal_savinv()
+    assert cal.has_investment and not cal.has_government
+    assert cal.sav_rate0 == pytest.approx(18.1 / 181.0)
+    assert cal.foreign_savings == pytest.approx(8.0 / 181.0)
+    assert np.allclose(cal.inv_gamma, [16.0 / 26.1, 10.1 / 26.1])
+
+
+def test_open_savinv_benchmark_replicates_under_both_closures():
+    """Tier 1: with a genuine trade deficit financing investment, the benchmark reproduces the
+    SAM — prices/er = 1, FD0 and INV0 — under BOTH closures."""
+    for closure in ("savings_driven", "fixed_real"):
+        cal = _cal_savinv()
+        sol, st = _solve_savinv(cal, inv_closure=closure)
+        assert np.allclose(sol.x, 1.0, atol=1e-7), closure
+        assert np.allclose(st.FD, cal.FD0, atol=1e-6), closure
+        assert np.allclose(st.ID, cal.INV0, atol=1e-6), closure
+
+
+def test_open_savinv_sf_routes_to_investment_not_household():
+    """THE 5d.2 open-economy identity, at a shocked equilibrium: household income excludes er·Sf
+    entirely, and nominal investment = household savings + er·Sf exactly."""
+    cal = _cal_savinv()
+    cc = 0.2 * _EMISSIONS
+    _sol, st = _solve_savinv(cal, cc=cc)
+    factor_income = float(np.dot(st.w, cal.endowment))
+    # Household: factor income + recycled revenue only — the Sf inflow is NOT in it.
+    assert st.income == pytest.approx(factor_income + st.carbon_revenue, rel=1e-9)
+    # Investment = savings + er·Sf (the open S-I identity).
+    assert float(np.dot(st.pq, st.ID)) == pytest.approx(
+        st.savings + st.er * cal.foreign_savings, rel=1e-9
+    )
+    assert st.savings == pytest.approx(cal.sav_rate0 * st.income, rel=1e-9)
+
+
+def test_open_savinv_walras_and_trade_balance_under_shock():
+    cal = _cal_savinv()
+    cc = 0.2 * _EMISSIONS
+    for closure in ("savings_driven", "fixed_real"):
+        _sol, st = _solve_savinv(cal, cc=cc, inv_closure=closure, drop_factor=0)
+        excess = float(st.F[0, :].sum()) - cal.endowment[0]
+        assert abs(excess) < 1e-6, closure
+        trade = float(st.M.sum() - st.E.sum()) - cal.foreign_savings
+        assert abs(trade) < 1e-6, closure
+
+
+def test_open_savinv_rejects_household_routed_transfer():
+    """Mixing routes is rejected: a SAM with a SAVINV account but the ROW capital transfer still
+    routed to the household is a probable mis-specification, not silently accepted."""
+    sam = _savinv_open_sam()
+    m = sam.matrix.copy()
+    m.loc["HOH", "ROW"] = 8.0  # put the transfer back on the household...
+    m.loc["SAVINV", "ROW"] = 0.0  # ...and off the investment account
+    bad = sam.model_copy(update={"matrix": m})
+    with pytest.raises(ValueError, match="must route ROW↔savings-investment"):
+        calibrate_open(
+            bad,
+            sectors=_SECTORS,
+            factors=_FACTORS,
+            institutions={"household": "HOH", "savings_investment": "SAVINV"},
+        )
+
+
+def test_engine_open_savinv_emits_investment():
+    """End-to-end: the open engine emits investment + savings (differing by exactly er·Sf), and
+    records the account/closure/rate in the manifest."""
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": _savinv_open_sam(), "carbon_cost_share": {"BRD": 0.2, "MIL": 0.05}},
+        shocks=[CarbonPrice(price=0.5)],
+        years=[2020],
+    )
+    d = res.data
+    inv = float(d[d["variable"] == "investment"]["value"].iloc[0])
+    sav = float(d[d["variable"] == "savings"]["value"].iloc[0])
+    assert inv > sav  # the deficit's foreign savings finance the gap
+    assert res.manifest.assumptions["savings_investment_account"] == "SAVINV"
+    assert res.manifest.assumptions["inv_closure"] == "savings_driven"
+    assert res.manifest.assumptions["benchmark_savings_rate_of_disposable_income"] == pytest.approx(
+        18.1 / 181.0
+    )

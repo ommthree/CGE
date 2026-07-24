@@ -64,6 +64,9 @@ class OpenModelState:
     GD: np.ndarray  # government final demand on the composite [i]
     gov_income: float  # government income (benchmark tax + carbon revenue)
     fiscal_balance: float  # income − spending (≡0 under balanced_budget)
+    # Savings-investment account (Phase 5d.2). Zeros when cal.has_investment is False.
+    ID: np.ndarray  # investment final demand on the composite [i]
+    savings: float  # household savings (investment = savings + er·Sf under savings_driven)
 
 
 def _va_unit_cost(cal: OpenCalibratedModel, w: np.ndarray) -> np.ndarray:
@@ -136,6 +139,7 @@ def derive_open_state(
     recycling: str = "lump_sum",
     strict: bool = False,
     gov_closure: str = "balanced_budget",
+    inv_closure: str = "savings_driven",
 ) -> OpenModelState:
     """Close the open model at prices (pd, pq, w, er): derive all quantities by CES/CET duals.
 
@@ -149,10 +153,18 @@ def derive_open_state(
 
     **Government account (Phase 5d.1, ``cal.has_government``):** exactly the closed model's
     design, with the open income identity. The household pays the benchmark direct tax
-    (rate·factor income) and keeps the er·Sf transfer; the GOVERNMENT collects carbon revenue and
-    spends tax+revenue on its own CD demand vector under ``balanced_budget``. Z is linear in the
-    total demand vector at fixed prices, so the government fixed point solves in closed form:
-    gov_income = (T + R0)/(1 − kg), R0 = cc·Z(FD), kg = cc·Z(gov_gamma/pq)."""
+    (rate·factor income); the GOVERNMENT collects carbon revenue and spends tax+revenue on its
+    own CD demand vector under ``balanced_budget``. Z is linear in the total demand vector at
+    fixed prices, so the government fixed point solves in closed form:
+    gov_income = (T + R0)/(1 − kg), R0 = cc·Z(FD), kg = cc·Z(gov_gamma/pq).
+
+    **Savings-investment account (Phase 5d.2, ``cal.has_investment``):** the genuine open-economy
+    closure change — the er·Sf capital transfer RE-ROUTES from household income into the
+    investment pool: household income = factor income − tax (no Sf), and investment = household
+    savings + er·Sf (foreign savings finance domestic investment, not consumption). Closures:
+    ``savings_driven`` (default; S = s·I_hh, nominal investment = S + er·Sf exactly) and
+    ``fixed_real`` (investment quantities pinned at INV0; household savings adjust residually,
+    S = pq·INV0 − er·Sf)."""
     ns = len(cal.sectors)
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pm = er * np.ones(ns)  # world import price 1
@@ -160,34 +172,85 @@ def derive_open_state(
     pv = _va_unit_cost(cal, w)
     pz = _cet_price(cal, pd, pe)
 
-    # Household income = factor income + the net ROW capital transfer + recycled carbon revenue.
-    # Foreign savings Sf is a fixed foreign-currency inflow, so it enters income valued at the
-    # exchange rate (er·Sf) — this lets the model run a **non-zero current account** and still
-    # replicate. At fixed prices every quantity is LINEAR in income (FD = γ·I/pq, Q solves a linear
-    # system in FD, Z = ratio·Z), so the recycling fixed point solves in closed form: writing
-    # base = factor_income + er·Sf and Z = I·z_unit, I = base + k·I ⇒ I = base/(1−k), guarded k < 1.
+    # Household income: factor income + (WITHOUT a savings-investment account) the net ROW capital
+    # transfer + recycled carbon revenue. Foreign savings Sf is a fixed foreign-currency inflow
+    # valued at the exchange rate (er·Sf); with a savings-investment account it finances
+    # INVESTMENT instead (Phase 5d.2). At fixed prices every quantity is LINEAR in the demand
+    # vector (FD = γ·I/pq, Q solves a linear system in demand, Z = ratio·Q), so every fixed point
+    # below solves in closed form, guarded k < 1.
     factor_income = float(np.dot(w, cal.endowment))
     recycles = recycling != "none" and np.any(cc != 0.0)
+    if cal.has_investment and inv_closure not in ("savings_driven", "fixed_real"):
+        raise ValueError(
+            f"unsupported inv_closure {inv_closure!r}; 5d.2 implements 'savings_driven' "
+            "(default) and 'fixed_real'."
+        )
+    s = cal.sav_rate0 if cal.has_investment else 0.0
+    sf = er * cal.foreign_savings  # the capital-account inflow in domestic currency
 
     if not cal.has_government:
-        # Pre-5d.1 behaviour, unchanged: carbon revenue recycles straight to the household.
-        base_income = factor_income + er * cal.foreign_savings
-        if recycles:
-            _, z_unit, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq)
-            k = float(cc @ z_unit)
+        if not cal.has_investment:
+            # Pre-5d behaviour, unchanged: er·Sf and recycled revenue both go to the household.
+            base_income = factor_income + sf
+            if recycles:
+                _, z_unit, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq)
+                k = float(cc @ z_unit)
+                if strict and k >= 1.0 - 1e-12:
+                    raise ValueError(
+                        f"open recycling fixed point diverges: carbon revenue ≥ income "
+                        f"(k={k:.6g} ≥ 1) at the equilibrium; the recycled transfer would exceed "
+                        "factor income. Lower the carbon price."
+                    )
+                # Non-strict: a smooth positive floor on (1−k) keeps income finite and the
+                # residual C¹-continuous with a restoring gradient when a trial point has k≥1
+                # (review P2); it is the identity for a real equilibrium.
+                income = base_income / _safe_denom(1.0 - k)
+            else:
+                income = base_income
+            FD = cal.gamma * income / pq
+            ID = np.zeros(ns)
+            savings = 0.0
+        elif inv_closure == "savings_driven":
+            # Household income = factor income + recycled revenue (NO er·Sf — it funds
+            # investment). Demand has an income-proportional part u·I and a fixed part
+            # inv_gamma·sf/pq, so R = k·I + c0 and I = (FI + c0)/(1−k).
+            u = ((1.0 - s) * cal.gamma + s * cal.inv_gamma) / pq
+            id_sf = cal.inv_gamma * sf / pq  # the Sf-financed part of investment demand
+            if recycles:
+                _, z_u, *_ = _quantities(cal, pd, pq, pm, pe, pz, u)
+                k = float(cc @ z_u)
+                _, z_sf, *_ = _quantities(cal, pd, pq, pm, pe, pz, id_sf)
+                c0 = float(cc @ z_sf)
+            else:
+                k, c0 = 0.0, 0.0
             if strict and k >= 1.0 - 1e-12:
+                raise ValueError(f"open recycling fixed point diverges (k={k:.6g} ≥ 1)")
+            income = (factor_income + c0) / _safe_denom(1.0 - k)
+            savings = s * income
+            FD = (1.0 - s) * income * cal.gamma / pq
+            ID = (savings + sf) * cal.inv_gamma / pq
+        else:  # fixed_real
+            ID = cal.INV0.copy()
+            p_inv = float(np.dot(pq, ID))
+            if recycles:
+                _, z_unit, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq)
+                k = float(cc @ z_unit)
+                _, z_id, *_ = _quantities(cal, pd, pq, pm, pe, pz, ID)
+                c_inv = float(cc @ z_id)
+            else:
+                k, c_inv = 0.0, 0.0
+            if strict and k >= 1.0 - 1e-12:
+                raise ValueError(f"open recycling fixed point diverges (k={k:.6g} ≥ 1)")
+            # Savings = pq·INV0 − er·Sf (residual); consumption income = I − savings. With
+            # recycling, R = k·(I − savings) + c_inv and I = FI + R:
+            savings = p_inv - sf
+            income = (factor_income - k * savings + c_inv) / _safe_denom(1.0 - k)
+            if strict and income - savings <= 0:
                 raise ValueError(
-                    f"open recycling fixed point diverges: carbon revenue ≥ income (k={k:.6g} ≥ 1) "
-                    "at the equilibrium; the recycled transfer would exceed factor income. Lower "
-                    "the carbon price."
+                    f"fixed_real investment leaves no consumption (savings {savings:.6g} ≥ "
+                    f"income {income:.6g}); lower the shock or use savings_driven."
                 )
-            # Non-strict: a smooth positive floor on (1−k) keeps income finite and the residual
-            # C¹-continuous with a restoring gradient when a trial point has k≥1 (review P2); it is
-            # the identity for a real equilibrium (1−k well above the floor).
-            income = base_income / _safe_denom(1.0 - k)
-        else:
-            income = base_income
-        FD = cal.gamma * income / pq
+            FD = (income - savings) * cal.gamma / pq
         GD = np.zeros(ns)
         gov_income = 0.0
     else:
@@ -196,13 +259,32 @@ def derive_open_state(
                 f"unsupported gov_closure {gov_closure!r} (5d.1 only implements "
                 "'balanced_budget'; 'deficit_financed' is Phase 5d.7)"
             )
-        # Household: factor income + er·Sf − direct tax; carbon revenue no longer enters it.
+        # Household: factor income − direct tax, + er·Sf ONLY without a savings-investment
+        # account; carbon revenue never enters it.
         tax = cal.gov_tax_rate0 * factor_income
-        income = factor_income + er * cal.foreign_savings - tax
-        FD = cal.gamma * income / pq
+        if not cal.has_investment:
+            income = factor_income + sf - tax
+            FD = cal.gamma * income / pq
+            ID = np.zeros(ns)
+            savings = 0.0
+        elif inv_closure == "savings_driven":
+            income = factor_income - tax
+            savings = s * income
+            FD = (1.0 - s) * income * cal.gamma / pq
+            ID = (savings + sf) * cal.inv_gamma / pq
+        else:  # fixed_real
+            income = factor_income - tax
+            ID = cal.INV0.copy()
+            savings = float(np.dot(pq, ID)) - sf
+            if strict and income - savings <= 0:
+                raise ValueError(
+                    f"fixed_real investment leaves no consumption (savings {savings:.6g} ≥ "
+                    f"disposable income {income:.6g})."
+                )
+            FD = (income - savings) * cal.gamma / pq
         if recycles:
-            _, z_fd, *_ = _quantities(cal, pd, pq, pm, pe, pz, FD)
-            r0 = float(cc @ z_fd)  # revenue from (price-fixed) household demand alone
+            _, z_fd, *_ = _quantities(cal, pd, pq, pm, pe, pz, FD + ID)
+            r0 = float(cc @ z_fd)  # revenue from the (price-fixed) household+investment demand
             _, z_unit_g, *_ = _quantities(cal, pd, pq, pm, pe, pz, cal.gov_gamma * 1.0 / pq)
             kg = float(cc @ z_unit_g)  # marginal revenue per unit of government spending
         else:
@@ -215,20 +297,27 @@ def derive_open_state(
         gov_income = (tax + r0) / _safe_denom(1.0 - kg)
         GD = cal.gov_gamma * gov_income / pq
 
-    Q, Z, D, E, M = _quantities(cal, pd, pq, pm, pe, pz, FD + GD)
+    Q, Z, D, E, M = _quantities(cal, pd, pq, pm, pe, pz, FD + GD + ID)
     carbon_revenue = float(cc @ Z)
     # Independent check of the income identity we just solved (cheap; catches any regression in the
     # linearity assumption above). Only in strict mode — the non-strict clamp deliberately violates
     # the identity to steer the solver, so checking it there would defeat the smooth-penalty design.
     if strict:
         if not cal.has_government:
-            resid = income - (
-                factor_income + er * cal.foreign_savings + (carbon_revenue if recycles else 0.0)
-            )
+            base = factor_income + (sf if not cal.has_investment else 0.0)
+            resid = income - (base + (carbon_revenue if recycles else 0.0))
         else:
             resid = gov_income - (cal.gov_tax_rate0 * factor_income + carbon_revenue)
         if abs(resid) > 1e-9 * max(1.0, abs(income)):  # pragma: no cover - guards the closed form
             raise ValueError(f"open income identity not satisfied (residual {resid:.3e}).")
+        # Savings-investment identity (Phase 5d.2): nominal investment = savings + er·Sf, under
+        # either closure (fixed_real defines savings as exactly this residual).
+        if cal.has_investment:
+            resid_si = float(np.dot(pq, ID)) - (savings + sf)
+            if abs(resid_si) > 1e-9 * max(1.0, abs(savings) + abs(sf)):  # pragma: no cover
+                raise ValueError(
+                    f"open savings-investment identity not satisfied (residual {resid_si:.3e})."
+                )
     # Factor demand (Shephard on VA cost).
     va_cost = cal.va_share * pv * Z
     F = _factor_demand(cal, w, pv, va_cost)
@@ -250,6 +339,8 @@ def derive_open_state(
         GD=GD,
         gov_income=gov_income,
         fiscal_balance=0.0,  # balanced_budget: spending exhausts income by construction
+        ID=ID,
+        savings=savings,
     )
 
 
@@ -303,6 +394,7 @@ def residuals(
     carbon_cost: np.ndarray | None = None,
     recycling: str = "lump_sum",
     drop_factor: int = 0,
+    inv_closure: str = "savings_driven",
 ) -> np.ndarray:
     ns = len(cal.sectors)
     nf = len(cal.factors)
@@ -312,7 +404,9 @@ def residuals(
     er = float(z[2 * ns + nf])
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
 
-    st = derive_open_state(cal, pd, pq, w, er, carbon_cost=cc, recycling=recycling)
+    st = derive_open_state(
+        cal, pd, pq, w, er, carbon_cost=cc, recycling=recycling, inv_closure=inv_closure
+    )
     pm = er * np.ones(ns)
     pe = er * np.ones(ns)
     pv = _va_unit_cost(cal, w)

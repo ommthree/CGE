@@ -25,10 +25,11 @@ a ``GOV`` SAM account (closed/open) or one ``GOV_<r>`` per region (multi-region)
 a real institution — it collects carbon revenue (and an optional benchmark household→government
 direct tax, stored as a rate on factor income) and spends on its own calibrated demand vector
 under a balanced budget, with ``fiscal_balance``/``gov_spending`` emitted. A **savings-investment
-account** (Phase 5d.2, closed variant) is supported via a ``SAVINV`` SAM account: household
-savings (a calibrated rate on disposable income) become investment demand with its own sectoral
-composition, under a ``savings_driven`` (default) or ``fixed_real`` closure, with
-``investment``/``savings`` emitted. Savings-investment in the open/multi variants, capital
+account** (Phase 5d.2, all variants) is supported via a ``SAVINV`` SAM account (``SAVINV_<r>`` per
+region in multi): household savings (a calibrated rate on disposable income) become investment
+demand with its own sectoral composition, under a ``savings_driven`` (default) or ``fixed_real``
+closure, with ``investment``/``savings`` emitted. In the open/multi variants the foreign-savings
+inflow re-routes into the investment pool (financing investment, not consumption). Capital
 accumulation (5d.3) and an energy nest (5d.5) remain reopened Phase 5 debt tracked as roadmap
 Phase 5d.
 
@@ -54,7 +55,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -825,6 +826,9 @@ def _assert_open_replicates(cal, base, x0: np.ndarray) -> None:
     if cal.has_government:
         # Benchmark government demand must reproduce its SAM column too (Phase 5d.1).
         checks["government demand GD"] = (base.GD, cal.GD0)
+    if cal.has_investment:
+        # Likewise the benchmark investment column (Phase 5d.2), under either closure.
+        checks["investment demand ID"] = (base.ID, cal.INV0)
     _raise_if_not_replicating(checks, "open")
 
 
@@ -843,6 +847,9 @@ def _assert_multi_replicates(cal, base, x0: np.ndarray) -> None:
     if cal.has_government:
         # Benchmark government demand must reproduce its SAM columns too (Phase 5d.1).
         checks["government demand GD"] = (base.GD, cal.GD0)
+    if cal.has_investment:
+        # Likewise the benchmark investment columns (Phase 5d.2), under either closure.
+        checks["investment demand ID"] = (base.ID, cal.INV0)
     _raise_if_not_replicating(checks, "multi-region")
 
 
@@ -880,7 +887,8 @@ def _validate_open_sam(sam: SAM, sectors: list[str], factors: list[str]) -> None
         if not a.startswith(("a_", "c_"))
         and a not in factors
         and a != "ROW"
-        and a != _GOV_ACCOUNT  # GOV is an institution by name (Phase 5d.1), not a household
+        # GOV/SAVINV are institutions by name (Phase 5d.1/5d.2), not households.
+        and a not in (_GOV_ACCOUNT, _SAVINV_ACCOUNT)
     ]
     if len(households) != 1:
         raise ValueError(f"open SAM expects exactly one household account, got {households}")
@@ -1098,18 +1106,30 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     if recycling_defaulted:
         recycling = "lump_sum"  # the open economy also circulates carbon revenue to the household
 
-    # Government account (Phase 5d.1): same by-name convention as the closed variant. The
-    # household is the unique remaining institution (validated in _validate_open_sam).
+    # Government (Phase 5d.1) and savings-investment (Phase 5d.2) accounts: same by-name
+    # convention as the closed variant. The household is the unique remaining institution
+    # (validated in _validate_open_sam).
+    special = {_GOV_ACCOUNT, _SAVINV_ACCOUNT} & set(sam.accounts)
     institutions = None
-    if _GOV_ACCOUNT in sam.accounts:
+    if special:
         hoh = next(
             a
             for a in sam.accounts
             if not a.startswith(("a_", "c_"))
             and a not in factors
-            and a not in ("ROW", _GOV_ACCOUNT)
+            and a != "ROW"
+            and a not in special
         )
-        institutions = {"household": hoh, "government": _GOV_ACCOUNT}
+        institutions = {"household": hoh}
+        if _GOV_ACCOUNT in special:
+            institutions["government"] = _GOV_ACCOUNT
+        if _SAVINV_ACCOUNT in special:
+            institutions["savings_investment"] = _SAVINV_ACCOUNT
+    inv_closure = data.get("inv_closure", "savings_driven")
+    if inv_closure not in ("savings_driven", "fixed_real"):
+        raise ValueError(
+            f"unsupported inv_closure {inv_closure!r}; use 'savings_driven' or 'fixed_real'."
+        )
 
     cal = calibrate_open(
         sam,
@@ -1120,10 +1140,17 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         cet_elast=data.get("cet_elast", 2.0),
         institutions=institutions,
     )
+    if inv_closure != "savings_driven" and not cal.has_investment:
+        raise ValueError(
+            f"inv_closure={inv_closure!r} needs a {_SAVINV_ACCOUNT!r} account in the SAM; "
+            "this SAM has none, so the closure choice would silently do nothing."
+        )
 
     def _solve_year(cc):
         sol = solve(
-            lambda z: MO.residuals(cal, z, carbon_cost=cc, recycling=recycling),
+            lambda z: MO.residuals(
+                cal, z, carbon_cost=cc, recycling=recycling, inv_closure=inv_closure
+            ),
             MO.initial_guess(cal),
             prefer="scipy",
         )
@@ -1138,6 +1165,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             carbon_cost=cc,
             recycling=recycling,
             strict=True,
+            inv_closure=inv_closure,
         )
         return sol, st
 
@@ -1208,6 +1236,13 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             "gov_benchmark_tax_share_of_factor_income": (
                 round(float(cal.gov_tax_rate0), 12) if cal.has_government else 0.0
             ),
+            # Savings-investment account (Phase 5d.2). With it, er·Sf routes into the investment
+            # pool (investment = savings + er·Sf), not household income.
+            "savings_investment_account": _SAVINV_ACCOUNT if cal.has_investment else "none",
+            "inv_closure": inv_closure if cal.has_investment else "n/a (no investment)",
+            "benchmark_savings_rate_of_disposable_income": (
+                round(float(cal.sav_rate0), 12) if cal.has_investment else 0.0
+            ),
             "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
             # SAM credibility surface when the open SAM was built from an IOSystem (None when a SAM
@@ -1247,10 +1282,10 @@ def _emit_open(records, cal, base, st, year: int) -> None:
     # figure diverges from the correct C+X−M change (the prior code silently used the special case
     # Sf=0 as if it were the general identity — the existing GDP==welfare test only exercised a
     # zero-current-account fixture).
-    # C + G + (X − M): household consumption, government consumption (zero without a GOV account —
-    # Phase 5d.1), and net exports, all at CPI-numéraire prices.
-    consumption = float(np.dot(st.pq, st.FD + st.GD))
-    consumption_base = float(np.dot(base.pq, base.FD + base.GD))
+    # C + G + I + (X − M): household consumption, government consumption (Phase 5d.1), investment
+    # (Phase 5d.2 — both zero without their accounts), and net exports, at CPI-numéraire prices.
+    consumption = float(np.dot(st.pq, st.FD + st.GD + st.ID))
+    consumption_base = float(np.dot(base.pq, base.FD + base.GD + base.ID))
     net_exports = st.er * float(st.E.sum() - st.M.sum())
     net_exports_base = base.er * float(base.E.sum() - base.M.sum())
     real_gdp = consumption + net_exports
@@ -1266,6 +1301,13 @@ def _emit_open(records, cal, base, st, year: int) -> None:
         records.append(_rec("fiscal_balance", "__economy__", year, st.fiscal_balance / cal.gdp0))
         gov_spend = float(np.dot(st.pq, st.GD))
         records.append(_rec("gov_spending", "__economy__", year, gov_spend / cal.gdp0))
+    # Savings-investment account (Phase 5d.2): nominal investment and household savings, shares of
+    # benchmark GDP. Investment = savings + er·Sf under savings_driven (the open S-I identity —
+    # they differ by exactly the foreign-savings inflow, unlike the closed variant's S=I).
+    if cal.has_investment:
+        inv_spend = float(np.dot(st.pq, st.ID))
+        records.append(_rec("investment", "__economy__", year, inv_spend / cal.gdp0))
+        records.append(_rec("savings", "__economy__", year, st.savings / cal.gdp0))
 
 
 def _ratio(x: float, x0: float) -> float:
@@ -1368,9 +1410,22 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     if recycling_defaulted:
         recycling = "lump_sum"
 
-    # Government accounts (Phase 5d.1): GOV_<r> per region, by the same naming convention as
-    # HOH_<r>. calibrate_multi enforces the all-regions-or-none rule and the flow restrictions.
+    # Government (Phase 5d.1) and savings-investment (Phase 5d.2) accounts: GOV_<r>/SAVINV_<r>
+    # per region, by the same naming convention as HOH_<r>. calibrate_multi enforces the
+    # all-regions-or-none rule and the flow restrictions (incl. capital transfers routing between
+    # the SAVINV accounts, not between households).
     has_gov_accounts = any(a.startswith("GOV_") for a in sam.accounts)
+    has_savinv_accounts = any(a.startswith("SAVINV_") for a in sam.accounts)
+    inv_closure = data.get("inv_closure", "savings_driven")
+    if inv_closure not in ("savings_driven", "fixed_real"):
+        raise ValueError(
+            f"unsupported inv_closure {inv_closure!r}; use 'savings_driven' or 'fixed_real'."
+        )
+    if inv_closure != "savings_driven" and not has_savinv_accounts:
+        raise ValueError(
+            f"inv_closure={inv_closure!r} needs SAVINV_<r> accounts in the SAM; this SAM has "
+            "none, so the closure choice would silently do nothing."
+        )
     cal = calibrate_multi(
         sam,
         regions=regions,
@@ -1380,16 +1435,21 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         cet_elast=data.get("cet_elast", 2.0),
         va_elast=data.get("va_elast", 1.0),
         government=has_gov_accounts,
+        savings_investment=has_savinv_accounts,
     )
 
     def _solve_year(cc):
         sol = solve(
-            lambda z: MM.residuals(cal, z, carbon_cost=cc, recycling=recycling),
+            lambda z: MM.residuals(
+                cal, z, carbon_cost=cc, recycling=recycling, inv_closure=inv_closure
+            ),
             MM.initial_guess(cal),
             prefer="scipy",
         )
         # strict=True enforces the recycling k<1 feasibility guard on the ACCEPTED equilibrium.
-        st = MM.unpack_state(cal, sol.x, carbon_cost=cc, recycling=recycling, strict=True)
+        st = MM.unpack_state(
+            cal, sol.x, carbon_cost=cc, recycling=recycling, strict=True, inv_closure=inv_closure
+        )
         return sol, st
 
     _bsol, base = _solve_year(np.zeros((nr, ns)))
@@ -1457,6 +1517,15 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
                 [round(float(v), 12) for v in cal.gov_tax_rate0.tolist()]
                 if cal.has_government
                 else []
+            ),
+            # Savings-investment accounts (Phase 5d.2): Sf_r routes into each region's investment
+            # pool (investment_r = savings_r + Sf_r), not household income.
+            "savings_investment_account": (
+                "SAVINV_<r> per region" if cal.has_investment else "none"
+            ),
+            "inv_closure": inv_closure if cal.has_investment else "n/a (no investment)",
+            "benchmark_savings_rate_of_disposable_income_by_region": (
+                [round(float(v), 12) for v in cal.sav_rate0.tolist()] if cal.has_investment else []
             ),
             "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
@@ -1559,6 +1628,17 @@ def _emit_multi(records, cal, base, st, year: int) -> None:
             gov_spend = float(np.dot(st.pq[ri], st.GD[ri]))
             records.append(
                 _rec_r("gov_spending", "__economy__", region, year, gov_spend / regional_gdp0)
+            )
+        # Savings-investment accounts (Phase 5d.2): per-region nominal investment and household
+        # savings, shares of the region's OWN benchmark GDP. investment_r = savings_r + Sf_r under
+        # savings_driven — they differ by exactly the region's capital-account inflow.
+        if cal.has_investment:
+            inv_spend = float(np.dot(st.pq[ri], st.ID[ri]))
+            records.append(
+                _rec_r("investment", "__economy__", region, year, inv_spend / regional_gdp0)
+            )
+            records.append(
+                _rec_r("savings", "__economy__", region, year, st.savings[ri] / regional_gdp0)
             )
 
 

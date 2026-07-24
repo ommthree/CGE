@@ -71,6 +71,9 @@ class MultiModelState:
     GD: np.ndarray  # [r, s] government final demand
     gov_income: np.ndarray  # [r] government income (benchmark tax + own-region carbon revenue)
     fiscal_balance: np.ndarray  # [r] income − spending (≡0 under balanced_budget)
+    # Savings-investment accounts (Phase 5d.2). Zeros when cal.has_investment is False.
+    ID: np.ndarray  # [r, s] investment final demand
+    savings: np.ndarray  # [r] household savings (investment_r = savings_r + Sf_r)
 
 
 def _va_unit_cost(cal: MultiCalibratedModel, w: np.ndarray) -> np.ndarray:
@@ -242,6 +245,7 @@ def derive_multi_state(
     recycling: str = "lump_sum",
     strict: bool = False,
     gov_closure: str = "balanced_budget",
+    inv_closure: str = "savings_driven",
 ) -> MultiModelState:
     """Close the multi-region model at prices (pd, pq, pe, w): derive all quantities and per-region
     income. ``carbon_cost`` is [r,s]. Income per region = factor income + Sf transfer + recycled
@@ -254,36 +258,99 @@ def derive_multi_state(
     and spends tax+revenue on its own CD demand vector under ``balanced_budget``. The per-region
     fixed point is exact because ``_quantities`` is block-diagonal in demand per region at fixed
     prices (region r's output depends only on region r's demand): gov_income_r =
-    (T_r + R0_r)/(1 − kg_r)."""
+    (T_r + R0_r)/(1 − kg_r).
+
+    **Savings-investment accounts (Phase 5d.2, ``cal.has_investment``):** one per region; the
+    bilateral capital transfer Sf_r RE-ROUTES from household income into the region's investment
+    pool: investment_r = household savings_r + Sf_r. Closures ``savings_driven`` (default) and
+    ``fixed_real`` mirror the open model, per region."""
     nr, ns = cal.nr, cal.ns
     cc = np.zeros((nr, ns)) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pv = _va_unit_cost(cal, w)
     pz = _cet_price(cal, pd, pe)
 
-    # Per-region income: base = factor income + the fixed foreign-savings transfer (Sf valued at the
-    # bilateral prices is exactly the benchmark Sf at benchmark; here we hold Sf at its calibrated
-    # nominal level, consistent with the fixed-Sf closure). Recycled carbon revenue adds k·I.
+    # Per-region income: base = factor income + (WITHOUT a savings-investment layer) the fixed
+    # foreign-savings transfer Sf (held at its calibrated nominal level, the fixed-Sf closure).
+    # Recycled carbon revenue adds k·I when no government collects it.
     factor_income = (w * cal.endowment).sum(axis=0)  # [r]
     recycles = recycling != "none" and np.any(cc != 0.0)
+    if cal.has_investment and inv_closure not in ("savings_driven", "fixed_real"):
+        raise ValueError(
+            f"unsupported inv_closure {inv_closure!r}; 5d.2 implements 'savings_driven' "
+            "(default) and 'fixed_real'."
+        )
+    s = cal.sav_rate0 if cal.has_investment else np.zeros(nr)
+    sf = cal.foreign_savings  # [r] fixed nominal capital-account inflow
+
+    def _k_of(demand):
+        """Per-region marginal carbon revenue of a demand array [r,s] (exact: block-diagonal)."""
+        _, z_d, *_ = _quantities(cal, pd, pq, pe, pz, demand)
+        return (cc * z_d).sum(axis=1)
 
     if not cal.has_government:
-        # Pre-5d.1 behaviour, unchanged: revenue recycles straight to each region's household.
-        base_income = factor_income + cal.foreign_savings  # [r]
-        income = base_income.copy()
-        if recycles:
-            FD_unit = cal.gamma / pq  # per-unit-income FD
-            _, Zc, *_ = _quantities(cal, pd, pq, pe, pz, FD_unit)
-            k = (cc * Zc).sum(axis=1)  # [r]
+        if not cal.has_investment:
+            # Pre-5d behaviour, unchanged: Sf and recycled revenue both go to the household.
+            base_income = factor_income + sf  # [r]
+            income = base_income.copy()
+            if recycles:
+                k = _k_of(cal.gamma / pq)  # [r]
+                if strict and np.any(k >= 1.0 - 1e-12):
+                    bad = int(np.argmax(k))
+                    raise ValueError(
+                        f"multi-region recycling fixed point diverges in region "
+                        f"{cal.regions[bad]}: carbon revenue ≥ income (k={k[bad]:.6g} ≥ 1). "
+                        "Lower the carbon price."
+                    )
+                k = np.clip(k, None, 1.0 - 1e-9)
+                income = base_income / (1.0 - k)
+            FD = cal.gamma * income[:, None] / pq
+            ID = np.zeros((nr, ns))
+            savings = np.zeros(nr)
+        elif inv_closure == "savings_driven":
+            # Household income = factor income + recycled revenue (Sf funds investment). Demand
+            # has an income-proportional part u·I and a fixed Sf part, so I = (FI + c0)/(1−k).
+            u = ((1.0 - s)[:, None] * cal.gamma + s[:, None] * cal.inv_gamma) / pq
+            id_sf = cal.inv_gamma * sf[:, None] / pq
+            if recycles:
+                k = _k_of(u)
+                c0 = _k_of(id_sf)
+            else:
+                k, c0 = np.zeros(nr), np.zeros(nr)
             if strict and np.any(k >= 1.0 - 1e-12):
                 bad = int(np.argmax(k))
                 raise ValueError(
                     f"multi-region recycling fixed point diverges in region "
-                    f"{cal.regions[bad]}: carbon revenue ≥ income (k={k[bad]:.6g} ≥ 1). Lower the "
-                    "carbon price."
+                    f"{cal.regions[bad]} (k={k[bad]:.6g} ≥ 1); lower the carbon price."
                 )
             k = np.clip(k, None, 1.0 - 1e-9)
-            income = base_income / (1.0 - k)
-        FD = cal.gamma * income[:, None] / pq
+            income = (factor_income + c0) / (1.0 - k)
+            savings = s * income
+            FD = (1.0 - s)[:, None] * income[:, None] * cal.gamma / pq
+            ID = (savings + sf)[:, None] * cal.inv_gamma / pq
+        else:  # fixed_real
+            ID = cal.INV0.copy()
+            p_inv = (pq * ID).sum(axis=1)  # [r]
+            savings = p_inv - sf
+            if recycles:
+                k = _k_of(cal.gamma / pq)
+                c_inv = _k_of(ID)
+            else:
+                k, c_inv = np.zeros(nr), np.zeros(nr)
+            if strict and np.any(k >= 1.0 - 1e-12):
+                bad = int(np.argmax(k))
+                raise ValueError(
+                    f"multi-region recycling fixed point diverges in region "
+                    f"{cal.regions[bad]} (k={k[bad]:.6g} ≥ 1); lower the carbon price."
+                )
+            k = np.clip(k, None, 1.0 - 1e-9)
+            income = (factor_income - k * savings + c_inv) / (1.0 - k)
+            if strict and np.any(income - savings <= 0):
+                bad = int(np.argmax(savings - income))
+                raise ValueError(
+                    f"fixed_real investment leaves no consumption in region "
+                    f"{cal.regions[bad]}; lower the shock or use savings_driven."
+                )
+            FD = (income - savings)[:, None] * cal.gamma / pq
         GD = np.zeros((nr, ns))
         gov_income = np.zeros(nr)
     else:
@@ -292,15 +359,32 @@ def derive_multi_state(
                 f"unsupported gov_closure {gov_closure!r} (5d.1 only implements "
                 "'balanced_budget'; 'deficit_financed' is Phase 5d.7)"
             )
-        # Household per region: factor income + Sf − direct tax; no carbon revenue in it.
+        # Household per region: factor income − direct tax, + Sf ONLY without a savings-
+        # investment layer; no carbon revenue in it.
         tax = cal.gov_tax_rate0 * factor_income  # [r]
-        income = factor_income + cal.foreign_savings - tax
-        FD = cal.gamma * income[:, None] / pq
+        if not cal.has_investment:
+            income = factor_income + sf - tax
+            FD = cal.gamma * income[:, None] / pq
+            ID = np.zeros((nr, ns))
+            savings = np.zeros(nr)
+        elif inv_closure == "savings_driven":
+            income = factor_income - tax
+            savings = s * income
+            FD = (1.0 - s)[:, None] * income[:, None] * cal.gamma / pq
+            ID = (savings + sf)[:, None] * cal.inv_gamma / pq
+        else:  # fixed_real
+            income = factor_income - tax
+            ID = cal.INV0.copy()
+            savings = (pq * ID).sum(axis=1) - sf
+            if strict and np.any(income - savings <= 0):
+                bad = int(np.argmax(savings - income))
+                raise ValueError(
+                    f"fixed_real investment leaves no consumption in region {cal.regions[bad]}."
+                )
+            FD = (income - savings)[:, None] * cal.gamma / pq
         if recycles:
-            _, z_fd, *_ = _quantities(cal, pd, pq, pe, pz, FD)
-            r0 = (cc * z_fd).sum(axis=1)  # [r] revenue from (price-fixed) household demand
-            _, z_g, *_ = _quantities(cal, pd, pq, pe, pz, cal.gov_gamma / pq)
-            kg = (cc * z_g).sum(axis=1)  # [r] marginal revenue per unit of own-gov spending
+            r0 = _k_of(FD + ID)  # [r] revenue from the (price-fixed) household+investment demand
+            kg = _k_of(cal.gov_gamma / pq)  # [r] marginal revenue per unit of own-gov spending
         else:
             r0, kg = np.zeros(nr), np.zeros(nr)
         if strict and np.any(kg >= 1.0 - 1e-12):
@@ -313,7 +397,7 @@ def derive_multi_state(
         gov_income = (tax + r0) / (1.0 - kg)  # [r]
         GD = cal.gov_gamma * gov_income[:, None] / pq
 
-    Q, Z, D, EX, M = _quantities(cal, pd, pq, pe, pz, FD + GD)
+    Q, Z, D, EX, M = _quantities(cal, pd, pq, pe, pz, FD + GD + ID)
     carbon_revenue = (cc * Z).sum(axis=1)  # [r]
     va_cost = cal.va_share * pv * Z
     F = _factor_demand(cal, w, pv, va_cost)
@@ -335,6 +419,8 @@ def derive_multi_state(
         GD=GD,
         gov_income=gov_income,
         fiscal_balance=np.zeros(nr),  # balanced_budget by construction
+        ID=ID,
+        savings=savings,
     )
 
 
@@ -373,12 +459,15 @@ def residuals(
     carbon_cost: np.ndarray | None = None,
     recycling: str = "lump_sum",
     drop_factor: int = 0,
+    inv_closure: str = "savings_driven",
 ) -> np.ndarray:
     nr, ns, nf = cal.nr, cal.ns, cal.nf
     pd, pq, pe, w = _unpack(cal, z)
     cc = np.zeros((nr, ns)) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
 
-    st = derive_multi_state(cal, pd, pq, pe, w, carbon_cost=cc, recycling=recycling)
+    st = derive_multi_state(
+        cal, pd, pq, pe, w, carbon_cost=cc, recycling=recycling, inv_closure=inv_closure
+    )
     pv = _va_unit_cost(cal, w)
     pz = _cet_price(cal, pd, pe)
 
@@ -418,9 +507,19 @@ def n_unknowns(cal: MultiCalibratedModel) -> int:
     return 2 * cal.nr * cal.ns + len(cal.active_routes) + cal.nf * cal.nr
 
 
-def unpack_state(cal, x, *, carbon_cost=None, recycling="lump_sum", strict=True):
+def unpack_state(
+    cal, x, *, carbon_cost=None, recycling="lump_sum", strict=True, inv_closure="savings_driven"
+):
     """Convenience: derive the model state from a solved unknown vector (used by the engine)."""
     pd, pq, pe, w = _unpack(cal, x)
     return derive_multi_state(
-        cal, pd, pq, pe, w, carbon_cost=carbon_cost, recycling=recycling, strict=strict
+        cal,
+        pd,
+        pq,
+        pe,
+        w,
+        carbon_cost=carbon_cost,
+        recycling=recycling,
+        strict=strict,
+        inv_closure=inv_closure,
     )

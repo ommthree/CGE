@@ -1,17 +1,19 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: 5d.1 COMPLETE; 5d.2 closed-variant landed** (engine v0.7.0). 5d.1: government account
-in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure, benchmark direct
-tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs — `docs/models/
+**Status: 5d.1 COMPLETE; 5d.2 COMPLETE (all three variants)** (engine v0.7.1). 5d.1: government
+account in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure, benchmark
+direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs — `docs/models/
 cge-static.md` §4b; `deficit_financed` reserved for 5d.7 as planned). 5d.2: savings-investment
-account in the closed variant (`SAVINV`, savings rate on disposable income, `savings_driven` +
-`fixed_real` closures both switchable and tested, S=I identity verified at every strict
-evaluation, `investment`/`savings` outputs — §4c). **Notably the plan's anticipated +1
-unknown/+1 equation never materialises**: both closures substitute the savings-investment
-identity in closed form, so the system stays square in (p,w) — the §0.3 square-count risk is
-discharged trivially. Remaining in 5d.2: the open/multi generalisation (foreign savings must
-re-route from household income into the savings pool — a genuine closure change). 5d.3–5d.7 not
-started. This is the detailed implementation plan for Phase 5d, reopened Phase 5
+account in all three variants (`SAVINV` / `SAVINV_<r>` per region, savings rate on disposable
+income, `savings_driven` + `fixed_real` closures both switchable and tested, `investment`/`savings`
+outputs — §4c). **The plan's anticipated +1 unknown/+1 equation never materialised**: every
+closure substitutes the savings-investment identity in closed form, so all three residual systems
+stay square — the §0.3 square-count risk was discharged trivially. **The genuine open/multi
+closure change** (identified in the plan) landed too: foreign savings re-route from household
+income into the investment pool (SAM: ROW↔`SAVINV` / inter-`SAVINV` capital transfers, not
+ROW↔household / HOH↔HOH), so the open/multi identity is `p·ID = S + er·Sf` — investment and
+savings differ by exactly the capital-account inflow. Mixing the two routes is rejected at
+calibration. 5d.3–5d.7 not started. This is the detailed implementation plan for Phase 5d, reopened Phase 5
 debt (see `roadmap.md` §Phase 5 correction note and `docs/phase-5-plan.md`'s status header). Phase
 5's original §2/§3 design called for a government/fiscal account, savings/investment with capital
 accumulation, and a genuine KL-E-M energy nest; none of these existed in the implemented model

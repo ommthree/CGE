@@ -626,3 +626,160 @@ def test_engine_multi_gov_zero_shock_replicates():
     for region in ("N", "S"):
         val = float(gs[gs["region"] == region]["value"].iloc[0])
         assert val == pytest.approx(0.1, rel=1e-6)  # 10% of own-region GDP at benchmark
+
+
+# -- savings-investment accounts (Phase 5d.2, multi-region variant) -----------
+def _savinv_multi_sam():
+    """toy_multi_sam plus one SAVINV_<r> per region (both regions' current accounts are balanced
+    in the toy, so Sf_r = 0 and investment = own savings): N saves 16.8 (10% of 168) buying
+    c_N_BRD (10) + c_N_MIL (6.8); S saves 14.8 (10% of 148) buying c_S_BRD (8) + c_S_MIL (6.8)."""
+    sam = toy_multi_sam()
+    acc = list(sam.accounts) + ["SAVINV_N", "SAVINV_S"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["SAVINV_N", "HOH_N"] = 16.8
+    m.loc["c_N_BRD", "SAVINV_N"] = 10.0
+    m.loc["c_N_MIL", "SAVINV_N"] = 6.8
+    m.loc["c_N_BRD", "HOH_N"] -= 10.0
+    m.loc["c_N_MIL", "HOH_N"] -= 6.8
+    m.loc["SAVINV_S", "HOH_S"] = 14.8
+    m.loc["c_S_BRD", "SAVINV_S"] = 8.0
+    m.loc["c_S_MIL", "SAVINV_S"] = 6.8
+    m.loc["c_S_BRD", "HOH_S"] -= 8.0
+    m.loc["c_S_MIL", "HOH_S"] -= 6.8
+    return sam.model_copy(update={"accounts": acc, "matrix": m})
+
+
+def _cal_savinv(**kw):
+    return calibrate_multi(
+        _savinv_multi_sam(),
+        regions=REGIONS,
+        sectors=SECTORS,
+        factors=_FACTORS,
+        savings_investment=True,
+        **kw,
+    )
+
+
+def test_multi_savinv_calibrates():
+    cal = _cal_savinv()
+    assert cal.has_investment and not cal.has_government
+    assert np.allclose(cal.sav_rate0, [0.1, 0.1])
+    assert np.allclose(cal.inv_gamma[0], [10.0 / 16.8, 6.8 / 16.8])
+    assert np.allclose(cal.inv_gamma[1], [8.0 / 14.8, 6.8 / 14.8])
+
+
+def test_multi_savinv_benchmark_replicates_under_both_closures():
+    cal = _cal_savinv()
+    for closure in ("savings_driven", "fixed_real"):
+        sol = solve(
+            lambda z, cl=closure: MM.residuals(cal, z, recycling="lump_sum", inv_closure=cl),
+            MM.initial_guess(cal) * 1.03,
+            prefer="scipy",
+        )
+        st = MM.unpack_state(cal, sol.x, recycling="lump_sum", inv_closure=closure)
+        assert np.allclose(sol.x, 1.0, atol=1e-7), closure
+        assert np.allclose(st.FD, cal.FD0, atol=1e-7), closure
+        assert np.allclose(st.ID, cal.INV0, atol=1e-7), closure
+
+
+def test_multi_savinv_identity_under_shock():
+    """Per-region S-I identity at a shocked equilibrium: investment_r = savings_r + Sf_r, and
+    household income excludes Sf (here Sf = 0, so investment = savings exactly, still a real
+    check that revenue/income routing is right)."""
+    cal = _cal_savinv()
+    cc = np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3
+    sol = solve(
+        lambda z: MM.residuals(cal, z, carbon_cost=cc, recycling="lump_sum"),
+        MM.initial_guess(cal) * 1.03,
+        prefer="scipy",
+    )
+    st = MM.unpack_state(cal, sol.x, carbon_cost=cc, recycling="lump_sum")
+    factor_income = (st.w * cal.endowment).sum(axis=0)
+    # Household income = factor income + own-region recycled revenue (no Sf, no gov here).
+    assert np.allclose(st.income, factor_income + st.carbon_revenue, atol=1e-9)
+    inv_nominal = (st.pq * st.ID).sum(axis=1)
+    assert np.allclose(inv_nominal, st.savings + cal.foreign_savings, atol=1e-9)
+    assert np.allclose(st.savings, cal.sav_rate0 * st.income, atol=1e-9)
+
+
+def test_multi_savinv_walras_under_shock():
+    cal = _cal_savinv()
+    cc = np.zeros((cal.nr, cal.ns))
+    cc[0, 0] = 0.3
+    for closure in ("savings_driven", "fixed_real"):
+        sol = solve(
+            lambda z, cl=closure: MM.residuals(
+                cal, z, carbon_cost=cc, recycling="lump_sum", inv_closure=cl, drop_factor=0
+            ),
+            MM.initial_guess(cal) * 1.03,
+            prefer="scipy",
+        )
+        st = MM.unpack_state(
+            cal, sol.x, carbon_cost=cc, recycling="lump_sum", strict=False, inv_closure=closure
+        )
+        excess = float(st.F[0, 0, :].sum()) - cal.endowment[0, 0]
+        assert abs(excess) < 1e-6, closure
+
+
+def test_multi_savinv_partial_layout_rejected():
+    sam = toy_multi_sam()
+    acc = list(sam.accounts) + ["SAVINV_N"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    bad = sam.model_copy(update={"accounts": acc, "matrix": m})
+    with pytest.raises(ValueError, match="every region; missing .*SAVINV_S"):
+        calibrate_multi(
+            bad,
+            regions=REGIONS,
+            sectors=SECTORS,
+            factors=_FACTORS,
+            savings_investment=True,
+        )
+
+
+def test_multi_savinv_household_capital_transfer_rejected():
+    """With SAVINV accounts, a cross-region HOH↔HOH capital transfer (the pre-5d.2 routing) is
+    rejected — capital must flow between the SAVINV accounts."""
+    sam = _savinv_multi_sam()
+    m = sam.matrix.copy()
+    m.loc["HOH_N", "HOH_S"] = 3.0  # a household-routed capital transfer
+    bad = sam.model_copy(update={"matrix": m})
+    with pytest.raises(ValueError, match="cross-region household transfers"):
+        calibrate_multi(
+            bad,
+            regions=REGIONS,
+            sectors=SECTORS,
+            factors=_FACTORS,
+            savings_investment=True,
+        )
+
+
+def test_engine_multi_savinv_emits_investment():
+    """End-to-end: SAVINV_<r> accounts dispatch through the multi variant, emit per-region
+    investment + savings, and record the manifest keys; a no-SAVINV run emits neither."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": _savinv_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}},
+        shocks=[CarbonPrice(price=0.5)],
+        years=[2020],
+    )
+    d = res.data
+    inv = d[d["variable"] == "investment"]
+    sav = d[d["variable"] == "savings"]
+    assert set(inv["region"]) == {"N", "S"} and set(sav["region"]) == {"N", "S"}
+    assert res.manifest.assumptions["savings_investment_account"] == "SAVINV_<r> per region"
+    assert res.manifest.assumptions[
+        "benchmark_savings_rate_of_disposable_income_by_region"
+    ] == pytest.approx([0.1, 0.1])
+
+    plain = eng.run(
+        data={"SAM": toy_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}},
+        shocks=[CarbonPrice(price=0.5)],
+        years=[2020],
+    )
+    assert not (plain.data["variable"] == "investment").any()
+    assert plain.manifest.assumptions["savings_investment_account"] == "none"

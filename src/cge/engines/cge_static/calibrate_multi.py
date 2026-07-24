@@ -95,6 +95,13 @@ class MultiCalibratedModel:
     gov_income0: np.ndarray | None = None  # [r] benchmark government income (GDP-normalised)
     GD0: np.ndarray | None = None  # [r, s] benchmark government demand (GDP-normalised)
     gov_tax_rate0: np.ndarray | None = None  # [r] benchmark tax rate on regional factor income
+    # Savings-investment accounts (Phase 5d.2; None ⇒ pre-5d.2 behaviour, the bilateral capital
+    # transfer Sf_r goes to households). One ``SAVINV_<r>`` per region, all-or-nothing. With them,
+    # each region's investment = its household savings + its Sf_r (capital transfers route between
+    # the SAVINV accounts, not between households).
+    inv_gamma: np.ndarray | None = None  # [r, s] investment demand composition (sum→1 per region)
+    INV0: np.ndarray | None = None  # [r, s] benchmark investment demand (GDP-normalised)
+    sav_rate0: np.ndarray | None = None  # [r] savings rate on regional disposable income
 
     @property
     def gdp0(self) -> float:
@@ -103,6 +110,10 @@ class MultiCalibratedModel:
     @property
     def has_government(self) -> bool:
         return self.gov_gamma is not None
+
+    @property
+    def has_investment(self) -> bool:
+        return self.inv_gamma is not None
 
     @property
     def nr(self) -> int:
@@ -189,6 +200,7 @@ def calibrate_multi(
     cet_elast: float = DEFAULT_CET_ELAST,
     va_elast: float = 1.0,
     government: bool = False,
+    savings_investment: bool = False,
 ) -> MultiCalibratedModel:
     """Calibrate the multi-region CGE from a globally-balanced multi-region SAM with
     ``a_<r>_<s>``/``c_<r>_<s>`` activity/commodity accounts, per-region factors ``<f>_<r>`` and
@@ -199,7 +211,14 @@ def calibrate_multi(
     like ``HOH_<r>`` — all regions must have one): each region's government buys its OWN region's
     composites (its ``c_<r>_<s>`` column) financed by a ``HOH_<r>``→``GOV_<r>`` direct tax,
     stored as a rate on that region's factor income. Cross-region government flows, production/
-    factor taxes and transfers are rejected explicitly (5d follow-ups)."""
+    factor taxes and transfers are rejected explicitly (5d follow-ups).
+
+    ``savings_investment=True`` (Phase 5d.2) reads one ``SAVINV_<r>`` per region (all-or-nothing).
+    Each buys its own region's composites (investment demand), financed by its household's savings
+    (a rate on regional disposable income) **plus that region's foreign savings Sf_r — the
+    bilateral capital transfers must route between the SAVINV accounts, not between households**
+    (the 5d.2 closure change: capital flows finance investment, not consumption; a
+    cross-region HOH↔HOH transfer is rejected when SAVINV accounts are present)."""
     m = sam.matrix
     nr, ns = len(regions), len(sectors)
 
@@ -278,10 +297,70 @@ def calibrate_multi(
                     f"{g} is unbalanced: benchmark receipts {gov_tax0[ri]:.6g} ≠ spending "
                     f"{float(GD0[ri].sum()):.6g}."
                 )
+    INV0 = None
+    sav0 = None
+    if savings_investment:
+        missing = [f"SAVINV_{r}" for r in regions if f"SAVINV_{r}" not in sam.accounts]
+        if missing:
+            raise ValueError(
+                f"savings_investment=True needs a SAVINV_<r> account for every region; missing "
+                f"{missing} (all regions or none)."
+            )
+        INV0 = np.array(
+            [[m.loc[c(r, s), f"SAVINV_{r}"] for s in sectors] for r in regions], dtype=float
+        )
+        sav0 = np.array([m.loc[f"SAVINV_{r}", f"HOH_{r}"] for r in regions], dtype=float)
+        savinv_names = {f"SAVINV_{r}" for r in regions}
+        for r in regions:
+            si_acc = f"SAVINV_{r}"
+            own_com = {c(r, s) for s in sectors}
+            allowed_in = {f"HOH_{r}"} | (savinv_names - {si_acc})
+            bad_in = [
+                a
+                for a in sam.accounts
+                if a not in allowed_in and abs(float(m.loc[si_acc, a])) > 1e-9 and a != si_acc
+            ]
+            allowed_out = own_com | (savinv_names - {si_acc})
+            bad_out = [
+                a
+                for a in sam.accounts
+                if a not in allowed_out and abs(float(m.loc[a, si_acc])) > 1e-9 and a != si_acc
+            ]
+            if bad_in:
+                raise ValueError(
+                    f"{si_acc} receives from accounts {bad_in}: only HOH_{r} savings and "
+                    "inter-SAVINV capital transfers are modelled (Phase 5d follow-up)."
+                )
+            if bad_out:
+                raise ValueError(
+                    f"{si_acc} pays accounts {bad_out}: a region's savings-investment account "
+                    "may only buy its own region's composites or transfer to other SAVINV "
+                    "accounts (the bilateral capital account)."
+                )
+        # With SAVINV accounts, capital transfers must route between them — a cross-region
+        # household transfer would put Sf back into consumption income (the pre-5d.2 routing).
+        hoh_names = [f"HOH_{r}" for r in regions]
+        bad_hoh = [
+            (a, b)
+            for a in hoh_names
+            for b in hoh_names
+            if a != b and abs(float(m.loc[a, b])) > 1e-9
+        ]
+        if bad_hoh:
+            raise ValueError(
+                f"with SAVINV accounts, cross-region household transfers {bad_hoh} are rejected: "
+                "bilateral capital must route between the SAVINV accounts (foreign savings "
+                "finance investment, not consumption)."
+            )
     # Composite use of commodity s in region r = Σ_i INT0[r, s, i] + FD (s used by each activity i)
-    # + government demand (Phase 5d.1). INT0[r,j,i] is composite j used by activity i, so use of
-    # commodity s = INT0[r,s,:].sum().
-    Q0 = INT0.sum(axis=2) + FD0 + (GD0 if GD0 is not None else 0.0)
+    # + government demand (Phase 5d.1) + investment demand (Phase 5d.2). INT0[r,j,i] is composite j
+    # used by activity i, so use of commodity s = INT0[r,s,:].sum().
+    Q0 = (
+        INT0.sum(axis=2)
+        + FD0
+        + (GD0 if GD0 is not None else 0.0)
+        + (INV0 if INV0 is not None else 0.0)
+    )
 
     # Normalise by global GDP.
     scale = float(F0.sum())
@@ -292,6 +371,8 @@ def calibrate_multi(
     )
     if GD0 is not None:
         GD0, gov_tax0 = GD0 / scale, gov_tax0 / scale
+    if INV0 is not None:
+        INV0, sav0 = INV0 / scale, sav0 / scale
 
     if float(Z0.min()) <= 0 or float(Q0.min()) <= 0 or float(D0.min()) <= 0:
         raise ValueError("multi-region SAM has non-positive output / composite / domestic sales")
@@ -359,6 +440,30 @@ def calibrate_multi(
         )
         gov_tax_rate0 = gov_tax0 / endowment.sum(axis=0)  # [r] tax / regional factor income
 
+    # Savings-investment parameters (Phase 5d.2): per-region composition and savings rate on
+    # regional DISPOSABLE income, plus the per-region balance check investment = savings + Sf_r —
+    # which implicitly validates that the inter-SAVINV capital transfers settle each region's
+    # current account (the direct transfer cells are free to settle it any zero-sum way).
+    inv_gamma = None
+    sav_rate0 = None
+    if INV0 is not None:
+        inv_total = INV0.sum(axis=1)  # [r]
+        for ri, r in enumerate(regions):
+            expected = sav0[ri] + foreign_savings[ri]
+            if abs(inv_total[ri] - expected) > 1e-6 * max(1.0, abs(expected)):
+                raise ValueError(
+                    f"SAVINV_{r} is unbalanced: investment {inv_total[ri]:.6g} ≠ household "
+                    f"savings {sav0[ri]:.6g} + foreign savings {foreign_savings[ri]:.6g}; the "
+                    "inter-SAVINV capital transfers do not settle the region's current account."
+                )
+        inv_gamma = np.where(
+            (inv_total > 0)[:, None],
+            INV0 / np.where(inv_total > 0, inv_total, 1.0)[:, None],
+            gamma,
+        )
+        disposable0 = endowment.sum(axis=0) - (gov_tax0 if gov_tax0 is not None else 0.0)
+        sav_rate0 = sav0 / disposable0  # [r]
+
     model = MultiCalibratedModel(
         regions=list(regions),
         sectors=list(sectors),
@@ -392,6 +497,9 @@ def calibrate_multi(
         gov_income0=gov_income0,
         GD0=GD0,
         gov_tax_rate0=gov_tax_rate0,
+        inv_gamma=inv_gamma,
+        INV0=INV0,
+        sav_rate0=sav_rate0,
     )
 
     # A single global numéraire + a single globally-dropped factor-market equation is only a valid

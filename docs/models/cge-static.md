@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.7.0)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.7.1)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -43,16 +43,16 @@ factor endowments, CPI numéraire, a carbon price as a per-unit emissions cost w
 §4b) is supported in **all three variants**: a `GOV` SAM account (closed/open) or one `GOV_<r>`
 per region (multi-region) makes government a real institution that collects carbon revenue (and an
 optional benchmark direct tax) and spends on its own calibrated demand vector under a **balanced
-budget**. A **savings-investment account** (Phase 5d.2, §4c) is supported in the **closed**
-variant: a `SAVINV` SAM account turns household savings (a calibrated rate on disposable income)
-into investment demand with its own sectoral composition, under a **savings-driven** (default) or
-**fixed-real** closure. An **open-economy variant** (§8) adds Armington imports and CET exports
-with a rest-of-world account — chosen automatically when the SAM carries a `ROW` account.
+budget**. A **savings-investment account** (Phase 5d.2, §4c) is supported in **all three
+variants**: a `SAVINV` SAM account (`SAVINV_<r>` per region in multi-region) turns household
+savings (a calibrated rate on disposable income) into investment demand with its own sectoral
+composition, under a **savings-driven** (default) or **fixed-real** closure; in the open and
+multi-region variants the foreign-savings inflow re-routes into the investment pool (financing
+investment, not consumption). An **open-economy variant** (§8) adds Armington imports and CET
+exports with a rest-of-world account — chosen automatically when the SAM carries a `ROW` account.
 
 **Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today);
-the savings-investment account in the **open/multi-region** variants (closed only today — the
-open/multi generalisation routes foreign savings into the investment pool instead of household
-income, a genuine closure change); a **deficit-financed government closure** (Phase 5d.7 —
+a **deficit-financed government closure** (Phase 5d.7 —
 today's government cannot run a deficit/surplus: `fiscal_balance` ≡ 0 by construction),
 **production/factor taxes, government→household transfers, government savings, government trade
 (GOV↔ROW), and cross-region government purchases** (a benchmark SAM carrying them is rejected
@@ -252,14 +252,16 @@ through prices, not through cross-region demand quantities). `fiscal_balance`/`g
 emitted per region as shares of that region's **own** benchmark GDP, consistent with
 `carbon_revenue`.
 
-### 4c. Savings and investment (Phase 5d.2 — closed variant)
+### 4c. Savings and investment (Phase 5d.2 — all variants)
 
 A `SAVINV` account (recognised by name, like `GOV`) makes investment a genuine final-demand
 component instead of everything being consumed. Its column calibrates the investment composition
 $\gamma^v_i = INV^0_i/\sum_k INV^0_k$ (typically capital-goods-heavy, unlike consumption); its
 single supported receipt is household savings, converted to a **rate on disposable income**
 $s = S^0/(Y^0 - T^0)$ — the same rate-not-level logic as the direct tax, so replication and
-homogeneity both survive. Coexists freely with the government account (§4b).
+homogeneity both survive. Coexists freely with the government account (§4b). The equations below
+are stated for the closed variant; the **open** and **multi-region** generalisations follow at the
+end of this section.
 
 **Closures** (`inv_closure`, switchable by config, both tested):
 
@@ -281,11 +283,31 @@ this static model (standard static-CGE treatment): welfare is still CD utility o
 only, and the savings *rate* is a calibrated constant, not an intertemporal choice — the
 capital-accumulation identity that makes investment mean something across periods is Phase 5d.3.
 New outputs: `investment` and `savings` (shares of benchmark GDP; equal under `savings_driven` by
-construction — emitted so the identity is visible, like `fiscal_balance`). The manifest records
-`savings_investment_account`, `inv_closure`, and the benchmark savings rate. **Closed variant
-only**: the open/multi generalisation must also re-route foreign savings ($er\cdot S_f$) from
-household income into the savings pool — a genuine closure change, not a mechanical extension —
-and is the remaining 5d.2 work.
+construction in the closed variant — emitted so the identity is visible, like `fiscal_balance`).
+The manifest records `savings_investment_account`, `inv_closure`, and the benchmark savings rate.
+
+**Open variant — the genuine closure change.** Foreign savings finance investment, not
+consumption: the `er\cdot S_f` capital-account inflow **re-routes** from household income into the
+investment pool. Concretely, the SAM's ROW capital transfer must run ROW↔`SAVINV` (a ROW↔household
+transfer is rejected when a `SAVINV` account is present — mixing the two routes is a probable
+mis-specification). Household income is then factor income $-$ tax (no $er\cdot S_f$); the
+savings-investment identity becomes $p\cdot ID = S + er\cdot S_f$ — nominal investment equals
+household savings **plus** the foreign inflow, so `investment` and `savings` now differ by exactly
+$er\cdot S_f$ (unlike the closed variant's $S=I$). Both closures carry over: `savings_driven`
+($S = s\cdot I^{hh}$, $ID = \gamma^v(S + er S_f)/pq$) and `fixed_real` ($ID = INV^0$ pinned,
+$S = pq\cdot INV^0 - er S_f$ residual). Still square in $(pd, pq, w, er)$ — every fixed point
+substitutes in closed form.
+
+**Multi-region variant.** One `SAVINV_<r>` per region (all-or-nothing, like the governments).
+Each region's bilateral capital transfer $S_{f,r}$ re-routes into its own investment pool
+($p_r\cdot ID_r = S_r + S_{f,r}$), so the inter-region capital transfers must settle **between the
+`SAVINV` accounts** (a cross-region household transfer is rejected). Emitted per region as shares
+of the region's own benchmark GDP.
+
+Across all variants, savings carry **no utility** in this static model (standard static-CGE
+treatment): welfare is still CD utility over consumption only, and the savings *rate* is a
+calibrated constant, not an intertemporal choice — the capital-accumulation identity that makes
+investment mean something across periods is Phase 5d.3.
 
 ## 5. Calibration
 
