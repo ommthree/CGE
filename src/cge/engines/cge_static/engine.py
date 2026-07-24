@@ -29,9 +29,12 @@ account** (Phase 5d.2, all variants) is supported via a ``SAVINV`` SAM account (
 region in multi): household savings (a calibrated rate on disposable income) become investment
 demand with its own sectoral composition, under a ``savings_driven`` (default) or ``fixed_real``
 closure, with ``investment``/``savings`` emitted. In the open/multi variants the foreign-savings
-inflow re-routes into the investment pool (financing investment, not consumption). Capital
-accumulation (5d.3) and an energy nest (5d.5) remain reopened Phase 5 debt tracked as roadmap
-Phase 5d.
+inflow re-routes into the investment pool (financing investment, not consumption). A **labour-
+market closure** (Phase 5d.4, closed variant) adds an optional ``labour_floor`` (a wage floor,
+via a regime-switch) with involuntary ``unemployment``, alongside the default flexible-wage /
+full-employment closure. The capital-accumulation identity (5d.3) lives in ``capital.py`` (a
+standalone module for Phase 7.1, not wired into the solve); an energy nest (5d.5) remains reopened
+Phase 5 debt tracked as roadmap Phase 5d.
 
 Data contract (``data`` dict): either a ``SAM`` supplied directly (validated: aligned, finite,
 non-negative, balanced) with an optional per-sector dimensionless ``carbon_cost_share``, OR an
@@ -55,7 +58,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.7.1"
+VERSION = "0.8.0"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -99,9 +102,13 @@ ASSUMPTIONS = {
         "so it is not a valid counterfactual; a government/external account is a follow-up)."
     ),
     "closure": (
-        "savings-less pilot; fixed factor supply; numéraire = the exact Cobb-Douglas consumer "
-        "price index (Π p_i^γ_i = 1). The CPI is the unit of account, so no inflation/deflator is "
-        "reported; outputs are real quantities and relative (CPI-unit) prices."
+        "numéraire = the exact Cobb-Douglas consumer price index (Π p_i^γ_i = 1), the unit of "
+        "account, so no inflation/deflator is reported; outputs are real quantities and relative "
+        "(CPI-unit) prices. Factor SUPPLY is fixed. Factor-market closure: flexible wage / full "
+        "employment by default (see labour_closure); an optional labour_floor switches on a wage "
+        "floor with involuntary unemployment (Phase 5d.4). Savings/investment and a government "
+        "account are opt-in via SAM accounts (Phase 5d.1/5d.2; see the government_account / "
+        "savings_investment_account keys)."
     ),
     "solver_rule": (
         "non-optimal solve raises (well-posedness); solver backend, termination status, and "
@@ -319,6 +326,12 @@ class CGEStaticEngine:
                 f"inv_closure={inv_closure!r} needs a {_SAVINV_ACCOUNT!r} account in the SAM; "
                 "this SAM has none, so the closure choice would silently do nothing."
             )
+        # Labour-market closure (Phase 5d.4): default flexible-wage/full-employment; an optional
+        # ``labour_floor`` (a wage floor, in benchmark CPI-numéraire units where the benchmark
+        # wage = 1) switches on the wage-floor closure via a regime-switch in _solve.
+        labour_floor = data.get("labour_floor")
+        if labour_floor is not None and (not np.isfinite(labour_floor) or float(labour_floor) <= 0):
+            raise ValueError(f"labour_floor must be a positive wage; got {labour_floor!r}.")
         ns = len(sectors)
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
@@ -361,8 +374,22 @@ class CGEStaticEngine:
             recycling = "lump_sum"
             recycling_defaulted = True
 
-        # Benchmark solve (zero shock) — the replication point, and the base for % changes.
-        base_sol = _solve(cal, carbon_cost=np.zeros(ns), recycling="none", inv_closure=inv_closure)
+        # Benchmark solve (zero shock) — the replication point, and the base for % changes. The
+        # labour floor is NOT applied here: the benchmark is the calibration point, full employment
+        # at wage 1 by construction (that is what the SAM represents). The floor is a floor on the
+        # POST-SHOCK wage — it only binds when a shock pushes the wage below it, so it is a well-
+        # posed floor iff it is below 1 (a floor ≥ 1 would try to bind at the benchmark, which is
+        # nonsensical; rejected up front so the run fails loudly rather than at the replication
+        # gate).
+        if labour_floor is not None and labour_floor >= 1.0 - 1e-12:
+            raise ValueError(
+                f"labour_floor={labour_floor} is ≥ the benchmark wage (1.0); a wage floor is a "
+                "floor on the POST-SHOCK wage and must be below the benchmark wage to be "
+                "meaningful (the benchmark is full employment at wage 1 by construction)."
+            )
+        base_sol, _ = _solve(
+            cal, carbon_cost=np.zeros(ns), recycling="none", inv_closure=inv_closure
+        )
         base = M.derive_state(cal, base_sol.x[:ns], base_sol.x[ns:], inv_closure=inv_closure)
         # Universal post-calibration replication gate (review P1): a balanced SAM can pass the
         # structural validators yet not conform to the implemented model (e.g. an unsupported
@@ -375,9 +402,17 @@ class CGEStaticEngine:
         backends: set[str] = {base_sol.backend}
         statuses: set[str] = {base_sol.status}
         resid_max: float = base_sol.residual_norm
+        floor_ever_bound = False
         for year in years:
             cc, _prov = cc_by_year[year]
-            sol = _solve(cal, carbon_cost=cc, recycling=recycling, inv_closure=inv_closure)
+            sol, floor_applied = _solve(
+                cal,
+                carbon_cost=cc,
+                recycling=recycling,
+                inv_closure=inv_closure,
+                labour_floor=labour_floor,
+            )
+            floor_ever_bound = floor_ever_bound or floor_applied is not None
             backends.add(sol.backend)
             statuses.add(sol.status)
             resid_max = max(resid_max, sol.residual_norm)
@@ -391,6 +426,7 @@ class CGEStaticEngine:
                 recycling=recycling,
                 strict=True,
                 inv_closure=inv_closure,
+                labour_floor=floor_applied,
             )
             _emit(records, cal, base, st, year)
 
@@ -432,6 +468,15 @@ class CGEStaticEngine:
                 "benchmark_savings_rate_of_disposable_income": (
                     round(float(cal.sav_rate0), 12) if cal.has_investment else 0.0
                 ),
+                # Labour-market closure (Phase 5d.4): the default flexible-wage/full-employment, or
+                # a wage floor. ``labour_floor_bound`` records whether the floor actually bound in
+                # any year (a configured-but-slack floor leaves the full-employment result and is
+                # honestly reported as not binding).
+                "labour_closure": (
+                    "wage_floor" if labour_floor is not None else "flexible_wage_full_employment"
+                ),
+                "labour_floor": float(labour_floor) if labour_floor is not None else None,
+                "labour_floor_bound": floor_ever_bound,
                 "solver_backends": sorted(backends),
                 "solver_statuses": sorted(statuses),
                 # The strongest numerical convergence evidence: max ‖F(x)‖∞ over all solves. The
@@ -687,18 +732,46 @@ def _infer_sectors(sam: SAM, factors: list[str]) -> list[str]:
     ]
 
 
-def _solve(cal, *, carbon_cost, recycling="none", inv_closure="savings_driven"):
+def _solve(cal, *, carbon_cost, recycling="none", inv_closure="savings_driven", labour_floor=None):
     # prefer='scipy' explicitly: the CGE model residual is numeric-only (it evaluates the Leontief
     # inverse and Cobb-Douglas cost functions with numpy), so it cannot build a symbolic Pyomo
     # model. Auto-selecting IPOPT when its binary is present would therefore FAIL (review P1). A
     # symbolic residual to enable IPOPT is a documented follow-up; scipy solves the small model.
-    return solve(
+    #
+    # Labour-market regime-switch (Phase 5d.4): first solve the DEFAULT full-employment system. If
+    # no floor is configured, or the equilibrium labour wage already sits at/above the floor (it is
+    # slack), that solution stands — returned with ``floor_applied=None`` so the caller derives the
+    # state with the same (no-floor) closure. Only when the unconstrained wage would fall BELOW the
+    # floor do we re-solve the wage-floor system (LAB clears on the pinned wage, not on quantity),
+    # returning the floor so the caller reports the resulting unemployment. This avoids a genuine
+    # mixed-complementarity solver — the scipy backend can't do MCP — while giving the right
+    # economics for the documented case.
+    sol = solve(
         lambda z: M.residuals(
             cal, z, carbon_cost=carbon_cost, recycling=recycling, inv_closure=inv_closure
         ),
         M.initial_guess(cal),
         prefer="scipy",
     )
+    if labour_floor is None or "LAB" not in cal.factors:
+        return sol, None
+    lab = cal.factors.index("LAB")
+    w_lab = float(sol.x[len(cal.sectors) + lab])
+    if w_lab >= labour_floor - 1e-12:
+        return sol, None  # floor is slack — full employment stands
+    floor_sol = solve(
+        lambda z: M.residuals(
+            cal,
+            z,
+            carbon_cost=carbon_cost,
+            recycling=recycling,
+            inv_closure=inv_closure,
+            labour_floor=labour_floor,
+        ),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    return floor_sol, labour_floor
 
 
 def _emit(records, cal, base, st, year: int) -> None:
@@ -753,6 +826,12 @@ def _emit(records, cal, base, st, year: int) -> None:
         inv_spend = float(np.dot(st.p, st.ID))
         records.append(_rec("investment", "__economy__", year, inv_spend / cal.gdp0))
         records.append(_rec("savings", "__economy__", year, st.savings / cal.gdp0))
+    # Labour market (Phase 5d.4): the unemployment RATE (unemployed labour ÷ labour endowment),
+    # emitted only when a wage floor actually binds — a no-floor / full-employment run stays
+    # byte-identical to pre-5d.4 output.
+    if st.unemployment > 1e-9 and "LAB" in cal.factors:
+        lab_endow = float(cal.endowment[cal.factors.index("LAB")])
+        records.append(_rec("unemployment", "__economy__", year, st.unemployment / lab_endow))
 
 
 def _rec(variable: str, sector: str, year: int, value: float) -> dict:

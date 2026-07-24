@@ -1,6 +1,6 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: 5d.1, 5d.2, 5d.3 COMPLETE** (engine v0.7.1). 5d.1: government
+**Status: 5d.1, 5d.2, 5d.3, 5d.4 COMPLETE** (engine v0.8.0). 5d.1: government
 account in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure, benchmark
 direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs — `docs/models/
 cge-static.md` §4b; `deficit_financed` reserved for 5d.7 as planned). 5d.2: savings-investment
@@ -18,7 +18,16 @@ stateless, unit-tested module (`cge.engines.cge_static.capital`) — the Phase 7
 a 5%/yr depreciation default [OECD2009], an exogenous premature-retirement (stranded-asset) term,
 boundary validation, and a `benchmark_capital(cal)` adapter that extracts region-level $K_0$ from
 any variant (§4d). Deliberately NOT wired into the solve — the multi-year loop is Phase 7.1.
-5d.4–5d.7 not started. This is the detailed implementation plan for Phase 5d, reopened Phase 5
+5d.4: labour-market wage-floor closure (closed variant, §4e) — default flexible-wage/full-
+employment plus an optional `labour_floor` via a REGIME-SWITCH (solve full-employment first; if
+the unconstrained wage would fall below the floor, re-solve with the LAB clearing row replaced by
+the wage pin `w_L = floor` — labour demand ≤ supply slack, gap reported as `unemployment`). No MCP
+solver needed. The employed-labour income fixed point (household earns only employed labour → a
+contraction reusing the six income branches) keeps it exact. Walras re-proved: the CAP market still
+clears at the pinned-wage solution (the flagged Tier-1 check). Floor never applied to the benchmark
+(full employment at wage 1); floor ≥ 1 rejected. A slack floor is byte-identical to full
+employment. Wage-curve alternative + open/multi generalisation are documented follow-ups.
+5d.5–5d.7 not started. This is the detailed implementation plan for Phase 5d, reopened Phase 5
 debt (see `roadmap.md` §Phase 5 correction note and `docs/phase-5-plan.md`'s status header). Phase
 5's original §2/§3 design called for a government/fiscal account, savings/investment with capital
 accumulation, and a genuine KL-E-M energy nest; none of these existed in the implemented model

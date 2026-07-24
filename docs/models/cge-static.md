@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.7.1)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.8.0)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -48,8 +48,10 @@ variants**: a `SAVINV` SAM account (`SAVINV_<r>` per region in multi-region) tur
 savings (a calibrated rate on disposable income) into investment demand with its own sectoral
 composition, under a **savings-driven** (default) or **fixed-real** closure; in the open and
 multi-region variants the foreign-savings inflow re-routes into the investment pool (financing
-investment, not consumption). An **open-economy variant** (§8) adds Armington imports and CET
-exports with a rest-of-world account — chosen automatically when the SAM carries a `ROW` account.
+investment, not consumption). A **labour-market closure choice** (Phase 5d.4, §4e, closed variant)
+adds a wage floor with involuntary `unemployment` as an alternative to the default flexible-wage /
+full-employment closure. An **open-economy variant** (§8) adds Armington imports and CET exports
+with a rest-of-world account — chosen automatically when the SAM carries a `ROW` account.
 
 **Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today);
 a **deficit-financed government closure** (Phase 5d.7 —
@@ -59,8 +61,9 @@ today's government cannot run a deficit/surplus: `fiscal_balance` ≡ 0 by const
 explicitly); a **genuine energy nest** (KL–E–M — energy is a plain Leontief/CES intermediate
 today, not a separable nest a carbon price can shift substitution within); the **recursive-dynamic
 loop** (5d.3, §4d, provides the capital-accumulation *identity*; the multi-year wrapper that calls
-it year-over-year is Phase 7.1); heterogeneous households; and a distortionary labour-tax wedge
-(so the
+it year-over-year is Phase 7.1); the **wage-floor closure in the open/multi variants** and a
+**wage-curve** alternative (§4e is closed-variant, wage-floor only); heterogeneous households; and
+a distortionary labour-tax wedge (so the
 "double-dividend" channel that would distinguish labour-tax-cut from lump-sum recycling in a
 *single*-household model). Roadmap Phase 5.2 originally specified the government account,
 investment, and energy nest — they were dropped rather than carried forward, and are now tracked as
@@ -332,6 +335,41 @@ grounds) are documented out-of-scope extensions — retirement here is a scenari
 modelled decision. Inputs are validated at the boundary (a negative stock, out-of-range $\delta$
 or $r$ raise, rather than silently producing a bad stock), mirroring the `ElasticitySet`
 validator.
+
+### 4e. Labour market: wage floor & unemployment (Phase 5d.4 — closed variant)
+
+The **default** closure clears every factor market on quantity with a flexible price: labour is
+fully employed by construction, the wage adjusting to clear. This is a *closure choice*, not a
+structural fact — 5d.4 makes that explicit and adds an alternative.
+
+**Wage-floor closure** (`labour_floor`, a floor on the post-shock wage in CPI-numéraire units
+where the benchmark wage is 1, so a meaningful floor is $<1$). Labour *supply* is still fixed (no
+demographic response — out of scope). When the floor binds, the labour market no longer clears on
+quantity: the wage sits at the floor and labour *demand* falls short of supply, the gap reported
+as an `unemployment` rate (unemployed ÷ endowment). Because the household then earns only its
+**employed** labour, it is poorer — and employed labour depends on output which depends on income,
+so factor income is a scalar fixed point $FI = w_K K + w_L\,L_{\text{emp}}(FI)$, solved by
+iteration (a contraction reusing the existing income branches; converges to machine precision).
+
+**Regime-switch implementation.** A wage floor is a complementarity condition (wage = floor *when*
+demand < supply; wage floats and clears *when* demand ≥ supply at the floor), which is not a
+smooth equation — and the scipy backend does not do mixed-complementarity. So the engine
+**regime-switches**: solve the default full-employment system first; if the unconstrained wage sits
+at/above the floor it is slack and that solution stands (byte-identical to a no-floor run — the
+regression-safety case); only if the unconstrained wage would fall *below* the floor does it
+re-solve the wage-floor system, where the LAB factor-clearing residual row is **replaced by the
+wage pin** $w_L - \text{floor} = 0$ (the system stays exactly square — one clearing row for one pin
+row). Walras still holds: the *other* factor market (capital) clears exactly at the pinned-wage
+solution — re-proved as the phase's flagged Tier-1 check. The floor is never applied to the
+benchmark (the calibration point is full employment at wage 1); a floor $\ge 1$ is rejected up
+front as nonsensical.
+
+New output: `unemployment` (emitted only when a floor binds, so a full-employment run is
+byte-identical to pre-5d.4). The manifest records `labour_closure`, `labour_floor`, and
+`labour_floor_bound` (whether it actually bound — a configured-but-slack floor is honestly
+reported as not binding). **Closed variant only**; a wage-curve alternative (wage responds to
+unemployment with a calibrated elasticity, Blanchflower–Oswald-style) and the open/multi
+generalisation are documented follow-ups — the floor's regime-switch is exact and simple first.
 
 ## 5. Calibration
 

@@ -55,6 +55,9 @@ class ModelState:
     # Savings-investment account (Phase 5d.2). Zeros when cal.has_investment is False.
     ID: np.ndarray  # investment final demand [i]
     savings: float  # household savings (= nominal investment under savings_driven)
+    # Labour market (Phase 5d.4). 0 under the default full-employment closure; positive when a
+    # wage floor binds (labour supply exceeds employed labour F[LAB]).
+    unemployment: float = 0.0
 
 
 def _va_unit_cost(cal: CalibratedModel, w: np.ndarray) -> np.ndarray:
@@ -115,6 +118,7 @@ def derive_state(
     strict: bool = False,
     gov_closure: str = "balanced_budget",
     inv_closure: str = "savings_driven",
+    labour_floor: float | None = None,
 ) -> ModelState:
     """Close the model at equilibrium prices (p, w): compute VA cost, outputs, demands and income.
 
@@ -169,7 +173,6 @@ def derive_state(
     ns = len(cal.sectors)
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pv = _va_unit_cost(cal, w)
-    factor_income = float(np.dot(w, cal.endowment))
 
     leontief = np.linalg.inv(np.eye(ns) - cal.ax)  # (I − ax)⁻¹, small and dense
     demand_per_income = cal.gamma / p  # FD = I · demand_per_income
@@ -181,100 +184,140 @@ def derive_state(
         )
     s = cal.sav_rate0 if cal.has_investment else 0.0
 
-    if not cal.has_government:
-        # Pre-5d.1/5d.2 behaviour when no accounts are declared, bit-for-bit unchanged: carbon
-        # revenue recycles straight to the household. With an investment account, the fixed point
-        # is the same shape — demand is still linear in income:
-        #   savings_driven: per-unit-income demand u = ((1−s)γ + s·inv_gamma)/p, I = FI/(1−k);
-        #   fixed_real: demand = γ(I − p·INV0)/p + INV0, so R = k·(I − pI0) + cInv and
-        #     I = (FI − k·pI0 + cInv)/(1−k) with pI0 = p·INV0, cInv = cc·L·INV0.
-        if not cal.has_investment:
-            k = float(cc @ (leontief @ demand_per_income)) if recycles else 0.0
-            if strict and k >= 1.0 - 1e-12:
-                # Runaway recycling (revenue ≥ income) AT THE ACCEPTED EQUILIBRIUM — refuse rather
-                # than return numbers (review P2).
-                raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
-            # A trial price vector during the solve can hit k≥1 even when a valid equilibrium
-            # (k<1) exists elsewhere; in non-strict (exploratory) mode use a SMOOTH floor on
-            # (1−k): identity for 1−k ≥ δ, asymptotes to δ as 1−k → −∞, keeping income finite and
-            # the residual C¹-continuous — not a flat plateau.
-            income = factor_income / _safe_denom(1.0 - k)
-            FD = income * demand_per_income
-            ID = np.zeros(ns)
-            savings = 0.0
-        elif inv_closure == "savings_driven":
-            u = ((1.0 - s) * cal.gamma + s * cal.inv_gamma) / p
-            k = float(cc @ (leontief @ u)) if recycles else 0.0
-            if strict and k >= 1.0 - 1e-12:
-                raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
-            income = factor_income / _safe_denom(1.0 - k)
-            savings = s * income
-            FD = (1.0 - s) * income * demand_per_income
-            ID = savings * cal.inv_gamma / p
-        else:  # fixed_real
-            ID = cal.INV0.copy()
-            p_inv = float(np.dot(p, ID))
-            if recycles:
-                k = float(cc @ (leontief @ demand_per_income))
-                c_inv = float(cc @ (leontief @ ID))
-            else:
-                k, c_inv = 0.0, 0.0
-            if strict and k >= 1.0 - 1e-12:
-                raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
-            income = (factor_income - k * p_inv + c_inv) / _safe_denom(1.0 - k)
-            savings = p_inv  # residual saving that finances the fixed real investment
-            if strict and income - p_inv <= 0:
-                raise ValueError(
-                    f"fixed_real investment ({p_inv:.6g}) exceeds household income "
-                    f"({income:.6g}); no consumption left. Lower the shock or use "
-                    "savings_driven."
-                )
-            FD = (income - p_inv) * demand_per_income
-        GD = np.zeros(ns)
-        gov_income = 0.0
-        fiscal_balance = 0.0
-    else:
-        if gov_closure != "balanced_budget":
-            raise ValueError(
-                f"unsupported gov_closure {gov_closure!r} (5d.1 only implements "
-                "'balanced_budget'; 'deficit_financed' is Phase 5d.7)"
-            )
-        # Household income is factor income net of the benchmark direct tax — carbon revenue no
-        # longer passes through it. The tax is levied as a RATE on factor income (rate·w·FF), so
-        # the benchmark government replicates exactly and homogeneity survives (see calibrate).
-        tax = cal.gov_tax_rate0 * factor_income
-        income = factor_income - tax
-        if not cal.has_investment:
-            FD = income * demand_per_income
-            ID = np.zeros(ns)
-            savings = 0.0
-        elif inv_closure == "savings_driven":
-            savings = s * income
-            FD = (1.0 - s) * income * demand_per_income
-            ID = savings * cal.inv_gamma / p
-        else:  # fixed_real
-            ID = cal.INV0.copy()
-            savings = float(np.dot(p, ID))
-            if strict and income - savings <= 0:
-                raise ValueError(
-                    f"fixed_real investment ({savings:.6g}) exceeds household disposable income "
-                    f"({income:.6g}); no consumption left."
-                )
-            FD = (income - savings) * demand_per_income
-        gov_demand_per_income = cal.gov_gamma / p  # GD = gov_income · gov_demand_per_income
-        if recycles:
-            # Revenue from the (price-fixed) household + investment demand.
-            r0 = float(cc @ (leontief @ (FD + ID)))
-            kg = float(cc @ (leontief @ gov_demand_per_income))  # marginal revenue from Σgov spend
-        else:
-            r0, kg = 0.0, 0.0
-        if strict and kg >= 1.0 - 1e-12:
-            raise ValueError(f"government revenue-recycling fixed point diverges (kg={kg:.3f} ≥ 1)")
-        gov_income = (tax + r0) / _safe_denom(1.0 - kg)
-        GD = gov_income * gov_demand_per_income
-        fiscal_balance = 0.0  # balanced_budget: spending exactly exhausts income, by construction
+    # Labour-market closure (Phase 5d.4). Default: flexible wage, full employment — factor income
+    # values labour at the full fixed endowment. Wage-floor alternative: when a floor is configured
+    # and binds (the residual system pins w[LAB]=floor; see ``residuals``), the household earns only
+    # its EMPLOYED labour (labour DEMAND, not supply), so it is poorer and there is unemployment.
+    # Employed labour scales linearly with factor income (the whole quantity chain does at fixed
+    # prices), so factor income is a scalar fixed point: FI = capital income + w_L·L_emp(FI). We
+    # solve it by iteration (a contraction with ratio w_L·ℓ < 1) rather than re-deriving all six
+    # income branches — each pass reuses ``_close`` unchanged. With no floor (or a slack floor)
+    # the loop runs once with L_emp = the endowment, i.e. exactly the pre-5d.4 behaviour.
+    lab = cal.factors.index("LAB") if "LAB" in cal.factors else None
+    floor_active = labour_floor is not None and lab is not None
 
-    X = leontief @ (FD + GD + ID)  # goods-market clearing
+    def _close(factor_income: float):
+        """Given a factor income, derive (FD, GD, ID, X, F, income, gov_income, savings,
+        fiscal_balance). Everything here is the pre-5d.4 body, made a function of factor income so
+        the labour-floor fixed point can iterate it."""
+        if not cal.has_government:
+            # Pre-5d.1/5d.2 behaviour when no accounts are declared, bit-for-bit unchanged: carbon
+            # revenue recycles straight to the household. With an investment account, the fixed
+            # point is the same shape — demand is still linear in income:
+            #   savings_driven: per-unit-income demand u = ((1−s)γ + s·inv_gamma)/p, I = FI/(1−k);
+            #   fixed_real: demand = γ(I − p·INV0)/p + INV0, so R = k·(I − pI0) + cInv and
+            #     I = (FI − k·pI0 + cInv)/(1−k) with pI0 = p·INV0, cInv = cc·L·INV0.
+            if not cal.has_investment:
+                k = float(cc @ (leontief @ demand_per_income)) if recycles else 0.0
+                if strict and k >= 1.0 - 1e-12:
+                    # Runaway recycling (revenue ≥ income) AT THE ACCEPTED EQUILIBRIUM — refuse
+                    # rather than return numbers (review P2).
+                    raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
+                # A trial price vector during the solve can hit k≥1 even when a valid equilibrium
+                # (k<1) exists elsewhere; in non-strict (exploratory) mode use a SMOOTH floor on
+                # (1−k): identity for 1−k ≥ δ, asymptotes to δ as 1−k → −∞, keeping income finite
+                # and the residual C¹-continuous — not a flat plateau.
+                income = factor_income / _safe_denom(1.0 - k)
+                FD = income * demand_per_income
+                ID = np.zeros(ns)
+                savings = 0.0
+            elif inv_closure == "savings_driven":
+                u = ((1.0 - s) * cal.gamma + s * cal.inv_gamma) / p
+                k = float(cc @ (leontief @ u)) if recycles else 0.0
+                if strict and k >= 1.0 - 1e-12:
+                    raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
+                income = factor_income / _safe_denom(1.0 - k)
+                savings = s * income
+                FD = (1.0 - s) * income * demand_per_income
+                ID = savings * cal.inv_gamma / p
+            else:  # fixed_real
+                ID = cal.INV0.copy()
+                p_inv = float(np.dot(p, ID))
+                if recycles:
+                    k = float(cc @ (leontief @ demand_per_income))
+                    c_inv = float(cc @ (leontief @ ID))
+                else:
+                    k, c_inv = 0.0, 0.0
+                if strict and k >= 1.0 - 1e-12:
+                    raise ValueError(f"revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)")
+                income = (factor_income - k * p_inv + c_inv) / _safe_denom(1.0 - k)
+                savings = p_inv  # residual saving that finances the fixed real investment
+                if strict and income - p_inv <= 0:
+                    raise ValueError(
+                        f"fixed_real investment ({p_inv:.6g}) exceeds household income "
+                        f"({income:.6g}); no consumption left. Lower the shock or use "
+                        "savings_driven."
+                    )
+                FD = (income - p_inv) * demand_per_income
+            GD = np.zeros(ns)
+            gov_income = 0.0
+            fiscal_balance = 0.0
+        else:
+            if gov_closure != "balanced_budget":
+                raise ValueError(
+                    f"unsupported gov_closure {gov_closure!r} (5d.1 only implements "
+                    "'balanced_budget'; 'deficit_financed' is Phase 5d.7)"
+                )
+            # Household income is factor income net of the benchmark direct tax — carbon revenue no
+            # longer passes through it. The tax is levied as a RATE on factor income (rate·w·FF),
+            # so the benchmark government replicates exactly and homogeneity survives (calibrate).
+            tax = cal.gov_tax_rate0 * factor_income
+            income = factor_income - tax
+            if not cal.has_investment:
+                FD = income * demand_per_income
+                ID = np.zeros(ns)
+                savings = 0.0
+            elif inv_closure == "savings_driven":
+                savings = s * income
+                FD = (1.0 - s) * income * demand_per_income
+                ID = savings * cal.inv_gamma / p
+            else:  # fixed_real
+                ID = cal.INV0.copy()
+                savings = float(np.dot(p, ID))
+                if strict and income - savings <= 0:
+                    raise ValueError(
+                        f"fixed_real investment ({savings:.6g}) exceeds household disposable "
+                        f"income ({income:.6g}); no consumption left."
+                    )
+                FD = (income - savings) * demand_per_income
+            gov_demand_per_income = cal.gov_gamma / p  # GD = gov_income · gov_demand_per_income
+            if recycles:
+                # Revenue from the (price-fixed) household + investment demand.
+                r0 = float(cc @ (leontief @ (FD + ID)))
+                kg = float(cc @ (leontief @ gov_demand_per_income))  # marginal from Σgov spend
+            else:
+                r0, kg = 0.0, 0.0
+            if strict and kg >= 1.0 - 1e-12:
+                raise ValueError(
+                    f"government revenue-recycling fixed point diverges (kg={kg:.3f} ≥ 1)"
+                )
+            gov_income = (tax + r0) / _safe_denom(1.0 - kg)
+            GD = gov_income * gov_demand_per_income
+            fiscal_balance = 0.0  # balanced_budget: spending exhausts income, by construction
+
+        X = leontief @ (FD + GD + ID)  # goods-market clearing
+        va_cost = cal.va_share * pv * X  # [i] total VA payment per sector
+        F = _factor_demand(cal, w, pv, va_cost)  # [f,i]
+        return FD, GD, ID, X, F, income, gov_income, savings, fiscal_balance
+
+    # Labour-floor fixed point. Full employment: factor income = w·endowment. Floor binding: labour
+    # income counts EMPLOYED labour F[LAB].sum(), so we iterate factor income to consistency (a
+    # contraction — each pass shrinks the gap by w_L·(∂L_emp/∂FI) < 1). Not floor-active ⇒ one pass
+    # with the full endowment, identical to before.
+    factor_income = float(np.dot(w, cal.endowment))
+    result = _close(factor_income)
+    if floor_active:
+        capital_income = factor_income - w[lab] * cal.endowment[lab]  # non-labour factor income
+        for _ in range(100):
+            employed = float(result[4][lab, :].sum())  # F[LAB].sum() at the current guess
+            fi_new = capital_income + w[lab] * employed
+            if abs(fi_new - factor_income) <= 1e-13 * max(1.0, abs(fi_new)):
+                factor_income = fi_new
+                result = _close(factor_income)
+                break
+            factor_income = fi_new
+            result = _close(factor_income)
+    FD, GD, ID, X, F, income, gov_income, savings, fiscal_balance = result
     carbon_revenue = float(cc @ X)
     # Savings-investment identity check (strict mode; Phase 5d.2 Tier 2): under savings_driven,
     # nominal investment must equal household savings exactly.
@@ -282,9 +325,10 @@ def derive_state(
         resid = float(np.dot(p, ID)) - savings
         if abs(resid) > 1e-9 * max(1.0, abs(savings)):  # pragma: no cover - guards the closed form
             raise ValueError(f"savings-investment identity not satisfied (residual {resid:.3e}).")
-    # Factor demand (Shephard on the value-added cost va_share·pv·X). CD or CES per sector.
-    va_cost = cal.va_share * pv * X  # [i] total VA payment per sector
-    F = _factor_demand(cal, w, pv, va_cost)  # [f,i]
+    # Unemployment (Phase 5d.4): labour supply less employed labour (0 unless a floor binds).
+    unemployment = 0.0
+    if lab is not None:
+        unemployment = float(cal.endowment[lab] - F[lab, :].sum())
     return ModelState(
         p=p,
         w=w,
@@ -300,6 +344,7 @@ def derive_state(
         factor_income=factor_income,
         ID=ID,
         savings=savings,
+        unemployment=unemployment,
     )
 
 
@@ -312,6 +357,7 @@ def residuals(
     drop_factor: int = 0,
     gov_closure: str = "balanced_budget",
     inv_closure: str = "savings_driven",
+    labour_floor: float | None = None,
 ) -> np.ndarray:
     """Equilibrium residual vector F(z) for z = [p (ns), w (nf)].
 
@@ -333,6 +379,15 @@ def residuals(
     square-count re-derivation the phase plan required is therefore trivial: the count is
     unchanged, verified by the existing square-system test.
 
+    ``labour_floor`` (Phase 5d.4) selects the wage-floor labour-market closure. When set, the
+    **LAB factor-clearing row is replaced by the wage pin** ``w[LAB] − floor = 0``: the labour
+    market no longer clears on quantity (demand may fall short of supply — the shortfall is
+    reported as ``unemployment``), it clears on the pinned wage instead. The system stays exactly
+    square — one clearing row swapped for one pin row, same count. The engine imposes this only
+    in the regime where the floor genuinely binds (the unconstrained wage would sit below it),
+    solving the default full-employment system first (see ``engine._solve``); off-regime the floor
+    is passed as ``None`` and this is the pre-5d.4 residual exactly.
+
     ``z`` accepts an object-dtype array (pyomo vars) so the same residual builds the IPOPT model;
     it uses only +, −, ×, ÷ and np.dot-free elementwise algebra where that matters.
     """
@@ -341,6 +396,7 @@ def residuals(
     p = z[:ns]
     w = z[ns : ns + nf]
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
+    lab = cal.factors.index("LAB") if "LAB" in cal.factors else None
 
     state = derive_state(
         cal,
@@ -350,6 +406,7 @@ def residuals(
         recycling=recycling,
         gov_closure=gov_closure,
         inv_closure=inv_closure,
+        labour_floor=labour_floor,
     )
 
     res = []
@@ -357,11 +414,16 @@ def residuals(
     for i in range(ns):
         intermediate = sum(cal.ax[j, i] * p[j] for j in range(ns))
         res.append(p[i] - (intermediate + cal.va_share[i] * state.pv[i] + cc[i]))
-    # Factor clearing (drop one by Walras).
+    # Factor clearing (drop one by Walras). Under a binding wage floor (Phase 5d.4), the LAB row
+    # becomes the wage pin w[LAB] = floor instead of quantity-clearing — labour demand ≤ supply is
+    # then slack, the gap reported as unemployment.
     for f in range(nf):
         if f == drop_factor:
             continue
-        res.append(float(state.F[f, :].sum()) - cal.endowment[f])
+        if labour_floor is not None and f == lab:
+            res.append(w[lab] - labour_floor)
+        else:
+            res.append(float(state.F[f, :].sum()) - cal.endowment[f])
     # Numéraire: the household's exact Cobb-Douglas price index (cost of living) Π_i p[i]^γ[i] = 1.
     # Using the CD price index itself as numéraire keeps it CONSISTENT with the reported welfare
     # and real-GDP deflation: the deflator relative to it is 1 by construction, not an AM-GM

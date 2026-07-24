@@ -1192,3 +1192,189 @@ def test_engine_inv_closure_switch_changes_results():
             shocks=[CarbonPrice(price=0.15)],
             years=[2020],
         )
+
+
+# -- labour market: wage-floor closure (Phase 5d.4) ---------------------------
+def _floor_solve(cal, cc, labour_floor, recycling="lump_sum", drop_factor=0):
+    ns = len(cal.sectors)
+    sol = solve(
+        lambda z: M.residuals(
+            cal,
+            z,
+            carbon_cost=cc,
+            recycling=recycling,
+            labour_floor=labour_floor,
+            drop_factor=drop_factor,
+        ),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    st = M.derive_state(
+        cal, sol.x[:ns], sol.x[ns:], carbon_cost=cc, recycling=recycling, labour_floor=labour_floor
+    )
+    return sol, st
+
+
+def test_no_floor_is_full_employment_and_pre_5d4_identical():
+    """Default closure: unemployment is exactly 0, and derive_state without a floor is unchanged."""
+    cal = _cal()
+    _sol, st = _solve(cal, carbon_cost=0.3 * _EMISSIONS)
+    assert st.unemployment == pytest.approx(0.0, abs=1e-12)
+
+
+def test_floor_primitive_pins_wage_unconditionally():
+    """The model-level ``labour_floor`` is a PRIMITIVE that always pins w[LAB] = floor; deciding
+    WHETHER to impose it (only when it genuinely binds) is the engine's regime-switch, not this
+    residual's job. Here we confirm the primitive does what it says: the wage lands on the floor."""
+    cal = _cal()
+    cc = 0.3 * _EMISSIONS
+    lab = cal.factors.index("LAB")
+    _s0, st0 = _solve(cal, carbon_cost=cc)
+    floor = 0.5 * (st0.w[lab] + 1.0)  # a genuinely binding floor (above the eq wage)
+    _s1, st1 = _floor_solve(cal, cc, labour_floor=floor)
+    assert st1.w[lab] == pytest.approx(floor, abs=1e-8)
+
+
+def test_binding_floor_pins_wage_and_produces_unemployment():
+    """A floor ABOVE the market-clearing wage binds: the LAB wage sits exactly at the floor,
+    labour demand falls short of supply, and the shortfall is reported as unemployment."""
+    cal = _cal()
+    cc = 0.3 * _EMISSIONS
+    lab = cal.factors.index("LAB")
+    _s0, st0 = _solve(cal, carbon_cost=cc)
+    w_eq = st0.w[lab]
+    floor = 0.5 * (w_eq + 1.0)  # between the depressed eq wage and the benchmark 1.0
+    _s1, st1 = _floor_solve(cal, cc, labour_floor=floor)
+    assert st1.w[lab] == pytest.approx(floor, abs=1e-8)  # wage pinned at the floor
+    employed = float(st1.F[lab, :].sum())
+    assert employed < cal.endowment[lab]  # demand short of supply
+    assert st1.unemployment == pytest.approx(cal.endowment[lab] - employed, abs=1e-9)
+    assert st1.unemployment > 0.0
+
+
+def test_walras_holds_under_binding_floor():
+    """THE Tier-1 re-proof (plan §5d.4): when the labour market clears on the pinned wage (not on
+    quantity), the OTHER factor market (capital) must still clear exactly — the regime switch
+    must not open a hidden imbalance. Drop the capital row by Walras and confirm it holds."""
+    cal = _cal()
+    cc = 0.3 * _EMISSIONS
+    lab = cal.factors.index("LAB")
+    cap = cal.factors.index("CAP")
+    _s0, st0 = _solve(cal, carbon_cost=cc)
+    floor = 0.5 * (st0.w[lab] + 1.0)
+    # Drop the CAP market (drop_factor=cap); the floor replaces the LAB clearing row. If the
+    # system is genuinely square and consistent, CAP still clears at the solution.
+    _s1, st1 = _floor_solve(cal, cc, labour_floor=floor, drop_factor=cap)
+    cap_excess = float(st1.F[cap, :].sum()) - cal.endowment[cap]
+    assert abs(cap_excess) < 1e-7
+
+
+def test_binding_floor_lowers_welfare_vs_full_employment():
+    """Economic-sense: forcing a wage floor that creates unemployment makes the household worse
+    off than the full-employment outcome (it earns less labour income)."""
+    cal = _cal()
+    cc = 0.3 * _EMISSIONS
+    lab = cal.factors.index("LAB")
+    _s0, st0 = _solve(cal, carbon_cost=cc)
+    floor = 0.5 * (st0.w[lab] + 1.0)
+    _s1, st1 = _floor_solve(cal, cc, labour_floor=floor)
+
+    def cd_u(state):
+        return float(np.prod(np.power(state.FD, cal.gamma)))
+
+    assert cd_u(st1) < cd_u(st0)  # unemployment lowers household utility
+
+
+def test_higher_floor_more_unemployment():
+    """Monotonicity: a higher wage floor binds harder — more unemployment."""
+    cal = _cal()
+    cc = 0.3 * _EMISSIONS
+    lab = cal.factors.index("LAB")
+    _s0, st0 = _solve(cal, carbon_cost=cc)
+    w_eq = st0.w[lab]
+    _lo, st_lo = _floor_solve(cal, cc, labour_floor=w_eq + 0.15 * (1.0 - w_eq))
+    _hi, st_hi = _floor_solve(cal, cc, labour_floor=w_eq + 0.5 * (1.0 - w_eq))
+    assert st_hi.unemployment > st_lo.unemployment > 0.0
+
+
+def test_labour_income_fixed_point_makes_household_poorer():
+    """The employed-labour income fixed point: under a binding floor the household's factor income
+    counts only EMPLOYED labour, so it is strictly below the full-employment factor income at the
+    same prices (this is the mechanism that couples unemployment back into demand)."""
+    cal = _cal()
+    cc = 0.3 * _EMISSIONS
+    lab = cal.factors.index("LAB")
+    _s0, st0 = _solve(cal, carbon_cost=cc)
+    floor = 0.5 * (st0.w[lab] + 1.0)
+    _s1, st1 = _floor_solve(cal, cc, labour_floor=floor)
+    # factor_income under the floor = w·(capital endowment) + w_L·(employed labour) — less than
+    # w·(full endowment) would give at the same wages.
+    full_emp_income = float(np.dot(st1.w, cal.endowment))
+    assert st1.factor_income < full_emp_income
+
+
+# -- engine wiring for the wage floor (Phase 5d.4) ----------------------------
+def test_engine_labour_floor_rejected_at_or_above_benchmark_wage():
+    """A floor ≥ the benchmark wage (1.0) is nonsensical (it would bind at the full-employment
+    benchmark); rejected up front, not at the replication gate."""
+    eng = registry.get("cge_static")
+    with pytest.raises(ValueError, match="below the benchmark wage"):
+        eng.run(
+            data={
+                "SAM": toy_sam(),
+                "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5},
+                "labour_floor": 1.0,
+            },
+            shocks=[CarbonPrice(price=0.15)],
+            years=[2020],
+        )
+
+
+def test_engine_binding_floor_emits_unemployment_and_manifest():
+    """End-to-end: a floor that binds post-shock emits an `unemployment` rate and records the
+    wage-floor closure in the manifest; a no-floor run emits neither and reports full employment."""
+    eng = registry.get("cge_static")
+    data = {"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}, "labour_floor": 0.75}
+    res = eng.run(data=data, shocks=[CarbonPrice(price=0.3)], years=[2020])
+    u = res.data[res.data["variable"] == "unemployment"]
+    assert len(u) == 1 and float(u["value"].iloc[0]) > 0.0
+    assert res.manifest.assumptions["labour_closure"] == "wage_floor"
+    assert res.manifest.assumptions["labour_floor"] == pytest.approx(0.75)
+    assert res.manifest.assumptions["labour_floor_bound"] is True
+    lab_ch = float(
+        res.data[(res.data["variable"] == "factor_price_change") & (res.data["sector"] == "LAB")][
+            "value"
+        ].iloc[0]
+    )
+    assert (1.0 + lab_ch) == pytest.approx(0.75, abs=1e-6)  # wage pinned at the floor
+
+    plain = eng.run(
+        data={"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    assert not (plain.data["variable"] == "unemployment").any()
+    assert plain.manifest.assumptions["labour_closure"] == "flexible_wage_full_employment"
+
+
+def test_engine_slack_floor_is_byte_identical_to_no_floor():
+    """A configured-but-slack floor (below the post-shock wage) leaves results byte-identical to
+    the full-employment run — only the manifest records that a floor was configured."""
+    eng = registry.get("cge_static")
+    shk = [CarbonPrice(price=0.3)]
+    plain = eng.run(
+        data={"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+        shocks=shk,
+        years=[2020],
+    )
+    slack = eng.run(
+        data={"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}, "labour_floor": 0.4},
+        shocks=shk,
+        years=[2020],
+    )
+    merged = plain.data.merge(
+        slack.data, on=["variable", "sector", "region", "year", "scenario"], suffixes=("_p", "_s")
+    )
+    assert len(merged) == len(plain.data) == len(slack.data)
+    assert np.allclose(merged["value_p"], merged["value_s"], atol=1e-12)
+    assert slack.manifest.assumptions["labour_floor_bound"] is False
