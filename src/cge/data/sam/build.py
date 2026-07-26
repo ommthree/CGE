@@ -430,3 +430,344 @@ def build_open_sam(
         fd_attribution=raw.fd_attribution,
     )
     return raw.sam, report, raw.sectors
+
+
+# ---------------------------------------------------------------------------
+# Multi-region SAM (Phase 5.1b — true bilateral trade among the build's regions)
+# ---------------------------------------------------------------------------
+
+
+class TopologyError(ValueError):
+    """A multi-region build whose region-trade graph is disconnected — two regions (or blocks) with
+    no active bilateral trade route between them, directly or via a chain. The multi-region CGE's
+    single global numéraire + single dropped factor-market equation is only a valid closure on a
+    CONNECTED region graph (a disconnected component's overall price level is genuinely
+    underdetermined — see MultiCalibratedModel.connected_components). Rejected here, before
+    calibration, with the offending partition, rather than silently solved to a non-unique
+    equilibrium."""
+
+
+@dataclass(frozen=True)
+class RawMultiSAM:
+    """A raw (pre-balancing) multi-region SAM plus the audit trail of how it was built."""
+
+    sam: SAM
+    regions: list[str]
+    sectors: list[str]
+    capital_share: float
+    source_gross_output: float
+    source_final_demand: float
+    source_value_added: float
+    value_added_clipped: float
+    fd_attribution: str  # "measured" (final demand by consuming region) — required for multi
+
+
+def build_multi_raw_sam(
+    io: IOSystem,
+    *,
+    regions: list[str] | None = None,
+    capital_share: float = DEFAULT_CAPITAL_SHARE,
+    materiality: float = 1e-9,
+) -> RawMultiSAM:
+    """Build a raw **R-region** SAM (``a_<r>_<s>``/``c_<r>_<s>`` activity/commodity, per-region
+    factors ``<f>_<r>`` and households ``HOH_<r>``) from a multi-regional ``io``, in the bilateral
+    Armington/CET structure [Hosoe2010, ch. 7 generalised] that ``calibrate_multi`` consumes.
+
+    Generalises ``build_open_raw_sam`` from *home + rest-of-world* to *R genuine regions each with
+    its own household and bilateral trade to every other region*. The MRIO already carries the
+    inter-regional blocks, so — unlike the single-region-open reduction, where exports are a
+    residual (``E = Xhome − D``) — bilateral trade is read **directly**:
+
+    - **domestic sales** ``D[r,s]`` = region ``r``'s output of ``s`` used within region ``r`` (its
+      own intermediates + own final demand of its own product);
+    - **bilateral exports** ``EX[o,s,d]`` = region ``o``'s output of ``s`` used by region ``d`` (d's
+      intermediates + d's final demand of o's product) — equivalently region ``d``'s **imports**
+      ``M[d,s,o]``;
+    - **intermediates** ``INT[r,i,j]`` = region ``r``'s composite ``i`` used by region ``r``'s
+      activity ``j`` (composite = domestic variety + imports, so an imported input enters here and
+      the import appears once, on the trade block);
+    - **household final demand** ``FD[r,s]`` = region ``r``'s consumption of composite ``s``.
+
+    Final demand MUST be retained by consuming region (``io.fd_by_region()``): a multi-region SAM
+    attributes each region's own final demand, so an aggregate-only build (no by-region column)
+    cannot be reduced without inventing the regional split — rejected, not imputed.
+
+    ``materiality`` drops bilateral flows below this share of a region's output as numerical dust
+    (aggregation/RAS noise), so a live sparse build does not carry ~1e-12 phantom trade routes.
+    """
+    if not 0.0 < capital_share < 1.0:
+        raise ValueError(f"capital_share must be in (0,1), got {capital_share}")
+    all_regions = list(io.regions.labels)
+    regions = list(regions) if regions is not None else all_regions
+    unknown = [r for r in regions if r not in all_regions]
+    if unknown:
+        raise ValueError(f"requested regions {unknown} not in build regions {all_regions}")
+    if len(regions) < 2:
+        raise ValueError(f"a multi-region SAM needs ≥2 regions; got {regions}")
+
+    fd_region = io.fd_by_region()
+    if fd_region is None:
+        raise ValueError(
+            "a multi-region SAM needs final demand BY CONSUMING REGION (io.fd_by_region()); this "
+            "build carries only an aggregate final-demand column, so each region's own final demand "
+            "cannot be attributed without inventing the split — rebuild with by-region final demand."
+        )
+
+    x, labels = _gross_output(io)
+    A = io.A.to_numpy(dtype=float)
+    Z = A * x[None, :]  # Z[a,b] = supply of label a to label b
+
+    sectors = sorted({_sector_of(lb) for lb in labels})
+    s_index = {s: k for k, s in enumerate(sectors)}
+    r_index = {r: k for k, r in enumerate(regions)}
+    region_set = set(regions)
+    nr, ns = len(regions), len(sectors)
+
+    def region_of(lb: str) -> str:
+        return lb.split(":", 1)[0]
+
+    # Trade block T[o, s, d] = region o's output of s used by region d (intermediate + final). The
+    # own-region slot (o==d) is domestic sales D[r,s]. Off-diagonal is a bilateral export/import.
+    T = np.zeros((nr, ns, nr))  # [origin, sector, dest]
+    INT = np.zeros((nr, ns, ns))  # [r, i, j] composite i used by r's activity j (any source region)
+    FD = np.zeros((nr, ns))  # [r, s] region r final demand on composite s (any source region)
+    Xreg = np.zeros((nr, ns))  # [r, s] region r gross output of s
+
+    # Only the requested regions form the modelled economy; a build may carry more regions than we
+    # model, in which case flows to/from unmodelled regions are folded into the nearest modelled
+    # aggregate is NOT attempted — we require regions to be the full build (checked below) so the
+    # global economy is closed. (Subsetting to a strict subset would leak trade off-model.)
+    if region_set != set(all_regions):
+        raise ValueError(
+            "multi-region SAM must model EVERY build region (the global economy is closed with no "
+            f"external rest-of-world); build has {all_regions}, requested {regions}. Aggregate the "
+            "build to the desired regions first (build a coarser IOSystem), then model all of them."
+        )
+
+    for a, lb_a in enumerate(labels):
+        ra, ia = region_of(lb_a), s_index[_sector_of(lb_a)]
+        if ra not in region_set:
+            continue
+        Xreg[r_index[ra], ia] += x[a]
+        # Final demand of label a (an o-region product) by each consuming region d.
+        for d in regions:
+            yad = float(fd_region[d].get(lb_a, 0.0))
+            T[r_index[ra], ia, r_index[d]] += yad  # o's product consumed by d
+        for b, lb_b in enumerate(labels):
+            rb, jb = region_of(lb_b), s_index[_sector_of(lb_b)]
+            if rb not in region_set:
+                continue
+            # o=ra supplies its product a into activity b (in region rb): a trade flow o→rb, and it
+            # is an intermediate input into rb's composite ia used by rb's activity jb.
+            T[r_index[ra], ia, r_index[rb]] += Z[a, b]
+            INT[r_index[rb], ia, jb] += Z[a, b]
+
+    # Domestic sales / bilateral trade split off the diagonal of T. Materiality: drop dust routes.
+    D = np.zeros((nr, ns))
+    EX = np.zeros((nr, ns, nr))  # [o, s, d] exports (o≠d)
+    for ri in range(nr):
+        scale = max(float(Xreg[ri].sum()), 1.0)
+        for si in range(ns):
+            D[ri, si] = T[ri, si, ri]
+            for di in range(nr):
+                if di == ri:
+                    continue
+                v = T[ri, si, di]
+                if v > materiality * scale:
+                    EX[ri, si, di] = v
+
+    # Household final demand per region-sector: consumption of composite s by region r, from ANY
+    # producing region (measured, by consuming region), read directly off fd_region over the
+    # composite (sector) axis (T folds the final-demand part into the trade block for D/EX above).
+    FD = np.zeros((nr, ns))
+    for a, lb_a in enumerate(labels):
+        ia = s_index[_sector_of(lb_a)]
+        if region_of(lb_a) not in region_set:
+            continue
+        for d in regions:
+            FD[r_index[d], ia] += float(fd_region[d].get(lb_a, 0.0))
+
+    Z0 = D + EX.sum(axis=2)  # activity output = domestic sales + all exports, per region-sector
+    # Value added per region-activity = output − intermediate composite purchases.
+    VA_raw = Z0 - INT.sum(axis=1)  # INT[r,i,j] summed over i (composite) → per activity j
+    VA = np.clip(VA_raw, 0.0, None)
+    va_clip = float(np.sum(np.abs(np.minimum(VA_raw, 0.0))))
+
+    if float(np.min(Z0)) <= 0:
+        raise ValueError("multi SAM: some region-sector has non-positive gross output")
+
+    sam = _assemble_multi_sam(regions, sectors, D, EX, INT, FD, VA, capital_share, io)
+    return RawMultiSAM(
+        sam=sam,
+        regions=regions,
+        sectors=sectors,
+        capital_share=capital_share,
+        source_gross_output=float(Z0.sum()),
+        source_final_demand=float(FD.sum()),
+        source_value_added=float(VA_raw.sum()),
+        value_added_clipped=va_clip,
+        fd_attribution="measured",
+    )
+
+
+def _assemble_multi_sam(regions, sectors, D, EX, INT, FD, VA, capital_share, io):
+    """Assemble the multi-region SAM matrix (a_<r>_<s>/c_<r>_<s>/<f>_<r>/HOH_<r>) with the bilateral
+    trade block and the household↔household current-account closure."""
+    nr, ns = len(regions), len(sectors)
+    accounts: list[str] = []
+    for r in regions:
+        accounts += [f"a_{r}_{s}" for s in sectors] + [f"c_{r}_{s}" for s in sectors]
+    for r in regions:
+        accounts += [f"{f}_{r}" for f in FACTORS] + [f"HOH_{r}"]
+    m = pd.DataFrame(0.0, index=accounts, columns=accounts)
+
+    for ri, r in enumerate(regions):
+        for si, s in enumerate(sectors):
+            m.loc[f"a_{r}_{s}", f"c_{r}_{s}"] = D[ri, si]  # domestic sales into own composite
+            m.loc[f"c_{r}_{s}", f"HOH_{r}"] = FD[ri, si]  # household final demand
+            m.loc[f"CAP_{r}", f"a_{r}_{s}"] = capital_share * VA[ri, si]
+            m.loc[f"LAB_{r}", f"a_{r}_{s}"] = (1.0 - capital_share) * VA[ri, si]
+            for di, d in enumerate(regions):
+                if di == ri:
+                    continue
+                # r's activity s sells into d's composite s: payment c_<d>_<s> → a_<r>_<s>.
+                if EX[ri, si, di] > 0:
+                    m.loc[f"a_{r}_{s}", f"c_{d}_{s}"] = EX[ri, si, di]
+            for ji, j in enumerate(sectors):
+                m.loc[f"c_{r}_{s}", f"a_{r}_{j}"] = INT[ri, si, ji]  # composite s into activity j
+    # Factor income to each region's household.
+    for r in regions:
+        m.loc[f"HOH_{r}", f"CAP_{r}"] = m.loc[f"CAP_{r}", :].sum()
+        m.loc[f"HOH_{r}", f"LAB_{r}"] = m.loc[f"LAB_{r}", :].sum()
+    # Current-account closure: region r's net foreign savings Sf_r = imports − exports (globally
+    # zero-sum) financed by a bilateral HOH↔HOH capital transfer, exactly as the toy multi SAM does.
+    _add_multi_capital_transfers(m, regions, sectors)
+
+    prov = Provenance(
+        source=io.provenance.source,
+        source_version=io.provenance.source_version,
+        licence=io.provenance.licence,
+        reference_year=io.provenance.reference_year,
+        retrieved=io.provenance.retrieved,
+        build_id=io.provenance.build_id,
+        generation=io.provenance.generation,
+        notes=(
+            f"multi-region SAM from {io.provenance.build_id}; regions={regions}; bilateral "
+            f"Armington/CET; VA split cap={capital_share} (assumption); final demand measured by "
+            "consuming region; current accounts closed by HOH↔HOH capital transfers (globally "
+            "zero-sum)."
+        ),
+    )
+    return SAM(provenance=prov, accounts=accounts, matrix=m)
+
+
+def _add_multi_capital_transfers(m: pd.DataFrame, regions: list[str], sectors: list[str]) -> None:
+    """Close each region's current account with an HOH↔HOH capital transfer (surplus regions finance
+    deficit regions, proportional to surplus) — the same zero-sum settlement as the toy multi SAM,
+    so the per-region and global accounts balance by construction."""
+    ca = {}
+    for r in regions:
+        exports = sum(m.loc[f"a_{r}_{s}", f"c_{d}_{s}"] for d in regions if d != r for s in sectors)
+        imports = sum(m.loc[f"a_{o}_{s}", f"c_{r}_{s}"] for o in regions if o != r for s in sectors)
+        ca[r] = float(exports - imports)  # >0 ⇒ surplus (net lender)
+    total_surplus = sum(v for v in ca.values() if v > 0)
+    if total_surplus <= 0:
+        return
+    for lender in regions:
+        if ca[lender] <= 0:
+            continue
+        for borrower in regions:
+            if ca[borrower] >= 0:
+                continue
+            amount = (-ca[borrower]) * (ca[lender] / total_surplus)
+            m.loc[f"HOH_{borrower}", f"HOH_{lender}"] += amount
+
+
+def build_multi_sam(
+    io: IOSystem,
+    *,
+    regions: list[str] | None = None,
+    capital_share: float = DEFAULT_CAPITAL_SHARE,
+    materiality: float = 1e-9,
+    balance_tol: float = 1e-6,
+) -> tuple[SAM, QualityReport, list[str], list[str]]:
+    """Build, balance, quality-report and **topology-validate** a multi-region SAM from ``io``.
+
+    Returns ``(sam, quality_report, regions, sectors)``. The bilateral reduction is not balanced by
+    construction (the regional final-demand split and VA derivation are approximate), so a residual
+    imbalance beyond ``balance_tol`` is RAS-balanced and the adjustment recorded. The region-trade
+    graph is checked for **connectivity** after balancing — a disconnected build raises
+    ``TopologyError`` (the multi-region closure is only valid on a connected graph), which is far
+    more likely on a live aggregated build than on a hand-built toy."""
+    raw = build_multi_raw_sam(
+        io, regions=regions, capital_share=capital_share, materiality=materiality
+    )
+    m = raw.sam.matrix
+    adjustment = None
+    if not is_balanced(m, tol=balance_tol):
+        target = (m.sum(axis=1) + m.sum(axis=0)) / 2.0
+        balanced = ras_balance(m, target, tol=balance_tol)
+        adjustment = m - balanced
+        m = balanced
+        raw.sam.matrix.loc[:, :] = m
+
+    _assert_multi_connected(m, raw.regions, raw.sectors, materiality)
+
+    report = sam_quality_report(
+        io.provenance.build_id or "multi_sam",
+        m,
+        source_gross_output=raw.source_gross_output,
+        source_final_demand=raw.source_final_demand,
+        source_value_added=raw.source_value_added,
+        sectors=raw.sectors,
+        factors=FACTORS,
+        household=HOUSEHOLD,
+        capital_share=capital_share,
+        adjustment=adjustment,
+        value_added_clipped=raw.value_added_clipped,
+        fd_attribution=raw.fd_attribution,
+        regions=raw.regions,
+    )
+    return raw.sam, report, raw.regions, raw.sectors
+
+
+def _assert_multi_connected(
+    m: pd.DataFrame, regions: list[str], sectors: list[str], materiality: float
+) -> None:
+    """Reject a disconnected region-trade graph (Phase 5.1b topology validation). Two regions are
+    linked if they trade ANY good in EITHER direction above the materiality threshold; the graph
+    must be a single connected component or the multi-region closure (one numéraire, one dropped
+    factor equation) is under-determined. Mirrors MultiCalibratedModel.connected_components so the
+    data-side gate matches the calibration-side invariant, but rejects here with a clear message."""
+    nr = len(regions)
+    parent = list(range(nr))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for oi, o in enumerate(regions):
+        scale = max(float(sum(m.loc[f"a_{o}_{s}", :].sum() for s in sectors)), 1.0)
+        for di, d in enumerate(regions):
+            if oi == di:
+                continue
+            traded = any(
+                float(m.loc[f"a_{o}_{s}", f"c_{d}_{s}"]) > materiality * scale for s in sectors
+            )
+            if traded:
+                ri, rj = find(oi), find(di)
+                if ri != rj:
+                    parent[ri] = rj
+    comps: dict[int, list[str]] = {}
+    for i, r in enumerate(regions):
+        comps.setdefault(find(i), []).append(r)
+    if len(comps) > 1:
+        raise TopologyError(
+            "multi-region build has a DISCONNECTED region-trade graph: components "
+            f"{[sorted(c) for c in comps.values()]} have no active bilateral trade route between "
+            "them, so the single-numéraire multi-region closure is under-determined. This is not a "
+            "solvable equilibrium — aggregate the disconnected regions together or add the missing "
+            "trade link."
+        )

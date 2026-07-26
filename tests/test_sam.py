@@ -147,6 +147,146 @@ def test_open_sam_unknown_home_region_rejected(small_build_io):
         build_open_sam(io, home_region="Z")
 
 
+# -- multi-region SAM from a real build (Phase 5.1b) -----------------------------------------
+def test_build_multi_sam_balanced_and_quality_passes(small_build_io):
+    """A multi-region SAM built from the multi-region build (every region a genuine region with
+    bilateral trade) is balanced by construction and passes the SAM quality gates, with
+    a_<r>_<s>/c_<r>_<s>/<f>_<r>/HOH_<r> accounts and NO ROW account (closed global economy)."""
+    from cge.data.sam import build_multi_sam
+
+    io, _store, _bid = small_build_io
+    sam, report, regions, sectors = build_multi_sam(io)
+    assert is_balanced(sam.matrix, tol=1e-6)
+    assert report.passed
+    assert "ROW" not in sam.accounts
+    assert len(regions) >= 2
+    for r in regions:
+        assert f"HOH_{r}" in sam.accounts
+        assert all(f"a_{r}_{s}" in sam.accounts and f"c_{r}_{s}" in sam.accounts for s in sectors)
+    # Final demand is MEASURED (the build carries by-region final demand), not imputed.
+    assert any(
+        c.name == "open_fd_attribution" and c.severity.value == "pass" for c in report.checks
+    )
+
+
+def test_build_multi_sam_preserves_aggregates(small_build_io):
+    """The multi-region reduction preserves the source EXIOBASE aggregates (gross output, final
+    demand, value added) — the conservation-through-a-transform gate, summed over all regions."""
+    from cge.data.sam import build_multi_raw_sam
+
+    io, _store, _bid = small_build_io
+    raw = build_multi_raw_sam(io)
+    m = raw.sam.matrix
+    factor_rows = [f"{f}_{r}" for r in raw.regions for f in ("CAP", "LAB")]
+    va_cols = [f"a_{r}_{s}" for r in raw.regions for s in raw.sectors]
+    fd_rows = [f"c_{r}_{s}" for r in raw.regions for s in raw.sectors]
+    fd_cols = [f"HOH_{r}" for r in raw.regions]
+    sam_va = m.loc[factor_rows, va_cols].to_numpy().sum()
+    sam_fd = m.loc[fd_rows, fd_cols].to_numpy().sum()
+    assert np.isclose(sam_va, raw.source_value_added, rtol=1e-9)
+    assert np.isclose(sam_fd, raw.source_final_demand, rtol=1e-9)
+    assert np.isclose(sam_va, sam_fd, rtol=1e-6)  # global GDP identity
+
+
+def test_multi_cge_calibrates_and_replicates_on_built_sam(small_build_io):
+    """THE Phase 5.1b DoD: the multi-region CGE calibrates on a SAM built from an EXIOBASE-shaped
+    build and replicates its benchmark to machine precision (the full
+    IOSystem→multi-SAM→calibrate→solve pipeline on structured multi-region data)."""
+    from cge.data.sam import build_multi_sam
+    from cge.engines.cge_static import model_multi as MM
+    from cge.engines.cge_static.calibrate_multi import calibrate_multi
+
+    io, _store, _bid = small_build_io
+    sam, _report, regions, sectors = build_multi_sam(io)
+    cal = calibrate_multi(sam, regions=regions, sectors=sectors, factors=["CAP", "LAB"])
+    assert cal.active_routes  # genuine bilateral trade survives materiality
+    assert len(cal.connected_components) == 1  # connected region graph
+    sol = solve(
+        lambda z: MM.residuals(cal, z, recycling="lump_sum"),
+        MM.initial_guess(cal) * 1.03,
+        prefer="scipy",
+    )
+    st = MM.unpack_state(cal, sol.x, recycling="lump_sum", strict=True)
+    assert sol.residual_norm < 1e-8
+    assert np.allclose(st.Z, cal.Z0, atol=1e-6)
+    assert np.allclose(st.M, cal.M0, atol=1e-6)
+
+
+def test_build_multi_sam_needs_by_region_final_demand(small_build_io):
+    """A build with only an AGGREGATE final-demand column cannot be reduced to a multi-region SAM
+    (each region's own final demand cannot be attributed without inventing the split) — rejected,
+    not imputed (unlike the single-region-open builder, which can impute a single home region)."""
+    from cge.contracts.data_objects import IOSystem
+    from cge.data.sam import build_multi_sam
+
+    io, _store, _bid = small_build_io
+    # Collapse to an aggregate FD column (IOSystem defaults final_demand_kind to "aggregate").
+    agg = IOSystem(
+        provenance=io.provenance,
+        sectors=io.sectors,
+        regions=io.regions,
+        price_basis=io.price_basis,
+        currency=io.currency,
+        unit=io.unit,
+        A=io.A,
+        final_demand=io.final_demand.sum(axis=1).to_frame("final_demand"),
+    )
+    assert agg.fd_by_region() is None
+    with pytest.raises(ValueError, match="by consuming region|by-region final demand"):
+        build_multi_sam(agg)
+
+
+def test_build_multi_sam_rejects_disconnected_topology():
+    """A DISCONNECTED region-trade graph (two regions with no bilateral trade between them) is
+    rejected with a TopologyError — the single-numéraire multi-region closure is under-determined
+    on a disconnected graph. Built by hand so the disconnection is unambiguous."""
+    from dataclasses import replace
+
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, IOSystem, Provenance
+    from cge.data.sam import TopologyError, build_multi_sam
+
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-26"
+    )
+    regions, sectors = ["A", "B"], ["g"]
+    labels = ["A:g", "B:g"]
+    # Block-diagonal A: A and B never buy from each other. FD is within-region only. No trade link.
+    A = pd.DataFrame([[0.2, 0.0], [0.0, 0.2]], index=labels, columns=labels)
+    fd = pd.DataFrame({"A": [80.0, 0.0], "B": [0.0, 90.0]}, index=labels)
+    io = IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=sectors),
+        regions=Classification(name="r", kind="region", labels=regions),
+        A=A,
+        final_demand=fd,
+        unit="MEUR",
+        currency="EUR",
+        final_demand_kind="by_region",
+    )
+    with pytest.raises(TopologyError, match="DISCONNECTED"):
+        build_multi_sam(io)
+
+
+def test_engine_multi_run_from_iosystem(small_build_io):
+    """The engine builds a multi-region SAM from an IOSystem when multi_region=True, dispatches to
+    the multi path, and replicates on a zero shock (the full IOSystem→multi-CGE wiring)."""
+    from cge.engines.cge_static.engine import CGEStaticEngine
+
+    io, store, bid = small_build_io
+    sat = store.load(bid)["SatelliteAccount"]
+    res = CGEStaticEngine().run(
+        data={"IOSystem": io, "SatelliteAccount": sat, "multi_region": True},
+        shocks=[CarbonPrice(price=0.0)],
+        years=[2020],
+    )
+    assert res.data["value"].abs().max() < 1e-6  # zero-shock replication
+    assert res.manifest.assumptions["sam_quality"]["worst"] == "pass"
+    assert (res.data["variable"] == "import_change").any()
+    assert len(res.manifest.assumptions["regions"]) >= 2
+
+
 def test_engine_runs_on_real_build_via_runner(small_build_io):
     from cge.runner import run_scenario
     from cge.scenarios.loader import Scenario

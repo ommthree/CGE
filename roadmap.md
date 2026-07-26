@@ -301,10 +301,21 @@ solver + termination status; a non-optimal solve raises (never returns numbers).
 - ✅ Value added derived from the IO identity and split capital/labour by a documented assumption; RAS balancer (`balance.py`) for the thin-data path; SAM-specific `QualityReport` (`quality.py`): balance, **aggregate preservation**, adjustment audit, negative-cell + assumed-share flags — surfaced in the run manifest, and a failing SAM is rejected.
 - **DoD (met for the closed single-region SAM):** balanced SAM reproducing source aggregates to 1e-6 with an audit trail; the CGE calibrates on it and replicates its benchmark to machine precision (`replicates_on_built_sam` validation check). Runs on the offline EXIOBASE-shaped test build; a live-EXIOBASE CGE gate is a follow-up.
 
-**5.1b Live-data multi-region SAM build (3–5 wk) — new task (review P2, round 10): owns the
+**5.1b Live-data multi-region SAM build — ✅ DONE (2026-07-26, engine v0.9.6): owns the
 previously-unowned "live-EXIOBASE open/multi SAM build" and "IOSystem→multi-region-SAM builder"
 deferred items, explicitly, since Phase 7b (harmonization) and Phase 8 (empirical validation)
 cannot credibly operate on the current hand-built supplied multi-region SAM.**
+- ✅ `build_multi_sam(io)` (data/sam/build.py) generalises `build_open_sam` to R regions; bilateral
+  trade read directly from the MRIO blocks; measured FD (by-region required, aggregate rejected);
+  trade-materiality dust-dropping + `TopologyError` connectivity gate; HOH↔HOH capital-account
+  closure; RAS-balanced + quality-reported (the `regions=` layout added to `sam_quality_report`).
+- ✅ `_run_multi_from_io` engine entry point (`data={"IOSystem": io, "multi_region": True}`);
+  per-(region,sector) effective carbon cost consumed as-is (price-applied-once, guarded by test);
+  satellite/SAM-quality provenance in the manifest.
+- ✅ `multi_region_live_replicates_on_built_sam` validation gate (machine-precision replication on
+  the offline pymrio-test MRIO aggregated to 2 regions × 3 sectors). 52 validation checks, all
+  green. NB the live EXIOBASE *download* wrapper `build_exiobase` was already present (§5.1); 5.1b
+  is the multi-region SAM *reduction* + engine wiring on top of it.
 - An IOSystem-driven multi-region SAM builder generalising `build_open_sam` (§5.1) from
   home-region + single ROW to **R build regions, each a genuine region** with its own household
   and bilateral trade to every other region — reusing the same construction pattern (balanced by
@@ -622,7 +633,7 @@ P0 ─▶ P1 ─▶ P2 ─▶ P3 (GUI v1)
 | End P4b | ~9–15 wk | **GVA per sector/country, GDP per country, and a deflator** per time-step, in **real and nominal** terms (indicative PE tier; native and exact in the CGE) |
 | End P6 (skipping P5) | ~11–19 wk | Nature dependency/impact exposure of any good, incl. via its supply chain, plus nature stress runs |
 | End P5 | ~16–25 wk | General-equilibrium price + volume answers with carbon-tax revenue recycling (Armington/CET open economy + true multi-region bilateral trade — no government account, investment, or energy nest yet: see P5d; and the multi-region SAM is still hand-built, not live-EXIOBASE: see §5.1b) |
-| End §5.1b | ~19–30 wk | A live-EXIOBASE-driven multi-region SAM build (satellite alignment, FD attribution, trade-materiality handling, topology validation, live-data replication gate) — the data-side prerequisite Phase 7b/8 need before they can credibly operate on multi-region output |
+| End §5.1b ✅ | done (v0.9.6) | A build-driven multi-region SAM reduction (`build_multi_sam`: bilateral trade from the MRIO blocks, measured FD attribution, trade-materiality dust-dropping, `TopologyError` connectivity gate, machine-precision `multi_region_live_replicates_on_built_sam` gate) + `_run_multi_from_io` engine wiring — the data-side prerequisite Phase 7b/8 need before they can credibly operate on multi-region output |
 | End P5d | ~27–42 wk (revised — review P2, round 10: Phase 5d's own header corrected from 4–8 wk to 8–12 wk solo FTE to match its task total) | A government/fiscal account, savings-investment with capital accumulation, an energy nest, and the full standard scenario output set (GDP, GVA, consumption, investment, employment, wages, fiscal balance, capital returns, and a relative cost-of-living index — not "inflation", which the CPI-numéraire closure cannot identify) — the macro closure Phase 5 originally specified |
 | End P6b | ~34–56 wk | Physically-grounded nature scenarios (degradation/restoration state, not a bare productivity-shock number) |
 | Full incl. P7 pathway stack | 6–12 months | NGFS-driven dynamic pathways to 2050 with temperature reporting, multi-source data, scenario library |

@@ -977,3 +977,129 @@ def test_engine_multi_energy_nest_end_to_end():
         ].iloc[0]
     )
     assert dv < 0.0  # North fossil output contracts
+
+
+# -- IO-backed multi-region path (Phase 5.1b) ------------------------------------------------
+def _eur_multi_io_sat():
+    """A 2-region EUR IOSystem + satellite with by-region final demand and genuine bilateral trade,
+    for the IO-backed multi-region path (units must be EUR for carbon pricing)."""
+    from cge.contracts.data_objects import (
+        Classification,
+        IOSystem,
+        Provenance,
+        SatelliteAccount,
+    )
+
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-26"
+    )
+    regions, sectors = ["A", "B"], ["energy", "mfg"]
+    labels = [f"{r}:{s}" for r in regions for s in sectors]
+    A = pd.DataFrame(
+        [
+            [0.10, 0.20, 0.02, 0.03],
+            [0.15, 0.10, 0.03, 0.04],
+            [0.03, 0.02, 0.10, 0.20],
+            [0.04, 0.03, 0.15, 0.10],
+        ],
+        index=labels,
+        columns=labels,
+    )
+    fd = pd.DataFrame(
+        {"A": [100.0, 120.0, 10.0, 12.0], "B": [12.0, 10.0, 110.0, 130.0]}, index=labels
+    )
+    io = IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=sectors),
+        regions=Classification(name="r", kind="region", labels=regions),
+        A=A,
+        final_demand=fd,
+        unit="MEUR",
+        currency="EUR",
+        final_demand_kind="by_region",
+    )
+    sat = SatelliteAccount(
+        provenance=prov,
+        name="GHG",
+        units={"CO2": "t/MEUR"},
+        data=pd.DataFrame(
+            {"A:energy": [800.0], "A:mfg": [200.0], "B:energy": [900.0], "B:mfg": [150.0]},
+            index=["CO2"],
+        ),
+    )
+    return io, sat
+
+
+def test_engine_multi_from_io_carbon_price_moves_all_regions():
+    """The IO-backed multi path prices carbon from the satellite per (region, sector): energy
+    contracts and manufacturing expands in BOTH regions, and the higher-intensity region's energy
+    contracts more (the substitution-away-from-energy mechanism, region by region)."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    io, sat = _eur_multi_io_sat()
+    res = eng.run(
+        data={"IOSystem": io, "SatelliteAccount": sat, "multi_region": True},
+        shocks=[CarbonPrice(price=100.0)],
+        years=[2020],
+    )
+    d = res.data
+
+    def vol(r, s):
+        return float(
+            d[(d["variable"] == "volume_change") & (d["region"] == r) & (d["sector"] == s)][
+                "value"
+            ].iloc[0]
+        )
+
+    for r in ("A", "B"):
+        assert vol(r, "energy") < 0.0  # energy contracts
+        assert vol(r, "mfg") > 0.0  # manufacturing expands
+    assert vol("B", "energy") < vol("A", "energy")  # B is more energy-intensive → contracts more
+    assert res.manifest.assumptions["emissions_priced"] is True
+    input_names = {i.get("name") for i in res.manifest.assumptions["inputs"]}
+    assert "SatelliteAccount" in input_names  # satellite provenance recorded
+
+
+def test_engine_multi_from_io_price_applied_once():
+    """Review P0 regression (the open path's double-counting bug, guarded on the multi path): the
+    IO-backed effective cost is already price-included, so it must NOT be re-multiplied by the
+    price. Doubling the price roughly doubles the effective wedge — a ~4× move would signal the
+    price was squared."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    io, sat = _eur_multi_io_sat()
+
+    def energy_drop(price):
+        res = eng.run(
+            data={"IOSystem": io, "SatelliteAccount": sat, "multi_region": True},
+            shocks=[CarbonPrice(price=price)],
+            years=[2020],
+        )
+        d = res.data
+        return -float(
+            d[(d["variable"] == "volume_change") & (d["region"] == "A") & (d["sector"] == "energy")][
+                "value"
+            ].iloc[0]
+        )
+
+    d1, d2 = energy_drop(50.0), energy_drop(100.0)
+    assert d1 > 0 and d2 > 0
+    ratio = d2 / d1
+    assert 1.5 < ratio < 2.6  # ~linear (≈2×), NOT ~4× (which price-squaring would give)
+
+
+def test_engine_multi_from_io_missing_satellite_rejected():
+    """A positive carbon price on the IO-backed multi path with no satellite is rejected (it would
+    be a silently zero-impact run) — the same gate the closed/open IO paths have."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    io, _sat = _eur_multi_io_sat()
+    with pytest.raises(ValueError, match="requires a 'SatelliteAccount'|SatelliteAccount"):
+        eng.run(
+            data={"IOSystem": io, "multi_region": True},
+            shocks=[CarbonPrice(price=100.0)],
+            years=[2020],
+        )

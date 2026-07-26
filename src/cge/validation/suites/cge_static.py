@@ -257,6 +257,46 @@ def _open_real_sam_replication():
     return err < 1e-6, f"open real-SAM replication error = {err:.2e}", err, 1e-6
 
 
+@check(SUITE, "multi_region_live_replicates_on_built_sam")
+def _multi_real_sam_replication():
+    """The Phase 5.1b DoD gate: build a genuine **multi-region** SAM (bilateral trade among ALL
+    build regions) from an EXIOBASE-shaped IOSystem via ``build_multi_sam``, quality- and
+    topology-gate it, then confirm the multi-region CGE calibrates and replicates its benchmark to
+    machine precision — proving the IOSystem→multi-SAM→calibrate→solve pipeline works on structured
+    multi-region data (offline pymrio test MRIO, not live EXIOBASE), and that the built SAM's
+    trade-materiality/connectivity survives calibration (active_routes ≠ ∅, one connected
+    component)."""
+    import tempfile
+
+    from cge.data.build import build_test
+    from cge.data.sam import build_multi_sam
+    from cge.data.store import DataStore
+    from cge.engines.cge_static import model_multi as MM
+    from cge.engines.cge_static.calibrate_multi import calibrate_multi
+
+    store = DataStore(tempfile.mkdtemp())
+    build_test(store=store)
+    # The aggregated small build is the 2-region × 3-sector multi-region system.
+    bid = next(b for b in store.build_ids() if b != "exiobase-test")
+    io = store.load(bid)["IOSystem"]
+    sam, report, regions, sectors = build_multi_sam(io)
+    if not report.passed:
+        return False, "multi-region SAM quality gate failed on the built SAM", None, None
+    cal = calibrate_multi(sam, regions=regions, sectors=sectors, factors=["CAP", "LAB"])
+    if not cal.active_routes:
+        return False, "built multi-region SAM has no active trade routes", None, None
+    if len(cal.connected_components) != 1:
+        return False, "built multi-region SAM is disconnected", None, None
+    sol = solve(
+        lambda z: MM.residuals(cal, z, recycling="lump_sum"),
+        MM.initial_guess(cal) * 1.03,
+        prefer="scipy",
+    )
+    st = MM.unpack_state(cal, sol.x, recycling="lump_sum", strict=True)
+    err = max(float(np.max(np.abs(st.Z - cal.Z0))), float(np.max(np.abs(st.M - cal.M0))))
+    return err < 1e-6, f"multi-region live-SAM replication error = {err:.2e}", err, 1e-6
+
+
 # -- open economy (Armington/CET) ---------------------------------------------
 _OPEN_EMISSIONS = np.array([2.0, 0.5])
 

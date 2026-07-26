@@ -42,17 +42,28 @@ def sam_quality_report(
     value_added_clipped: float = 0.0,
     open_economy: bool = False,
     fd_attribution: str | None = None,
+    regions: list[str] | None = None,
 ) -> QualityReport:
     """Build the SAM ``QualityReport``. ``adjustment`` (raw − balanced) drives the adjustment-audit
     check when RAS moved cells; pass ``None`` when no balancing was needed. ``open_economy`` selects
     the account naming for the aggregate-preservation reads: an open SAM uses ``a_<s>`` activity and
     ``c_<s>`` commodity accounts (value added is paid by activities, final demand received by
-    commodities), a closed SAM uses plain sector accounts for both."""
+    commodities), a closed SAM uses plain sector accounts for both. ``regions`` (Phase 5.1b) selects
+    the MULTI-region layout: activity/commodity accounts are ``a_<r>_<s>``/``c_<r>_<s>`` over every
+    region-sector, final demand is received by every ``HOH_<r>`` (``household`` is ignored), and the
+    same aggregate-preservation identities hold summed over regions."""
     report = QualityReport(build_id=build_id)
-    # Account labels the aggregate-preservation checks read from (differ open vs closed).
-    va_cols = [f"a_{s}" for s in sectors] if open_economy else sectors
-    fd_rows = [f"c_{s}" for s in sectors] if open_economy else sectors
-    output_rows = [f"a_{s}" for s in sectors] if open_economy else sectors
+    # Account labels the aggregate-preservation checks read from (differ closed/open/multi).
+    if regions is not None:
+        va_cols = [f"a_{r}_{s}" for r in regions for s in sectors]
+        fd_rows = [f"c_{r}_{s}" for r in regions for s in sectors]
+        output_rows = va_cols
+    elif open_economy:
+        va_cols = [f"a_{s}" for s in sectors]
+        fd_rows = [f"c_{s}" for s in sectors]
+        output_rows = va_cols
+    else:
+        va_cols = fd_rows = output_rows = sectors
 
     # 1. Balance identity (fatal): row sum = column sum per account.
     imb = imbalance(matrix)
@@ -68,8 +79,13 @@ def sam_quality_report(
     )
 
     # 2. Aggregate preservation: SAM reproduces source EXIOBASE aggregates.
-    sam_fd = float(matrix.loc[fd_rows, household].sum())
-    sam_va = float(matrix.loc[factors, va_cols].to_numpy().sum())
+    fd_cols = [f"HOH_{r}" for r in regions] if regions is not None else [household]
+    # Factor rows are region-qualified in the multi layout (CAP_<r>/LAB_<r>), plain otherwise.
+    factor_rows = (
+        [f"{f}_{r}" for r in regions for f in factors] if regions is not None else list(factors)
+    )
+    sam_fd = float(matrix.loc[fd_rows, fd_cols].to_numpy().sum())
+    sam_va = float(matrix.loc[factor_rows, va_cols].to_numpy().sum())
     # Gross output = intermediate sales + final demand (row totals of the output-side accounts).
     sam_x = float(matrix.loc[output_rows, :].to_numpy().sum())
     for name, sam_val, src_val in (

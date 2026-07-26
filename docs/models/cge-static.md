@@ -685,10 +685,11 @@ and every factor market under shock**, not just at the benchmark
 carbon leakage) and **raises partners' output** of that good
 (`multi_region_cross_region_leakage`). Results are **region-tagged**, and the manifest records the
 hashed effective carbon-cost matrix (``EffectiveCarbonCostMatrix``) so two runs that differ only in
-carbon shares or recycling mode produce distinct manifests — there is currently no
-IOSystem-driven multi-region SAM build (§8a's "Remaining sub-phases", below), so unlike the
-single-region open economy the multi-region manifest never carries a ``SatelliteAccount``
-identity; that identity only appears when a satellite is actually consulted. The emitted
+carbon shares or recycling mode produce distinct manifests. An **IOSystem-driven multi-region SAM
+build** (Phase 5.1b — see "Remaining sub-phases" below) lets a real build run through the
+multi-region variant, in which case the manifest carries the built SAM's quality report and the
+consulted ``SatelliteAccount`` identity (as the single-region open IO path does); on a supplied SAM
+that identity only appears when a satellite is actually consulted. The emitted
 ``real_consumption_change`` is a base-price (Laspeyres) household-consumption index, not
 production-side real GDP. This is **not** because other regions' prices are "unpinned" — one
 global numéraire (region 0's CPI) fixes the common nominal scale for every region, and every
@@ -698,9 +699,32 @@ change and the composite-price change, so summing it conflates the two. Valuing 
 **base** (benchmark) prices instead strips out the price move and isolates the real quantity
 effect.
 
-**Remaining sub-phases:** an IOSystem-driven multi-region SAM build (today the multi-region variant
-requires a supplied SAM — see §5a for the single-region open economy, which does have an
-IOSystem build) and per-cell (rather than uniform) trade elasticities.
+**IOSystem-driven multi-region SAM build (Phase 5.1b).** `build_multi_sam(io)` generalises the
+single-region-open `build_open_sam` from *home + rest-of-world* to *R genuine regions, each with its
+own household and bilateral trade to every other region* — the closed global economy the
+multi-region CGE calibrates on. Unlike the open reduction, where exports are a residual, the MRIO
+already carries the inter-regional blocks, so bilateral trade `EX[o,s,d]` is read **directly** (o's
+output of s consumed by d, intermediate + final); domestic sales are the own-region diagonal;
+imported intermediates enter each region's Armington composite. Final demand **must** be retained by
+consuming region (`io.fd_by_region()`) — a multi-region SAM attributes each region's own final
+demand, so an aggregate-only build is **rejected**, not imputed (the open builder can impute a
+single home region; R regions cannot be split without inventing the shares). Two live-data hazards
+are handled: **trade materiality** (bilateral flows below a share-of-output threshold are dropped as
+aggregation/RAS dust, so a live sparse build carries no ~1e-12 phantom routes), and **topology** —
+the region-trade graph is checked for connectivity after balancing and a disconnected build raises
+`TopologyError` before calibration (the single-numéraire closure is under-determined on a
+disconnected graph; this data-side gate mirrors `MultiCalibratedModel.connected_components`). The
+result passes the SAM quality report (balanced, aggregates preserved, non-negative) and the CGE
+**replicates its benchmark to machine precision** (`multi_region_live_replicates_on_built_sam`, the
+5.1b DoD gate). The engine runs it via `data={"IOSystem": io, "multi_region": True}` (+ optional
+`SatelliteAccount` for carbon pricing, `capital_share`, `multi_materiality`), deriving the
+per-(region, sector) effective carbon cost the same way the open IO path does and consuming it
+directly (already price-included — not re-multiplied).
+
+**Remaining sub-phases:** per-cell (rather than uniform) trade elasticities; a curated
+analytically-precise sector concordance (the coarse keyword map is a functional default); and
+per-component numéraire closures so a disconnected multi-region build could be calibrated in one
+call rather than as separate economies.
 
 ## 9. Honest expectations
 

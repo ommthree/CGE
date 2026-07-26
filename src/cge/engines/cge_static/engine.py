@@ -63,7 +63,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.5"
+VERSION = "0.9.6"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -336,7 +336,8 @@ class CGEStaticEngine:
     def run(self, *, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
         # Dispatch by SAM structure: MULTI-REGION (bilateral trade — several HOH_<r> households) →
         # _run_multi; OPEN (a single ROW account) → _run_open; an IOSystem + open_home_region builds
-        # an open SAM; otherwise the CLOSED pilot. Each variant has its own calibration/model.
+        # an open SAM; an IOSystem + multi_region=True builds an R-region SAM (Phase 5.1b);
+        # otherwise the CLOSED pilot. Each variant has its own calibration/model.
         supplied_sam = data.get("SAM")
         if supplied_sam is not None and _is_multi_region_sam(supplied_sam):
             return _run_multi(self.meta, data, shocks, years)
@@ -344,6 +345,8 @@ class CGEStaticEngine:
             return _run_open(self.meta, data, shocks, years)
         if data.get("IOSystem") is not None and data.get("open_home_region") is not None:
             return _run_open_from_io(self.meta, data, shocks, years)
+        if data.get("IOSystem") is not None and data.get("multi_region"):
+            return _run_multi_from_io(self.meta, data, shocks, years)
 
         inp = _resolve_inputs(data)
         sam, sectors, factors = (
@@ -1626,6 +1629,95 @@ def _validate_multi_sam(sam: SAM, regions: list[str], sectors: list[str], factor
         raise ValueError(f"multi-region SAM is not balanced (max |row−col| = {worst:.3e} > 1e-6)")
 
 
+def _run_multi_from_io(meta, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
+    """Multi-region CGE on a **real build** (Phase 5.1b): construct an R-region SAM from the supplied
+    ``IOSystem`` via ``build_multi_sam`` (bilateral trade among ALL build regions, topology- and
+    quality-gated), derive the per-(region, sector) effective carbon cost from the satellite the
+    SAME way Engine 1 / the open IO path does, then delegate to ``_run_multi`` with the built SAM +
+    effective cost injected.
+
+    The multi analogue of ``_run_open_from_io``. ``data`` keys: ``IOSystem`` (+ ``SatelliteAccount``),
+    optional ``capital_share``, ``multi_materiality`` (dust-route threshold). Unlike the open path
+    there is no ``home_region`` — every build region is modelled as a genuine region (the global
+    economy is closed with no external rest-of-world)."""
+    from cge.data.sam import build_multi_sam
+
+    io: IOSystem = data["IOSystem"]
+    sat = data.get("SatelliteAccount")
+    kwargs = {}
+    if "capital_share" in data:
+        kwargs["capital_share"] = data["capital_share"]
+    if "multi_materiality" in data:
+        kwargs["materiality"] = data["multi_materiality"]
+    sam, quality, regions, sectors = build_multi_sam(io, **kwargs)
+    if quality.worst.value == "fail":
+        raise ValueError(
+            f"multi-region SAM from {io.provenance.build_id} failed quality gates: "
+            f"{quality.summary()}"
+        )
+
+    carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+    # Same missing-satellite gate as the closed/open IO paths: a positive price with no satellite
+    # would silently be a zero-impact run.
+    positive_price = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
+    if positive_price and sat is None:
+        raise ValueError(
+            "a positive carbon price on an IO-backed multi-region CGE run requires a "
+            "'SatelliteAccount' (emission intensities); none supplied — the run would be "
+            "silently zero-impact."
+        )
+    if carbon_shocks:
+        from cge.engines.io_price.engine import _assert_coverage_labels
+
+        _assert_coverage_labels(carbon_shocks, io)
+    cc_by_year = _multi_effective_cc_from_io(io, sat, carbon_shocks, regions, sectors, years)
+
+    inner = {k: v for k, v in data.items() if k not in ("IOSystem", "SatelliteAccount")}
+    inner["SAM"] = sam
+    inner["_sam_quality"] = quality
+    inner["_io_backed"] = True
+    if cc_by_year is not None:
+        inner["_effective_cc_by_year"] = cc_by_year  # per-year [nr, ns] cost, consumed as-is
+    if sat is not None:
+        inner["_emissions_provenance"] = _sat_identity(sat)
+    return _run_multi(meta, inner, shocks, years)
+
+
+def _multi_effective_cc_from_io(io, sat, carbon_shocks, regions, sectors, years):
+    """Effective per-year carbon-cost matrix ``{year: cc[nr, ns]}`` (or None if not priced) for the
+    multi-region build. Reuses Engine 1's ``carbon_cost_vector`` (units/gases/coverage/paths/1e-6
+    scaling) PER YEAR over every region's labels, aggregated to (region, sector) output-weighted —
+    the per-(region,sector) analogue of the open path's home-only ``_open_effective_cc_from_io``.
+    The result already includes the carbon price, so the caller must not re-multiply it (review P0)."""
+    positive = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
+    if not positive or sat is None:
+        return None
+    from cge.engines.io_price.engine import carbon_cost_vector
+
+    _assert_cge_units(io, sat)
+    labels = list(io.A.columns)
+    A = io.A.to_numpy(dtype=float)
+    fd = io.final_demand.sum(axis=1).reindex(labels).fillna(0.0).to_numpy(dtype=float)
+    x = np.linalg.solve(np.eye(A.shape[0]) - A, fd)
+    r_index = {r: k for k, r in enumerate(regions)}
+    s_index = {s: k for k, s in enumerate(sectors)}
+    nr, ns = len(regions), len(sectors)
+    out: dict[int, np.ndarray] = {}
+    for year in years:
+        cost, _descs = carbon_cost_vector(carbon_shocks, sat, labels, year)  # price-included
+        num = np.zeros((nr, ns))
+        den = np.zeros((nr, ns))
+        for lb, c_i, xi in zip(labels, cost, x, strict=True):
+            r, s = lb.split(":", 1)
+            if r not in r_index or s not in s_index:
+                continue
+            ri, si = r_index[r], s_index[s]
+            num[ri, si] += c_i * xi
+            den[ri, si] += xi
+        out[year] = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
+    return out if any(np.any(v != 0.0) for v in out.values()) else None
+
+
 def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
     """Multi-region (bilateral Armington/CET) CGE run. The SAM has ``a_<r>_<s>``/``c_<r>_<s>``
     accounts, per-region factors ``<f>_<r>`` and households ``HOH_<r>``. Carbon cost is a supplied
@@ -1642,9 +1734,18 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     _validate_multi_sam(sam, regions, sectors, factors)
     nr, ns = len(regions), len(sectors)
 
+    # IO-backed path (Phase 5.1b): _run_multi_from_io built the SAM and the EFFECTIVE per-year
+    # carbon-cost matrix (already price × intensity × 1e-6, honouring gases/coverage) upstream, so
+    # this run consumes it directly rather than re-multiplying by the price, exactly as the open
+    # IO path does (review P0: re-applying the price double-counts).
+    io_backed = bool(data.get("_io_backed"))
+    eff_by_year = data.get("_effective_cc_by_year")
+
     carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
     for s in carbon_shocks:
-        if s.gases != ["CO2"] or s.coverage_sectors or s.coverage_regions:
+        # On the supplied-SAM path the multi CGE cannot select gases/coverage (the share is a bare
+        # per-(region,sector) number); the IO path HAS honoured them while building eff_by_year.
+        if not io_backed and (s.gases != ["CO2"] or s.coverage_sectors or s.coverage_regions):
             raise ValueError(
                 "the multi-region CGE applies a per-(region,sector) carbon_cost_share and cannot "
                 "select gases or apply coverage; express coverage via carbon_cost_share values."
@@ -1656,7 +1757,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
 
     share = _multi_carbon_share(data, regions, sectors)
     positive = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
-    if positive and share is None:
+    if positive and share is None and not io_backed:
         raise ValueError(
             "a positive carbon price on the multi-region CGE requires carbon_cost_share"
         )
@@ -1667,7 +1768,8 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     # when a positive-revenue scenario actually reaches here (review P2: the flag was always set,
     # and — round-9 follow-up — the switch itself must also only fire then, or a zero-impact run's
     # manifest can report recycling_mode="lump_sum" next to recycling_defaulted_from_none=False).
-    emissions_priced = bool(positive and np.any(share != 0.0))
+    io_priced = bool(eff_by_year is not None and any(np.any(v != 0.0) for v in eff_by_year.values()))
+    emissions_priced = bool(positive and (io_priced if io_backed else np.any(share != 0.0)))
     recycling = requested_recycling
     recycling_defaulted = requested_recycling == "none" and emissions_priced
     if recycling_defaulted:
@@ -1726,8 +1828,13 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     backends, statuses = {_bsol.backend}, {_bsol.status}
     cc_by_year: dict[int, np.ndarray] = {}
     for year in years:
-        tau = sum(s.price_at(year) for s in carbon_shocks)
-        cc = tau * share
+        if io_backed and eff_by_year is not None:
+            # Effective cost is already price-included per year (may be absent for a year the
+            # coverage excludes → zero); consume as-is, do NOT multiply by the price again.
+            cc = eff_by_year.get(year, np.zeros((nr, ns)))
+        else:
+            tau = sum(s.price_at(year) for s in carbon_shocks)
+            cc = tau * share
         cc_by_year[year] = cc
         sol, st = _solve_year(cc)
         resid_max = max(resid_max, sol.residual_norm)
@@ -1753,6 +1860,10 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         if emissions_priced
         else []
     )
+    # IO-backed path (Phase 5.1b): record the satellite identity actually consulted, like the open
+    # path (surfaced even when the effective cost is zero — a real satellite was read).
+    if data.get("_emissions_provenance") is not None:
+        emissions_inputs.append(data["_emissions_provenance"])
     manifest = RunManifest.build(
         engine_name=meta.name,
         engine_version=meta.version,
@@ -1796,6 +1907,13 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             ),
             "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
+            # SAM credibility surface when the multi SAM was built from an IOSystem (Phase 5.1b);
+            # None when a SAM was supplied directly and validated separately.
+            "sam_quality": (
+                {"worst": _q.worst.value, "summary": _q.summary()}
+                if (_q := data.get("_sam_quality")) is not None
+                else "supplied directly (validated: aligned, finite, non-negative, balanced)"
+            ),
             "inputs": [
                 input_identity("SAM", sam.provenance, content=_sam_fingerprint(sam)),
                 *emissions_inputs,
