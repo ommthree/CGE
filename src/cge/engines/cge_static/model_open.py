@@ -67,6 +67,9 @@ class OpenModelState:
     # Savings-investment account (Phase 5d.2). Zeros when cal.has_investment is False.
     ID: np.ndarray  # investment final demand on the composite [i]
     savings: float  # household savings (investment = savings + er·Sf under savings_driven)
+    # Foreign savings Sf (Phase 5d.7). Fixed at the benchmark under fixed_foreign_savings; the
+    # endogenous current account under flexible_balance (er fixed, Sf adjusts).
+    foreign_savings: float = 0.0
 
 
 def _va_unit_cost(cal: OpenCalibratedModel, w: np.ndarray) -> np.ndarray:
@@ -140,6 +143,7 @@ def derive_open_state(
     strict: bool = False,
     gov_closure: str = "balanced_budget",
     inv_closure: str = "savings_driven",
+    foreign_savings: float | None = None,
 ) -> OpenModelState:
     """Close the open model at prices (pd, pq, w, er): derive all quantities by CES/CET duals.
 
@@ -191,7 +195,12 @@ def derive_open_state(
             "(default) and 'fixed_real'."
         )
     s = cal.sav_rate0 if cal.has_investment else 0.0
-    sf = er * cal.foreign_savings  # the capital-account inflow in domestic currency
+    # The capital-account inflow in domestic currency. Default (fixed-Sf / flexible-er closure):
+    # Sf is the calibrated benchmark level, valued at the endogenous er. Flexible-trade-balance
+    # closure (Phase 5d.7): Sf is a SOLVER UNKNOWN (passed as foreign_savings) and er is fixed, so
+    # the current account adjusts freely — the residual system pins Sf via the trade balance.
+    fs = cal.foreign_savings if foreign_savings is None else foreign_savings
+    sf = er * fs
 
     if not cal.has_government:
         if not cal.has_investment:
@@ -356,6 +365,7 @@ def derive_open_state(
         fiscal_balance=0.0,  # balanced_budget: spending exhausts income by construction
         ID=ID,
         savings=savings,
+        foreign_savings=fs,  # benchmark Sf (fixed) or the endogenous current account (flexible)
     )
 
 
@@ -441,18 +451,52 @@ def residuals(
     recycling: str = "lump_sum",
     drop_factor: int = 0,
     inv_closure: str = "savings_driven",
+    gov_closure: str = "balanced_budget",
+    trade_closure: str = "fixed_foreign_savings",
 ) -> np.ndarray:
     ns = len(cal.sectors)
     nf = len(cal.factors)
     pd = np.asarray(z[:ns], dtype=float)
     pq = np.asarray(z[ns : 2 * ns], dtype=float)
     w = np.asarray(z[2 * ns : 2 * ns + nf], dtype=float)
-    er = float(z[2 * ns + nf])
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
-
-    st = derive_open_state(
-        cal, pd, pq, w, er, carbon_cost=cc, recycling=recycling, inv_closure=inv_closure
-    )
+    # Trade closure (Phase 5d.7): the last unknown is either the exchange rate ``er`` (default —
+    # er adjusts, Sf fixed at its benchmark) or foreign savings ``Sf`` (flexible-trade-balance — er
+    # is fixed at 1, Sf adjusts so the current account balances freely). Same unknown count either
+    # way; only the interpretation of the last slot and one residual row swap.
+    if trade_closure == "flexible_balance":
+        er = 1.0
+        fs = float(z[2 * ns + nf])  # the last unknown is Sf
+        st = derive_open_state(
+            cal,
+            pd,
+            pq,
+            w,
+            er,
+            carbon_cost=cc,
+            recycling=recycling,
+            inv_closure=inv_closure,
+            gov_closure=gov_closure,
+            foreign_savings=fs,
+        )
+    elif trade_closure == "fixed_foreign_savings":
+        er = float(z[2 * ns + nf])  # the last unknown is er
+        st = derive_open_state(
+            cal,
+            pd,
+            pq,
+            w,
+            er,
+            carbon_cost=cc,
+            recycling=recycling,
+            inv_closure=inv_closure,
+            gov_closure=gov_closure,
+        )
+    else:
+        raise ValueError(
+            f"unsupported trade_closure {trade_closure!r}; use 'fixed_foreign_savings' "
+            "(default) or 'flexible_balance'."
+        )
     pm = er * np.ones(ns)
     pe = er * np.ones(ns)
     pv = _va_unit_cost(cal, w)
@@ -484,8 +528,11 @@ def residuals(
         if f == drop_factor:
             continue
         res.append(float(st.F[f, :].sum()) - cal.endowment[f])
-    # Trade balance: Σ pm·M − Σ pe·E − er·Sf = 0.  [1 row]
-    res.append(float(pm @ st.M - pe @ st.E - er * cal.foreign_savings))
+    # Trade balance: current account = capital account, Σ pm·M − Σ pe·E − er·Sf = 0.  [1 row]
+    # fixed_foreign_savings: Sf = cal.foreign_savings (fixed), this pins er. flexible_balance:
+    # Sf = fs (the last unknown), er = 1, this pins Sf — the current account adjusts freely.
+    sf_here = cal.foreign_savings if trade_closure == "fixed_foreign_savings" else fs
+    res.append(float(pm @ st.M - pe @ st.E - er * sf_here))
     # Numéraire: household CPI over the composite good, Π pq_i^γ_i = 1.  [1 row]
     cpi = float(np.prod(np.power(pq, cal.gamma)))
     res.append(cpi - 1.0)

@@ -58,9 +58,9 @@ bundle (opt-in via `energy_sectors`). An optional **adaptation/transition invest
 — chosen automatically when the SAM carries a `ROW` account.
 
 **Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today);
-a **flexible-trade-balance closure** (Phase 5d.7 — the open/multi variants fix `Sf` and let `er`
-adjust; the alternative fixes `er` and lets `Sf` adjust to a trade-balance target — the remaining
-5d.7 piece; the `deficit_financed` government closure is done, §4b);
+the **deficit-financed government closure in the open/multi variants** (Phase 5d.7 `deficit_financed`
+is closed-variant only today, §4b; the open engine rejects it explicitly — the flexible-trade-balance
+closure, §8, is done for the open variant and is structurally N/A for multi);
 **production/factor taxes, government→household transfers, government savings, government trade
 (GOV↔ROW), and cross-region government purchases** (a benchmark SAM carrying them is rejected
 explicitly); the **recursive-dynamic loop** (5d.3, §4d, provides the capital-accumulation
@@ -594,15 +594,32 @@ enters household income valued at the exchange rate:
 $$ I = \sum_f w_f FF_f + er\cdot S_f + R, $$
 so the model replicates a non-zero-$S_f$ benchmark exactly. Calibration checks that the SAM's
 ROW→household transfer equals $\sum M - \sum E$ (rejecting a mis-specified ROW capital account). The
-trade-balance residual holds $S_f$ fixed: $\sum p^m_i M_i - \sum p^e_i E_i - er\cdot S_f = 0$. An
-*endogenous*-$S_f$ closure (a savings-investment account with domestic investment demand) is a
-documented follow-up.
+trade-balance residual holds $S_f$ fixed: $\sum p^m_i M_i - \sum p^e_i E_i - er\cdot S_f = 0$.
+
+**Flexible-trade-balance closure** (Phase 5d.7, `trade_closure='flexible_balance'`). The default
+above fixes $S_f$ and lets the **exchange rate** clear the value trade balance. The alternative
+**pins the exchange rate** ($er=1$, the numéraire currency) and makes **foreign savings $S_f$ the
+free variable** — the current account adjusts freely to whatever a shock implies rather than being
+absorbed into the real exchange rate. This is a pure *closure swap*, not a new equation: the same
+last unknown slot in $z$ carries $er$ (default) or $S_f$ (flexible), and the same single
+trade-balance row pins whichever is free — the system stays square at $2N+|F|+1$. Under the flexible
+closure the engine reports `foreign_savings_change` (the endogenous current account) and holds
+`exchange_rate_change` at zero; the manifest records `trade_closure`. Both closures replicate the
+benchmark exactly (under flexible, the solve recovers $S_f=$ the benchmark foreign savings at
+$er=1$), and homogeneity holds (scaling the endowment $k\times$ scales real quantities and $S_f$ by
+$k$ with $er$ and prices unchanged). This closure is **open-variant only**: the multi-region variant
+(§8a) has **no single exchange rate** — bilateral trade prices $pe$ are the unknowns and each
+region's current account already closes by Walras once the bilateral goods markets clear, so there
+is no $er$/$S_f$ slot to swap. A savings-investment account (Phase 5d.2) is the separate mechanism
+that makes $S_f$ enter the *investment* pool rather than household income; it composes with either
+trade closure.
 
 It **replicates its benchmark to machine precision** and produces the signature open-economy result:
 a carbon price on the dirty sector causes **carbon leakage** — its domestic output falls, its
 **imports rise** (substitution to foreign supply) and its **exports fall** (lost competitiveness),
 while the clean sector expands and exports more. The engine emits `import_change`, `export_change`
-and `exchange_rate_change` alongside the usual outputs; `gdp_change_real` is the **full
+and `exchange_rate_change` alongside the usual outputs (plus `foreign_savings_change` under the
+flexible-trade-balance closure); `gdp_change_real` is the **full
 expenditure-side identity** $pq\cdot FD + er\cdot(\Sigma E - \Sigma M)$ — CPI-weighted household
 consumption **plus net exports** (review P1: an earlier version used $pq\cdot FD$ alone, which is
 household consumption, not GDP — the two coincide only when the current account is zero, which is

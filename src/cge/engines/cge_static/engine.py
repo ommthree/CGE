@@ -63,7 +63,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.4"
+VERSION = "0.9.5"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -1008,12 +1008,17 @@ def _assert_closed_replicates(cal, base, x0: np.ndarray) -> None:
     _raise_if_not_replicating(checks, "closed")
 
 
-def _assert_open_replicates(cal, base, x0: np.ndarray) -> None:
+def _assert_open_replicates(cal, base, x0: np.ndarray, trade_closure="fixed_foreign_savings") -> None:
     """Assert the benchmark solve reproduces the OPEN model's calibrated quantities (review P1).
     Same rationale as the closed gate, over the open benchmark set (Z/D/E/M/Q/FD/F) and unit
-    prices/exchange rate."""
+    prices. The last unknown is er (fixed_foreign_savings — benchmark 1) or Sf (flexible_balance —
+    benchmark cal.foreign_savings), so it is checked against its own benchmark, not blanket 1."""
+    prices = x0[:-1]
+    last = x0[-1]
+    last_benchmark = 1.0 if trade_closure == "fixed_foreign_savings" else float(cal.foreign_savings)
     checks = {
-        "prices+er": (x0, np.ones_like(x0)),
+        "prices": (prices, np.ones_like(prices)),
+        "last unknown (er or Sf)": (np.array([last]), np.array([last_benchmark])),
         "output Z": (base.Z, cal.Z0),
         "domestic D": (base.D, cal.D0),
         "exports E": (base.E, cal.E0),
@@ -1329,6 +1334,22 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         raise ValueError(
             f"unsupported inv_closure {inv_closure!r}; use 'savings_driven' or 'fixed_real'."
         )
+    gov_closure = data.get("gov_closure", "balanced_budget")
+    if gov_closure != "balanced_budget":
+        # The deficit_financed government closure is closed-variant only for now (the open/multi
+        # generalisation of the fiscal-residual absorption is a documented follow-up).
+        raise ValueError(
+            f"gov_closure={gov_closure!r} is not yet supported in the open-economy variant "
+            "(closed variant only); use 'balanced_budget'."
+        )
+    # Trade closure (Phase 5d.7): fixed_foreign_savings (default — er adjusts) or flexible_balance
+    # (er fixed at 1, Sf adjusts so the current account balances freely).
+    trade_closure = data.get("trade_closure", "fixed_foreign_savings")
+    if trade_closure not in ("fixed_foreign_savings", "flexible_balance"):
+        raise ValueError(
+            f"unsupported trade_closure {trade_closure!r}; use 'fixed_foreign_savings' "
+            "(default) or 'flexible_balance'."
+        )
 
     cal = calibrate_open(
         sam,
@@ -1346,34 +1367,58 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             f"inv_closure={inv_closure!r} needs a {_SAVINV_ACCOUNT!r} account in the SAM; "
             "this SAM has none, so the closure choice would silently do nothing."
         )
+    if gov_closure != "balanced_budget" and not cal.has_government:
+        raise ValueError(
+            f"gov_closure={gov_closure!r} needs a {_GOV_ACCOUNT!r} account in the SAM; none present."
+        )
+
+    # Under flexible_balance the last unknown is Sf (not er); seed it at the benchmark foreign
+    # savings so the solve starts near the benchmark.
+    def _guess():
+        g = MO.initial_guess(cal)
+        if trade_closure == "flexible_balance":
+            g = g.copy()
+            g[-1] = cal.foreign_savings
+        return g
 
     def _solve_year(cc):
         sol = solve(
             lambda z: MO.residuals(
-                cal, z, carbon_cost=cc, recycling=recycling, inv_closure=inv_closure
+                cal,
+                z,
+                carbon_cost=cc,
+                recycling=recycling,
+                inv_closure=inv_closure,
+                gov_closure=gov_closure,
+                trade_closure=trade_closure,
             ),
-            MO.initial_guess(cal),
+            _guess(),
             prefer="scipy",
         )
         # strict=True: enforce the recycling k<1 feasibility guard on the ACCEPTED equilibrium
         # (the residual evaluations inside solve() ran non-strict so the solve stays continuous).
+        flexible = trade_closure == "flexible_balance"
+        er = 1.0 if flexible else float(sol.x[-1])
+        fs = float(sol.x[-1]) if flexible else None
         st = MO.derive_open_state(
             cal,
             sol.x[:ns],
             sol.x[ns : 2 * ns],
             sol.x[2 * ns : 2 * ns + len(factors)],
-            float(sol.x[-1]),
+            er,
             carbon_cost=cc,
             recycling=recycling,
             strict=True,
             inv_closure=inv_closure,
+            gov_closure=gov_closure,
+            foreign_savings=fs,
         )
         return sol, st
 
     _bsol, base = _solve_year(np.zeros(ns))
     # Universal post-calibration replication gate (review P1): refuse a balanced-but-unsupported SAM
     # whose benchmark does not reproduce the calibrated quantities (see _assert_open_replicates).
-    _assert_open_replicates(cal, base, _bsol.x)
+    _assert_open_replicates(cal, base, _bsol.x, trade_closure=trade_closure)
     records: list[dict] = []
     resid_max = _bsol.residual_norm
     backends: set[str] = {_bsol.backend}
@@ -1433,9 +1478,12 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             "solver_statuses": sorted(statuses),
             "solver_max_residual_norm": resid_max,
             "foreign_savings": float(cal.foreign_savings),
+            # Trade closure (Phase 5d.7): fixed_foreign_savings (er adjusts) or flexible_balance
+            # (er fixed, Sf adjusts).
+            "trade_closure": trade_closure,
             # Government account (Phase 5d.1) — same keys as the closed variant's manifest.
             "government_account": _GOV_ACCOUNT if cal.has_government else "none",
-            "gov_closure": "balanced_budget" if cal.has_government else "n/a (no government)",
+            "gov_closure": gov_closure if cal.has_government else "n/a (no government)",
             "gov_benchmark_tax_share_of_factor_income": (
                 round(float(cal.gov_tax_rate0), 12) if cal.has_government else 0.0
             ),
@@ -1475,6 +1523,18 @@ def _emit_open(records, cal, base, st, year: int) -> None:
     for f_idx, factor in enumerate(cal.factors):
         records.append(_rec("factor_price_change", factor, year, st.w[f_idx] / base.w[f_idx] - 1.0))
     records.append(_rec("exchange_rate_change", "__economy__", year, st.er / base.er - 1.0))
+    # Foreign savings / current account (Phase 5d.7): under flexible_balance Sf is endogenous, so
+    # report its change (the current account adjusting instead of the exchange rate). Emitted only
+    # when Sf actually moved, so fixed-Sf runs stay byte-identical.
+    if abs(st.foreign_savings - base.foreign_savings) > 1e-12:
+        records.append(
+            _rec(
+                "foreign_savings_change",
+                "__economy__",
+                year,
+                _ratio(st.foreign_savings, base.foreign_savings),
+            )
+        )
     # Real GDP — expenditure-side: consumption + net exports (review P1: Σ pq_i·FD_i alone is
     # household CONSUMPTION, not GDP; it only coincides with GDP when the current account is zero.
     # With non-zero foreign savings — which this model explicitly supports via the ROW capital

@@ -1124,3 +1124,146 @@ def test_engine_open_energy_nest_end_to_end():
     d = res.data
     dv = float(d[(d["variable"] == "volume_change") & (d["sector"] == "DIRTY")]["value"].iloc[0])
     assert dv < 0.0  # fossil output contracts
+
+
+# -- flexible-trade-balance closure (Phase 5d.7) -----------------------------
+def _deficit_sam():
+    """An open SAM with a genuine trade deficit (imports 38 > exports 30, Sf = 8) — so the trade
+    closure swap (er adjusts vs Sf adjusts) is meaningfully exercised."""
+    return _build_open_sam(
+        exports={"BRD": 20.0, "MIL": 10.0},
+        imports={"BRD": 20.0, "MIL": 18.0},
+        domestic={"BRD": 80.0, "MIL": 110.0},
+    )
+
+
+def _solve_trade(cal, trade_closure, cc=None, recycling="lump_sum", drop_factor=0):
+    ns, nf = len(cal.sectors), len(cal.factors)
+    cc = np.zeros(ns) if cc is None else cc
+    g = MO.initial_guess(cal) * 1.02
+    if trade_closure == "flexible_balance":
+        g = g.copy()
+        g[-1] = cal.foreign_savings
+    sol = solve(
+        lambda z: MO.residuals(
+            cal, z, carbon_cost=cc, recycling=recycling, trade_closure=trade_closure, drop_factor=drop_factor
+        ),
+        g,
+        prefer="scipy",
+    )
+    flexible = trade_closure == "flexible_balance"
+    er = 1.0 if flexible else float(sol.x[-1])
+    fs = float(sol.x[-1]) if flexible else None
+    st = MO.derive_open_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns : 2 * ns],
+        sol.x[2 * ns : 2 * ns + nf],
+        er,
+        carbon_cost=cc,
+        recycling=recycling,
+        strict=True,
+        foreign_savings=fs,
+    )
+    return sol, st
+
+
+def test_flexible_trade_balance_replicates_benchmark():
+    """Tier 1: at the benchmark both closures replicate — under flexible, Sf recovers the benchmark
+    foreign savings and er = 1."""
+    cal = calibrate_open(_deficit_sam(), sectors=_SECTORS, factors=_FACTORS)
+    assert cal.foreign_savings == pytest.approx(8.0 / 181.0)  # deficit / benchmark GDP
+    sol, st = _solve_trade(cal, "flexible_balance")
+    assert np.allclose(st.Z, cal.Z0, atol=1e-6)
+    assert st.er == pytest.approx(1.0)  # exchange rate pinned
+    assert st.foreign_savings == pytest.approx(cal.foreign_savings, rel=1e-6)
+
+
+def test_flexible_pins_er_and_adjusts_foreign_savings():
+    """The closure swap: under a carbon shock, fixed_foreign_savings moves er (Sf held), while
+    flexible_balance pins er = 1 and lets Sf (the current account) adjust."""
+    cal = calibrate_open(_deficit_sam(), sectors=_SECTORS, factors=_FACTORS)
+    cc = 0.3 * _EMISSIONS
+    _sf, fixed = _solve_trade(cal, "fixed_foreign_savings", cc=cc)
+    _sx, flex = _solve_trade(cal, "flexible_balance", cc=cc)
+    assert abs(fixed.er - 1.0) > 1e-3  # er moves under fixed-Sf
+    assert flex.er == pytest.approx(1.0)  # er pinned under flexible
+    assert flex.foreign_savings != pytest.approx(cal.foreign_savings, rel=1e-3)  # Sf adjusts
+
+
+def test_flexible_trade_balance_identity_holds():
+    """The current account = capital account: Σ pm·M − Σ pe·E = er·Sf, with Sf the endogenous
+    variable under the flexible closure."""
+    cal = calibrate_open(_deficit_sam(), sectors=_SECTORS, factors=_FACTORS)
+    cc = 0.3 * _EMISSIONS
+    _s, st = _solve_trade(cal, "flexible_balance", cc=cc)
+    current_account = st.er * float(st.M.sum() - st.E.sum())
+    assert current_account == pytest.approx(st.er * st.foreign_savings, rel=1e-7)
+
+
+def test_flexible_trade_balance_walras_holds():
+    """Tier 1 re-proof: the dropped factor market still clears under the flexible closure."""
+    cal = calibrate_open(_deficit_sam(), sectors=_SECTORS, factors=_FACTORS)
+    cc = 0.3 * _EMISSIONS
+    _s, st = _solve_trade(cal, "flexible_balance", cc=cc, drop_factor=0)
+    assert abs(float(st.F[0, :].sum()) - cal.endowment[0]) < 1e-6
+
+
+def test_flexible_trade_balance_homogeneity():
+    """Tier 1: scaling the endowment k× scales real quantities by k, prices/er unchanged, Sf
+    scales, under the flexible closure."""
+    from dataclasses import replace
+
+    cal = calibrate_open(_deficit_sam(), sectors=_SECTORS, factors=_FACTORS)
+    _s, st = _solve_trade(cal, "flexible_balance")
+    k = 2.5
+    cal_k = replace(
+        cal,
+        endowment=cal.endowment * k,
+        Z0=cal.Z0 * k,
+        D0=cal.D0 * k,
+        E0=cal.E0 * k,
+        M0=cal.M0 * k,
+        Q0=cal.Q0 * k,
+        FD0=cal.FD0 * k,
+        F0=cal.F0 * k,
+        INT0=cal.INT0 * k,
+        foreign_savings=cal.foreign_savings * k,
+    )
+    _sk, st_k = _solve_trade(cal_k, "flexible_balance")
+    assert st_k.er == pytest.approx(st.er, rel=1e-6)  # er pinned, unchanged
+    assert np.allclose(st_k.Z, k * st.Z, atol=1e-6)
+    assert st_k.foreign_savings == pytest.approx(k * st.foreign_savings, rel=1e-6)
+
+
+def test_unsupported_trade_closure_rejected():
+    cal = calibrate_open(_deficit_sam(), sectors=_SECTORS, factors=_FACTORS)
+    with pytest.raises(ValueError, match="unsupported trade_closure"):
+        MO.residuals(cal, MO.initial_guess(cal), trade_closure="crawling_peg")
+
+
+def test_engine_flexible_trade_balance_end_to_end():
+    """End-to-end: flexible_balance pins the exchange rate (change ~0) and reports a
+    foreign_savings_change; the manifest records the closure; the default keeps er flexible."""
+    eng = registry.get("cge_static")
+    cs = {"BRD": 2.0, "MIL": 0.5}
+    flex = eng.run(
+        data={"SAM": _deficit_sam(), "carbon_cost_share": cs, "trade_closure": "flexible_balance"},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    er_ch = float(
+        flex.data[flex.data["variable"] == "exchange_rate_change"]["value"].iloc[0]
+    )
+    assert er_ch == pytest.approx(0.0, abs=1e-8)
+    assert (flex.data["variable"] == "foreign_savings_change").any()
+    assert flex.manifest.assumptions["trade_closure"] == "flexible_balance"
+
+    fixed = eng.run(
+        data={"SAM": _deficit_sam(), "carbon_cost_share": cs},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    assert abs(float(fixed.data[fixed.data["variable"] == "exchange_rate_change"]["value"].iloc[0])) > 1e-3
+    assert not (fixed.data["variable"] == "foreign_savings_change").any()
+    assert fixed.manifest.assumptions["trade_closure"] == "fixed_foreign_savings"
