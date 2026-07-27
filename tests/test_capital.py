@@ -176,21 +176,68 @@ def test_benchmark_capital_rejects_nonpositive_user_cost():
         benchmark_capital(cal, net_return=0.0, depreciation=0.0)
 
 
-def test_benchmark_capital_implied_investment_ratio_is_sane():
-    """The stock–flow bridge gives an economically sane I/K: at a steady state I = (g+δ)·K, so with
-    δ=5% and modest growth the investment/stock ratio is ~5–10%, NOT the ~30% the earlier
-    flow-as-stock treatment implied (review P2)."""
+def _inv_cal():
+    """Calibrate a closed SAM with a real SAVINV account so cal.INV0 is a genuine benchmark
+    investment flow (not a fabricated one) — the input for the implied-growth-rate check."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import SAM, Provenance
     from cge.data.sam import toy_sam
     from cge.engines.cge_static.calibrate import calibrate
-    from cge.engines.cge_static.capital import DEFAULT_DEPRECIATION_RATE, benchmark_capital
 
-    cal = calibrate(toy_sam(), sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
+    sam = toy_sam()
+    acc = list(sam.accounts) + ["SAVINV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["SAVINV", "HOH"] = 27.15  # household saves 15% of income 181
+    m.loc["BRD", "SAVINV"] = 20.0
+    m.loc["MIL", "SAVINV"] = 7.15
+    m.loc["BRD", "HOH"] -= 20.0
+    m.loc["MIL", "HOH"] -= 7.15
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=0, retrieved="2026-07-27"
+    )
+    sam2 = SAM(provenance=prov, accounts=acc, matrix=m)
+    return calibrate(
+        sam2,
+        sectors=["BRD", "MIL"],
+        factors=["CAP", "LAB"],
+        institutions={"household": "HOH", "savings_investment": "SAVINV"},
+    )
+
+
+def test_implied_growth_rate_uses_actual_INV0_not_a_fabricated_flow():
+    """Review P2 (2026-07-27): the capital bridge does NOT assume a steady state. benchmark_capital
+    pins K0 from capital INCOME; the ACTUAL calibrated investment INV0 is separate, so the implied
+    growth rate g = INV0/K0 − δ is generally nonzero (here negative — investment below δ·K, the
+    benchmark would contract). The test reads the real INV0, not a manufactured I=δK."""
+    from cge.engines.cge_static.capital import (
+        DEFAULT_DEPRECIATION_RATE,
+        benchmark_capital,
+        capital_next,
+        implied_growth_rate,
+    )
+
+    cal = _inv_cal()
     k0 = benchmark_capital(cal)
-    # Steady-state investment to replace depreciation on the derived stock.
-    steady_investment = DEFAULT_DEPRECIATION_RATE * k0
-    implied_ik = float((steady_investment / k0)[0])
-    assert implied_ik == pytest.approx(DEFAULT_DEPRECIATION_RATE)  # exactly δ at zero growth
-    assert implied_ik < 0.15  # sane, not the ~0.30 the flow-as-stock bug produced
+    inv0 = float(cal.INV0.sum())  # the genuine benchmark investment flow (nominal, unit prices)
+    g = implied_growth_rate(cal)
+    # g matches INV0/K0 − δ exactly, computed from the REAL INV0 (not δ·K0).
+    assert g[0] == pytest.approx(inv0 / k0[0] - DEFAULT_DEPRECIATION_RATE, rel=1e-9)
+    # On this fixture investment is below replacement, so the benchmark implies a CONTRACTING stock.
+    assert g[0] < 0.0
+    k1 = capital_next(k0, np.array([inv0]))
+    assert k1[0] < k0[0]  # stepping the real INV0 forward shrinks the stock — visible, not hidden
+
+
+def test_implied_growth_rate_needs_investment_account():
+    from cge.data.sam import toy_sam
+    from cge.engines.cge_static.calibrate import calibrate
+    from cge.engines.cge_static.capital import implied_growth_rate
+
+    cal = calibrate(toy_sam(), sectors=["BRD", "MIL"], factors=["CAP", "LAB"])  # no SAVINV
+    with pytest.raises(ValueError, match="savings-investment account"):
+        implied_growth_rate(cal)
 
 
 def test_benchmark_capital_steps_forward():

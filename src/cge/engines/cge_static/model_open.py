@@ -375,10 +375,13 @@ def _intermediate_coeffs(cal, pq, pv, carbon_cost):
 
     Flat model: fixed ``cal.ax`` and ``cal.va_share`` (price-independent, bit-identical to
     pre-5d.5), cc_eff = cc. Energy nest (Phase 5d.5): intermediates are the Armington COMPOSITE
-    commodities, so the nest substitutes over composite prices (imports included) and the carbon
-    cost attaches to the energy composites; a(p), the KL quantity, and cc_eff are all
-    price-responsive — cc_eff[i] = Σ_{j∈energy} cc[j]·a_energy[j,i], a linear functional of
-    output, so the recycling/government fixed points carry over unchanged."""
+    commodities, so the nest substitutes over composite prices (imports included); a(p) and the KL
+    quantity are price-responsive. **cc_eff = cc** — the carbon cost is a per-OUTPUT wedge (review
+    remediation 2026-07-26), identical to the flat model, so total revenue = Σ_i cc[i]·Z[i] with or
+    without the nest. The nest still substitutes away from taxed energy because a taxed sector's
+    output price rises via zero-profit and reaches energy inputs through the composite price pq
+    (NOT via a separate energy-price add-on, the original formulation that dropped process/household
+    emissions)."""
     ns = len(cal.sectors)
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     if not cal.has_energy_nest:
@@ -507,7 +510,8 @@ def residuals(
     res.extend((pq - pq_id).tolist())
     # Zero-profit: activity output price pz(pd,pe) = input cost. Flat: Σ_j ax[j,i]·pq_j + va·pv +
     # cc. Energy nest (Phase 5d.5): the input cost is the nest's output unit cost over composite
-    # prices (carbon attaches to the energy composites inside the nest). [ns rows]
+    # prices, with carbon as a per-OUTPUT wedge on px (review remediation 2026-07-26), not an
+    # energy-composite add-on. [ns rows]
     pz = _cet_price(cal, pd, pe)
     if cal.has_energy_nest:
         from cge.engines.cge_static.energy_nest import nest_unit_cost

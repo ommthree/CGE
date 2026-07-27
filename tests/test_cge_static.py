@@ -506,6 +506,56 @@ def test_engine_carbon_price_emits_ge_outputs():
     assert res.manifest.assumptions["emissions_priced"] is True
 
 
+# The standard scenario output schema (review P2, 2026-07-27) — the named result variables every
+# variant must emit when priced. Sector-level: price/volume/GVA. Economy-level: real GDP, a
+# relative GDP deflator, consumption, named wage + capital-return, employment, emissions, welfare.
+_STANDARD_SECTOR_VARS = {"price_change", "volume_change", "gva_change"}
+_STANDARD_ECONOMY_VARS = {
+    "gdp_change_real",
+    "gdp_deflator_change",
+    "wage_change",
+    "capital_return_change",
+    "employment_change",
+    "emissions_change",
+    "welfare_change",
+}
+
+
+def test_closed_emits_standard_output_schema():
+    """Review P2 (2026-07-27): the closed variant emits the full standard result-variable schema."""
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+        shocks=[CarbonPrice(price=0.1)],
+        years=[2020],
+    )
+    emitted = set(res.data["variable"].unique())
+    assert emitted >= (_STANDARD_SECTOR_VARS | _STANDARD_ECONOMY_VARS)
+    assert "consumption_change" in emitted
+
+
+def test_energy_use_emitted_only_with_the_nest():
+    """``energy_use_change`` is a named standard output, emitted only when the energy nest is
+    active (a flat run stays byte-identical)."""
+    eng = registry.get("cge_static")
+    cs = {"DIRTY": 1.0, "CLEAN": 0.0, "MFG": 0.0}
+    nest = eng.run(
+        data={"SAM": _energy_sam(), "carbon_cost_share": cs, "energy_sectors": ["DIRTY", "CLEAN"]},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    flat = eng.run(
+        data={"SAM": _energy_sam(), "carbon_cost_share": cs},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    assert (nest.data["variable"] == "energy_use_change").any()
+    assert not (flat.data["variable"] == "energy_use_change").any()
+    # A fossil carbon price cuts total energy throughput.
+    eu = float(nest.data[nest.data["variable"] == "energy_use_change"]["value"].iloc[0])
+    assert eu < 0.0
+
+
 def test_engine_cross_check_dirty_sector_falls():
     """Cross-engine consistency: the CGE's dirty-sector volume change is negative, the same sign
     as the partial-equilibrium intuition (a carbon price cuts the emitting sector's output). With
@@ -1776,7 +1826,14 @@ def test_engine_adaptation_rejected_without_savinv():
 
 
 # -- deficit-financed government closure (Phase 5d.7) -------------------------
-def _solve_gov_closure(cal, gov_closure, cc=None, recycling="lump_sum", drop_factor=0):
+def _solve_gov_closure(
+    cal,
+    gov_closure,
+    cc=None,
+    recycling="lump_sum",
+    drop_factor=0,
+    carbon_revenue_recipient="government",
+):
     ns = len(cal.sectors)
     cc = np.zeros(ns) if cc is None else cc
     sol = solve(
@@ -1786,6 +1843,7 @@ def _solve_gov_closure(cal, gov_closure, cc=None, recycling="lump_sum", drop_fac
             carbon_cost=cc,
             recycling=recycling,
             gov_closure=gov_closure,
+            carbon_revenue_recipient=carbon_revenue_recipient,
             drop_factor=drop_factor,
         ),
         M.initial_guess(cal),
@@ -1799,6 +1857,7 @@ def _solve_gov_closure(cal, gov_closure, cc=None, recycling="lump_sum", drop_fac
         recycling=recycling,
         strict=True,
         gov_closure=gov_closure,
+        carbon_revenue_recipient=carbon_revenue_recipient,
     )
     return sol, st
 
@@ -1853,6 +1912,76 @@ def test_deficit_financed_crowds_out_investment():
     deficit = float(np.dot(st.p, st.GD)) - st.gov_income
     p_id = float(np.dot(st.p, st.ID))
     assert p_id == pytest.approx(st.savings - deficit, rel=1e-7)
+
+
+def test_carbon_revenue_recipient_controls_ownership_not_the_closure():
+    """Review P1 (2026-07-27): who receives carbon revenue is a SEPARATE choice from the fiscal
+    closure. Under the DEFAULT 'government' recipient, deficit_financed gives the government
+    tax + carbon revenue (consistent with balanced_budget) — not tax only. Switching the recipient
+    to 'household' moves the revenue and changes real allocation, WITHOUT changing the closure."""
+    cal = _cal_gov_inv()
+    cc = 0.3 * _EMISSIONS
+    _sb, bal = _solve_gov_closure(cal, "balanced_budget", cc=cc)
+    _sg, gov = _solve_gov_closure(cal, "deficit_financed", cc=cc)  # default: government
+    _sh, hh = _solve_gov_closure(
+        cal, "deficit_financed", cc=cc, carbon_revenue_recipient="household"
+    )
+    tax = cal.gov_tax_rate0 * gov.factor_income
+    # Government recipient: gov income is tax + carbon revenue (like balanced_budget), not tax only.
+    assert gov.gov_income > tax + 1e-4
+    assert gov.gov_income == pytest.approx(tax + gov.carbon_revenue, rel=1e-6)
+    # Household recipient: government gets the tax only; the revenue went to the household.
+    assert hh.gov_income == pytest.approx(tax, rel=1e-6)
+    # The two recipients give genuinely different real allocations under the same closure.
+    assert not np.allclose(gov.X, hh.X, atol=1e-5)
+
+
+def test_unsupported_carbon_revenue_recipient_rejected():
+    cal = _cal_gov_inv()
+    with pytest.raises(ValueError, match="carbon_revenue_recipient"):
+        M.residuals(
+            cal,
+            M.initial_guess(cal),
+            carbon_cost=0.3 * _EMISSIONS,
+            recycling="lump_sum",
+            gov_closure="deficit_financed",
+            carbon_revenue_recipient="martians",
+        )
+
+
+def test_deficit_adaptation_over_earmark_rejected_componentwise():
+    """Review P1 (2026-07-27): deficit + adaptation must not drive investment negative. When the
+    adaptation earmark exceeds the NET investment budget (savings − deficit), the closure is
+    rejected — the earlier guard compared adaptation against GROSS savings, so a sector's investment
+    could go negative while the solver still reported a machine-zero residual."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    # Household recipient → government financed by tax only → a genuine deficit that crowds out
+    # investment; a 0.02 adaptation earmark then exceeds the small net budget left.
+    with pytest.raises(ValueError, match="exceeds the NET investment budget|negative in some"):
+        eng.run(
+            data={
+                "SAM": _gov_inv_sam(),
+                "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5},
+                "gov_closure": "deficit_financed",
+                "carbon_revenue_recipient": "household",
+                "adaptation_investment": {"BRD": 0.02},
+            },
+            shocks=[CarbonPrice(price=0.5)],
+            years=[2020],
+        )
+
+
+def test_deficit_investment_stays_nonnegative_componentwise():
+    """A deficit-financed run that DOES fit (small adaptation) keeps every sector's investment
+    demand non-negative — the componentwise guard admits the valid case."""
+    cal = _cal_gov_inv()
+    cc = 0.5 * _EMISSIONS
+    _s, st = _solve_gov_closure(
+        cal, "deficit_financed", cc=cc, carbon_revenue_recipient="household"
+    )
+    assert np.all(st.ID >= -1e-12)  # no negative investment demand
 
 
 def test_deficit_financed_holds_real_spending_fixed():

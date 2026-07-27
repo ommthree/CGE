@@ -113,16 +113,24 @@ def benchmark_capital(
     **services**, NOT a capital **stock**. Feeding that flow into ``capital_next`` (which adds gross
     investment in stock units) is dimensionally unsupported and inflates the implied I/K ratio (a
     services flow is roughly an order of magnitude smaller than the stock that yields it). This
-    converts the flow to a stock via the **user cost of capital**
+    converts the flow to a stock via the **user cost of capital** [Jorgenson1963]
 
         capital_income = u · K_0,   u = net_return + δ   (rental rate = net return + depreciation)
         ⇒  K_0 = capital_income / (net_return + δ)
 
-    the textbook Jorgensonian user-cost identity, equivalent at a steady state to the
-    ``I/K = g + δ`` relation. ``net_return`` (the real return net of depreciation) and
-    ``depreciation`` (δ) are documented parameters (defaults ``DEFAULT_NET_RETURN`` /
-    ``DEFAULT_DEPRECIATION_RATE``), overridable per scenario; a build carrying an observed capital
-    stock should pass it directly rather than infer it here (a documented future extension).
+    the textbook Jorgensonian user-cost identity. ``net_return`` (the real return net of
+    depreciation, default 4%/yr [KingRebelo1999]) and ``depreciation`` (δ, default 5%/yr [OECD2009])
+    are documented, overridable parameters; a build carrying an observed capital stock should pass
+    it directly rather than infer it here (a documented future extension).
+
+    **This is NOT a steady-state calibration** (review P2, 2026-07-27). The user-cost identity pins
+    the stock from the *income* flow; it does NOT assume the *investment* flow is at steady-state
+    replacement level. The calibrated benchmark investment ``INV0`` is whatever the SAM records, so
+    the implied growth rate ``g = INV0/K0 − δ`` (see ``implied_growth_rate``) is generally NONZERO —
+    typically negative here (investment below δ·K, so the stock would contract). Callers
+    building a Phase-7.1 dynamic path should read that implied ``g`` and decide whether to accept a
+    contracting benchmark or re-anchor the stock to a target growth rate — this function does not
+    silently impose ``I/K = g + δ``.
 
     Returns a 1-D array indexed by region: length 1 for the closed/open single-region variants,
     length ``nr`` for multi-region. Region-level (not region-sector) — matching the single
@@ -149,3 +157,31 @@ def benchmark_capital(
     # per-region capital income. Either way it is an income FLOW, converted to a STOCK below.
     capital_income = np.array([endowment[fi]]) if endowment.ndim == 1 else endowment[fi, :].copy()
     return capital_income / user_cost
+
+
+def implied_growth_rate(
+    cal,
+    *,
+    net_return: float = DEFAULT_NET_RETURN,
+    depreciation: float = DEFAULT_DEPRECIATION_RATE,
+) -> np.ndarray:
+    """The benchmark's IMPLIED capital growth rate ``g = INV0/K0 − δ`` per region (review P2,
+    2026-07-27). ``K0`` is the user-cost stock from ``benchmark_capital``; ``INV0`` is the model's
+    ACTUAL calibrated benchmark investment (nominal, at unit prices), NOT a fabricated replacement
+    flow. The perpetual-inventory step ``K_{t+1}=(1−δ)K_t+INV`` gives next-period growth
+    ``K_{t+1}/K_t − 1 = INV/K − δ = g``; a negative ``g`` means the benchmark investment is below
+    the replacement level ``δ·K`` and the stock would contract if stepped forward unchanged.
+
+    Reported so a caller can SEE the benchmark's dynamic implication rather than the code silently
+    assuming a steady state. Raises if the model has no savings-investment account (no ``INV0`` to
+    compare) or no ``CAP`` factor."""
+    if not getattr(cal, "has_investment", False):
+        raise ValueError(
+            "implied_growth_rate needs a savings-investment account (INV0) to compare against the "
+            "derived stock; this model has none."
+        )
+    k0 = benchmark_capital(cal, net_return=net_return, depreciation=depreciation)
+    inv0 = np.asarray(cal.INV0, dtype=float)
+    # INV0 is [i] (closed/open) or [r, i] (multi); aggregate to the region level to match K0.
+    inv_by_region = np.array([inv0.sum()]) if inv0.ndim == 1 else inv0.sum(axis=1)
+    return inv_by_region / k0 - float(depreciation)

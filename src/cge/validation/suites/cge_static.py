@@ -584,3 +584,219 @@ def _open_income_identity():
     factor_income = float(np.dot(st.w, cal.endowment))
     gap = float(abs(st.income - (factor_income + st.carbon_revenue)))
     return gap < 1e-9, f"open income-identity gap = {gap:.2e}", gap, 1e-9
+
+
+# -- interaction gates (review P2, 2026-07-27) — the standing suite must exercise the interactions
+# the round-12 review found the P1 defects in, not just each mechanism in isolation. -----------
+def _gov_inv_cal():
+    """A closed SAM with BOTH a government (GOV) and a savings-investment (SAVINV) account, for the
+    deficit-closure × carbon-recipient and deficit × adaptation interaction gates."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import SAM, Provenance
+
+    sam = toy_sam()
+    acc = list(sam.accounts) + ["GOV", "SAVINV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[sam.accounts, sam.accounts] = sam.matrix
+    m.loc["GOV", "HOH"] = 18.1
+    m.loc["BRD", "GOV"] = 10.0
+    m.loc["MIL", "GOV"] = 8.1
+    m.loc["SAVINV", "HOH"] = 16.29
+    m.loc["BRD", "SAVINV"] = 9.0
+    m.loc["MIL", "SAVINV"] = 7.29
+    m.loc["BRD", "HOH"] -= 19.0
+    m.loc["MIL", "HOH"] -= 15.39
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=0, retrieved="2026-07-27"
+    )
+    return calibrate(
+        SAM(provenance=prov, accounts=acc, matrix=m),
+        sectors=_SECTORS,
+        factors=_FACTORS,
+        institutions={"household": "HOH", "government": "GOV", "savings_investment": "SAVINV"},
+    )
+
+
+def _solve_gov(cal, recipient, cc, adapt_amount=0.0, adapt_gamma=None):
+    ns = len(cal.sectors)
+    sol = solve(
+        lambda z: M.residuals(
+            cal,
+            z,
+            carbon_cost=cc,
+            recycling="lump_sum",
+            gov_closure="deficit_financed",
+            carbon_revenue_recipient=recipient,
+            adapt_amount=adapt_amount,
+            adapt_gamma=adapt_gamma,
+        ),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    st = M.derive_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns:],
+        carbon_cost=cc,
+        recycling="lump_sum",
+        strict=True,
+        gov_closure="deficit_financed",
+        carbon_revenue_recipient=recipient,
+        adapt_amount=adapt_amount,
+        adapt_gamma=adapt_gamma,
+    )
+    return st
+
+
+@check(SUITE, "deficit_carbon_recipient_controls_ownership")
+def _deficit_carbon_recipient():
+    """Deficit closure × carbon-revenue recipient: 'government' gives the government tax + carbon
+    revenue (its income exceeds the tax alone); 'household' gives it the tax only. The recipient —
+    not the closure — controls ownership (review P1)."""
+    cal = _gov_inv_cal()
+    cc = 0.3 * _EMISSIONS
+    gov = _solve_gov(cal, "government", cc)
+    hh = _solve_gov(cal, "household", cc)
+    tax = float(cal.gov_tax_rate0 * gov.factor_income)
+    gov_gets_revenue = gov.gov_income > tax + 1e-4
+    hh_gov_is_tax_only = abs(hh.gov_income - tax) < 1e-6
+    ok = gov_gets_revenue and hh_gov_is_tax_only
+    return (
+        ok,
+        f"gov_inc(gov)={gov.gov_income:.4f} vs tax={tax:.4f}; gov_inc(hh)={hh.gov_income:.4f}",
+        None,
+        None,
+    )
+
+
+@check(SUITE, "deficit_investment_nonnegative_componentwise")
+def _deficit_investment_nonnegative():
+    """Deficit closure × adaptation: a feasible run keeps every sector's investment demand
+    non-negative, and an over-earmark (adaptation > net investment budget) is rejected — never a
+    numerically-exact but negative-investment equilibrium (review P1)."""
+    cal = _gov_inv_cal()
+    cc = 0.5 * _EMISSIONS
+    st = _solve_gov(cal, "household", cc)  # a genuine deficit that crowds out investment
+    min_id = float(st.ID.min())
+    # And the over-earmark case raises.
+    rejected = False
+    try:
+        _solve_gov(cal, "household", cc, adapt_amount=0.02, adapt_gamma=cal.inv_gamma * 0 + 0.5)
+    except ValueError:
+        rejected = True
+    ok = min_id >= -1e-12 and rejected
+    return ok, f"min ID={min_id:.3e}; over-earmark rejected={rejected}", min_id, -1e-12
+
+
+@check(SUITE, "multi_dust_route_rejected")
+def _multi_dust_rejected():
+    """A supplied multi-region SAM with a sub-threshold dust route is rejected at calibration (not
+    silently calibrated into a 35%-imbalance equilibrium), and the toy SAM (clean) calibrates —
+    every calibrated trade share has a clearing route (review P1)."""
+
+    from cge.contracts.data_objects import SAM, Provenance
+    from cge.data.sam.toy_multi import REGIONS as MR
+    from cge.data.sam.toy_multi import SECTORS as MS
+    from cge.data.sam.toy_multi import toy_multi_sam
+    from cge.engines.cge_static.calibrate_multi import calibrate_multi
+
+    # Clean toy calibrates and every share has a route.
+    cal = calibrate_multi(toy_multi_sam(), regions=MR, sectors=MS, factors=_FACTORS)
+    active = set(cal.active_routes)
+    aligned = all(
+        (cal.arm_share_m[d, s, o] > 0.0) == ((o, s, d) in active) or cal.arm_share_m[d, s, o] == 0.0
+        for o in range(cal.nr)
+        for d in range(cal.nr)
+        if o != d
+        for s in range(cal.ns)
+    )
+    # A dust route is rejected.
+    m = toy_multi_sam().matrix.copy()
+    accounts = list(m.index)
+    m.loc["a_N_MIL", "c_S_MIL"] = m.loc["a_N_MIL", "c_S_MIL"]  # existing real route unchanged
+    # Inject a truly tiny extra route cell that is sub-threshold and unbalanced → dust gate fires.
+    m2 = m.copy()
+    m2.loc["a_N_BRD", "c_S_BRD"] = 1e-9
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=0, retrieved="2026-07-27"
+    )
+    rejected = False
+    try:
+        calibrate_multi(
+            SAM(provenance=prov, accounts=accounts, matrix=m2),
+            regions=MR,
+            sectors=MS,
+            factors=_FACTORS,
+        )
+    except ValueError as e:
+        rejected = "dust" in str(e)
+    ok = aligned and rejected
+    return ok, f"shares aligned with routes={aligned}; dust rejected={rejected}", None, None
+
+
+@check(SUITE, "capital_bridge_reports_implied_growth")
+def _capital_bridge_growth():
+    """The capital bridge does not assume a steady state: it converts capital INCOME to a stock and
+    reports the implied growth rate from the ACTUAL INV0, which is nonzero on the fixtures (review
+    P2). g = INV0/K0 − δ matches the real INV0, not a fabricated δ·K."""
+    from cge.engines.cge_static.capital import (
+        DEFAULT_DEPRECIATION_RATE,
+        benchmark_capital,
+        implied_growth_rate,
+    )
+
+    cal = _gov_inv_cal()  # has SAVINV, so INV0 exists
+    k0 = benchmark_capital(cal)
+    inv0 = float(cal.INV0.sum())
+    g = implied_growth_rate(cal)
+    expected = inv0 / k0[0] - DEFAULT_DEPRECIATION_RATE
+    gap = abs(float(g[0]) - expected)
+    return gap < 1e-9, f"implied g={float(g[0]):+.4f} from real INV0 (gap {gap:.1e})", gap, 1e-9
+
+
+@check(SUITE, "standard_output_schema_all_variants")
+def _standard_output_schema():
+    """Every variant emits the standard named result schema (review P2): real GDP, GVA, wage,
+    capital return, employment, emissions, welfare, deflator — including multi-region real GDP."""
+    from cge.contracts.engine import registry
+    from cge.contracts.shocks import CarbonPrice
+    from cge.data.sam import toy_open_sam, toy_sam
+    from cge.data.sam.toy_multi import toy_multi_sam
+
+    eng = registry.get("cge_static")
+    core = {
+        "gdp_change_real",
+        "gva_change",
+        "wage_change",
+        "capital_return_change",
+        "employment_change",
+        "emissions_change",
+        "welfare_change",
+        "gdp_deflator_change",
+    }
+    runs = {
+        "closed": eng.run(
+            data={"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+            shocks=[CarbonPrice(price=0.1)],
+            years=[2020],
+        ),
+        "open": eng.run(
+            data={"SAM": toy_open_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+            shocks=[CarbonPrice(price=0.1)],
+            years=[2020],
+        ),
+        "multi": eng.run(
+            data={"SAM": toy_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}},
+            shocks=[CarbonPrice(price=0.3)],
+            years=[2020],
+        ),
+    }
+    missing = {k: sorted(core - set(r.data["variable"].unique())) for k, r in runs.items()}
+    bad = {k: v for k, v in missing.items() if v}
+    return (
+        not bad,
+        f"variants missing schema vars: {bad}" if bad else "all variants emit the schema",
+        None,
+        None,
+    )

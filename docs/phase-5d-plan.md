@@ -1,10 +1,15 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
 **Status: PHASE 5 COMPLETE — 5d.1–5d.7 + §5.1b (live multi-region SAM build) all done; engine
-v0.9.7 after the 2026-07-27 review remediation** (five P1 correctness fixes: energy-nest carbon
-contract, signed foreign savings, unified route materiality, real deficit financing, one-factor
-wage floor; plus P2 capital stock–flow bridge and multi-region name inference — see
-[the review-round-11 note in memory] / commits `241fec8`, and the P2/P3 remediation commit). 5d.1:
+v0.9.9 after two review-remediation rounds.** Round 11 (commits `241fec8`/`a344e4e`): five P1 fixes
+(energy-nest carbon contract, signed foreign savings, route materiality, real deficit financing,
+one-factor wage floor) + P2 capital stock–flow bridge, multi-region name inference, lint, docs.
+Round 12 (2026-07-27): three further P1 fixes (carbon-revenue recipient made explicit under the
+deficit closure, deficit×adaptation componentwise-nonnegative investment guard, trade-route
+materiality centralised in the calibrator with a dust-rejection gate + builder RAS-rebalance) plus
+the **standardized output schema across all variants** (real GDP incl. multi, GVA, named
+wage/capital-return, employment, emissions, energy use, relative GDP deflator), capital
+implied-growth-rate honesty, and system-level validation gates for these interactions. 5d.1:
 government account in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure,
 benchmark direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs —
 `docs/models/cge-static.md` §4b; `deficit_financed` delivered in 5d.7, below). 5d.2: savings-investment
@@ -39,9 +44,12 @@ employment. Wage-curve alternative + open/multi generalisation are documented fo
 (unit-tested standalone first, like `capital.py`), opt-in via `energy_sectors`. Production goes
 from flat Leontief to a 3-level CES (outer KLE-vs-materials, middle KL-vs-energy, inner
 CES-over-energy-commodities); each layer calibrated δ∝v^{1/σ} so the benchmark replicates to
-machine precision. Carbon cost attaches to the energy commodities (raising their in-nest price);
-the fixed Leontief inverse becomes a price-responsive `(I−A(p))⁻¹`, with an effective per-output
-carbon cost `ĉ_i=Σ_e cc_e·a_ei(p)` keeping the recycling/government fixed points linear/unchanged.
+machine precision. **Carbon is a per-OUTPUT wedge `cc_i` on sector i's output** (review remediation
+2026-07-26 — NOT an in-nest energy-price add-on, which silently dropped process/household emissions
+and broke revenue reconciliation): total revenue = Σ cc_i·X_i with or without the nest. The fixed
+Leontief inverse becomes a price-responsive `(I−A(p))⁻¹`; substitution away from taxed energy flows
+through the composite price pq (a taxed sector's output price rises via zero-profit), and the
+recycling/government fixed points stay linear/unchanged (cc_eff = cc).
 Tier-1 (replication/homogeneity/Walras) green; the Tier-2 DELIVERABLE proven: a fossil carbon
 price shifts a sector's fossil/electricity ratio down, contracts fossil output, expands
 electricity. **Open variant** (v0.9.1): same nest over the Armington COMPOSITE intermediate prices

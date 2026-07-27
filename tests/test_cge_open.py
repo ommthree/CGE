@@ -1348,3 +1348,31 @@ def test_flexible_surplus_can_cross_into_deficit_under_shock():
     # The balance moved (the current account is genuinely endogenous); Sf remains finite and signed.
     assert abs(shk.foreign_savings - base.foreign_savings) > 1e-6
     assert np.isfinite(shk.foreign_savings)
+
+
+def test_open_emits_standard_output_schema():
+    """Review P2 (2026-07-27): the open variant emits the full standard result-variable schema —
+    the same named variables as the closed variant plus trade (import/export)."""
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": toy_open_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+        shocks=[CarbonPrice(price=0.1)],
+        years=[2020],
+    )
+    emitted = set(res.data["variable"].unique())
+    standard = {
+        "price_change",
+        "volume_change",
+        "gva_change",
+        "gdp_change_real",
+        "gdp_deflator_change",
+        "wage_change",
+        "capital_return_change",
+        "employment_change",
+        "emissions_change",
+        "welfare_change",
+        "consumption_change",
+        "import_change",
+        "export_change",
+    }
+    assert standard <= emitted

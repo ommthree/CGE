@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.8)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.9)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -246,9 +246,21 @@ and Walras' law is re-proved unchanged (tested).
   replicates; under a shock the deficit opens and investment is crowded out. Walras and homogeneity
   re-proved under this closure (tested).
 
+**Carbon-revenue recipient (`carbon_revenue_recipient`, review round 12).** Who receives carbon
+revenue is a **separate choice from the fiscal closure**. The default `government` routes revenue to
+the government budget (consistent across `balanced_budget` — where it is spent on $\gamma^g$ — and
+`deficit_financed` — where it funds the fixed spending, so the deficit is $p\cdot GD-(\text{tax}+R)$).
+`household` instead recycles revenue to the household (as under lump-sum), independent of the
+closure. This was made explicit because an earlier `deficit_financed` implementation *silently*
+recycled all revenue to the household, so switching the closure also switched revenue ownership —
+a defect: the recipient is now its own documented, manifest-recorded assumption
+(`carbon_revenue_recipient`). Under `balanced_budget` revenue funds the government by construction,
+so the choice only bites under `deficit_financed`.
+
 **Semantics, stated plainly:** with a `GOV` account, the scenario's `revenue_recycling` mode routes
-carbon revenue **to the government budget** (spent on $\gamma^g$), *not* to household income.
-Reported `welfare_change` values **household consumption only** — government-provided goods carry
+carbon revenue **to the government budget** (spent on $\gamma^g$) by default, *not* to household
+income (see `carbon_revenue_recipient` above to change this). Reported `welfare_change` values
+**household consumption only** — government-provided goods carry
 no utility (a documented scope choice; a public-goods utility term is out of scope). Expenditure
 GDP becomes $\sum_i p_i (FD_i + GD_i)$ — consumption plus government consumption. New outputs:
 `fiscal_balance` and `gov_spending` (shares of benchmark GDP, like `carbon_revenue`); the manifest
@@ -350,12 +362,19 @@ works at any granularity; 5d.3 tracks capital at **region level** (matching the 
 of any variant as the wrapper's starting point. **Stock–flow bridge** (review remediation
 2026-07-27): the `CAP` factor's benchmark income is a *flow* — the annual payment for capital
 **services** — not a **stock**, so `benchmark_capital` converts it via the user cost of capital,
-$K_0 = \text{capital income}/(r_{\text{net}}+\delta)$ (the Jorgensonian user-cost identity;
-equivalently $I/K=g+\delta$ at a steady state). The net return $r_{\text{net}}$ (default **4 %/yr**)
-and $\delta$ are documented, overridable parameters; a build carrying an observed capital stock
-should pass it directly. Without this conversion the identity added a services flow to an
-investment stock — dimensionally unsupported, and it inflated the implied $I/K$ to ~30 %; with it,
-steady-state $I/K=\delta\approx5\%$. Sector-specific vintage capital (needing a
+$K_0 = \text{capital income}/(r_{\text{net}}+\delta)$ (the Jorgensonian user-cost identity
+[Jorgenson1963]). The net return $r_{\text{net}}$ (default **4 %/yr** [KingRebelo1999]) and
+$\delta$ (default **5 %/yr** [OECD2009]) are documented, overridable parameters; a build carrying
+an observed capital stock should pass it directly. Without this conversion the identity added a
+services flow to an investment stock — dimensionally unsupported, and it inflated the implied
+$I/K$ to ~30 %. **This is NOT a steady-state calibration**: the identity pins $K_0$ from the income
+flow, it does *not* assume investment is at its steady-state replacement level $\delta K$. The
+calibrated benchmark investment $INV_0$ is whatever the SAM records, so the **implied growth rate**
+$g = INV_0/K_0 - \delta$ (exposed by `implied_growth_rate(cal)`) is generally nonzero — on the toy
+fixtures it is negative (e.g. $I/K\approx2.7\%$, $g\approx-2.3\%$, a contracting benchmark). A
+Phase-7.1 wrapper should read that implied $g$ and decide whether to accept the contraction or
+re-anchor the stock to a target growth rate, rather than the code silently imposing $I/K=g+\delta$.
+Sector-specific vintage capital (needing a
 capital-mobility assumption) and **endogenous** stranding (capital exiting on expected-return
 grounds) are documented out-of-scope extensions — retirement here is a scenario input, not a
 modelled decision. Inputs are validated at the boundary (a negative stock, out-of-range $\delta$
@@ -490,6 +509,32 @@ manifest records the earmark. **Closed variant, `savings_driven` only** (adaptat
 savings pool to crowd out); rejected loudly otherwise. Endogenous adaptation (chosen by the model
 on cost-benefit grounds) is out of scope — this is an exogenous scenario input. The open/multi
 generalisation is a documented follow-up.
+
+### 4h. Standard scenario output schema (review round 12, 2026-07-27 — all variants)
+
+Every run emits a standard set of named, provenance-tagged result variables so a report reads the
+same across closed / open / multi-region. All are **changes vs the benchmark** unless noted, in the
+CPI numéraire (so they are real). Sector- or region-tagged where the dimension applies.
+
+| variable | definition |
+|---|---|
+| `price_change` | commodity/composite price $p_i$ (or $pq_{r,i}$) relative change |
+| `volume_change` | activity output $X_i$ / $Z_{r,i}$ relative change |
+| `gva_change` | sector gross value added $=\sum_f w_f F_{f,i}$ (factor payments) relative change |
+| `gdp_change_real` | expenditure-side real GDP $= p\cdot(FD+GD+ID) + \text{net exports}$, base-priced; **per region** in the multi variant |
+| `gdp_deflator_change` | GDP deflator relative to the CPI numéraire — **0 by identity** here (both baskets in CPI units); emitted for schema completeness (NOT inflation — the CPI is the numéraire, so no absolute price level is identified) |
+| `consumption_change` / `real_consumption_change` | household consumption $p\cdot FD$ (base-priced quantity index) |
+| `wage_change` / `capital_return_change` | the named LAB / CAP factor prices $w_f$ (also emitted generically as `factor_price_change`) |
+| `employment_change` | total LAB demand $\sum_i F_{\text{LAB},i}$ (≈0 under full employment; falls when a wage floor binds) |
+| `import_change` / `export_change` | trade volumes (open/multi) |
+| `exchange_rate_change` | $er$ (open) |
+| `carbon_revenue` | $\sum_i cc_i X_i$ as a GDP share |
+| `emissions_change` | physical emissions $\sum_i e_i X_i$ change $= (cc\cdot X_{\text{shock}})/(cc\cdot X_{\text{base}})-1$ (the run's $cc\propto e$, so τ cancels); emitted where priced |
+| `energy_use_change` | total real output of the energy sectors (only with the energy nest) |
+| `welfare_change` | CD utility $\prod_i FD_i^{\gamma_i}$ change (household consumption only) |
+| `fiscal_balance` / `gov_spending` | with a government account (GDP shares) |
+| `investment` / `savings` | with a savings-investment account (GDP shares) |
+| `foreign_savings_gdp_share` / `foreign_savings_change_pp` | endogenous current account under the flexible-trade-balance closure |
 
 ## 5. Calibration
 
@@ -631,8 +676,10 @@ free variable** — the current account adjusts freely to whatever a shock impli
 absorbed into the real exchange rate. This is a pure *closure swap*, not a new equation: the same
 last unknown slot in $z$ carries $er$ (default) or $S_f$ (flexible), and the same single
 trade-balance row pins whichever is free — the system stays square at $2N+|F|+1$. Under the flexible
-closure the engine reports `foreign_savings_change` (the endogenous current account) and holds
-`exchange_rate_change` at zero; the manifest records `trade_closure`. Both closures replicate the
+closure the engine reports `foreign_savings_gdp_share` (the endogenous current account as a level,
+a share of benchmark GDP) and `foreign_savings_change_pp` (its percentage-point change — a signed
+level/point convention, not a ratio, since $S_f$ can be negative or cross zero, review P1), and
+holds `exchange_rate_change` at zero; the manifest records `trade_closure`. Both closures replicate the
 benchmark exactly (under flexible, the solve recovers $S_f=$ the benchmark foreign savings at
 $er=1$), and homogeneity holds (scaling the endowment $k\times$ scales real quantities and $S_f$ by
 $k$ with $er$ and prices unchanged). This closure is **open-variant only**: the multi-region variant
@@ -646,8 +693,8 @@ It **replicates its benchmark to machine precision** and produces the signature 
 a carbon price on the dirty sector causes **carbon leakage** — its domestic output falls, its
 **imports rise** (substitution to foreign supply) and its **exports fall** (lost competitiveness),
 while the clean sector expands and exports more. The engine emits `import_change`, `export_change`
-and `exchange_rate_change` alongside the usual outputs (plus `foreign_savings_change` under the
-flexible-trade-balance closure); `gdp_change_real` is the **full
+and `exchange_rate_change` alongside the usual outputs (plus `foreign_savings_gdp_share` and
+`foreign_savings_change_pp` under the flexible-trade-balance closure); `gdp_change_real` is the **full
 expenditure-side identity** $pq\cdot FD + er\cdot(\Sigma E - \Sigma M)$ — CPI-weighted household
 consumption **plus net exports** (review P1: an earlier version used $pq\cdot FD$ alone, which is
 household consumption, not GDP — the two coincide only when the current account is zero, which is

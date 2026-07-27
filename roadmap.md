@@ -365,11 +365,16 @@ accumulation in the dynamic wrapper is imposed bookkeeping, not a modelled decis
 | 5d.6 | **Adaptation and transition investment.** A documented shock/response channel: a scenario can specify adaptation or transition capital expenditure (e.g. retrofitting, energy-efficiency investment) that competes with 5d.2's investment demand and is reported as its own line item, not absorbed silently into aggregate investment | 1 wk |
 | 5d.7 | **Alternative external-balance and fiscal closures.** Beyond the fixed-trade-balance / lump-sum-recycling defaults already implemented: a flexible-trade-balance option and a government closure alternative (e.g. deficit-financed spending), each documented and switchable by config, with the standard correctness battery re-run under each | 1 wk |
 
-**Standard scenario output set (DoD across 5d):** every CGE run — closed, open, or multi-region —
-reports GDP, GVA, consumption, investment, employment, wages, a **relative cost-of-living /
-GDP-deflator index** (review P2, round 10: NOT "inflation" — see below), trade, fiscal balance,
-capital returns, emissions, and energy use as named result variables, each provenance-tagged and
-each with an equation-level definition in `docs/models/cge-static.md`.
+**Standard scenario output set (DoD across 5d) — ✅ DELIVERED (2026-07-27, review round 12):** every
+CGE run — closed, open, or multi-region — reports real GDP (`gdp_change_real`, including per region
+in the multi variant), GVA (`gva_change` per sector), consumption, investment (with the accounts),
+employment (`employment_change`), wages (`wage_change`), capital returns (`capital_return_change`),
+a **relative GDP-deflator index** (`gdp_deflator_change` — NOT "inflation"; under the CPI numéraire
+the GDP deflator relative to the consumption basket is 0 by identity, emitted for schema
+completeness and to make that property explicit/testable — see the deflator note below), trade
+(`import_change`/`export_change`, open/multi), fiscal balance (with a government), emissions
+(`emissions_change`, where priced), and energy use (`energy_use_change`, with the nest) as named
+result variables. Verified by the `standard_output_schema_all_variants` validation gate.
 
 **"Inflation" corrected to a relative deflator (review P2, round 10).** An earlier draft of this
 output set promised "inflation" as a standard per-run output. The model fixes the household's CPI

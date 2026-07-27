@@ -39,6 +39,14 @@ reports are citable for applied choices.
   perpetual-inventory method and standard applied depreciation rates behind the capital-
   accumulation identity K_{t+1}=(1−δ)K_t+INV (Phase 5d.3). Ch. 5 (the PIM), the source of the
   ~5%/yr aggregate-capital depreciation default.
+- **[Jorgenson1963]** Jorgenson, D. W. (1963). Capital theory and investment behavior.
+  *American Economic Review*, 53(2), 247–259. — The user cost of capital
+  u = (r + δ)·p_K relating the rental price of capital services to the stock; the
+  `benchmark_capital` services-flow→stock conversion K₀ = capital income / (r_net + δ).
+- **[KingRebelo1999]** King, R. G. & Rebelo, S. T. (1999). Resuscitating real business cycles.
+  In *Handbook of Macroeconomics* (Vol. 1B, ch. 14), Elsevier. — Standard business-cycle/growth
+  calibration of the real net return on capital at ~4%/yr (a real annual return of roughly
+  0.04 net of depreciation), the documented default for `benchmark_capital`'s `net_return`.
 
 ## Nature / ENCORE (Phase 6)
 

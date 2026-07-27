@@ -185,6 +185,7 @@ def derive_state(
     strict: bool = False,
     gov_closure: str = "balanced_budget",
     inv_closure: str = "savings_driven",
+    carbon_revenue_recipient: str = "government",
     labour_floor: float | None = None,
     adapt_amount: float = 0.0,
     adapt_gamma: np.ndarray | None = None,
@@ -418,48 +419,88 @@ def derive_state(
                     )
                 GD = cal.gov_income0 * cal.gov_gamma  # fixed real quantity (price-independent)
                 p_gd = float(np.dot(p, GD))  # nominal government spending
-                # Government is financed by the direct tax alone; the deficit def = p·GD − tax is
-                # EXOGENOUS given prices (it does not depend on the endogenous carbon revenue — that
-                # recycles to the household, as under lump_sum). The deficit draws on the national
-                # savings pool, crowding out private investment 1-for-1:
-                #     p·ID = private_savings − def          (crowding out)
-                #     private_savings = s·I,  FD = (1−s)·I·(γ/p),  I = FI − tax + R_hh
-                #     R_hh = cc_eff·(I−A)⁻¹·(FD + ID + GD)  (carbon revenue recycled to household)
-                # Everything is linear in I (the net ID re-scales the inv_gamma vector by the same
-                # deficit shift), so this is one linear fixed point solved in closed form — the same
-                # contraction the balanced branch uses, just with the deficit shifting the ID base.
-                gov_income = (
-                    tax  # government financed by the tax; carbon revenue is the household's
-                )
-                deficit = p_gd - gov_income
                 inv_dir = cal.inv_gamma / p  # nominal 1 of investment buys this quantity vector
-                # Net investment quantity vs income: ID(I) = (s·I − def)·inv_dir + adapt
-                # (d_adapt is nominally zero-sum). Household consumption FD(I) = (1−s)·I·(γ/p).
-                # Revenue base B(I) = (I−A)⁻¹·(FD + ID + GD); R_hh = cc_eff·B. Collect the I-linear
-                # part (coefficient k) and the constant part (c0).
-                if recycles:
-                    u_income = (1.0 - s) * cal.gamma / p + s * inv_dir  # ∂(FD+ID)/∂I
-                    const_dem = GD + d_adapt - deficit * inv_dir  # income-independent demand part
-                    k = float(cc_eff @ (leontief @ u_income))
-                    c0 = float(cc_eff @ (leontief @ const_dem))
+                # Who receives carbon revenue R is a SEPARATE choice (carbon_revenue_recipient),
+                # NOT implied by the fiscal closure (review P1, 2026-07-27). Two closed forms:
+                #
+                #  government (default): R funds the government alongside the tax, so
+                #     gov_income = tax + R,  def = p·GD − (tax + R),  p·ID = s_priv − def
+                #     household  I = FI − tax  (no carbon revenue — it is the government's).
+                #     Here R depends on ID (revenue base) and ID depends on R (via the deficit), a
+                #     scalar linear fixed point in nominal net investment.
+                #
+                #  household: R recycles to the household (as under lump_sum), the government is
+                #     financed by the tax alone, so def = p·GD − tax is exogenous given prices:
+                #     I = FI − tax + R_hh,  R_hh = cc_eff·L·(FD + ID + GD),  p·ID = s_priv − def.
+                #
+                # Both keep GD fixed real and finance the deficit by crowding out investment.
+                if carbon_revenue_recipient == "government":
+                    income = factor_income - tax  # household gets no carbon revenue
+                    private_savings = s * income if cal.has_investment else 0.0
+                    FD = (1.0 - s) * income * demand_per_income
+                    # Solve p·ID (nominal net investment) from the R/deficit fixed point. With
+                    #   R = a·pID + b,  a = cc_eff·L·inv_dir,  b = cc_eff·L·(FD + d_adapt + GD)
+                    #   pID = s_priv − (p·GD − tax − R) = s_priv − p·GD + tax + R
+                    # ⇒ pID·(1 − a) = s_priv − p·GD + tax + b.
+                    if recycles:
+                        a = float(cc_eff @ (leontief @ inv_dir))
+                        b = float(cc_eff @ (leontief @ (FD + d_adapt + GD)))
+                    else:
+                        a, b = 0.0, 0.0
+                    if strict and a >= 1.0 - 1e-12:
+                        raise ValueError(
+                            f"deficit-financed (gov recipient) fixed point diverges (a={a:.3f} ≥ 1)"
+                        )
+                    p_id_net = (private_savings - p_gd + tax + b) / _safe_denom(1.0 - a)
+                    R = a * p_id_net + b
+                    gov_income = tax + R
+                elif carbon_revenue_recipient == "household":
+                    # Government financed by the tax alone; deficit exogenous given prices.
+                    gov_income = tax
+                    deficit = p_gd - gov_income
+                    if recycles:
+                        u_income = (1.0 - s) * cal.gamma / p + s * inv_dir  # ∂(FD+ID)/∂I
+                        const_dem = GD + d_adapt - deficit * inv_dir
+                        k = float(cc_eff @ (leontief @ u_income))
+                        c0 = float(cc_eff @ (leontief @ const_dem))
+                    else:
+                        k, c0 = 0.0, 0.0
+                    if strict and k >= 1.0 - 1e-12:
+                        raise ValueError(
+                            f"deficit-financed income fixed point diverges (k={k:.3f} ≥ 1)"
+                        )
+                    income = (factor_income - tax + c0) / _safe_denom(1.0 - k)
+                    private_savings = s * income if cal.has_investment else 0.0
+                    FD = (1.0 - s) * income * demand_per_income
+                    p_id_net = private_savings - deficit
                 else:
-                    k, c0 = 0.0, 0.0
-                if strict and k >= 1.0 - 1e-12:
                     raise ValueError(
-                        f"deficit-financed income fixed point diverges (k={k:.3f} ≥ 1)"
+                        f"unsupported carbon_revenue_recipient {carbon_revenue_recipient!r}; use "
+                        "'government' (default) or 'household'."
                     )
-                # I = FI − tax + R_hh = FI − tax + (k·I + c0) ⇒ I = (FI − tax + c0)/(1 − k).
-                income = (factor_income - tax + c0) / _safe_denom(1.0 - k)
-                private_savings = s * income if cal.has_investment else 0.0
-                FD = (1.0 - s) * income * demand_per_income
-                p_id_net = private_savings - deficit
+                # Crowding-out feasibility: the NET investment budget (after the deficit) must be
+                # positive, the adaptation earmark cannot exceed it, and the per-sector
+                # investment demand must be non-negative componentwise (review P1, 2026-07-27: the
+                # earlier guard compared adaptation to GROSS savings, so def could drive a sector
+                # sector's ID negative while the solver still reported a machine-zero residual).
                 if strict and p_id_net <= 0:
                     raise ValueError(
-                        f"deficit ({deficit:.6g}) exhausts private investment "
-                        f"({private_savings:.6g}); fixed real government spending is infeasible "
-                        "at this tax rate."
+                        f"deficit exhausts private investment (net budget {p_id_net:.6g} ≤ 0); "
+                        "fixed real government spending is infeasible at this tax rate."
+                    )
+                if strict and adapt_active and adapt_amount > p_id_net + 1e-12:
+                    raise ValueError(
+                        f"adaptation investment ({adapt_amount:.6g}) exceeds the NET investment "
+                        f"budget after the deficit ({p_id_net:.6g}); it cannot crowd out more than "
+                        "what is left after financing the deficit."
                     )
                 ID = p_id_net * inv_dir + d_adapt  # crowded-out investment (adaptation preserved)
+                if strict and np.any(ID < -1e-12):
+                    raise ValueError(
+                        f"deficit-financed investment demand is negative in some sector "
+                        f"(min {float(ID.min()):.3e}); the deficit + adaptation over-committed the "
+                        "investment budget."
+                    )
                 savings = private_savings
                 fiscal_balance = gov_income - p_gd  # < 0 ⇒ deficit financed from savings
 
@@ -505,7 +546,14 @@ def derive_state(
             raise ValueError(f"savings-investment identity not satisfied (residual {resid:.3e}).")
     # Adaptation crowding-out guard (Phase 5d.6): the earmarked adaptation cannot exceed the total
     # investment budget, or ordinary investment would go negative (a nonsensical over-earmark).
-    if strict and adapt_active and adapt_amount > savings + 1e-12:
+    # deficit_financed has its OWN (stricter, net-of-deficit + componentwise) guard inline above —
+    # here ``savings`` is the GROSS budget, the right denominator only when there is no deficit.
+    if (
+        strict
+        and adapt_active
+        and gov_closure != "deficit_financed"
+        and adapt_amount > savings + 1e-12
+    ):
         raise ValueError(
             f"adaptation investment ({adapt_amount:.6g}) exceeds total investment ({savings:.6g}); "
             "it cannot crowd out more than the whole budget. Lower the adaptation amount."
@@ -543,6 +591,7 @@ def residuals(
     drop_factor: int = 0,
     gov_closure: str = "balanced_budget",
     inv_closure: str = "savings_driven",
+    carbon_revenue_recipient: str = "government",
     labour_floor: float | None = None,
     adapt_amount: float = 0.0,
     adapt_gamma: np.ndarray | None = None,
@@ -594,6 +643,7 @@ def residuals(
         recycling=recycling,
         gov_closure=gov_closure,
         inv_closure=inv_closure,
+        carbon_revenue_recipient=carbon_revenue_recipient,
         labour_floor=labour_floor,
         adapt_amount=adapt_amount,
         adapt_gamma=adapt_gamma,
@@ -601,8 +651,9 @@ def residuals(
 
     res = []
     if cal.has_energy_nest:
-        # Zero-profit with the KL-E-M nest (Phase 5d.5): p[i] = px[i], the nest's output unit cost
-        # (carbon attaches to energy commodities inside the nest, not as a flat per-output add-on).
+        # Zero-profit with the KL-E-M nest (Phase 5d.5): p[i] = px[i], the nest's output unit cost.
+        # Carbon is a per-OUTPUT wedge added to px (review remediation 2026-07-26) — NOT an add-on
+        # inside the nest — so the emissions/revenue contract is identical to the flat model.
         from cge.engines.cge_static.energy_nest import nest_unit_cost
 
         px = nest_unit_cost(cal.energy_nest, np.asarray(p, dtype=float), state.pv, cc)

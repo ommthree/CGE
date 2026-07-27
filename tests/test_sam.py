@@ -246,6 +246,121 @@ def test_no_retained_route_lacks_a_clearing_residual(small_build_io):
     assert worst < 1e-8
 
 
+def _tiny_route_io(cross):
+    """A 2-region EUR IOSystem with a controllable tiny cross-region intermediate/final flow, to
+    exercise the dust-drop + rebalance path (review P1, 2026-07-27)."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, IOSystem, Provenance
+
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-27"
+    )
+    regions, sectors = ["A", "B"], ["g"]
+    labels = [f"{r}:g" for r in regions]
+    A = pd.DataFrame([[0.2, cross], [cross, 0.2]], index=labels, columns=labels)
+    fd = pd.DataFrame({"A": [80.0, cross], "B": [cross, 90.0]}, index=labels)
+    return IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=sectors),
+        regions=Classification(name="r", kind="region", labels=regions),
+        A=A,
+        final_demand=fd,
+        unit="MEUR",
+        currency="EUR",
+        final_demand_kind="by_region",
+    )
+
+
+def test_build_multi_sam_drops_dust_and_rebalances_cleanly():
+    """Review P1 (2026-07-27): a built SAM with a genuinely tiny cross route drops the dust and
+    RAS-rebalances to a clean, balanced SAM (the earlier fold-into-origin left the destination's
+    uses dangling and RAS failed to converge). The calibrated model then has NO route with a share
+    but no clearing residual, and every active route clears at the solution."""
+    from cge.data.sam import build_multi_sam
+    from cge.data.sam.balance import is_balanced
+    from cge.engines.cge_static import model_multi as MM
+    from cge.engines.cge_static.calibrate_multi import calibrate_multi
+
+    sam, _report, regions, sectors = build_multi_sam(_tiny_route_io(1e-5))
+    assert is_balanced(sam.matrix, tol=1e-6)
+    cal = calibrate_multi(sam, regions=regions, sectors=sectors, factors=["CAP", "LAB"])
+    active = set(cal.active_routes)
+    for oi in range(cal.nr):
+        for di in range(cal.nr):
+            if oi == di:
+                continue
+            for si in range(cal.ns):
+                assert not (cal.arm_share_m[di, si, oi] > 0.0 and (oi, si, di) not in active)
+                assert not (cal.cet_share_e[oi, si, di] > 0.0 and (oi, si, di) not in active)
+    sol = solve(lambda z: MM.residuals(cal, z), MM.initial_guess(cal) * 1.02, prefer="scipy")
+    st = MM.unpack_state(cal, sol.x, strict=True)
+    worst = max(
+        (abs(float(st.M[di, si, oi] - st.EX[oi, si, di])) for (oi, si, di) in cal.active_routes),
+        default=0.0,
+    )
+    assert worst < 1e-8
+
+
+def test_build_multi_sam_materiality_bounds_validated():
+    """The user-facing ``materiality`` has a bounded, documented contract: at least the calibrator's
+    threshold (so the built SAM passes the calibrator's dust gate) and below 0.1 of GDP (so real
+    trade is not erased). Out-of-range values are rejected (review P1, 2026-07-27)."""
+    from cge.data.sam import build_multi_sam
+    from cge.engines.cge_static.calibrate_multi import ROUTE_MATERIALITY_THRESHOLD
+
+    io = _tiny_route_io(1e-3)
+    with pytest.raises(ValueError, match="materiality must be in"):
+        build_multi_sam(io, materiality=ROUTE_MATERIALITY_THRESHOLD / 10)  # too small
+    with pytest.raises(ValueError, match="materiality must be in"):
+        build_multi_sam(io, materiality=0.5)  # too large — would erase real trade
+
+
+def test_supplied_sam_with_dust_route_is_rejected():
+    """A SUPPLIED (not built) multi-region SAM carrying a sub-threshold dust route is rejected at
+    calibration with a clear message — not silently calibrated into a 35%-imbalance equilibrium the
+    solver accepts at machine-zero residual (review P1, 2026-07-27). Built by hand with one genuine
+    route and one dust route so the dust is unambiguous and the SAM is otherwise balanced."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import SAM, Provenance
+    from cge.engines.cge_static.calibrate_multi import calibrate_multi
+
+    regions, sectors = ["N", "S"], ["BRD", "MIL"]
+    accounts = []
+    for r in regions:
+        accounts += [f"a_{r}_{s}" for s in sectors] + [f"c_{r}_{s}" for s in sectors]
+    accounts += [f"{f}_{r}" for r in regions for f in ("CAP", "LAB")] + [
+        f"HOH_{r}" for r in regions
+    ]
+    m = pd.DataFrame(0.0, index=accounts, columns=accounts)
+    for r in regions:
+        for s in sectors:
+            m.loc[f"a_{r}_{s}", f"c_{r}_{s}"] = 100.0
+    # A genuine, balanced BRD route N<->S (keeps the graph connected) and a DUST MIL route N->S.
+    m.loc["a_N_BRD", "c_S_BRD"] = 15.0
+    m.loc["a_S_BRD", "c_N_BRD"] = 15.0
+    m.loc["a_N_MIL", "c_S_MIL"] = 1e-7  # dust: ~2.9e-10 of the ~340 GDP
+    for r in regions:
+        for s in sectors:
+            output = float(m.loc[f"a_{r}_{s}", :].sum())
+            m.loc[f"CAP_{r}", f"a_{r}_{s}"] = output / 2.0
+            m.loc[f"LAB_{r}", f"a_{r}_{s}"] = output / 2.0
+    for r in regions:
+        for s in sectors:
+            com = f"c_{r}_{s}"
+            m.loc[com, f"HOH_{r}"] = float(m[com].sum()) - float(m.loc[com].sum())
+    for r in regions:
+        m.loc[f"HOH_{r}", f"CAP_{r}"] = float(m.loc[f"CAP_{r}", :].sum())
+        m.loc[f"HOH_{r}", f"LAB_{r}"] = float(m.loc[f"LAB_{r}", :].sum())
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=0, retrieved="2026-07-27"
+    )
+    sam = SAM(provenance=prov, accounts=accounts, matrix=m)
+    with pytest.raises(ValueError, match="dust trade route"):
+        calibrate_multi(sam, regions=regions, sectors=sectors, factors=["CAP", "LAB"])
+
+
 def test_build_multi_sam_needs_by_region_final_demand(small_build_io):
     """A build with only an AGGREGATE final-demand column cannot be reduced to a multi-region SAM
     (each region's own final demand cannot be attributed without inventing the split) — rejected,

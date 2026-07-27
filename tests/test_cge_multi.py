@@ -399,12 +399,15 @@ def test_multi_connected_components_partitions_correctly():
     assert len(sparse_cal.connected_components) == 1
 
 
-def test_multi_route_materiality_threshold_excludes_numerical_dust():
-    """THE P1 regression: a route with a trade value of ~1e-10 of GDP (numerical dust from
-    upstream aggregation/RAS noise, not genuine trade) must NOT be treated as active — a bare
-    ``>0`` check would pack a price unknown for it, producing a near-singular Jacobian (condition
-    number ~1e12) where perturbing that route's price leaves residuals far below typical solver
-    tolerance."""
+def test_multi_route_materiality_dust_route_is_rejected():
+    """Review P1 (2026-07-27): a dust route (~1e-10 of GDP) is now REJECTED with a clear message —
+    the calibrator refuses a benchmark with a positive-but-sub-threshold bilateral flow, because
+    such a route gets a genuine-but-tiny share and a near-singular price column the solver cannot
+    pin. (Earlier the threshold was compared against the RAW flow while shares were calibrated off a
+    bare ``>0``, so a route in the gap got a share but no clearing residual — a 35%-imbalance
+    equilibrium the solver accepted at machine-zero residual. Now shares and clearing are aligned by
+    construction and dust is rejected outright; ``build_multi_sam`` zeroes+rebalances dust upstream
+    so a built SAM never hits this.)"""
     regions, sectors = ["N", "S"], ["BRD", "MIL"]
     accounts = []
     for r in regions:
@@ -445,10 +448,7 @@ def test_multi_route_materiality_threshold_excludes_numerical_dust():
         source="test", source_version="v", licence="n/a", reference_year=0, retrieved="2026-01-01"
     )
     sam = SAM(provenance=prov, accounts=accounts, matrix=m)
-    # The dust-only trade also makes the region graph disconnected under the materiality
-    # threshold, so this correctly raises via the connectivity gate — pinning that a dust route
-    # does not count as a real link either.
-    with pytest.raises(ValueError, match="disconnected"):
+    with pytest.raises(ValueError, match="dust trade route"):
         calibrate_multi(sam, regions=regions, sectors=sectors, factors=_FACTORS)
 
 
@@ -1212,3 +1212,36 @@ def _prov():
     return Provenance(
         source="t", source_version="1", licence="x", reference_year=0, retrieved="2026-07-27"
     )
+
+
+def test_multi_emits_standard_output_schema():
+    """Review P2 (2026-07-27): the multi-region variant emits the full standard schema PER REGION,
+    including real GDP (gdp_change_real) — previously it emitted only real_consumption_change."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    res = eng.run(
+        data={"SAM": toy_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    emitted = set(res.data["variable"].unique())
+    standard = {
+        "price_change",
+        "volume_change",
+        "gva_change",
+        "gdp_change_real",
+        "gdp_deflator_change",
+        "wage_change",
+        "capital_return_change",
+        "employment_change",
+        "emissions_change",
+        "welfare_change",
+        "real_consumption_change",
+        "import_change",
+        "export_change",
+    }
+    assert standard <= emitted, standard - emitted
+    # gdp_change_real is emitted for every region.
+    gdp_regions = set(res.data[res.data["variable"] == "gdp_change_real"]["region"].unique())
+    assert {"N", "S"} <= gdp_regions

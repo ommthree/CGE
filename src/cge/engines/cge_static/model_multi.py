@@ -165,9 +165,10 @@ def _intermediate_coeffs(cal, pq, pv, cc):
     region r), value-added (KL) quantity per unit output ``va_qty[r,i]``, and effective per-output
     carbon cost ``cc_eff[r,i]``. Flat model: fixed ``cal.ax[r]`` + ``cal.va_share`` + cc_eff=cc.
     Energy nest (Phase 5d.5): each region's nest substitutes over its own COMPOSITE prices pq[r]
-    (imports included), the carbon cost attaching to the region's energy composites; cc_eff[r,i] =
-    Σ_{j∈energy} cc[r,j]·a_energy[r,j,i], linear in output so the per-region recycling/government
-    fixed points carry over unchanged."""
+    (imports included). **cc_eff = cc** — the carbon cost is a per-OUTPUT wedge (review remediation
+    2026-07-26), identical to the flat model, so total revenue = Σ cc[r,i]·Z[r,i] with or without
+    the nest. Substitution flows through pq (a taxed sector's output price rises via zero-profit),
+    NOT a separate energy-price add-on (the original formulation that dropped process emissions)."""
     nr, ns = cal.nr, cal.ns
     if not cal.has_energy_nest:
         return cal.ax, cal.va_share, cc

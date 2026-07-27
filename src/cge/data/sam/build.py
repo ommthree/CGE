@@ -474,7 +474,6 @@ def build_multi_raw_sam(
     *,
     regions: list[str] | None = None,
     capital_share: float = DEFAULT_CAPITAL_SHARE,
-    materiality: float = _ROUTE_MATERIALITY,
 ) -> RawMultiSAM:
     """Build a raw **R-region** SAM (``a_<r>_<s>``/``c_<r>_<s>`` activity/commodity, per-region
     factors ``<f>_<r>`` and households ``HOH_<r>``) from a multi-regional ``io``, in the bilateral
@@ -499,11 +498,9 @@ def build_multi_raw_sam(
     attributes each region's own final demand, so an aggregate-only build (no by-region column)
     cannot be reduced without inventing the regional split — rejected, not imputed.
 
-    ``materiality`` drops bilateral flows below this share of GLOBAL output as numerical dust
-    (aggregation/RAS noise), FOLDING each dropped flow into the origin region's domestic sales so
-    the SAM stays balanced. It defaults to (and must not exceed) the calibrator's
-    ``ROUTE_MATERIALITY_THRESHOLD`` so every route the builder keeps is one the calibrator will
-    clear — there is no retained-but-inactive gap (review P1, 2026-07-26).
+    This raw builder keeps **every** bilateral route; dust removal (dropping tiny routes and
+    RAS-rebalancing so the SAM stays balanced) is done in ``build_multi_sam`` on the assembled
+    square matrix — the balance-safe place to do it (review P1, 2026-07-27).
     """
     if not 0.0 < capital_share < 1.0:
         raise ValueError(f"capital_share must be in (0,1), got {capital_share}")
@@ -572,30 +569,20 @@ def build_multi_raw_sam(
             T[r_index[ra], ia, r_index[rb]] += Z[a, b]
             INT[r_index[rb], ia, jb] += Z[a, b]
 
-    # Domestic sales / bilateral trade split off the diagonal of T. Trade materiality (review P1,
-    # 2026-07-26): a route below the threshold is dropped AND its value is FOLDED INTO DOMESTIC
-    # SALES of the origin region, so (a) the SAM stays balanced by construction (nothing vanishes),
-    # and (b) the builder and the calibrator use ONE threshold and ONE denominator — a global scale
-    # so the drop matches ``calibrate_multi.ROUTE_MATERIALITY_THRESHOLD`` (a share of global output,
-    # which after GDP-normalisation is the calibrator's ``active_routes`` test). This closes the gap
-    # the review found: previously the builder dropped below ``1e-9 × regional output`` while the
-    # calibrator declared inactive below ``1e-6 × global GDP``, so a route between the two was kept
-    # with positive Armington/CET shares (used by demand/supply) but had no clearing residual.
-    global_scale = max(float(Xreg.sum()), 1.0)
-    threshold = materiality * global_scale
+    # Domestic sales / bilateral trade split off the diagonal of T. ALL off-diagonal flows are kept
+    # here (dust removal + rebalancing is done in ``build_multi_sam`` on the assembled SAM, review
+    # P1 2026-07-27): folding a dropped export into the ORIGIN's domestic sales at this point leaves
+    # the DESTINATION's intermediate/final uses of that import unchanged, so the commodity balance
+    # breaks (the earlier "balance-safe" fold was not). The right place to drop dust is on the whole
+    # square SAM, followed by a RAS re-balance that restores every account's row=col sum.
     D = np.zeros((nr, ns))
     EX = np.zeros((nr, ns, nr))  # [o, s, d] exports (o≠d)
     for ri in range(nr):
         for si in range(ns):
             D[ri, si] = T[ri, si, ri]
             for di in range(nr):
-                if di == ri:
-                    continue
-                v = T[ri, si, di]
-                if v > threshold:
-                    EX[ri, si, di] = v
-                else:
-                    D[ri, si] += v  # fold a dropped dust route into domestic sales (balance-safe)
+                if di != ri:
+                    EX[ri, si, di] = T[ri, si, di]
 
     # Household final demand per region-sector: consumption of composite s by region r, from ANY
     # producing region (measured, by consuming region), read directly off fd_region over the
@@ -718,10 +705,20 @@ def build_multi_sam(
     imbalance beyond ``balance_tol`` is RAS-balanced and the adjustment recorded. The region-trade
     graph is checked for **connectivity** after balancing — a disconnected build raises
     ``TopologyError`` (the multi-region closure is only valid on a connected graph), which is far
-    more likely on a live aggregated build than on a hand-built toy."""
-    raw = build_multi_raw_sam(
-        io, regions=regions, capital_share=capital_share, materiality=materiality
-    )
+    more likely on a live aggregated build than on a hand-built toy.
+
+    ``materiality`` is the dust threshold as a share of global GDP (bounded contract, review P1
+    2026-07-27): it must lie in ``[ROUTE_MATERIALITY_THRESHOLD, 0.1)`` — at least the calibrator's
+    threshold (so every route the builder keeps is one the calibrator accepts, and every route it
+    drops the calibrator would have rejected), and below 10% of GDP (a larger value would erase
+    real trade, not dust). Dropped dust is zeroed and RAS-rebalanced on the square SAM."""
+    if not (_ROUTE_MATERIALITY <= materiality < 0.1):
+        raise ValueError(
+            f"materiality must be in [{_ROUTE_MATERIALITY:g}, 0.1) (a share of global GDP): at "
+            "least the calibrator's ROUTE_MATERIALITY_THRESHOLD so the built SAM passes the "
+            f"calibrator's dust gate, and below 0.1 so real trade is not erased; got {materiality}."
+        )
+    raw = build_multi_raw_sam(io, regions=regions, capital_share=capital_share)
     m = raw.sam.matrix
     adjustment = None
     if not is_balanced(m, tol=balance_tol):
@@ -731,7 +728,22 @@ def build_multi_sam(
         m = balanced
         raw.sam.matrix.loc[:, :] = m
 
-    _assert_multi_connected(m, raw.regions, raw.sectors, materiality)
+    # Trade-materiality: zero DUST routes on the balanced SAM, then RAS-rebalance so every account's
+    # row=col sum is restored (review P1, 2026-07-27). A dust route is a bilateral cell below
+    # ``materiality × global GDP`` (total value added) — the SAME threshold/denominator the
+    # calibrator's ``_reject_dust_routes`` uses, so the built SAM passes that gate: every surviving
+    # bilateral route is genuine trade with a clearing equation, and dropped dust is absorbed by the
+    # re-balance rather than silently unbalancing the destination.
+    gdp = float(sum(m.loc[f"{f}_{r}", :].sum() for r in raw.regions for f in FACTORS))
+    dust_threshold = materiality * max(gdp, 1.0)
+    m, dust_adjustment = _zero_dust_routes_and_rebalance(
+        m, raw.regions, raw.sectors, dust_threshold, balance_tol
+    )
+    raw.sam.matrix.loc[:, :] = m
+    if dust_adjustment is not None:
+        adjustment = dust_adjustment if adjustment is None else adjustment + dust_adjustment
+
+    _assert_multi_connected(m, raw.regions, raw.sectors, dust_threshold)
 
     report = sam_quality_report(
         io.provenance.build_id or "multi_sam",
@@ -751,14 +763,47 @@ def build_multi_sam(
     return raw.sam, report, raw.regions, raw.sectors
 
 
+def _zero_dust_routes_and_rebalance(
+    m: pd.DataFrame,
+    regions: list[str],
+    sectors: list[str],
+    dust_threshold: float,
+    balance_tol: float,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """Zero every bilateral trade cell ``a_<o>_<s> → c_<d>_<s>`` (o≠d) below ``dust_threshold`` and
+    RAS-rebalance so the SAM stays square/balanced (review P1, 2026-07-27). Returns
+    ``(balanced_matrix, adjustment)`` where ``adjustment`` (pre − post) is None if no dust was
+    found. Zeroing on the whole square matrix + re-balance is the balance-safe way to drop a route
+    (unlike folding it into one side, which leaves the other side's uses dangling)."""
+    dust_cells = []
+    for o in regions:
+        for d in regions:
+            if o == d:
+                continue
+            for s in sectors:
+                v = float(m.loc[f"a_{o}_{s}", f"c_{d}_{s}"])
+                if 0.0 < v < dust_threshold:
+                    dust_cells.append((f"a_{o}_{s}", f"c_{d}_{s}"))
+    if not dust_cells:
+        return m, None
+    pre = m.copy()
+    for row, col in dust_cells:
+        m.loc[row, col] = 0.0
+    # Re-balance to each account's mean(row,col) total (standard RAS target).
+    target = (m.sum(axis=1) + m.sum(axis=0)) / 2.0
+    balanced = ras_balance(m, target, tol=balance_tol)
+    return balanced, pre - balanced
+
+
 def _assert_multi_connected(
-    m: pd.DataFrame, regions: list[str], sectors: list[str], materiality: float
+    m: pd.DataFrame, regions: list[str], sectors: list[str], threshold: float
 ) -> None:
     """Reject a disconnected region-trade graph (Phase 5.1b topology validation). Two regions are
-    linked if they trade ANY good in EITHER direction above the materiality threshold; the graph
-    must be a single connected component or the multi-region closure (one numéraire, one dropped
-    factor equation) is under-determined. Mirrors MultiCalibratedModel.connected_components so the
-    data-side gate matches the calibration-side invariant, but rejects here with a clear message."""
+    linked if they trade ANY good in EITHER direction at or above ``threshold`` (the SAME absolute
+    GDP-based dust threshold used to zero routes, review P1 2026-07-27, so a link is exactly a route
+    that survives to be cleared at calibration); the graph must be a single connected component or
+    the multi-region closure (one numéraire, one dropped factor equation) is under-determined.
+    Mirrors MultiCalibratedModel.connected_components but rejects here with a clear message."""
     nr = len(regions)
     parent = list(range(nr))
 
@@ -768,12 +813,6 @@ def _assert_multi_connected(
             i = parent[i]
         return i
 
-    # ONE denominator (global output) and ONE threshold, matching the route-drop step above and the
-    # calibrator's ``active_routes`` (review P1): a route counts as a trade link iff it clears at
-    # calibration, so the connectivity graph is exactly the calibrator's ``active_routes`` graph.
-    threshold = materiality * max(
-        float(sum(m.loc[f"a_{o}_{s}", :].sum() for o in regions for s in sectors)), 1.0
-    )
     for oi, o in enumerate(regions):
         for di, d in enumerate(regions):
             if oi == di:

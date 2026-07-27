@@ -143,30 +143,27 @@ class MultiCalibratedModel:
 
     @property
     def active_routes(self) -> list[tuple[int, int, int]]:
-        """Ordered ``(o, s, d)`` triples for routes with genuine (materially above-threshold)
-        benchmark trade — ``M0[d,s,o] > ROUTE_MATERIALITY_THRESHOLD`` (equivalently
-        ``EX0[o,s,d]``; the two coincide at a balanced benchmark, both GDP-normalised). A route
-        absent from this list has **no** price unknown and **no** clearing residual (review P1):
-        packing an unknown for a structurally-zero route left its price undetermined — perturbing
-        it left every residual at machine-zero, a genuine rank deficiency, so the solver's
-        "convergence" on a sparse SAM did not pin a unique equilibrium. Real SAMs are commonly
-        sparse (most region pairs don't trade every good), so we pack only active routes rather
-        than rejecting sparse topology outright. The threshold (not a bare ``> 0``) additionally
-        excludes numerical dust — a route at ~1e-10 of GDP from upstream aggregation/RAS noise is
-        not "trade" in any economic sense, but a bare `>0` check would pack a price unknown for it
-        anyway, producing a near-singular (condition number ~1e12) Jacobian that a tolerance-based
-        solver can accept as converged while that route's price is actually free (round-10
-        follow-up review)."""
+        """Ordered ``(o, s, d)`` triples for routes that carry a **nonzero calibrated trade share**
+        — exactly the routes ``calibrate_multi`` did NOT reclassify as domestic dust. This is the
+        single source of truth for "which bilateral markets clear": a route is active **iff** its
+        Armington import share or CET export share is strictly positive, so there is no route that
+        has a share (used by demand/supply) yet lacks a price unknown and clearing residual, and
+        none that has a residual but no share (review P1, 2026-07-27 — the earlier version compared
+        the *raw* ``M0/EX0`` vs ``ROUTE_MATERIALITY_THRESHOLD`` while the shares were calibrated
+        off a bare ``> 0`` of the same array, so a route in the gap between the two got a share but
+        no residual, a 35%-imbalance equilibrium the solver accepted at machine-zero residual).
+
+        ``calibrate_multi`` reclassifies sub-``ROUTE_MATERIALITY_THRESHOLD`` flows as domestic
+        BEFORE calibrating the shares (``_reclassify_dust_routes``), so a dust route ends up with a
+        zero share and is correctly absent here; every surviving route has a genuine positive share
+        and is cleared."""
         routes = []
         for oi in range(self.nr):
             for di in range(self.nr):
                 if oi == di:
                     continue
                 for si in range(self.ns):
-                    if (
-                        self.M0[di, si, oi] > ROUTE_MATERIALITY_THRESHOLD
-                        or self.EX0[oi, si, di] > ROUTE_MATERIALITY_THRESHOLD
-                    ):
+                    if self.arm_share_m[di, si, oi] > 0.0 or self.cet_share_e[oi, si, di] > 0.0:
                         routes.append((oi, si, di))
         return routes
 
@@ -390,6 +387,18 @@ def calibrate_multi(
     if INV0 is not None:
         INV0, sav0 = INV0 / scale, sav0 / scale
 
+    # Centralised trade-route materiality gate (review P1, 2026-07-27). The Armington/CET shares are
+    # calibrated off a bare ``> 0`` of the NORMALISED M0/EX0, and ``active_routes`` clears exactly
+    # the routes with a positive share — so the two are aligned BY CONSTRUCTION and there can be no
+    # retained-but-unclearing route. What remains is to refuse a SAM that carries **dust**: a route
+    # whose normalised flow is positive but below ROUTE_MATERIALITY_THRESHOLD (a share of global
+    # GDP). Such a route would get a genuine but tiny price unknown and a near-singular Jacobian
+    # column (condition ~1e12) that a tolerance-based solver can accept as converged while the
+    # price is effectively free. Rather than silently packing it (the old behaviour) OR silently
+    # dropping it and unbalancing the SAM, we REJECT — a supplied SAM must be clean, and the builder
+    # (``build_multi_sam``) removes dust and RAS-rebalances so its output passes this gate.
+    _reject_dust_routes(M0, EX0, ROUTE_MATERIALITY_THRESHOLD)
+
     if float(Z0.min()) <= 0 or float(Q0.min()) <= 0 or float(D0.min()) <= 0:
         raise ValueError("multi-region SAM has non-positive output / composite / domestic sales")
 
@@ -565,6 +574,34 @@ def calibrate_multi(
             "into separate single-economy runs."
         )
     return model
+
+
+def _reject_dust_routes(M0, EX0, threshold):
+    """Reject a benchmark with a **dust** trade route: a normalised bilateral flow that is positive
+    but below ``threshold`` (a share of global GDP). Such a route would be calibrated with a genuine
+    but negligibly small Armington/CET share and packed as a price unknown, giving a near-singular
+    Jacobian column the solver can accept as converged while the price is effectively free (review
+    P1). A route is either genuine trade (≥ threshold, cleared) or not trade at all (exactly zero) —
+    nothing in between. The builder removes dust + rebalances; a supplied SAM must be clean."""
+    dust = []
+    nr, ns, _ = M0.shape
+    for oi in range(nr):
+        for di in range(nr):
+            if oi == di:
+                continue
+            for si in range(ns):
+                for name, v in (("import", M0[di, si, oi]), ("export", EX0[oi, si, di])):
+                    if 0.0 < v < threshold:
+                        dust.append((oi, si, di, name, float(v)))
+    if dust:
+        o, s, d, name, v = dust[0]
+        raise ValueError(
+            f"multi-region SAM has {len(dust)} dust trade route(s) below the materiality "
+            f"threshold {threshold:g} (share of GDP) — e.g. region-{o}→region-{d} sector-{s} "
+            f"{name}={v:.2e}. A route must be genuine trade (≥ threshold) or exactly zero, not "
+            "in between (a tiny route gets a near-singular price column the solver cannot pin). "
+            "Clean the SAM (zero and rebalance the dust) — build_multi_sam does this automatically."
+        )
 
 
 def _calibrate_arm(D0, M0, Q0, arm):
