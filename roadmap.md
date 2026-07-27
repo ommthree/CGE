@@ -316,37 +316,17 @@ cannot credibly operate on the current hand-built supplied multi-region SAM.**
   the offline pymrio-test MRIO aggregated to 2 regions × 3 sectors). 52 validation checks, all
   green. NB the live EXIOBASE *download* wrapper `build_exiobase` was already present (§5.1); 5.1b
   is the multi-region SAM *reduction* + engine wiring on top of it.
-- An IOSystem-driven multi-region SAM builder generalising `build_open_sam` (§5.1) from
-  home-region + single ROW to **R build regions, each a genuine region** with its own household
-  and bilateral trade to every other region — reusing the same construction pattern (balanced by
-  construction, quality-gated).
-- **Satellite alignment**: the multi-region carbon-cost path (currently supplied-SAM-only —
-  `_run_multi` has no IOSystem/SatelliteAccount entry point, unlike the open model's
-  `_run_open_from_io`) needs the same `carbon_cost_vector`-based per-year effective cost
-  construction, aggregated per build region.
-- **Final-demand attribution** using the by-region `final_demand_kind` machinery already built for
-  the open path (§5.1's `open_fd_attribution` check), generalised to attribute each build region's
-  own final demand rather than a single home region's.
-- **Trade-materiality handling**: the live build's bilateral trade will be genuinely sparse (most
-  region pairs don't trade every good) and may contain near-zero noise from aggregation/RAS —
-  reuse `ROUTE_MATERIALITY_THRESHOLD` and `active_routes` (calibrate_multi.py) rather than
-  reintroducing a bare `>0` check.
-- **Topology validation**: a live build's region-trade graph must be checked for connectivity
-  (`connected_components`) before calibration — a live multi-region build is far more likely than
-  a hand-built toy to contain a genuinely disconnected pair of regions (e.g. two small economies
-  with no direct recorded trade link after aggregation), which must be rejected with a clear
-  message, not silently solved.
-- **Live-data replication gate**: `multi_region_live_replicates_on_built_sam`, the multi-region
-  analogue of `open_replicates_on_built_sam` — the multi-region CGE calibrates on the live-built
-  SAM and replicates its benchmark to machine precision, gating this task's own DoD.
-- **DoD:** an EXIOBASE-shaped multi-region SAM builds from a real (or realistically-aggregated)
-  IOSystem + SatelliteAccount, passes the SAM quality report, and the multi-region CGE calibrates
-  on it and replicates to machine precision, with topology validation and trade-materiality
-  handling exercised by the live data (not just the hand-built toy fixtures).
-- **Depends on:** §5.1 (the single-region open live build, whose patterns this generalises);
-  `calibrate_multi.py`'s `active_routes`/`connected_components` (already built). **Unblocks:**
-  Phase 7b (country/sector harmonization needs a live multi-region SAM, not a hand-built one) and
-  Phase 8 (empirical validation/hindcasting needs real data to validate against).
+  How each DoD item was met (all ✅): the **IOSystem→multi-region-SAM builder** generalises
+  `build_open_sam` from home+ROW to R genuine regions; **satellite alignment** via
+  `_multi_effective_cc_from_io` (the `carbon_cost_vector` per-year effective cost, per build region);
+  **final-demand attribution** reuses the by-region `final_demand_kind` machinery (aggregate-only
+  builds rejected, not imputed); **trade-materiality** reuses `ROUTE_MATERIALITY_THRESHOLD` — and
+  the 2026-07-27 remediation unified the builder's drop threshold/denominator with the calibrator's
+  `active_routes` so there is no retained-but-inactive route; **topology validation** raises
+  `TopologyError` on a disconnected region graph before calibration; and the **live-data
+  replication gate** `multi_region_live_replicates_on_built_sam` calibrates on the built SAM and
+  replicates to machine precision. **Unblocked:** Phase 7b (harmonization) and Phase 8 (empirical
+  validation) can now operate on a build-driven multi-region SAM, not a hand-built one.
 
 **5.2 Model core (2–4 wk) — ✅ pilot done; government/investment/energy-nest reopened as 5d**
 - ✅ Static CGE in pyomo/scipy: Armington imports / CET exports, household demand (Cobb-Douglas), carbon-tax revenue with recycling options (lump-sum vs labour-tax cut, as a same-period pass-through), square-model and degrees-of-freedom checks (proven square via the replication gate).
@@ -377,7 +357,7 @@ accumulation in the dynamic wrapper is imposed bookkeeping, not a modelled decis
 
 | # | Task | Effort |
 |---|---|---|
-| 5d.1 | **Government/fiscal account.** A tracked government balance sheet: carbon-tax revenue, subsidies, other tax instruments, and public spending as explicit SAM accounts (not a same-period collect-and-recycle pass-through); a `fiscal_balance` result variable; the closure choice (balanced budget vs deficit-financed) is a first-class, documented assumption | 1–2 wk |
+| 5d.1 | **Government/fiscal account.** An explicit government account: carbon-tax revenue and public spending as explicit SAM accounts (not a same-period collect-and-recycle pass-through); a `fiscal_balance` result variable; the closure choice (balanced budget vs deficit-financed) is a first-class, documented assumption. NB `fiscal_balance` is a **within-period** accounting/financing balance (balanced-budget ≡ 0; deficit-financed crowds out investment) — a *cross-period* tracked balance sheet / debt accumulation is Phase 7.1, not this. Subsidies and other tax instruments remain follow-ups. | 1–2 wk |
 | 5d.2 | **Savings and investment.** A savings-investment identity closing the household/government/RoW accounts; investment demand as a new final-demand component with its own sectoral composition (not folded into household consumption); the standard closure choices from the original 5.2 spec (savings-driven investment as default, fixed vs flexible trade balance as alternatives) | 1–2 wk |
 | 5d.3 | **Capital accumulation, depreciation, and premature retirement.** Extends 5d.2 with a capital stock that depreciates and accumulates from investment — the actual mechanism Phase 7.1's recursive-dynamic wrapper needs between static solves (7.1 currently has no real capital-accumulation identity to call); premature asset retirement (e.g. stranded fossil capital under a carbon shock) as a documented, switchable option | 1 wk, shared with 7.1 |
 | 5d.4 | **Labour market: employment/unemployment and wages.** Today's factor market clears with a fixed endowment and a flexible wage (full employment by construction); add a documented labour-market closure alternative (a wage floor/curve with involuntary unemployment) so factor-market outcomes aren't always "full employment, wage adjusts" by assumption | 1–2 wk |

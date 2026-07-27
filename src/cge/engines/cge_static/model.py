@@ -391,10 +391,10 @@ def derive_state(
             else:  # deficit_financed (Phase 5d.7, redesigned 2026-07-26)
                 # Government spends a FIXED REAL amount (its benchmark real level gov_income0·γ^g),
                 # financed by the direct tax PLUS a genuine deficit that draws on the national
-                # savings pool — i.e. the deficit CROWDS OUT private investment 1-for-1 (the standard
+                # savings pool — i.e. the deficit CROWDS OUT private investment 1-for-1 (standard
                 # static financing closure). This is a real financing account, not the earlier
-                # household-residual pass-through (which cancelled the tax out of demand entirely and
-                # was economically a variable lump-sum transfer — review P1, 2026-07-26).
+                # household-residual pass-through (which cancelled the tax out of demand, and was
+                # economically a variable lump-sum transfer — review P1, 2026-07-26).
                 #
                 #   household disposable income  I = factor_income − tax + R_household   (tax BITES)
                 #   government budget            gov_income = tax + R_gov
@@ -428,10 +428,12 @@ def derive_state(
                 # Everything is linear in I (the net ID re-scales the inv_gamma vector by the same
                 # deficit shift), so this is one linear fixed point solved in closed form — the same
                 # contraction the balanced branch uses, just with the deficit shifting the ID base.
-                gov_income = tax  # government financed by the tax; carbon revenue is the household's
+                gov_income = (
+                    tax  # government financed by the tax; carbon revenue is the household's
+                )
                 deficit = p_gd - gov_income
                 inv_dir = cal.inv_gamma / p  # nominal 1 of investment buys this quantity vector
-                # Net investment quantity as a function of income: ID(I) = (s·I − def)·inv_dir + adapt
+                # Net investment quantity vs income: ID(I) = (s·I − def)·inv_dir + adapt
                 # (d_adapt is nominally zero-sum). Household consumption FD(I) = (1−s)·I·(γ/p).
                 # Revenue base B(I) = (I−A)⁻¹·(FD + ID + GD); R_hh = cc_eff·B. Collect the I-linear
                 # part (coefficient k) and the constant part (c0).
@@ -454,7 +456,7 @@ def derive_state(
                 if strict and p_id_net <= 0:
                     raise ValueError(
                         f"deficit ({deficit:.6g}) exhausts private investment "
-                        f"({private_savings:.6g}); the fixed real government spending is infeasible "
+                        f"({private_savings:.6g}); fixed real government spending is infeasible "
                         "at this tax rate."
                     )
                 ID = p_id_net * inv_dir + d_adapt  # crowded-out investment (adaptation preserved)

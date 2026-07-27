@@ -253,11 +253,13 @@ def nest_unit_cost(
       relatively more expensive and the nest still substitutes away from them.
 
     Bottom-up: energy composite cost pE from energy-commodity prices; KLE cost from (pv, pE);
-    output cost from (pKLE, pM) with pM the Leontief materials cost; then the output carbon wedge."""
+    output cost from (pKLE, pM), pM the Leontief materials cost; then the output carbon wedge."""
     ns = len(pv)
     px = np.empty(ns)
     e_idx, m_idx = nest.energy_idx, nest.mat_idx
-    p_energy_eff = pq[e_idx]  # energy inputs pay the composite price (the output wedge is on px, below)
+    p_energy_eff = pq[
+        e_idx
+    ]  # energy inputs pay the composite price (the output wedge is on px, below)
     p_mat = pq[m_idx]
     for i in range(ns):
         # Inner: energy composite unit cost (only if the sector uses energy).

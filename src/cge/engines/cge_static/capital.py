@@ -89,31 +89,63 @@ def capital_next(
 # Convention: the capital factor's account name in the CGE's ``factors`` list.
 _CAPITAL_FACTOR = "CAP"
 
+# Documented default NET rate of return on capital (the real return *net* of depreciation). With
+# the depreciation rate δ it forms the user cost of capital u = net_return + δ, the price of one
+# unit of capital SERVICES per period. 4%/yr is a standard applied central value for the real net
+# return in CGE/growth calibrations [e.g. the 4% "world interest rate" convention]; overridable per
+# scenario — the same "central default + documented override" discipline as the elasticities/δ.
+DEFAULT_NET_RETURN = 0.04
 
-def benchmark_capital(cal) -> np.ndarray:
-    """Region-level benchmark capital stock K_0 from any calibrated CGE model (Phase 5d.3).
+
+def benchmark_capital(
+    cal,
+    *,
+    net_return: float = DEFAULT_NET_RETURN,
+    depreciation: float = DEFAULT_DEPRECIATION_RATE,
+) -> np.ndarray:
+    """Region-level benchmark capital **stock** K_0 from any calibrated CGE model (Phase 5d.3).
 
     The clean entry point for Phase 7.1's recursive-dynamic wrapper: the initial stock the
-    accumulation identity steps forward from. Capital is the ``CAP`` factor's benchmark income
-    (= its endowment, since benchmark prices are 1) — a well-defined *value* stock at the
-    normalised benchmark scale, consistent with how the CGE holds the capital endowment fixed.
+    accumulation identity steps forward from.
 
-    Returns a 1-D array indexed by region: length 1 (a scalar-in-array) for the closed/open
-    single-region variants, length ``nr`` for multi-region. Region-level (not region-sector) —
-    matching the single aggregate capital factor per region, per 5d.3's recommended granularity.
+    **Stock–flow bridge (review remediation 2026-07-27).** The ``CAP`` factor's benchmark income
+    (= its endowment at unit benchmark prices) is a *flow*: the annual payment for capital
+    **services**, NOT a capital **stock**. Feeding that flow into ``capital_next`` (which adds gross
+    investment in stock units) is dimensionally unsupported and inflates the implied I/K ratio (a
+    services flow is roughly an order of magnitude smaller than the stock that yields it). This
+    converts the flow to a stock via the **user cost of capital**
 
-    Raises if the model has no ``CAP`` factor (the identity has no capital to track otherwise)."""
+        capital_income = u · K_0,   u = net_return + δ   (rental rate = net return + depreciation)
+        ⇒  K_0 = capital_income / (net_return + δ)
+
+    the textbook Jorgensonian user-cost identity, equivalent at a steady state to the
+    ``I/K = g + δ`` relation. ``net_return`` (the real return net of depreciation) and
+    ``depreciation`` (δ) are documented parameters (defaults ``DEFAULT_NET_RETURN`` /
+    ``DEFAULT_DEPRECIATION_RATE``), overridable per scenario; a build carrying an observed capital
+    stock should pass it directly rather than infer it here (a documented future extension).
+
+    Returns a 1-D array indexed by region: length 1 for the closed/open single-region variants,
+    length ``nr`` for multi-region. Region-level (not region-sector) — matching the single
+    aggregate capital factor per region, per 5d.3's recommended granularity.
+
+    Raises if the model has no ``CAP`` factor, or if the user cost ``net_return + δ`` is not
+    strictly positive (the conversion would be undefined/negative)."""
     factors = list(cal.factors)
     if _CAPITAL_FACTOR not in factors:
         raise ValueError(
             f"model has no {_CAPITAL_FACTOR!r} factor; capital accumulation needs a capital "
             f"factor to track (factors are {factors})."
         )
+    user_cost = float(net_return) + float(depreciation)
+    if not np.isfinite(user_cost) or user_cost <= 0:
+        raise ValueError(
+            f"user cost of capital (net_return + depreciation) must be > 0; got "
+            f"{net_return} + {depreciation} = {user_cost}."
+        )
     fi = factors.index(_CAPITAL_FACTOR)
     endowment = np.asarray(cal.endowment, dtype=float)
-    if endowment.ndim == 1:
-        # Closed/open: endowment is [f]; capital is a single aggregate — return it as a length-1
-        # array so the caller always gets a per-region vector.
-        return np.array([endowment[fi]])
-    # Multi-region: endowment is [f, r]; return the capital row (one entry per region).
-    return endowment[fi, :].copy()
+    # Closed/open: endowment is [f]; capital is a single aggregate — return a length-1 array so the
+    # caller always gets a per-region vector. Multi-region: endowment is [f, r]; the capital row is
+    # per-region capital income. Either way it is an income FLOW, converted to a STOCK below.
+    capital_income = np.array([endowment[fi]]) if endowment.ndim == 1 else endowment[fi, :].copy()
+    return capital_income / user_cost

@@ -116,28 +116,81 @@ def test_phase_7_1_usage_shape_round_trips():
 
 
 # -- benchmark_capital adapter (the Phase 7.1 entry point) --------------------
-def test_benchmark_capital_closed():
+def test_benchmark_capital_closed_converts_income_flow_to_stock():
+    """Review remediation (2026-07-27): the CAP endowment is capital-SERVICES income (a flow); the
+    benchmark STOCK is that flow divided by the user cost u = net_return + δ. The stock is therefore
+    ~1/u ≈ an order of magnitude LARGER than the income flow — not equal to it (the earlier bug)."""
     from cge.data.sam import toy_sam
     from cge.engines.cge_static.calibrate import calibrate
-    from cge.engines.cge_static.capital import benchmark_capital
+    from cge.engines.cge_static.capital import (
+        DEFAULT_DEPRECIATION_RATE,
+        DEFAULT_NET_RETURN,
+        benchmark_capital,
+    )
 
     cal = calibrate(toy_sam(), sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
     k0 = benchmark_capital(cal)
     assert k0.shape == (1,)  # single-region → length-1 vector
-    # CAP endowment at the GDP-normalised benchmark = capital's share of factor income.
-    assert k0[0] == pytest.approx(cal.endowment[cal.factors.index("CAP")])
+    income = cal.endowment[cal.factors.index("CAP")]
+    u = DEFAULT_NET_RETURN + DEFAULT_DEPRECIATION_RATE
+    assert k0[0] == pytest.approx(income / u)
+    assert k0[0] > income  # a stock is much larger than its annual services flow
 
 
 def test_benchmark_capital_multi_is_per_region():
     from cge.data.sam.toy_multi import REGIONS, SECTORS, toy_multi_sam
     from cge.engines.cge_static.calibrate_multi import calibrate_multi
-    from cge.engines.cge_static.capital import benchmark_capital
+    from cge.engines.cge_static.capital import (
+        DEFAULT_DEPRECIATION_RATE,
+        DEFAULT_NET_RETURN,
+        benchmark_capital,
+    )
 
     cal = calibrate_multi(toy_multi_sam(), regions=REGIONS, sectors=SECTORS, factors=["CAP", "LAB"])
     k0 = benchmark_capital(cal)
     assert k0.shape == (cal.nr,)  # one entry per region
     fi = cal.factors.index("CAP")
-    assert np.allclose(k0, cal.endowment[fi, :])
+    u = DEFAULT_NET_RETURN + DEFAULT_DEPRECIATION_RATE
+    assert np.allclose(k0, cal.endowment[fi, :] / u)
+
+
+def test_benchmark_capital_user_cost_is_overridable():
+    """The user-cost parameters are documented and overridable per scenario."""
+    from cge.data.sam import toy_sam
+    from cge.engines.cge_static.calibrate import calibrate
+    from cge.engines.cge_static.capital import benchmark_capital
+
+    cal = calibrate(toy_sam(), sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
+    income = cal.endowment[cal.factors.index("CAP")]
+    k0 = benchmark_capital(cal, net_return=0.06, depreciation=0.04)  # u = 0.10
+    assert k0[0] == pytest.approx(income / 0.10)
+
+
+def test_benchmark_capital_rejects_nonpositive_user_cost():
+    from cge.data.sam import toy_sam
+    from cge.engines.cge_static.calibrate import calibrate
+    from cge.engines.cge_static.capital import benchmark_capital
+
+    cal = calibrate(toy_sam(), sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
+    with pytest.raises(ValueError, match="user cost"):
+        benchmark_capital(cal, net_return=0.0, depreciation=0.0)
+
+
+def test_benchmark_capital_implied_investment_ratio_is_sane():
+    """The stock–flow bridge gives an economically sane I/K: at a steady state I = (g+δ)·K, so with
+    δ=5% and modest growth the investment/stock ratio is ~5–10%, NOT the ~30% the earlier
+    flow-as-stock treatment implied (review P2)."""
+    from cge.data.sam import toy_sam
+    from cge.engines.cge_static.calibrate import calibrate
+    from cge.engines.cge_static.capital import DEFAULT_DEPRECIATION_RATE, benchmark_capital
+
+    cal = calibrate(toy_sam(), sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
+    k0 = benchmark_capital(cal)
+    # Steady-state investment to replace depreciation on the derived stock.
+    steady_investment = DEFAULT_DEPRECIATION_RATE * k0
+    implied_ik = float((steady_investment / k0)[0])
+    assert implied_ik == pytest.approx(DEFAULT_DEPRECIATION_RATE)  # exactly δ at zero growth
+    assert implied_ik < 0.15  # sane, not the ~0.30 the flow-as-stock bug produced
 
 
 def test_benchmark_capital_steps_forward():
@@ -148,9 +201,10 @@ def test_benchmark_capital_steps_forward():
 
     cal = calibrate(toy_sam(), sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
     k0 = benchmark_capital(cal)
-    k1 = capital_next(k0, np.array([0.05]))  # a small investment flow
+    k1 = capital_next(k0, 0.05 * k0)  # steady-state replacement investment (δ·K)
     assert k1.shape == k0.shape
     assert np.all(np.isfinite(k1)) and np.all(k1 >= 0)
+    assert np.allclose(k1, k0)  # δ·K investment exactly replaces δ·K depreciation → stock steady
 
 
 def test_benchmark_capital_requires_capital_factor():

@@ -1095,9 +1095,11 @@ def test_engine_multi_from_io_price_applied_once():
         )
         d = res.data
         return -float(
-            d[(d["variable"] == "volume_change") & (d["region"] == "A") & (d["sector"] == "energy")][
-                "value"
-            ].iloc[0]
+            d[
+                (d["variable"] == "volume_change")
+                & (d["region"] == "A")
+                & (d["sector"] == "energy")
+            ]["value"].iloc[0]
         )
 
     d1, d2 = energy_drop(50.0), energy_drop(100.0)
@@ -1119,3 +1121,94 @@ def test_engine_multi_from_io_missing_satellite_rejected():
             shocks=[CarbonPrice(price=100.0)],
             years=[2020],
         )
+
+
+# -- multi-region account-name inference (review P2, 2026-07-27) ------------------------------
+def _io_with_region(region_a, region_b):
+    """A 2-region EUR IOSystem whose regions are named as given (used to test that a region name
+    containing '_' survives the a_<r>_<s> round-trip)."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, IOSystem, Provenance
+
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-27"
+    )
+    regions, sectors = [region_a, region_b], ["energy", "mfg"]
+    labels = [f"{r}:{s}" for r in regions for s in sectors]
+    A = pd.DataFrame(
+        [
+            [0.10, 0.20, 0.02, 0.03],
+            [0.15, 0.10, 0.03, 0.04],
+            [0.03, 0.02, 0.10, 0.20],
+            [0.04, 0.03, 0.15, 0.10],
+        ],
+        index=labels,
+        columns=labels,
+    )
+    fd = pd.DataFrame(
+        {region_a: [100.0, 120.0, 10.0, 12.0], region_b: [12.0, 10.0, 110.0, 130.0]}, index=labels
+    )
+    return IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=sectors),
+        regions=Classification(name="r", kind="region", labels=regions),
+        A=A,
+        final_demand=fd,
+        unit="MEUR",
+        currency="EUR",
+        final_demand_kind="by_region",
+    )
+
+
+def test_engine_multi_region_name_with_underscore_survives():
+    """Review P2 (2026-07-27): a region name containing '_' (e.g. 'Rest_of_World') used to be
+    truncated by split('_')[1] to 'Rest', breaking the freshly built SAM. The IO path now passes the
+    builder's exact axes through, so the full name survives and the run replicates on zero shock."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    io = _io_with_region("A", "Rest_of_World")
+    res = eng.run(
+        data={"IOSystem": io, "multi_region": True}, shocks=[CarbonPrice(price=0.0)], years=[2020]
+    )
+    assert res.manifest.assumptions["regions"] == ["A", "Rest_of_World"]
+    assert res.data["value"].abs().max() < 1e-6  # zero-shock replication with the '_' region
+
+
+def test_infer_multi_axes_rejects_prefix_ambiguous_regions():
+    """A supplied SAM whose region names are prefix-ambiguous (one a prefix of another) cannot have
+    its a_<r>_<s> accounts split uniquely — rejected with a clear message (pass explicit axes)."""
+    from cge.engines.cge_static.engine import _infer_multi_axes
+
+    # Region 'N' is a prefix of 'N_east'; a_N_east_g could mean (N, east_g) or (N_east, g).
+    accounts = []
+    for r in ["N", "N_east"]:
+        accounts += [f"a_{r}_g", f"c_{r}_g", f"CAP_{r}", f"LAB_{r}", f"HOH_{r}"]
+    m = pd.DataFrame(0.0, index=accounts, columns=accounts)
+    sam = SAM(provenance=_prov(), accounts=accounts, matrix=m)
+    with pytest.raises(ValueError, match="prefix-ambiguous"):
+        _infer_multi_axes(sam)
+
+
+def test_validate_multi_sam_rejects_duplicate_axis_labels():
+    """Set-equality alone tolerates a repeated axis label; the duplicate guard now rejects it."""
+    from cge.engines.cge_static.engine import _validate_multi_sam
+
+    regions, sectors = ["N", "S"], ["g"]
+    accounts = []
+    for r in regions:
+        accounts += [f"a_{r}_g", f"c_{r}_g", f"CAP_{r}", f"LAB_{r}", f"HOH_{r}"]
+    dup_accounts = accounts + ["HOH_N"]  # a duplicated declared account
+    m = pd.DataFrame(0.0, index=dup_accounts, columns=dup_accounts)
+    sam = SAM(provenance=_prov(), accounts=dup_accounts, matrix=m)
+    with pytest.raises(ValueError, match="duplicate"):
+        _validate_multi_sam(sam, regions, sectors, ["CAP", "LAB"])
+
+
+def _prov():
+    from cge.contracts.data_objects import Provenance
+
+    return Provenance(
+        source="t", source_version="1", licence="x", reference_year=0, retrieved="2026-07-27"
+    )

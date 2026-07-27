@@ -29,6 +29,7 @@ from cge.contracts.data_objects import SAM, IOSystem, Provenance
 from cge.contracts.quality import QualityReport
 from cge.data.sam.balance import is_balanced, ras_balance
 from cge.data.sam.quality import sam_quality_report
+
 # Canonical trade-materiality threshold — shared with the calibrator so the builder's route drop
 # and the calibrator's ``active_routes`` test use ONE threshold and ONE (global) denominator
 # (review P1, 2026-07-26): after GDP-normalisation a share-of-global-output drop coincides with the
@@ -518,8 +519,8 @@ def build_multi_raw_sam(
     if fd_region is None:
         raise ValueError(
             "a multi-region SAM needs final demand BY CONSUMING REGION (io.fd_by_region()); this "
-            "build carries only an aggregate final-demand column, so each region's own final demand "
-            "cannot be attributed without inventing the split — rebuild with by-region final demand."
+            "build carries only an aggregate final-demand column, so each region's own final "
+            "demand cannot be attributed without inventing the split — rebuild with by-region FD."
         )
 
     x, labels = _gross_output(io)
@@ -600,7 +601,7 @@ def build_multi_raw_sam(
     # producing region (measured, by consuming region), read directly off fd_region over the
     # composite (sector) axis (T folds the final-demand part into the trade block for D/EX above).
     FD = np.zeros((nr, ns))
-    for a, lb_a in enumerate(labels):
+    for lb_a in labels:
         ia = s_index[_sector_of(lb_a)]
         if region_of(lb_a) not in region_set:
             continue
@@ -633,7 +634,6 @@ def build_multi_raw_sam(
 def _assemble_multi_sam(regions, sectors, D, EX, INT, FD, VA, capital_share, io):
     """Assemble the multi-region SAM matrix (a_<r>_<s>/c_<r>_<s>/<f>_<r>/HOH_<r>) with the bilateral
     trade block and the household↔household current-account closure."""
-    nr, ns = len(regions), len(sectors)
     accounts: list[str] = []
     for r in regions:
         accounts += [f"a_{r}_{s}" for s in sectors] + [f"c_{r}_{s}" for s in sectors]

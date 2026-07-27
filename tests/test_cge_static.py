@@ -1558,7 +1558,7 @@ def test_carbon_price_expands_clean_relative_to_dirty():
 
 
 def test_energy_nest_collects_carbon_revenue():
-    """Carbon revenue is positive under a fossil carbon price (the per-output wedge is collected)."""
+    """Carbon revenue is positive under a fossil carbon price (the per-output wedge collected)."""
     cal = _cal_energy()
     cc = np.array([0.3, 0.0, 0.0])
     _s, shk = _solve_energy(cal, cc=cc)
@@ -1584,7 +1584,7 @@ def test_nest_carbon_revenue_reconciles_with_output_intensity():
 def test_nest_does_not_change_carbon_meaning_vs_flat():
     """Enabling ``energy_sectors`` must NOT change a scenario's emissions/revenue meaning: pricing a
     NON-energy sector (MFG) produces a real, revenue-positive response WITH the nest — where the old
-    formulation gave exactly zero — and the revenue reconciles the same way the flat model's does."""
+    formulation gave exactly zero — and the revenue reconciles the same way the flat model does."""
     cc = np.array([0.0, 0.0, 0.4])  # carbon on the non-energy sector only
     flat = calibrate(_energy_sam(), sectors=_ENERGY_SECTORS, factors=_FACTORS)
     nest = _cal_energy()

@@ -1164,7 +1164,12 @@ def _solve_trade(cal, trade_closure, cc=None, recycling="lump_sum", drop_factor=
         lower[-1] = -1.0
     sol = solve(
         lambda z: MO.residuals(
-            cal, z, carbon_cost=cc, recycling=recycling, trade_closure=trade_closure, drop_factor=drop_factor
+            cal,
+            z,
+            carbon_cost=cc,
+            recycling=recycling,
+            trade_closure=trade_closure,
+            drop_factor=drop_factor,
         ),
         g,
         lower=lower,
@@ -1272,9 +1277,7 @@ def test_engine_flexible_trade_balance_end_to_end():
         shocks=[CarbonPrice(price=0.3)],
         years=[2020],
     )
-    er_ch = float(
-        flex.data[flex.data["variable"] == "exchange_rate_change"]["value"].iloc[0]
-    )
+    er_ch = float(flex.data[flex.data["variable"] == "exchange_rate_change"]["value"].iloc[0])
     assert er_ch == pytest.approx(0.0, abs=1e-8)
     assert (flex.data["variable"] == "foreign_savings_gdp_share").any()
     assert (flex.data["variable"] == "foreign_savings_change_pp").any()
@@ -1286,7 +1289,10 @@ def test_engine_flexible_trade_balance_end_to_end():
         shocks=[CarbonPrice(price=0.3)],
         years=[2020],
     )
-    assert abs(float(fixed.data[fixed.data["variable"] == "exchange_rate_change"]["value"].iloc[0])) > 1e-3
+    assert (
+        abs(float(fixed.data[fixed.data["variable"] == "exchange_rate_change"]["value"].iloc[0]))
+        > 1e-3
+    )
     assert not (fixed.data["variable"] == "foreign_savings_gdp_share").any()
     assert not (fixed.data["variable"] == "foreign_savings_change_pp").any()
     assert fixed.manifest.assumptions["trade_closure"] == "fixed_foreign_savings"

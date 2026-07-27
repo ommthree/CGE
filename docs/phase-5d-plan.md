@@ -1,9 +1,13 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: 5d.1–5d.5 COMPLETE; 5d.6 closed COMPLETE; 5d.7 government-closure COMPLETE** (engine v0.9.4). 5d.1: government
-account in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure, benchmark
-direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs — `docs/models/
-cge-static.md` §4b; `deficit_financed` reserved for 5d.7 as planned). 5d.2: savings-investment
+**Status: PHASE 5 COMPLETE — 5d.1–5d.7 + §5.1b (live multi-region SAM build) all done; engine
+v0.9.7 after the 2026-07-27 review remediation** (five P1 correctness fixes: energy-nest carbon
+contract, signed foreign savings, unified route materiality, real deficit financing, one-factor
+wage floor; plus P2 capital stock–flow bridge and multi-region name inference — see
+[the review-round-11 note in memory] / commits `241fec8`, and the P2/P3 remediation commit). 5d.1:
+government account in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure,
+benchmark direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs —
+`docs/models/cge-static.md` §4b; `deficit_financed` delivered in 5d.7, below). 5d.2: savings-investment
 account in all three variants (`SAVINV` / `SAVINV_<r>` per region, savings rate on disposable
 income, `savings_driven` + `fixed_real` closures both switchable and tested, `investment`/`savings`
 outputs — §4c). **The plan's anticipated +1 unknown/+1 equation never materialised**: every
@@ -17,7 +21,11 @@ calibration. 5d.3: the capital-accumulation identity `K_{t+1}=(1−δ)(1−r)K_t
 stateless, unit-tested module (`cge.engines.cge_static.capital`) — the Phase 7.1 entry point, with
 a 5%/yr depreciation default [OECD2009], an exogenous premature-retirement (stranded-asset) term,
 boundary validation, and a `benchmark_capital(cal)` adapter that extracts region-level $K_0$ from
-any variant (§4d). Deliberately NOT wired into the solve — the multi-year loop is Phase 7.1.
+any variant (§4d). **Review remediation (2026-07-27):** `benchmark_capital` now converts the CAP
+factor's benchmark income (a *services flow*) to a *stock* via the user cost of capital
+$K_0=\text{capital income}/(r_{\text{net}}+\delta)$ (default $r_{\text{net}}=4\%$) — feeding the
+income flow directly as a stock was dimensionally wrong and inflated the implied $I/K$ to ~30%.
+Deliberately NOT wired into the solve — the multi-year loop is Phase 7.1.
 5d.4: labour-market wage-floor closure (closed variant, §4e) — default flexible-wage/full-
 employment plus an optional `labour_floor` via a REGIME-SWITCH (solve full-employment first; if
 the unconstrained wage would fall below the floor, re-solve with the LAB clearing row replaced by
@@ -50,12 +58,17 @@ moves. Emits `adaptation_investment` + `ordinary_investment` (summing to total).
 SAVINV-account only (rejected otherwise); strict guard on over-earmark (A > savings). Open/multi
 + endogenous adaptation = follow-ups. 5d.7: the **deficit-financed government closure** (§4b) —
 `gov_closure='deficit_financed'`: government spends a FIXED REAL amount (benchmark level GD0·γ^g)
-regardless of revenue; the household absorbs the fiscal residual so the closed economy stays
-closed; `fiscal_balance = gov_income − p·GD` reported (not closed — no debt accumulation, that's
-7.1). Benchmark replicates (revenue = fixed spending at benchmark); under shock the gap is a real
-surplus/deficit. Tier-1 (replication/homogeneity/Walras) re-proved. The **flexible-trade-balance
-closure** (fix er / flexible Sf targeting a trade-balance level, open/multi — a new
-unknown/equation swap) is the remaining 5d.7 piece. This is the
+regardless of revenue. **Redesigned in the 2026-07-27 review remediation:** the deficit is financed
+by a real channel — it **crowds out private investment** from the savings pool
+(`p·ID = savings − deficit`), so the direct tax genuinely bites (requires a `SAVINV` account,
+rejected without one). The earlier version had the household absorb the whole residual, which
+cancelled the tax out of demand (a variable lump-sum). `fiscal_balance = gov_income − p·GD` is a
+within-period financing balance, NOT a cross-period debt/balance sheet (that's Phase 7.1). Benchmark
+replicates (deficit = 0 at benchmark); under shock the gap is a real surplus/deficit that crowds out
+investment. Tier-1 (replication/homogeneity/Walras) re-proved. The **flexible-trade-balance closure**
+(fix er / flexible signed Sf, open variant; structurally N/A for multi — no single exchange rate)
+is DONE (`trade_closure='flexible_balance'`, §8). §5.1b's **live multi-region SAM build**
+(`build_multi_sam`) is also DONE. This is the
 detailed implementation plan for Phase 5d, reopened Phase 5
 debt (see `roadmap.md` §Phase 5 correction note and `docs/phase-5-plan.md`'s status header). Phase
 5's original §2/§3 design called for a government/fiscal account, savings/investment with capital
@@ -149,7 +162,9 @@ set, validation suite) was already built to hold this; only the model equations 
 `calibrate()`'s current `hoh = [...]; if len(hoh) != 1: raise` becomes an explicit, named split:
 
 ```python
-institutions: dict[str, str]  # role -> SAM account name, e.g. {"household": "hoh", "government": "gov"}
+institutions: dict[
+    str, str
+]  # role -> SAM account name, e.g. {"household": "hoh", "government": "gov"}
 ```
 
 with `"household"` the only required role (preserves every existing single-institution SAM/test

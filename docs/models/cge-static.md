@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.4)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.8)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -57,10 +57,10 @@ bundle (opt-in via `energy_sectors`). An optional **adaptation/transition invest
 **open-economy variant** (§8) adds Armington imports and CET exports with a rest-of-world account
 — chosen automatically when the SAM carries a `ROW` account.
 
-**Not yet modelled:** an IOSystem-driven multi-region SAM build (§8a is supplied-SAM only today);
-the **deficit-financed government closure in the open/multi variants** (Phase 5d.7 `deficit_financed`
-is closed-variant only today, §4b; the open engine rejects it explicitly — the flexible-trade-balance
-closure, §8, is done for the open variant and is structurally N/A for multi);
+**Not yet modelled:** the **deficit-financed government closure in the open/multi variants**
+(Phase 5d.7 `deficit_financed` is closed-variant only today, §4b; the open engine rejects it
+explicitly — the flexible-trade-balance closure, §8, is done for the open variant and is
+structurally N/A for multi);
 **production/factor taxes, government→household transfers, government savings, government trade
 (GOV↔ROW), and cross-region government purchases** (a benchmark SAM carrying them is rejected
 explicitly); the **recursive-dynamic loop** (5d.3, §4d, provides the capital-accumulation
@@ -231,15 +231,20 @@ and Walras' law is re-proved unchanged (tested).
 - **`balanced_budget`** (default): government spending exactly exhausts its income each period, so
   `fiscal_balance` $\equiv 0$. The tax being a *rate* (not a fixed level) preserves homogeneity:
   scaling the endowment scales government demand proportionally (tested).
-- **`deficit_financed`** (Phase 5d.7): government spending is fixed at its **benchmark real level**
-  ($GD = GD^0\!\cdot\!\gamma^g$, a price-independent quantity) regardless of revenue; the gap
-  $\text{fiscal\_balance} = \text{gov income} - p\cdot GD$ is **reported, not closed** — a static
-  model has no debt accumulation (that is Phase 7.1). To keep the closed economy's circular flow
-  intact, the household **absorbs the fiscal residual** (a lump-sum transfer to/from it), so
-  $I^{hh} = Y + R - p\cdot GD$ ($R$ = carbon revenue). $R$ is linear in demand which is linear in
-  $I^{hh}$, so this is a standard closed-form fixed point. At the benchmark, revenue equals fixed
-  spending so `fiscal_balance` $=0$ and the benchmark replicates; under a shock the two diverge and
-  the surplus/deficit is reported. Walras and homogeneity re-proved under this closure (tested).
+- **`deficit_financed`** (Phase 5d.7, redesigned in the 2026-07-27 review remediation): government
+  spending is fixed at its **benchmark real level** ($GD = GD^0\!\cdot\!\gamma^g$, price-independent)
+  regardless of revenue, and the deficit is financed by a **real financing channel** — it **crowds
+  out private investment** from the national savings pool, $p\cdot ID = \text{savings} - \text{def}$,
+  where $\text{def} = p\cdot GD - \text{tax}$. The direct tax therefore **genuinely bites**: a higher
+  tax rate shrinks the deficit, crowds out less investment, and moves real output (an earlier version
+  let the household absorb the whole residual, which cancelled the tax out of demand — economically a
+  variable lump-sum, corrected here). This needs a savings-investment (`SAVINV`) account as the
+  financing channel and is rejected without one. `fiscal_balance` $= \text{gov income} - p\cdot GD$
+  is reported; it is a **within-period** financing balance (crowding-out), **not** a cross-period
+  debt/balance sheet — genuine debt accumulation across years is Phase 7.1. At the benchmark the
+  deficit is zero (revenue equals fixed spending), so there is no crowding-out and the benchmark
+  replicates; under a shock the deficit opens and investment is crowded out. Walras and homogeneity
+  re-proved under this closure (tested).
 
 **Semantics, stated plainly:** with a `GOV` account, the scenario's `revenue_recycling` mode routes
 carbon revenue **to the government budget** (spent on $\gamma^g$), *not* to household income.
@@ -342,7 +347,15 @@ overridable per scenario) and $r$ is an optional **premature-retirement** fracti
 shock), applied multiplicatively with depreciation. The arrays are elementwise, so the identity
 works at any granularity; 5d.3 tracks capital at **region level** (matching the single aggregate
 `CAP` factor per region), with `benchmark_capital(cal)` extracting $K_0$ from a calibrated model
-of any variant as the wrapper's starting point. Sector-specific vintage capital (needing a
+of any variant as the wrapper's starting point. **Stock–flow bridge** (review remediation
+2026-07-27): the `CAP` factor's benchmark income is a *flow* — the annual payment for capital
+**services** — not a **stock**, so `benchmark_capital` converts it via the user cost of capital,
+$K_0 = \text{capital income}/(r_{\text{net}}+\delta)$ (the Jorgensonian user-cost identity;
+equivalently $I/K=g+\delta$ at a steady state). The net return $r_{\text{net}}$ (default **4 %/yr**)
+and $\delta$ are documented, overridable parameters; a build carrying an observed capital stock
+should pass it directly. Without this conversion the identity added a services flow to an
+investment stock — dimensionally unsupported, and it inflated the implied $I/K$ to ~30 %; with it,
+steady-state $I/K=\delta\approx5\%$. Sector-specific vintage capital (needing a
 capital-mobility assumption) and **endogenous** stranding (capital exiting on expected-return
 grounds) are documented out-of-scope extensions — retirement here is a scenario input, not a
 modelled decision. Inputs are validated at the boundary (a negative stock, out-of-range $\delta$
@@ -675,7 +688,12 @@ zero-share route's price anyway (`cal.active_routes`, `model_multi.py`). "Genuin
 above `ROUTE_MATERIALITY_THRESHOLD` (a GDP-share threshold, since benchmark flows are
 GDP-normalised) — a bare `>0` check would treat numerical dust from upstream aggregation/RAS noise
 (e.g. a route at ~1e-10 of GDP) as active, producing a near-singular Jacobian that a
-tolerance-based solver could accept as converged while that route's price is actually free.
+tolerance-based solver could accept as converged while that route's price is actually free. The
+`build_multi_sam` builder uses the **same** threshold and denominator to drop dust routes (folding
+them into domestic sales), so a built SAM has **no route that is retained-but-inactive** — every
+route with a nonzero Armington/CET share gets a clearing residual and clears (review P1, corrected
+2026-07-27; earlier the builder's `1e-9`-of-regional-output drop and this `1e-6`-of-global-GDP test
+disagreed, leaving in-between routes used by demand but never cleared).
 Foreign savings per region ``Sf[r]=ΣM−ΣE`` is fixed at benchmark and globally zero-sum (financed by
 household capital transfers); there is no exchange rate and no external rest-of-world — trade is
 entirely among the build's own regions.

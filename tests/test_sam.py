@@ -266,7 +266,7 @@ def test_build_multi_sam_needs_by_region_final_demand(small_build_io):
         final_demand=io.final_demand.sum(axis=1).to_frame("final_demand"),
     )
     assert agg.fd_by_region() is None
-    with pytest.raises(ValueError, match="by consuming region|by-region final demand"):
+    with pytest.raises(ValueError, match="BY CONSUMING REGION|by-region"):
         build_multi_sam(agg)
 
 
@@ -274,7 +274,6 @@ def test_build_multi_sam_rejects_disconnected_topology():
     """A DISCONNECTED region-trade graph (two regions with no bilateral trade between them) is
     rejected with a TopologyError — the single-numéraire multi-region closure is under-determined
     on a disconnected graph. Built by hand so the disconnection is unambiguous."""
-    from dataclasses import replace
 
     import pandas as pd
 

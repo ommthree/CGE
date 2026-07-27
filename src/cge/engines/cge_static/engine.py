@@ -63,7 +63,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.7"
+VERSION = "0.9.8"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -1020,7 +1020,9 @@ def _assert_closed_replicates(cal, base, x0: np.ndarray) -> None:
     _raise_if_not_replicating(checks, "closed")
 
 
-def _assert_open_replicates(cal, base, x0: np.ndarray, trade_closure="fixed_foreign_savings") -> None:
+def _assert_open_replicates(
+    cal, base, x0: np.ndarray, trade_closure="fixed_foreign_savings"
+) -> None:
     """Assert the benchmark solve reproduces the OPEN model's calibrated quantities (review P1).
     Same rationale as the closed gate, over the open benchmark set (Z/D/E/M/Q/FD/F) and unit
     prices. The last unknown is er (fixed_foreign_savings — benchmark 1) or Sf (flexible_balance —
@@ -1381,7 +1383,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         )
     if gov_closure != "balanced_budget" and not cal.has_government:
         raise ValueError(
-            f"gov_closure={gov_closure!r} needs a {_GOV_ACCOUNT!r} account in the SAM; none present."
+            f"gov_closure={gov_closure!r} needs a {_GOV_ACCOUNT!r} account in the SAM; none there."
         )
 
     # Under flexible_balance the last unknown is Sf (not er); seed it at the benchmark foreign
@@ -1627,6 +1629,44 @@ def _is_multi_region_sam(sam: SAM) -> bool:
     return len(households) >= 2 and len(region_activities) > 0
 
 
+def _infer_multi_axes(sam: SAM) -> tuple[list[str], list[str]]:
+    """Infer (regions, sectors) from a supplied multi-region SAM UNAMBIGUOUSLY (review P2,
+    2026-07-27). Regions are the full suffix of each ``HOH_<r>`` account (strip only the ``HOH_``
+    prefix — never split on a further ``_``, so a region like ``Rest_of_World`` survives intact).
+    Sectors are what remains of each ``a_<r>_<s>`` activity after its known ``a_<r>_`` prefix.
+
+    Raises if an activity does not start with any known ``a_<r>_`` prefix, or if the region names
+    are prefix-ambiguous (one region name is a prefix of another, so ``a_<r>_<s>`` could split two
+    ways). The IO path avoids all of this by passing the builder's exact axes."""
+    regions = sorted({a[len("HOH_") :] for a in sam.accounts if a.startswith("HOH_")})
+    if len(regions) < 2:
+        raise ValueError(f"multi-region SAM needs ≥2 HOH_<r> households; found regions {regions}")
+    # Prefix-ambiguity guard: if region A's name is a prefix of region B's, then a_<B>_<s> could be
+    # mis-read as region A with sector "<B-suffix>_<s>". Require the caller to pass explicit axes.
+    for ri in regions:
+        for rj in regions:
+            if ri != rj and rj.startswith(ri + "_"):
+                raise ValueError(
+                    f"region names are prefix-ambiguous ({ri!r} is a prefix of {rj!r}), so "
+                    "a_<r>_<s> account names cannot be split uniquely; pass explicit 'regions' and "
+                    "'sectors' in data."
+                )
+    sectors: set[str] = set()
+    for a in sam.accounts:
+        if not a.startswith("a_"):
+            continue
+        matched = [r for r in regions if a.startswith(f"a_{r}_")]
+        if not matched:
+            raise ValueError(
+                f"activity account {a!r} does not start with any known 'a_<r>_' prefix for regions "
+                f"{regions}; the SAM's activity/household naming is inconsistent."
+            )
+        # Longest matching region prefix wins (defensive; prefix-ambiguity already rejected above).
+        r = max(matched, key=len)
+        sectors.add(a[len(f"a_{r}_") :])
+    return regions, sorted(sectors)
+
+
 def _rec_r(variable: str, sector: str, region: str, year: int, value: float) -> dict:
     return {
         "variable": variable,
@@ -1653,8 +1693,19 @@ def _validate_multi_sam(sam: SAM, regions: list[str], sectors: list[str], factor
         raise ValueError(f"multi-region SAM is missing required accounts: {missing[:6]}...")
     m = sam.matrix
     idx, cols = list(m.index), list(m.columns)
+    # Duplicate-label guard (review P2, 2026-07-27): set-equality alone silently tolerates a
+    # repeated axis label (two rows both named 'HOH_N'), which then makes .loc reads ambiguous and
+    # the balance check meaningless. Check LENGTH and membership so a duplicated label is caught.
+    for axis_name, axis in (("row", idx), ("column", cols)):
+        dups = sorted({a for a in axis if axis.count(a) > 1})
+        if dups:
+            raise ValueError(f"multi-region SAM has duplicate {axis_name} labels: {dups[:6]}")
     if set(idx) != set(sam.accounts) or set(cols) != set(sam.accounts):
         raise ValueError("multi-region SAM matrix axes must equal the declared accounts exactly")
+    # Declared-accounts uniqueness (the SAM contract lists accounts as a plain list).
+    acc_dups = sorted({a for a in sam.accounts if sam.accounts.count(a) > 1})
+    if acc_dups:
+        raise ValueError(f"multi-region SAM has duplicate declared accounts: {acc_dups[:6]}")
     arr = m.to_numpy(dtype=float)
     if not np.isfinite(arr).all() or float(arr.min()) < -1e-9:
         raise ValueError("multi-region SAM has non-finite or negative cells")
@@ -1664,14 +1715,14 @@ def _validate_multi_sam(sam: SAM, regions: list[str], sectors: list[str], factor
 
 
 def _run_multi_from_io(meta, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
-    """Multi-region CGE on a **real build** (Phase 5.1b): construct an R-region SAM from the supplied
+    """Multi-region CGE on a **real build** (Phase 5.1b): construct an R-region SAM from the given
     ``IOSystem`` via ``build_multi_sam`` (bilateral trade among ALL build regions, topology- and
     quality-gated), derive the per-(region, sector) effective carbon cost from the satellite the
     SAME way Engine 1 / the open IO path does, then delegate to ``_run_multi`` with the built SAM +
     effective cost injected.
 
-    The multi analogue of ``_run_open_from_io``. ``data`` keys: ``IOSystem`` (+ ``SatelliteAccount``),
-    optional ``capital_share``, ``multi_materiality`` (dust-route threshold). Unlike the open path
+    The multi analogue of ``_run_open_from_io``. ``data`` keys: ``IOSystem``, ``SatelliteAccount``,
+    plus optional ``capital_share`` and ``multi_materiality`` (dust threshold). Unlike the open path
     there is no ``home_region`` — every build region is modelled as a genuine region (the global
     economy is closed with no external rest-of-world)."""
     from cge.data.sam import build_multi_sam
@@ -1710,6 +1761,12 @@ def _run_multi_from_io(meta, data: dict, shocks: list[Shock], years: list[int]) 
     inner["SAM"] = sam
     inner["_sam_quality"] = quality
     inner["_io_backed"] = True
+    # Pass the builder's regions/sectors EXPLICITLY (review P2, 2026-07-27): a_<r>_<s> account names
+    # cannot be uniquely re-split when a region or sector name itself contains '_' (e.g.
+    # 'Rest_of_World'), so the engine must not string-split them back out — it takes the exact axes
+    # the builder used to construct the SAM.
+    inner["regions"] = list(regions)
+    inner["sectors"] = list(sectors)
     if cc_by_year is not None:
         inner["_effective_cc_by_year"] = cc_by_year  # per-year [nr, ns] cost, consumed as-is
     if sat is not None:
@@ -1722,7 +1779,7 @@ def _multi_effective_cc_from_io(io, sat, carbon_shocks, regions, sectors, years)
     multi-region build. Reuses Engine 1's ``carbon_cost_vector`` (units/gases/coverage/paths/1e-6
     scaling) PER YEAR over every region's labels, aggregated to (region, sector) output-weighted —
     the per-(region,sector) analogue of the open path's home-only ``_open_effective_cc_from_io``.
-    The result already includes the carbon price, so the caller must not re-multiply it (review P0)."""
+    The result already includes the carbon price, so the caller must not re-multiply it (see P0)."""
     positive = any(s.price_at(y) > 0 for s in carbon_shocks for y in years)
     if not positive or sat is None:
         return None
@@ -1761,10 +1818,16 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     from cge.engines.cge_static.calibrate_multi import calibrate_multi
 
     sam: SAM = data["SAM"]
-    regions = sorted({a.split("_")[1] for a in sam.accounts if a.startswith("HOH_")})
-    # Sectors from a_<r>_<s>: strip the region and keep distinct sector names.
-    sectors = sorted({a.split("_", 2)[2] for a in sam.accounts if a.startswith("a_")})
     factors = list(_DEFAULT_FACTORS)
+    # Region/sector axes. Prefer EXPLICIT axes (the IO path passes the builder's exact regions and
+    # sectors; a supplied-SAM caller may pass them too) — a_<r>_<s> names cannot be uniquely
+    # re-split when a name contains '_' (review P2, 2026-07-27). Without explicit axes, infer
+    # UNAMBIGUOUSLY: regions are the whole suffix of HOH_<r> (strip only the 'HOH_' prefix, never
+    # split on further '_'), then sectors are what remains after the known 'a_<r>_' prefix.
+    if data.get("regions") is not None and data.get("sectors") is not None:
+        regions, sectors = list(data["regions"]), list(data["sectors"])
+    else:
+        regions, sectors = _infer_multi_axes(sam)
     _validate_multi_sam(sam, regions, sectors, factors)
     nr, ns = len(regions), len(sectors)
 
@@ -1802,7 +1865,9 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     # when a positive-revenue scenario actually reaches here (review P2: the flag was always set,
     # and — round-9 follow-up — the switch itself must also only fire then, or a zero-impact run's
     # manifest can report recycling_mode="lump_sum" next to recycling_defaulted_from_none=False).
-    io_priced = bool(eff_by_year is not None and any(np.any(v != 0.0) for v in eff_by_year.values()))
+    io_priced = bool(
+        eff_by_year is not None and any(np.any(v != 0.0) for v in eff_by_year.values())
+    )
     emissions_priced = bool(positive and (io_priced if io_backed else np.any(share != 0.0)))
     recycling = requested_recycling
     recycling_defaulted = requested_recycling == "none" and emissions_priced
