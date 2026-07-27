@@ -107,12 +107,14 @@ def _leontief_and_va(cal: CalibratedModel, p: np.ndarray, pv: np.ndarray, cc: np
     price-independent and bit-identical to the pre-5d.5 code.
 
     **Energy nest** (Phase 5d.5): intermediate demand is price-responsive (energy substitutes as
-    its carbon-inclusive price moves), so A(p)[j,i] = intermediate use of commodity j per unit
-    output i comes from ``nest_demands`` at unit output; VA quantity per unit output = the KL
-    quantity per unit output. The carbon cost attaches to the *energy commodities* (it raises their
-    price inside the nest), so the carbon revenue per unit of a sector's output is
-    cc_eff[i] = Σ_{j∈energy} cc[j]·a_energy[j,i] — a linear functional of output, so the existing
-    recycling/government fixed points (using cc_eff @ leontief @ demand) carry over unchanged."""
+    relative prices move), so A(p)[j,i] = intermediate use of commodity j per unit output i comes
+    from ``nest_demands`` at unit output; VA quantity per unit output = the KL quantity per unit
+    output. **cc_eff = cc** — the carbon cost is a per-OUTPUT wedge, the same as the flat model
+    (review remediation 2026-07-26): total revenue = Σ_i cc[i]·X[i] with or without the nest, so
+    enabling the nest cannot change a scenario's emissions/revenue meaning. The nest still shifts
+    substitution away from taxed energy because a taxed fossil sector's output price rises via
+    zero-profit and reaches energy inputs through pq (NOT via a separate energy-price add-on, which
+    was the original formulation and silently dropped process/household emissions)."""
     ns = len(cal.sectors)
     if not cal.has_energy_nest:
         leontief = np.linalg.inv(np.eye(ns) - cal.ax)
@@ -123,14 +125,16 @@ def _leontief_and_va(cal: CalibratedModel, p: np.ndarray, pv: np.ndarray, cc: np
     unit_x = np.ones(ns)
     energy_use, materials_use, kl_qty = nest_demands(nest, p, pv, cc, unit_x)  # per unit output
     a = np.zeros((ns, ns))  # A(p)[j, i] = commodity j per unit output i
-    cc_eff = np.zeros(ns)
     for k, j in enumerate(nest.energy_idx):
         a[j, :] += energy_use[k, :]
-        cc_eff += cc[j] * energy_use[k, :]  # carbon revenue per unit output from energy commodity j
     for k, j in enumerate(nest.mat_idx):
         a[j, :] += materials_use[k, :]
     leontief = np.linalg.inv(np.eye(ns) - a)
-    return leontief, kl_qty, cc_eff
+    # cc_eff = cc: the carbon cost is a per-OUTPUT wedge (review remediation 2026-07-26), identical
+    # to the flat model, so total revenue = Σ_i cc[i]·X[i] with or without the nest. The nest still
+    # substitutes away from taxed energy because a taxed fossil sector's output price rises via
+    # zero-profit and flows into the energy-input price through pq.
+    return leontief, kl_qty, cc
 
 
 # Smooth positive floor on the recycling denominator (1−k). Identity for x ≫ δ, asymptotes to δ as
@@ -384,38 +388,78 @@ def derive_state(
                 gov_income = (tax + r0) / _safe_denom(1.0 - kg)
                 GD = gov_income * gov_demand_per_income
                 fiscal_balance = 0.0
-            else:  # deficit_financed (Phase 5d.7)
+            else:  # deficit_financed (Phase 5d.7, redesigned 2026-07-26)
                 # Government spends a FIXED REAL amount (its benchmark real level gov_income0·γ^g),
-                # regardless of revenue; the gap fiscal_balance = income − spending is REPORTED (not
-                # closed — a static model has no debt accumulation, that is Phase 7.1). To keep the
-                # closed economy's circular flow intact, the household absorbs the residual, so
-                # I = factor_income + R − p·GD (R = carbon revenue). R is linear in demand which is
-                # linear in I, so this is a standard fixed point solved in closed form.
+                # financed by the direct tax PLUS a genuine deficit that draws on the national
+                # savings pool — i.e. the deficit CROWDS OUT private investment 1-for-1 (the standard
+                # static financing closure). This is a real financing account, not the earlier
+                # household-residual pass-through (which cancelled the tax out of demand entirely and
+                # was economically a variable lump-sum transfer — review P1, 2026-07-26).
+                #
+                #   household disposable income  I = factor_income − tax + R_household   (tax BITES)
+                #   government budget            gov_income = tax + R_gov
+                #   deficit                      def = p·GD − gov_income   (financed from savings)
+                #   investment                   p·ID = private_savings − def   (crowding out)
+                #
+                # Deficit financing therefore needs a savings-investment account to draw on — the
+                # financing channel. Without one there is nowhere for the deficit to come from, so
+                # the closure is rejected (the engine gates this too).
+                if not cal.has_investment:
+                    raise ValueError(
+                        "deficit_financed needs a savings-investment (SAVINV) account to finance "
+                        "the deficit — the deficit crowds out private investment from the national "
+                        "savings pool; with no such account there is no financing channel."
+                    )
+                if inv_closure != "savings_driven":
+                    raise ValueError(
+                        "deficit_financed is modelled under the savings_driven investment closure "
+                        "(the deficit crowds out savings-financed investment); got "
+                        f"{inv_closure!r}."
+                    )
                 GD = cal.gov_income0 * cal.gov_gamma  # fixed real quantity (price-independent)
                 p_gd = float(np.dot(p, GD))  # nominal government spending
-                # Household income fixed point: I = FI + R − p_gd, with R = cc_eff·L·(FD+ID+GD) and
-                # FD+ID linear in I. Solve I = (FI − p_gd + c_gd)/(1 − k), where k is the marginal
-                # revenue per unit household income and c_gd the (fixed) revenue from GD + d_adapt.
+                # Government is financed by the direct tax alone; the deficit def = p·GD − tax is
+                # EXOGENOUS given prices (it does not depend on the endogenous carbon revenue — that
+                # recycles to the household, as under lump_sum). The deficit draws on the national
+                # savings pool, crowding out private investment 1-for-1:
+                #     p·ID = private_savings − def          (crowding out)
+                #     private_savings = s·I,  FD = (1−s)·I·(γ/p),  I = FI − tax + R_hh
+                #     R_hh = cc_eff·(I−A)⁻¹·(FD + ID + GD)  (carbon revenue recycled to household)
+                # Everything is linear in I (the net ID re-scales the inv_gamma vector by the same
+                # deficit shift), so this is one linear fixed point solved in closed form — the same
+                # contraction the balanced branch uses, just with the deficit shifting the ID base.
+                gov_income = tax  # government financed by the tax; carbon revenue is the household's
+                deficit = p_gd - gov_income
+                inv_dir = cal.inv_gamma / p  # nominal 1 of investment buys this quantity vector
+                # Net investment quantity as a function of income: ID(I) = (s·I − def)·inv_dir + adapt
+                # (d_adapt is nominally zero-sum). Household consumption FD(I) = (1−s)·I·(γ/p).
+                # Revenue base B(I) = (I−A)⁻¹·(FD + ID + GD); R_hh = cc_eff·B. Collect the I-linear
+                # part (coefficient k) and the constant part (c0).
                 if recycles:
-                    u = (
-                        ((1.0 - s) * cal.gamma + s * cal.inv_gamma) / p
-                        if cal.has_investment
-                        else (demand_per_income)
-                    )
-                    k = float(cc_eff @ (leontief @ u))
-                    c_gd = float(cc_eff @ (leontief @ (GD + d_adapt)))
+                    u_income = (1.0 - s) * cal.gamma / p + s * inv_dir  # ∂(FD+ID)/∂I
+                    const_dem = GD + d_adapt - deficit * inv_dir  # income-independent demand part
+                    k = float(cc_eff @ (leontief @ u_income))
+                    c0 = float(cc_eff @ (leontief @ const_dem))
                 else:
-                    k, c_gd = 0.0, 0.0
+                    k, c0 = 0.0, 0.0
                 if strict and k >= 1.0 - 1e-12:
                     raise ValueError(
                         f"deficit-financed income fixed point diverges (k={k:.3f} ≥ 1)"
                     )
-                income = (factor_income - p_gd + c_gd) / _safe_denom(1.0 - k)
-                FD, ID, savings = _hh_demand(
-                    income, demand_per_income, s, cal, p, inv_closure, d_adapt, strict
-                )
-                gov_income = tax + float(cc_eff @ (leontief @ (FD + ID + GD)))
-                fiscal_balance = gov_income - p_gd
+                # I = FI − tax + R_hh = FI − tax + (k·I + c0) ⇒ I = (FI − tax + c0)/(1 − k).
+                income = (factor_income - tax + c0) / _safe_denom(1.0 - k)
+                private_savings = s * income if cal.has_investment else 0.0
+                FD = (1.0 - s) * income * demand_per_income
+                p_id_net = private_savings - deficit
+                if strict and p_id_net <= 0:
+                    raise ValueError(
+                        f"deficit ({deficit:.6g}) exhausts private investment "
+                        f"({private_savings:.6g}); the fixed real government spending is infeasible "
+                        "at this tax rate."
+                    )
+                ID = p_id_net * inv_dir + d_adapt  # crowded-out investment (adaptation preserved)
+                savings = private_savings
+                fiscal_balance = gov_income - p_gd  # < 0 ⇒ deficit financed from savings
 
         X = leontief @ (FD + GD + ID)  # goods-market clearing
         # Total VA payment per sector = pv · (VA quantity). VA quantity per unit output is
@@ -446,7 +490,14 @@ def derive_state(
     # Savings-investment identity check (strict mode; Phase 5d.2 Tier 2): under savings_driven,
     # nominal investment must equal household savings exactly. Adaptation (Phase 5d.6) preserves
     # this exactly — d_adapt is nominally zero-sum, so p·ID = savings still, by construction.
-    if strict and cal.has_investment and inv_closure == "savings_driven":
+    # EXCEPTION: under deficit_financed, the government deficit crowds out investment, so
+    # p·ID = savings − deficit by design; that closure's own guard (p_id_net > 0) covers it instead.
+    if (
+        strict
+        and cal.has_investment
+        and inv_closure == "savings_driven"
+        and gov_closure != "deficit_financed"
+    ):
         resid = float(np.dot(p, ID)) - savings
         if abs(resid) > 1e-9 * max(1.0, abs(savings)):  # pragma: no cover - guards the closed form
             raise ValueError(f"savings-investment identity not satisfied (residual {resid:.3e}).")
@@ -564,6 +615,23 @@ def residuals(
     # Factor clearing (drop one by Walras). Under a binding wage floor (Phase 5d.4), the LAB row
     # becomes the wage pin w[LAB] = floor instead of quantity-clearing — labour demand ≤ supply is
     # then slack, the gap reported as unemployment.
+    #
+    # The dropped (Walras) market MUST be a non-LAB factor when the floor is active: the LAB row is
+    # the wage pin and must be present, so dropping LAB would silently discard the pin and let the
+    # wage fall below the floor unenforced (review P1, 2026-07-26 — a valid LAB-only model reported
+    # labour_floor_bound=true while the actual wage sat below the floor). If LAB is the only factor
+    # there is no non-LAB market to drop as the numéraire-market, so the wage-floor closure is not
+    # well posed and is rejected outright.
+    if labour_floor is not None and lab is not None:
+        non_lab = [f for f in range(nf) if f != lab]
+        if not non_lab:
+            raise ValueError(
+                "the wage-floor labour-market closure needs at least one non-LAB factor to drop as "
+                "the Walras market (the LAB row is the wage pin and cannot also be the dropped "
+                f"market); this model has only {cal.factors} — reject or add a capital factor."
+            )
+        if drop_factor == lab:
+            drop_factor = non_lab[0]  # never drop the LAB (pin) row when the floor is active
     for f in range(nf):
         if f == drop_factor:
             continue

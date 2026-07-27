@@ -63,7 +63,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.6"
+VERSION = "0.9.7"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -383,7 +383,9 @@ class CGEStaticEngine:
                 f"unsupported inv_closure {inv_closure!r}; use 'savings_driven' or 'fixed_real'."
             )
         # Government financing closure (Phase 5d.1 / 5d.7): balanced_budget (default) or
-        # deficit_financed (fixed real government spending, the fiscal gap reported not closed).
+        # deficit_financed (fixed real government spending; the deficit crowds out private
+        # investment from the savings pool — review remediation 2026-07-26, a real financing
+        # channel, not the earlier household-residual pass-through that cancelled the tax out).
         gov_closure = data.get("gov_closure", "balanced_budget")
         if gov_closure not in ("balanced_budget", "deficit_financed"):
             raise ValueError(
@@ -411,6 +413,13 @@ class CGEStaticEngine:
             raise ValueError(
                 f"gov_closure={gov_closure!r} needs a {_GOV_ACCOUNT!r} account in the SAM; this "
                 "SAM has none, so the closure choice would silently do nothing."
+            )
+        if gov_closure == "deficit_financed" and not cal.has_investment:
+            # The deficit is financed by crowding out private investment (review remediation
+            # 2026-07-26); with no savings-investment account there is no financing channel.
+            raise ValueError(
+                f"gov_closure='deficit_financed' needs a {_SAVINV_ACCOUNT!r} account in the SAM — "
+                "the deficit is financed by crowding out private investment; this SAM has none."
             )
         # Labour-market closure (Phase 5d.4): default flexible-wage/full-employment; an optional
         # ``labour_floor`` (a wage floor, in benchmark CPI-numéraire units where the benchmark
@@ -1384,6 +1393,23 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             g[-1] = cal.foreign_savings
         return g
 
+    # Foreign savings Sf is economically SIGNED (a trade surplus is Sf < 0). Under flexible_balance
+    # Sf is the last solver unknown, so it must NOT carry the default positivity floor — a benchmark
+    # exporter (Sf<0) or a shock that pushes the current account into surplus would otherwise be
+    # infeasible (review P1, 2026-07-26). Relax the last bound to effectively −∞; every other
+    # unknown (prices, er) keeps the 1e-9 floor.
+    # The solver's log-transform z=log(x−lower) needs a WELL-SCALED lower bound: a huge offset
+    # (−1e12) makes tiny z-steps map to enormous Sf swings and destroys conditioning near the small
+    # benchmark Sf. Sf is a GDP-share (|Sf| ≪ 1 in practice); a floor of −1.0 (a capital outflow of
+    # a full year's GDP — comfortably beyond any realistic surplus) is generous yet keeps
+    # log(Sf+1) well-scaled around the benchmark.
+    def _lower():
+        if trade_closure != "flexible_balance":
+            return None
+        lo = np.full(MO.n_unknowns(cal), 1e-9)
+        lo[-1] = -1.0  # Sf signed, well-scaled floor (a surplus is Sf<0)
+        return lo
+
     def _solve_year(cc):
         sol = solve(
             lambda z: MO.residuals(
@@ -1396,6 +1422,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
                 trade_closure=trade_closure,
             ),
             _guess(),
+            lower=_lower(),
             prefer="scipy",
         )
         # strict=True: enforce the recycling k<1 feasibility guard on the ACCEPTED equilibrium
@@ -1527,15 +1554,22 @@ def _emit_open(records, cal, base, st, year: int) -> None:
         records.append(_rec("factor_price_change", factor, year, st.w[f_idx] / base.w[f_idx] - 1.0))
     records.append(_rec("exchange_rate_change", "__economy__", year, st.er / base.er - 1.0))
     # Foreign savings / current account (Phase 5d.7): under flexible_balance Sf is endogenous, so
-    # report its change (the current account adjusting instead of the exchange rate). Emitted only
-    # when Sf actually moved, so fixed-Sf runs stay byte-identical.
+    # report the current account adjusting instead of the exchange rate. Sf is economically SIGNED
+    # (a surplus is Sf<0) and is already GDP-normalised, so it is reported as a LEVEL (a share of
+    # benchmark GDP) and a percentage-POINT change in that share — NOT a percentage ratio (review
+    # P1, 2026-07-26): a ratio is undefined/misleading when the benchmark is non-positive or the
+    # balance crosses zero (_ratio returns 0 for a non-positive base). Emitted only when Sf actually
+    # moved, so fixed-Sf runs stay byte-identical.
     if abs(st.foreign_savings - base.foreign_savings) > 1e-12:
         records.append(
+            _rec("foreign_savings_gdp_share", "__economy__", year, float(st.foreign_savings))
+        )
+        records.append(
             _rec(
-                "foreign_savings_change",
+                "foreign_savings_change_pp",
                 "__economy__",
                 year,
-                _ratio(st.foreign_savings, base.foreign_savings),
+                float(st.foreign_savings - base.foreign_savings),
             )
         )
     # Real GDP — expenditure-side: consumption + net exports (review P1: Σ pq_i·FD_i alone is

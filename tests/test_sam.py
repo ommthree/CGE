@@ -212,6 +212,40 @@ def test_multi_cge_calibrates_and_replicates_on_built_sam(small_build_io):
     assert np.allclose(st.M, cal.M0, atol=1e-6)
 
 
+def test_no_retained_route_lacks_a_clearing_residual(small_build_io):
+    """Review P1 (2026-07-26): the builder's route-drop threshold and the calibrator's
+    ``active_routes`` threshold now use ONE threshold and ONE (global) denominator, so there is no
+    'retained but inactive' route — every route with a nonzero Armington import share is in
+    ``active_routes`` (has a clearing residual), and every active route clears at the solution."""
+    from cge.data.sam import build_multi_sam
+    from cge.engines.cge_static import model_multi as MM
+    from cge.engines.cge_static.calibrate_multi import calibrate_multi
+
+    io, _store, _bid = small_build_io
+    sam, _report, regions, sectors = build_multi_sam(io)
+    cal = calibrate_multi(sam, regions=regions, sectors=sectors, factors=["CAP", "LAB"])
+    active = set(cal.active_routes)
+    # Every route USED by demand (nonzero import share) must be an ACTIVE (cleared) route.
+    for oi in range(cal.nr):
+        for di in range(cal.nr):
+            if oi == di:
+                continue
+            for si in range(cal.ns):
+                if cal.arm_share_m[di, si, oi] > 0.0:
+                    assert (oi, si, di) in active, (
+                        f"route {regions[oi]}->{regions[di]} [{sectors[si]}] has a nonzero import "
+                        "share but no clearing residual"
+                    )
+    # And every active route actually clears at the benchmark solution.
+    sol = solve(lambda z: MM.residuals(cal, z), MM.initial_guess(cal) * 1.02, prefer="scipy")
+    st = MM.unpack_state(cal, sol.x, strict=True)
+    worst = max(
+        (abs(float(st.M[di, si, oi] - st.EX[oi, si, di])) for (oi, si, di) in cal.active_routes),
+        default=0.0,
+    )
+    assert worst < 1e-8
+
+
 def test_build_multi_sam_needs_by_region_final_demand(small_build_io):
     """A build with only an AGGREGATE final-demand column cannot be reduced to a multi-region SAM
     (each region's own final demand cannot be attributed without inventing the split) — rejected,

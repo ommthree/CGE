@@ -388,13 +388,13 @@ def _intermediate_coeffs(cal, pq, pv, carbon_cost):
     nest = cal.energy_nest
     energy_use, materials_use, kl_qty = nest_demands(nest, pq, pv, cc, np.ones(ns))
     a = np.zeros((ns, ns))  # a[j, i] = composite commodity j per unit output i
-    cc_eff = np.zeros(ns)
     for k, j in enumerate(nest.energy_idx):
         a[j, :] += energy_use[k, :]
-        cc_eff += cc[j] * energy_use[k, :]
     for k, j in enumerate(nest.mat_idx):
         a[j, :] += materials_use[k, :]
-    return a, kl_qty, cc_eff
+    # cc_eff = cc: per-OUTPUT carbon wedge, identical contract to the flat model (review remediation
+    # 2026-07-26) — total revenue = Σ_i cc[i]·Z[i] with or without the nest.
+    return a, kl_qty, cc
 
 
 def _quantities(cal, pd, pq, pm, pe, pz, FD, *, pv=None, carbon_cost=None):

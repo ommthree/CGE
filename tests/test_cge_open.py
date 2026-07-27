@@ -1108,6 +1108,20 @@ def test_open_carbon_price_expands_clean_relative_to_dirty():
     assert (shk.Z[clean] / shk.Z[dirty]) > (base.Z[clean] / base.Z[dirty])
 
 
+def test_open_nest_carbon_revenue_reconciles_with_output():
+    """Review remediation: with the nest active, open-variant carbon revenue == Σ_i cc[i]·Z[i]
+    (output × intensity) for an energy AND a non-energy cost — the emissions contract holds, and a
+    non-energy cost is no longer silently dropped."""
+    cal = _cal_energy_open()
+    for cc in (np.array([0.3, 0.0, 0.0]), np.array([0.0, 0.0, 0.4])):  # DIRTY (energy), MFG (not)
+        _s, st = _solve_energy_open(cal, cc=cc)
+        assert st.carbon_revenue == pytest.approx(float(cc @ st.Z), rel=1e-7)
+    # The non-energy cost produces a real response (was zero under the old formulation).
+    _s, st = _solve_energy_open(cal, cc=np.array([0.0, 0.0, 0.4]))
+    assert st.carbon_revenue > 0.0
+    assert st.Z[_ENERGY_OPEN_S.index("MFG")] < cal.Z0[_ENERGY_OPEN_S.index("MFG")]
+
+
 def test_engine_open_energy_nest_end_to_end():
     """The open dispatch (ROW account) accepts energy_sectors and records the nested structure."""
     eng = registry.get("cge_static")
@@ -1141,14 +1155,19 @@ def _solve_trade(cal, trade_closure, cc=None, recycling="lump_sum", drop_factor=
     ns, nf = len(cal.sectors), len(cal.factors)
     cc = np.zeros(ns) if cc is None else cc
     g = MO.initial_guess(cal) * 1.02
+    lower = None
     if trade_closure == "flexible_balance":
         g = g.copy()
         g[-1] = cal.foreign_savings
+        # Sf is signed (surplus ⇒ Sf<0); relax the last unknown's positivity floor (see engine).
+        lower = np.full(MO.n_unknowns(cal), 1e-9)
+        lower[-1] = -1.0
     sol = solve(
         lambda z: MO.residuals(
             cal, z, carbon_cost=cc, recycling=recycling, trade_closure=trade_closure, drop_factor=drop_factor
         ),
         g,
+        lower=lower,
         prefer="scipy",
     )
     flexible = trade_closure == "flexible_balance"
@@ -1243,8 +1262,9 @@ def test_unsupported_trade_closure_rejected():
 
 
 def test_engine_flexible_trade_balance_end_to_end():
-    """End-to-end: flexible_balance pins the exchange rate (change ~0) and reports a
-    foreign_savings_change; the manifest records the closure; the default keeps er flexible."""
+    """End-to-end: flexible_balance pins the exchange rate (change ~0) and reports foreign savings
+    as a GDP-share LEVEL + percentage-POINT change (not a ratio — review P1 2026-07-26); the
+    manifest records the closure; the default keeps er flexible and emits neither."""
     eng = registry.get("cge_static")
     cs = {"BRD": 2.0, "MIL": 0.5}
     flex = eng.run(
@@ -1256,7 +1276,9 @@ def test_engine_flexible_trade_balance_end_to_end():
         flex.data[flex.data["variable"] == "exchange_rate_change"]["value"].iloc[0]
     )
     assert er_ch == pytest.approx(0.0, abs=1e-8)
-    assert (flex.data["variable"] == "foreign_savings_change").any()
+    assert (flex.data["variable"] == "foreign_savings_gdp_share").any()
+    assert (flex.data["variable"] == "foreign_savings_change_pp").any()
+    assert not (flex.data["variable"] == "foreign_savings_change").any()  # no misleading ratio
     assert flex.manifest.assumptions["trade_closure"] == "flexible_balance"
 
     fixed = eng.run(
@@ -1265,5 +1287,58 @@ def test_engine_flexible_trade_balance_end_to_end():
         years=[2020],
     )
     assert abs(float(fixed.data[fixed.data["variable"] == "exchange_rate_change"]["value"].iloc[0])) > 1e-3
-    assert not (fixed.data["variable"] == "foreign_savings_change").any()
+    assert not (fixed.data["variable"] == "foreign_savings_gdp_share").any()
+    assert not (fixed.data["variable"] == "foreign_savings_change_pp").any()
     assert fixed.manifest.assumptions["trade_closure"] == "fixed_foreign_savings"
+
+
+def _surplus_sam():
+    """An open SAM with a genuine trade SURPLUS (exports 38 > imports 30, so Sf = −8 < 0), for the
+    signed-foreign-savings tests."""
+    return _build_open_sam(
+        exports={"BRD": 20.0, "MIL": 18.0},
+        imports={"BRD": 20.0, "MIL": 10.0},
+        domestic={"BRD": 80.0, "MIL": 110.0},
+    )
+
+
+def _balanced_sam():
+    """An open SAM with balanced trade (Sf = 0), for the zero-balance flexible-closure test."""
+    return _build_open_sam(
+        exports={"BRD": 20.0, "MIL": 15.0},
+        imports={"BRD": 20.0, "MIL": 15.0},
+        domestic={"BRD": 80.0, "MIL": 110.0},
+    )
+
+
+def test_flexible_surplus_benchmark_replicates_with_negative_sf():
+    """Signed Sf (review P1): a benchmark EXPORTER (Sf<0) replicates under flexible_balance — the
+    surplus is a genuine negative foreign-savings level, not clamped to a positivity floor."""
+    cal = calibrate_open(_surplus_sam(), sectors=_SECTORS, factors=_FACTORS)
+    assert cal.foreign_savings < 0.0  # surplus
+    _s, st = _solve_trade(cal, "flexible_balance")
+    assert np.allclose(st.Z, cal.Z0, atol=1e-6)
+    assert st.foreign_savings == pytest.approx(cal.foreign_savings, rel=1e-6)  # recovers Sf<0
+    assert st.er == pytest.approx(1.0)
+
+
+def test_flexible_zero_balance_replicates():
+    """Signed Sf: a balanced-trade benchmark (Sf=0) replicates under flexible_balance and recovers
+    Sf≈0 — the case where a ratio-based report would be undefined."""
+    cal = calibrate_open(_balanced_sam(), sectors=_SECTORS, factors=_FACTORS)
+    assert cal.foreign_savings == pytest.approx(0.0, abs=1e-12)
+    _s, st = _solve_trade(cal, "flexible_balance")
+    assert np.allclose(st.Z, cal.Z0, atol=1e-6)
+    assert abs(st.foreign_savings) < 1e-6
+
+
+def test_flexible_surplus_can_cross_into_deficit_under_shock():
+    """Sign-crossing: starting from a small surplus, a carbon shock can push the current account the
+    other way — the signed unknown must be free to cross zero (a positivity-floored solver could
+    not represent this)."""
+    cal = calibrate_open(_surplus_sam(), sectors=_SECTORS, factors=_FACTORS)
+    _b, base = _solve_trade(cal, "flexible_balance")
+    _s, shk = _solve_trade(cal, "flexible_balance", cc=0.5 * _EMISSIONS)
+    # The balance moved (the current account is genuinely endogenous); Sf remains finite and signed.
+    assert abs(shk.foreign_savings - base.foreign_savings) > 1e-6
+    assert np.isfinite(shk.foreign_savings)

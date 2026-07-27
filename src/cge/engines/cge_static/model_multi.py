@@ -175,17 +175,17 @@ def _intermediate_coeffs(cal, pq, pv, cc):
 
     a = np.zeros((nr, ns, ns))  # a[r, s, i] = composite s per unit output i in region r
     va_qty = np.zeros((nr, ns))
-    cc_eff = np.zeros((nr, ns))
     for ri in range(nr):
         nest = cal.energy_nests[ri]
         energy_use, materials_use, kl_qty = nest_demands(nest, pq[ri], pv[ri], cc[ri], np.ones(ns))
         for k, j in enumerate(nest.energy_idx):
             a[ri, j, :] += energy_use[k, :]
-            cc_eff[ri] += cc[ri, j] * energy_use[k, :]
         for k, j in enumerate(nest.mat_idx):
             a[ri, j, :] += materials_use[k, :]
         va_qty[ri] = kl_qty
-    return a, va_qty, cc_eff
+    # cc_eff = cc: per-OUTPUT carbon wedge per (region,sector), identical contract to the flat model
+    # (review remediation 2026-07-26) — total revenue = Σ cc[r,i]·Z[r,i] with or without the nest.
+    return a, va_qty, cc
 
 
 def _quantities(cal, pd, pq, pe, pz, FD, *, pv=None, carbon_cost=None):

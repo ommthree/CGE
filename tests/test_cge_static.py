@@ -1237,6 +1237,40 @@ def test_floor_primitive_pins_wage_unconditionally():
     assert st1.w[lab] == pytest.approx(floor, abs=1e-8)
 
 
+def test_floor_not_silently_dropped_when_drop_factor_is_lab():
+    """Review P1 (2026-07-26): dropping the LAB market as the Walras market used to silently discard
+    the wage pin (the floor was declared bound while the wage sat below it). Now, when the floor is
+    active, the residual auto-reselects a NON-LAB factor to drop, so the pin is always enforced —
+    the wage lands on the floor regardless of the requested ``drop_factor``."""
+    cal = _cal()
+    cc = 0.3 * _EMISSIONS
+    lab = cal.factors.index("LAB")
+    _s0, st0 = _solve(cal, carbon_cost=cc)
+    floor = 0.5 * (st0.w[lab] + 1.0)  # a genuinely binding floor
+    # Explicitly ask to drop the LAB market — the fix must override this and still pin the wage.
+    _s1, st1 = _floor_solve(cal, cc, labour_floor=floor, drop_factor=lab)
+    assert st1.w[lab] == pytest.approx(floor, abs=1e-7)  # floor enforced, not silently dropped
+
+
+def test_wage_floor_rejected_when_labour_is_the_only_factor():
+    """Review P1 (2026-07-26): a LAB-only model has no non-LAB market to drop as the numéraire
+    (Walras) market while the LAB row is the wage pin, so the wage-floor closure is not well posed
+    and is rejected explicitly — rather than silently producing an unenforced floor."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import SAM, Provenance
+
+    acc = ["G", "LAB", "HOH"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc["G", "HOH"] = 100.0
+    m.loc["LAB", "G"] = 100.0
+    m.loc["HOH", "LAB"] = 100.0
+    prov = Provenance(source="t", source_version="1", licence="x", reference_year=0, retrieved="x")
+    cal = calibrate(SAM(provenance=prov, accounts=acc, matrix=m), sectors=["G"], factors=["LAB"])
+    with pytest.raises(ValueError, match="needs at least one non-LAB factor"):
+        M.residuals(cal, M.initial_guess(cal), labour_floor=0.75)
+
+
 def test_binding_floor_pins_wage_and_produces_unemployment():
     """A floor ABOVE the market-clearing wage binds: the LAB wage sits exactly at the floor,
     labour demand falls short of supply, and the shortfall is reported as unemployment."""
@@ -1524,12 +1558,41 @@ def test_carbon_price_expands_clean_relative_to_dirty():
 
 
 def test_energy_nest_collects_carbon_revenue():
-    """Carbon revenue is positive under a fossil carbon price and recycles (the nest's cc_eff is a
-    proper energy-weighted per-output cost)."""
+    """Carbon revenue is positive under a fossil carbon price (the per-output wedge is collected)."""
     cal = _cal_energy()
     cc = np.array([0.3, 0.0, 0.0])
     _s, shk = _solve_energy(cal, cc=cc)
     assert shk.carbon_revenue > 0.0
+
+
+# -- carbon-emissions contract under the nest (review remediation 2026-07-26) -----------------
+def test_nest_carbon_revenue_reconciles_with_output_intensity():
+    """The emissions/revenue contract: reported carbon revenue == Σ_i cc[i]·X[i] (output ×
+    intensity) with the nest active, for a cost on ENERGY, NON-ENERGY, and MIXED sectors — the
+    defect the review found was that the nest collected revenue only from intermediate energy use,
+    so a non-energy or household-borne cost silently vanished."""
+    cal = _cal_energy()
+    for cc in (
+        np.array([0.3, 0.0, 0.0]),  # DIRTY (energy)
+        np.array([0.0, 0.0, 0.4]),  # MFG (non-energy — process emissions)
+        np.array([0.2, 0.1, 0.3]),  # mixed
+    ):
+        _s, st = _solve_energy(cal, cc=cc)
+        assert st.carbon_revenue == pytest.approx(float(cc @ st.X), rel=1e-7)
+
+
+def test_nest_does_not_change_carbon_meaning_vs_flat():
+    """Enabling ``energy_sectors`` must NOT change a scenario's emissions/revenue meaning: pricing a
+    NON-energy sector (MFG) produces a real, revenue-positive response WITH the nest — where the old
+    formulation gave exactly zero — and the revenue reconciles the same way the flat model's does."""
+    cc = np.array([0.0, 0.0, 0.4])  # carbon on the non-energy sector only
+    flat = calibrate(_energy_sam(), sectors=_ENERGY_SECTORS, factors=_FACTORS)
+    nest = _cal_energy()
+    _sf, sf = _solve_energy(flat, cc=cc)
+    _sn, sn = _solve_energy(nest, cc=cc)
+    assert sf.carbon_revenue > 0.0 and sn.carbon_revenue > 0.0  # both collect (was 0 with the nest)
+    assert sn.X[2] < flat.X0[2]  # MFG output contracts under its own carbon price
+    assert sn.carbon_revenue == pytest.approx(float(cc @ sn.X), rel=1e-7)
 
 
 def test_engine_energy_nest_end_to_end_and_manifest():
@@ -1742,19 +1805,61 @@ def _solve_gov_closure(cal, gov_closure, cc=None, recycling="lump_sum", drop_fac
 
 def test_deficit_financed_replicates_benchmark():
     """Tier 1: at the benchmark (zero shock) the deficit-financed closure replicates — real
-    government spending is at its benchmark level, revenue equals it, fiscal_balance = 0."""
-    cal = _cal_gov_funded()
+    government spending is at its benchmark level, revenue equals it, fiscal_balance = 0 (so the
+    benchmark deficit is zero and there is no crowding out)."""
+    cal = _cal_gov_inv()
     sol, st = _solve_gov_closure(cal, "deficit_financed", recycling="none")
     assert np.allclose(sol.x, 1.0, atol=1e-8)
     assert np.allclose(st.GD, cal.GD0, atol=1e-7)
     assert st.fiscal_balance == pytest.approx(0.0, abs=1e-9)
 
 
+def test_deficit_financed_needs_a_financing_account():
+    """Review P1 (2026-07-26): deficit_financed now requires a savings-investment account — the
+    deficit crowds out investment from the national savings pool, so with no such account there is
+    no financing channel and the closure is rejected (rather than silently passing the residual
+    through the household, which cancelled the tax out of demand)."""
+    cal = _cal_gov_funded()  # GOV but NO SAVINV
+    with pytest.raises(ValueError, match="deficit_financed needs a savings-investment"):
+        _solve_gov_closure(cal, "deficit_financed", recycling="none")
+
+
+def test_deficit_financed_tax_rate_genuinely_bites():
+    """Review P1 (2026-07-26): THE defect — changing the tax rate used to leave prices, output and
+    household income identical (a variable lump-sum wash). With real deficit financing the tax
+    genuinely bites: a HIGHER tax rate shrinks the deficit, crowds out LESS investment, and moves
+    real output — so a run with the calibrated tax differs from a run with the tax halved."""
+    from dataclasses import replace
+
+    cal = _cal_gov_inv()
+    cal_low_tax = replace(cal, gov_tax_rate0=cal.gov_tax_rate0 * 0.5)
+    # A positive carbon price so revenue recycling + spending interact; compare the two tax regimes.
+    cc = 0.3 * _EMISSIONS
+    _s0, base = _solve_gov_closure(cal, "deficit_financed", cc=cc)
+    _s1, low = _solve_gov_closure(cal_low_tax, "deficit_financed", cc=cc)
+    # The lower tax means a bigger deficit → more crowding-out → different investment and output.
+    assert not np.allclose(base.X, low.X, atol=1e-5)
+    assert base.fiscal_balance != pytest.approx(low.fiscal_balance, abs=1e-4)
+    assert float(np.dot(base.p, base.ID)) != pytest.approx(float(np.dot(low.p, low.ID)), abs=1e-4)
+
+
+def test_deficit_financed_crowds_out_investment():
+    """The financing mechanism: under a shock that opens a deficit, nominal investment falls below
+    private savings by exactly the deficit (p·ID = savings − deficit) — the deficit is financed by
+    drawing on the savings pool, not by a household lump-sum."""
+    cal = _cal_gov_inv()
+    cc = 0.5 * _EMISSIONS  # a shock large enough to open a fiscal gap
+    _s, st = _solve_gov_closure(cal, "deficit_financed", cc=cc)
+    deficit = float(np.dot(st.p, st.GD)) - st.gov_income
+    p_id = float(np.dot(st.p, st.ID))
+    assert p_id == pytest.approx(st.savings - deficit, rel=1e-7)
+
+
 def test_deficit_financed_holds_real_spending_fixed():
     """Under a shock, deficit_financed keeps real government spending fixed at the benchmark
     quantity (GD == GD0), so revenue changes produce a nonzero fiscal_balance — unlike
     balanced_budget, where spending tracks revenue and the balance is always 0."""
-    cal = _cal_gov_funded()
+    cal = _cal_gov_inv()
     cc = 0.3 * _EMISSIONS
     _sb, bal = _solve_gov_closure(cal, "balanced_budget", cc=cc)
     _sd, dfc = _solve_gov_closure(cal, "deficit_financed", cc=cc)
@@ -1764,9 +1869,9 @@ def test_deficit_financed_holds_real_spending_fixed():
 
 
 def test_deficit_financed_walras_holds():
-    """Tier 1 re-proof (5d.7 DoD): the closed economy still closes under deficit_financed — the
-    household absorbs the fiscal residual, so the dropped factor market clears exactly."""
-    cal = _cal_gov_funded()
+    """Tier 1 re-proof: the closed economy still closes under deficit_financed — the deficit crowds
+    out investment (savings pool), so the dropped factor market clears exactly."""
+    cal = _cal_gov_inv()
     cc = 0.3 * _EMISSIONS
     _s, st = _solve_gov_closure(cal, "deficit_financed", cc=cc, drop_factor=0)
     assert abs(float(st.F[0, :].sum()) - cal.endowment[0]) < 1e-7
@@ -1777,7 +1882,7 @@ def test_deficit_financed_homogeneity():
     deficit-financed closure."""
     from dataclasses import replace
 
-    cal = _cal_gov_funded()
+    cal = _cal_gov_inv()
     _s, st = _solve_gov_closure(cal, "deficit_financed", recycling="none")
     k = 2.5
     cal_k = replace(
@@ -1788,6 +1893,7 @@ def test_deficit_financed_homogeneity():
         Z0=cal.Z0 * k,
         GD0=cal.GD0 * k,
         gov_income0=cal.gov_income0 * k,
+        INV0=cal.INV0 * k,
     )
     _sk, st_k = _solve_gov_closure(cal_k, "deficit_financed", recycling="none")
     assert np.allclose(_s.x, _sk.x, atol=1e-8)
@@ -1796,7 +1902,7 @@ def test_deficit_financed_homogeneity():
 
 def test_deficit_financed_fiscal_balance_identity():
     """fiscal_balance = government income − government spending, exactly."""
-    cal = _cal_gov_funded()
+    cal = _cal_gov_inv()
     cc = 0.3 * _EMISSIONS
     _s, st = _solve_gov_closure(cal, "deficit_financed", cc=cc)
     gov_spend = float(np.dot(st.p, st.GD))
@@ -1810,7 +1916,7 @@ def test_engine_deficit_financed_end_to_end():
     eng = registry.get("cge_static")
     cs = {"BRD": 2.0, "MIL": 0.5}
     dfc = eng.run(
-        data={"SAM": _gov_funded_sam(), "carbon_cost_share": cs, "gov_closure": "deficit_financed"},
+        data={"SAM": _gov_inv_sam(), "carbon_cost_share": cs, "gov_closure": "deficit_financed"},
         shocks=[CarbonPrice(price=0.3)],
         years=[2020],
     )
@@ -1819,7 +1925,7 @@ def test_engine_deficit_financed_end_to_end():
     assert dfc.manifest.assumptions["gov_closure"] == "deficit_financed"
 
     bal = eng.run(
-        data={"SAM": _gov_funded_sam(), "carbon_cost_share": cs},
+        data={"SAM": _gov_inv_sam(), "carbon_cost_share": cs},
         shocks=[CarbonPrice(price=0.3)],
         years=[2020],
     )

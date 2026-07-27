@@ -238,17 +238,26 @@ def nest_unit_cost(
 
     - ``pq`` [j]: composite commodity prices (what intermediates pay).
     - ``pv`` [i]: value-added (KL) unit cost per sector — as computed today.
-    - ``carbon_cost`` [j]: per-unit carbon cost on commodity j; **attaches to the energy
-      commodities specifically** (the emissions tax on fossil energy use), so the effective energy
-      price is pq[j] + carbon_cost[j] for an energy commodity j. This is what makes the carbon
-      price bite the energy nest — the whole point of 5d.5.
+    - ``carbon_cost`` [i]: the per-unit-OUTPUT carbon wedge on sector ``i`` — emissions per unit of
+      ``i``'s output × the price, exactly as in the flat model. It is added to ``i``'s output unit
+      cost (``px[i] += carbon_cost[i]``), so the emissions/revenue contract is identical with or
+      without the nest: total revenue = ``Σ_i cc[i]·X[i]`` (review remediation, 2026-07-26).
+
+      **This is a change from the original 5d.5 formulation**, which instead added ``carbon_cost``
+      to the *energy-input* prices inside the nest. That silently reinterpreted an output-intensity
+      vector as a fuel-use tax: it dropped process/direct emissions on non-energy sectors and on
+      household fuel use, and broke revenue reconciliation (enabling ``energy_sectors`` changed the
+      economic meaning of an identical scenario). The substitution mechanism 5d.5 targets is
+      **preserved** without that add-on: taxing a fossil sector's output raises its output price via
+      zero-profit, which flows into ``pq`` for the fossil commodity, so energy inputs still get
+      relatively more expensive and the nest still substitutes away from them.
 
     Bottom-up: energy composite cost pE from energy-commodity prices; KLE cost from (pv, pE);
-    output cost from (pKLE, pM) with pM the Leontief materials cost."""
+    output cost from (pKLE, pM) with pM the Leontief materials cost; then the output carbon wedge."""
     ns = len(pv)
     px = np.empty(ns)
     e_idx, m_idx = nest.energy_idx, nest.mat_idx
-    p_energy_eff = pq[e_idx] + carbon_cost[e_idx]  # carbon attaches to energy commodities
+    p_energy_eff = pq[e_idx]  # energy inputs pay the composite price (the output wedge is on px, below)
     p_mat = pq[m_idx]
     for i in range(ns):
         # Inner: energy composite unit cost (only if the sector uses energy).
@@ -282,7 +291,7 @@ def nest_unit_cost(
                 float(nest.kle_m_elast[i]),
                 float(nest.outer_scale[i]),
             )
-    return px
+    return px + carbon_cost  # per-output carbon wedge (same contract as the flat model)
 
 
 def nest_demands(
@@ -298,11 +307,16 @@ def nest_demands(
     TOTAL quantities (not per-unit). Consistent with ``nest_unit_cost`` by Shephard's lemma, so the
     goods market clears and factor demand keys off ``kl_qty``.
 
-    ``carbon_cost`` attaches to energy prices exactly as in ``nest_unit_cost``."""
+    ``carbon_cost`` is the per-output wedge (added to output cost, not to energy-input prices — see
+    ``nest_unit_cost``); it does not enter the input-DEMAND-per-output shares, so it is unused here
+    except to keep the signature aligned with ``nest_unit_cost``. Energy inputs pay ``pq`` (a taxed
+    fossil sector's output tax reaches them through ``pq`` via zero-profit, not through a second
+    add-on)."""
     ns = len(pv)
     n_e, n_m = len(nest.energy_idx), len(nest.mat_idx)
     e_idx, m_idx = nest.energy_idx, nest.mat_idx
-    p_energy_eff = pq[e_idx] + carbon_cost[e_idx]
+    _ = carbon_cost  # retained for signature symmetry with nest_unit_cost (see docstring)
+    p_energy_eff = pq[e_idx]
     p_mat = pq[m_idx]
     energy_use = np.zeros((n_e, ns))
     materials_use = np.zeros((n_m, ns))

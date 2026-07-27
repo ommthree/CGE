@@ -955,6 +955,22 @@ def test_multi_carbon_price_substitutes_within_region_energy():
     assert (shk.Z[0, clean] / shk.Z[0, dirty]) > (base.Z[0, clean] / base.Z[0, dirty])
 
 
+def test_multi_nest_carbon_revenue_reconciles_with_output():
+    """Review remediation: with the per-region nest active, each region's carbon revenue ==
+    Σ_s cc[r,s]·Z[r,s] (output × intensity) — for an energy cost in one region AND a non-energy
+    cost in another, so a non-energy or cross-region cost is not silently dropped."""
+    cal = _cal_energy_multi()
+    dirty, mfg = _ENERGY_MULTI_S.index("DIRTY"), _ENERGY_MULTI_S.index("MFG")
+    cc = np.zeros((cal.nr, cal.ns))
+    cc[0, dirty] = 0.3  # North: energy sector
+    cc[1, mfg] = 0.4  # South: non-energy sector (process emissions)
+    _s, st = _solve_energy_multi(cal, cc=cc)
+    for r in range(cal.nr):
+        assert st.carbon_revenue[r] == pytest.approx(float(cc[r] @ st.Z[r]), rel=1e-7)
+    assert st.carbon_revenue[1] > 0.0  # South's non-energy cost is collected (was dropped before)
+    assert st.Z[1, mfg] < cal.Z0[1, mfg]  # and South MFG contracts under its own carbon price
+
+
 def test_engine_multi_energy_nest_end_to_end():
     from cge.contracts.engine import registry
 

@@ -83,42 +83,48 @@ def test_benchmark_demands_reproduce_flows():
     assert np.allclose(kl_qty, _VA0, atol=1e-10)
 
 
-def test_carbon_on_energy_raises_output_cost():
-    """A carbon cost on the energy commodity raises the output unit cost of energy-using sectors,
-    and leaves the pure-materials sector (2, no energy) unchanged."""
+def test_carbon_is_a_per_output_wedge():
+    """Review remediation (2026-07-26): the carbon cost is a per-OUTPUT wedge, exactly as in the
+    flat model — ``nest_unit_cost`` raises sector ``i``'s output cost by ``cc[i]`` and NOTHING
+    else. So a cost on an ENERGY COMMODITY index raises only THAT sector's output cost (because it
+    happens to be indexed there), not the cost of every energy-using sector — the old formulation
+    (add-on to energy-input prices) reinterpreted an output-intensity vector as a fuel-use tax and
+    dropped process/household emissions. Substitution is driven by pq, tested separately."""
     nest = _cal()
     ns = len(_VA0)
     cc = np.zeros(ns)
-    cc[1] = 0.5  # carbon on energy commodity
+    cc[1] = 0.5  # per-output wedge on sector 1
     px = nest_unit_cost(nest, np.ones(ns), np.ones(ns), cc)
-    assert px[0] > 1.0  # sector 0 uses energy → costlier
-    assert px[1] > 1.0  # sector 1 uses energy → costlier
-    assert px[2] == pytest.approx(1.0, abs=1e-12)  # sector 2 has no energy → unchanged
+    assert px[1] == pytest.approx(1.5, abs=1e-12)  # sector 1's output cost += cc[1] exactly
+    assert px[0] == pytest.approx(1.0, abs=1e-12)  # OTHER sectors unchanged (no fuel-use add-on)
+    assert px[2] == pytest.approx(1.0, abs=1e-12)
+    # A cost on a NON-energy sector (0) is now honoured — the whole point of the fix.
+    cc0 = np.array([0.4, 0.0, 0.0])
+    assert nest_unit_cost(nest, np.ones(ns), np.ones(ns), cc0)[0] == pytest.approx(1.4, abs=1e-12)
 
 
-def test_carbon_substitutes_away_from_energy():
-    """THE Tier-2 sign test (5d.5's deliverable): a carbon cost on energy raises the effective
-    energy price, so an energy-using sector substitutes AWAY from energy — its energy input per
-    unit output falls relative to the benchmark."""
+def test_carbon_substitutes_away_from_energy_via_price():
+    """THE Tier-2 sign test (5d.5's deliverable), under the corrected contract: substitution is
+    driven by the energy-COMMODITY PRICE (pq), which is what a taxed fossil sector's output tax
+    raises via zero-profit — NOT by a separate carbon add-on. A higher energy-commodity price makes
+    an energy-using sector substitute AWAY from energy (lower energy input per unit output)."""
     nest = _cal()
     ns = len(_VA0)
     X = _X0()
-    # Benchmark energy intensity of sector 0.
     e0, _m0, _kl0 = nest_demands(nest, np.ones(ns), np.ones(ns), np.zeros(ns), X)
     energy_intensity_base = e0[0, 0] / X[0]
-    # With a carbon cost on energy (holding X fixed to isolate the substitution effect).
-    cc = np.zeros(ns)
-    cc[1] = 0.5
-    e1, _m1, _kl1 = nest_demands(nest, np.ones(ns), np.ones(ns), cc, X)
+    # Energy commodity (index 1) is more expensive — as it would be after its output is taxed.
+    pq = np.ones(ns)
+    pq[1] = 1.5
+    e1, _m1, _kl1 = nest_demands(nest, pq, np.ones(ns), np.zeros(ns), X)
     energy_intensity_shocked = e1[0, 0] / X[0]
     assert energy_intensity_shocked < energy_intensity_base  # substituted away from energy
 
 
-def test_within_energy_substitution_toward_cheaper():
-    """Within the energy composite, a carbon cost that falls MORE on one energy commodity shifts
-    the mix toward the less-taxed one (electricity vs. fossil — the intra-energy substitution)."""
-    # Square 3×3 (commodities == sectors, as in the real model): commodities 1 & 2 are energy,
-    # commodity 0 is materials. Sector 0 uses both energy goods equally at benchmark.
+def test_within_energy_substitution_toward_cheaper_via_price():
+    """Within the energy composite, a HIGHER PRICE on one energy commodity (its output tax passing
+    through pq) shifts the mix toward the cheaper one (electricity vs. fossil) — the intra-energy
+    substitution, now driven by relative prices, not a carbon add-on."""
     Z0 = np.array(
         [
             [2.0, 0.0, 0.0],  # materials commodity 0 used by sector 0
@@ -130,13 +136,12 @@ def test_within_energy_substitution_toward_cheaper():
     X0 = Z0.sum(axis=0) + VA0
     nest = calibrate_energy_nest(Z0, VA0, X0, np.array([1, 2]), energy_elast=2.0)
     ns = 3
-    # Carbon cost only on energy commodity 1 (energy-sub-index 0).
-    cc = np.zeros(ns)
-    cc[1] = 0.6
-    e_use, _m, _kl = nest_demands(nest, np.ones(ns), np.ones(ns), cc, X0)
+    pq = np.ones(ns)
+    pq[1] = 1.6  # energy commodity 1 pricier (its output tax passed through)
+    e_use, _m, _kl = nest_demands(nest, pq, np.ones(ns), np.zeros(ns), X0)
     e_base, _, _ = nest_demands(nest, np.ones(ns), np.ones(ns), np.zeros(ns), X0)
-    assert e_use[0, 0] < e_base[0, 0]  # taxed energy commodity used less
-    assert e_use[1, 0] > e_base[1, 0]  # untaxed energy commodity used more
+    assert e_use[0, 0] < e_base[0, 0]  # pricier energy commodity used less
+    assert e_use[1, 0] > e_base[1, 0]  # cheaper energy commodity used more
 
 
 def test_sector_with_no_energy_is_pure_leontief_materials():

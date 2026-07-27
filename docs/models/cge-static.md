@@ -411,19 +411,34 @@ precision — tested). Elasticity defaults (overridable per build): $\sigma_{\ma
 $\sigma_{\mathrm{KL,E}}=0.5$, $\sigma_{\mathrm{energy}}=1.5$ (energy commodities substitute more
 easily than the outer nests).
 
-**Carbon-price mechanism (the deliverable).** The carbon cost attaches to the **energy
-commodities** — it raises the effective energy price $pq_e + cc_e$ *inside* the nest, inducing
-substitution toward $\mathrm{KL}$ (away from energy) and, within $E_i$, toward the less-taxed
-energy commodity. Verified as the Tier-2 sign test: under a fossil carbon price, a manufacturing
-sector's fossil/electricity input ratio falls, fossil output contracts, and electricity output
-*expands* — the within-energy reallocation a flat model cannot produce.
+**Carbon-price mechanism (the deliverable).** The carbon cost is a **per-output wedge** $cc_i$ on
+sector $i$'s output — *identical* to the flat model, so the emissions/revenue contract is
+unchanged: total revenue $=\sum_i cc_i X_i$ (output × intensity) whether or not the nest is active,
+and enabling `energy_sectors` never changes a scenario's economic meaning (review remediation,
+2026-07-26). The nest still produces the within-energy reallocation because a **taxed fossil
+sector's output price rises** via zero-profit, and that higher price reaches every energy user
+through the commodity price $pq$ — so an energy-using sector substitutes toward $\mathrm{KL}$ (away
+from energy) and, within $E_i$, toward the cheaper (less-taxed) energy commodity. Verified as the
+Tier-2 sign test: under a fossil carbon price, a manufacturing sector's fossil/electricity input
+ratio falls, fossil output contracts, and electricity output *expands* — the within-energy
+reallocation a flat model cannot produce.
+
+> **Design note (corrected 2026-07-26).** An earlier 5d.5 formulation instead added $cc_e$ to the
+> energy-*input* price $pq_e + cc_e$ *inside* the nest and collected revenue only from intermediate
+> energy use. That silently reinterpreted the output-intensity vector as a fuel-use tax: it dropped
+> process/direct emissions on non-energy sectors (cement, agriculture, …) and household fossil
+> consumption, and broke revenue reconciliation — an identical scenario changed meaning merely by
+> enabling `energy_sectors`. The current per-output-wedge formulation fixes this while preserving
+> the substitution mechanism (it now flows through $pq$, not a separate add-on). A genuine
+> *fuel-use* emissions channel, distinct from output emissions, is a documented follow-up requiring
+> a separate fuel-use emissions matrix (not the output-intensity vector).
 
 **Integration.** Intermediate demand is now price-responsive, so the fixed Leontief inverse
 $(I-A)^{-1}$ becomes a price-dependent $(I-A(p))^{-1}$ built from the nest's Shephard demands;
 goods-market clearing $X=(I-A(p))^{-1}(FD+GD+ID)$ and factor demand (keyed off the KL quantity)
-carry over unchanged in form. Carbon revenue is $\hat{c}\cdot X$ with an **effective per-output
-carbon cost** $\hat c_i = \sum_{e}cc_e\,a_{ei}(p)$ (a linear functional of output), so the existing
-recycling/government fixed points are unchanged. Homogeneity and Walras re-proved with the nest
+carry over unchanged in form. Carbon revenue is $cc\cdot X$ (the per-output wedge, $\hat c_i=cc_i$,
+exactly as in the flat model — a linear functional of output), so the existing recycling/government
+fixed points are unchanged. Homogeneity and Walras re-proved with the nest
 active. The manifest records `production_structure`, `energy_sectors`, and the nest elasticities.
 
 **Open variant.** Same nest, with two differences: intermediates are the Armington **composite**

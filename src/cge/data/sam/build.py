@@ -29,6 +29,12 @@ from cge.contracts.data_objects import SAM, IOSystem, Provenance
 from cge.contracts.quality import QualityReport
 from cge.data.sam.balance import is_balanced, ras_balance
 from cge.data.sam.quality import sam_quality_report
+# Canonical trade-materiality threshold — shared with the calibrator so the builder's route drop
+# and the calibrator's ``active_routes`` test use ONE threshold and ONE (global) denominator
+# (review P1, 2026-07-26): after GDP-normalisation a share-of-global-output drop coincides with the
+# calibrator's share-of-global-GDP threshold, so no route survives the builder yet is declared
+# inactive (retained-but-unclearing) at calibration.
+from cge.engines.cge_static.calibrate_multi import ROUTE_MATERIALITY_THRESHOLD as _ROUTE_MATERIALITY
 
 # Default capital share of value added when no factor split is available in the build. EXIOBASE's
 # value-added detail is thin; 0.4 capital / 0.6 labour is a common macro default (documented, and
@@ -467,7 +473,7 @@ def build_multi_raw_sam(
     *,
     regions: list[str] | None = None,
     capital_share: float = DEFAULT_CAPITAL_SHARE,
-    materiality: float = 1e-9,
+    materiality: float = _ROUTE_MATERIALITY,
 ) -> RawMultiSAM:
     """Build a raw **R-region** SAM (``a_<r>_<s>``/``c_<r>_<s>`` activity/commodity, per-region
     factors ``<f>_<r>`` and households ``HOH_<r>``) from a multi-regional ``io``, in the bilateral
@@ -492,8 +498,11 @@ def build_multi_raw_sam(
     attributes each region's own final demand, so an aggregate-only build (no by-region column)
     cannot be reduced without inventing the regional split — rejected, not imputed.
 
-    ``materiality`` drops bilateral flows below this share of a region's output as numerical dust
-    (aggregation/RAS noise), so a live sparse build does not carry ~1e-12 phantom trade routes.
+    ``materiality`` drops bilateral flows below this share of GLOBAL output as numerical dust
+    (aggregation/RAS noise), FOLDING each dropped flow into the origin region's domestic sales so
+    the SAM stays balanced. It defaults to (and must not exceed) the calibrator's
+    ``ROUTE_MATERIALITY_THRESHOLD`` so every route the builder keeps is one the calibrator will
+    clear — there is no retained-but-inactive gap (review P1, 2026-07-26).
     """
     if not 0.0 < capital_share < 1.0:
         raise ValueError(f"capital_share must be in (0,1), got {capital_share}")
@@ -562,19 +571,30 @@ def build_multi_raw_sam(
             T[r_index[ra], ia, r_index[rb]] += Z[a, b]
             INT[r_index[rb], ia, jb] += Z[a, b]
 
-    # Domestic sales / bilateral trade split off the diagonal of T. Materiality: drop dust routes.
+    # Domestic sales / bilateral trade split off the diagonal of T. Trade materiality (review P1,
+    # 2026-07-26): a route below the threshold is dropped AND its value is FOLDED INTO DOMESTIC
+    # SALES of the origin region, so (a) the SAM stays balanced by construction (nothing vanishes),
+    # and (b) the builder and the calibrator use ONE threshold and ONE denominator — a global scale
+    # so the drop matches ``calibrate_multi.ROUTE_MATERIALITY_THRESHOLD`` (a share of global output,
+    # which after GDP-normalisation is the calibrator's ``active_routes`` test). This closes the gap
+    # the review found: previously the builder dropped below ``1e-9 × regional output`` while the
+    # calibrator declared inactive below ``1e-6 × global GDP``, so a route between the two was kept
+    # with positive Armington/CET shares (used by demand/supply) but had no clearing residual.
+    global_scale = max(float(Xreg.sum()), 1.0)
+    threshold = materiality * global_scale
     D = np.zeros((nr, ns))
     EX = np.zeros((nr, ns, nr))  # [o, s, d] exports (o≠d)
     for ri in range(nr):
-        scale = max(float(Xreg[ri].sum()), 1.0)
         for si in range(ns):
             D[ri, si] = T[ri, si, ri]
             for di in range(nr):
                 if di == ri:
                     continue
                 v = T[ri, si, di]
-                if v > materiality * scale:
+                if v > threshold:
                     EX[ri, si, di] = v
+                else:
+                    D[ri, si] += v  # fold a dropped dust route into domestic sales (balance-safe)
 
     # Household final demand per region-sector: consumption of composite s by region r, from ANY
     # producing region (measured, by consuming region), read directly off fd_region over the
@@ -688,7 +708,7 @@ def build_multi_sam(
     *,
     regions: list[str] | None = None,
     capital_share: float = DEFAULT_CAPITAL_SHARE,
-    materiality: float = 1e-9,
+    materiality: float = _ROUTE_MATERIALITY,
     balance_tol: float = 1e-6,
 ) -> tuple[SAM, QualityReport, list[str], list[str]]:
     """Build, balance, quality-report and **topology-validate** a multi-region SAM from ``io``.
@@ -748,14 +768,17 @@ def _assert_multi_connected(
             i = parent[i]
         return i
 
+    # ONE denominator (global output) and ONE threshold, matching the route-drop step above and the
+    # calibrator's ``active_routes`` (review P1): a route counts as a trade link iff it clears at
+    # calibration, so the connectivity graph is exactly the calibrator's ``active_routes`` graph.
+    threshold = materiality * max(
+        float(sum(m.loc[f"a_{o}_{s}", :].sum() for o in regions for s in sectors)), 1.0
+    )
     for oi, o in enumerate(regions):
-        scale = max(float(sum(m.loc[f"a_{o}_{s}", :].sum() for s in sectors)), 1.0)
         for di, d in enumerate(regions):
             if oi == di:
                 continue
-            traded = any(
-                float(m.loc[f"a_{o}_{s}", f"c_{d}_{s}"]) > materiality * scale for s in sectors
-            )
+            traded = any(float(m.loc[f"a_{o}_{s}", f"c_{d}_{s}"]) > threshold for s in sectors)
             if traded:
                 ri, rj = find(oi), find(di)
                 if ri != rj:
