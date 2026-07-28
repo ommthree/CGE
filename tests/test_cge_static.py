@@ -575,6 +575,27 @@ def test_gdp_is_a_volume_index_and_deflator_is_nonzero():
     assert defl == pytest.approx((1 + cur) / (1 + vol) - 1.0, abs=1e-6)  # nominal / volume
 
 
+def test_gui_gva_table_populates_real_column_for_cge_results():
+    """Review P2 (round 14, 2026-07-28): the GUI macro-GVA table must show the CGE real series.
+    The CGE engine emits it as ``gva_volume_change``; the table used to select only the PE-path
+    ``gva_change_real`` name, so the 'GVA Δ (real)' column was permanently empty for CGE runs.
+    Assert the table now carries a non-null, non-trivial real column populated from the volume
+    series."""
+    from cge.gui import results_view as rv
+
+    eng = registry.get("cge_static")
+    data = {"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}}
+    res = eng.run(data=data, shocks=[CarbonPrice(price=0.3)], years=[2020])
+    gva = rv.macro_gva_table(res)
+    assert "GVA Δ (real)" in gva.columns
+    assert gva["GVA Δ (real)"].notna().any()  # not the old permanently-empty column
+    # It really is the engine's volume series, not the (absent) gva_change_real.
+    d = res.data
+    vol = d[(d["variable"] == "gva_volume_change") & (d["scenario"] == "central")]
+    assert not vol.empty
+    assert gva["GVA Δ (real)"].abs().sum() == pytest.approx(vol["value"].abs().sum(), abs=1e-9)
+
+
 def test_energy_use_emitted_only_with_the_nest():
     """``energy_use_change`` is a named standard output, emitted only when the energy nest is
     active (a flat run stays byte-identical)."""
@@ -716,6 +737,26 @@ def _run_eur(shock, **sat_kwargs):
     return registry.get("cge_static").run(
         data={"IOSystem": io, "SatelliteAccount": sat}, shocks=[shock], years=[2020]
     )
+
+
+def test_io_covered_emissions_emitted_for_every_year_incl_zero_price():
+    """Review P1 (round 14, 2026-07-28): the IO covered-emissions output uses a PRICE-FREE
+    intensity, so it is emitted for EVERY modelled year — including a zero-price year — not only
+    the priced ones (the earlier code weighted by the price-inclusive cost, so a zero-price year
+    had zero weights and emitted nothing). A physical emissions quantity must not vanish because
+    the policy price is 0."""
+    io, sat = _eur_io_sat()
+    res = registry.get("cge_static").run(
+        data={"IOSystem": io, "SatelliteAccount": sat},
+        shocks=[CarbonPrice(price=0.0, path={2020: 0.0, 2030: 100.0})],
+        years=[2020, 2030],
+    )
+    ce = res.data[res.data["variable"] == "covered_emissions_change"]
+    assert set(ce["year"]) == {2020, 2030}  # BOTH years, incl. the zero-price 2020
+    y2020 = float(ce[ce["year"] == 2020]["value"].iloc[0])
+    y2030 = float(ce[ce["year"] == 2030]["value"].iloc[0])
+    assert y2020 == pytest.approx(0.0, abs=1e-9)  # unshocked year: no change
+    assert y2030 < 0.0  # the priced year cuts covered emissions
 
 
 def test_carbon_wedge_is_not_a_million_times_too_large():
@@ -1876,6 +1917,7 @@ def _solve_gov_closure(
     recycling="lump_sum",
     drop_factor=0,
     carbon_revenue_recipient="government",
+    inv_closure="savings_driven",
 ):
     ns = len(cal.sectors)
     cc = np.zeros(ns) if cc is None else cc
@@ -1887,6 +1929,7 @@ def _solve_gov_closure(
             recycling=recycling,
             gov_closure=gov_closure,
             carbon_revenue_recipient=carbon_revenue_recipient,
+            inv_closure=inv_closure,
             drop_factor=drop_factor,
         ),
         M.initial_guess(cal),
@@ -1901,8 +1944,31 @@ def _solve_gov_closure(
         strict=True,
         gov_closure=gov_closure,
         carbon_revenue_recipient=carbon_revenue_recipient,
+        inv_closure=inv_closure,
     )
     return sol, st
+
+
+def test_every_closure_combination_clears_every_market():
+    """Review P1 (round 14, 2026-07-28): THE false-equilibrium test. For EVERY supported closure
+    combination (gov_closure × inv_closure × carbon_revenue_recipient), the ACCEPTED equilibrium
+    must clear EVERY factor market — including the Walras-dropped one, whose residual the solver
+    cannot see. The earlier fixed_real + household-recipient case reported a ~0.577% capital-market
+    gap while the solver returned success (the fixed-real revenue equation used the savings-driven
+    demand derivative)."""
+    cal = _cal_gov_inv()  # GOV + SAVINV
+    cc = 0.3 * _EMISSIONS
+    nf = len(cal.factors)
+    for gov in ("balanced_budget", "deficit_financed"):
+        for inv in ("savings_driven", "fixed_real"):
+            for recip in ("government", "household"):
+                if gov == "deficit_financed" and inv == "fixed_real":
+                    continue  # deficit_financed is savings_driven-only (rejected loudly elsewhere)
+                _s, st = _solve_gov_closure(
+                    cal, gov, cc=cc, carbon_revenue_recipient=recip, inv_closure=inv
+                )
+                gap = max(abs(float(st.F[f, :].sum()) - cal.endowment[f]) for f in range(nf))
+                assert gap < 1e-9, f"{gov}/{inv}/{recip}: max factor-market gap {gap:.2e}"
 
 
 def test_deficit_financed_replicates_benchmark():

@@ -140,19 +140,31 @@ def build_raw_sam(
     VAagg = np.clip(VAagg_raw, 0.0, None)  # guard negatives (recorded below for the audit)
     va_clip = float(np.sum(np.abs(np.minimum(VAagg_raw, 0.0))))  # total negative VA clipped
 
-    # Normalise the institution split to sum EXACTLY to total final demand FDagg per sector, so it
-    # stays consistent with the total FD that drives gross output and the SAM balance regardless of
-    # any aggregation drift (review P1 round 13 — a small drift otherwise unbalances the SAM beyond
-    # what RAS can repair given the imputed-tax structural zeros). A sector with zero split (e.g. a
-    # pure-export good) keeps its total in the household column.
+    # Reconcile the institution split with total final demand FDagg per sector. In this CLOSED
+    # (region-summed) build the institution split (household+gov+investment) should already sum to
+    # FDagg — the only legitimate gap is small aggregation/rounding DRIFT. A LARGE gap means the
+    # split does not decompose this build's final demand: REJECT it rather than silently rescale
+    # (review P1 round 14 — a 0.4 split against 200 FD was amplified 500× into a plausible SAM).
+    # a small drift is normalised, and its magnitude is recorded for the quality audit.
+    institution_rescale = 0.0
     if fbi is not None:
         split_total = gov_fd + inv_fd + hh_fd
+        agg_split = float(split_total.sum())
+        agg_fd = float(FDagg.sum())
+        rel_gap = abs(agg_split - agg_fd) / max(abs(agg_fd), 1.0)
+        if rel_gap > 0.01:  # >1% aggregate gap is corruption, not drift
+            raise ValueError(
+                f"final-demand institution split totals {agg_split:.6g} but total final demand is "
+                f"{agg_fd:.6g} (rel gap {rel_gap:.2%} > 1%): the split does not decompose this "
+                "build's final demand. Rejecting rather than rescaling it into a plausible SAM "
+                "(supply a split consistent with final_demand, or disable institutions)."
+            )
         with np.errstate(divide="ignore", invalid="ignore"):
             scale_i = np.where(split_total > 0, FDagg / split_total, 0.0)
+        pos = split_total > 0
+        institution_rescale = float(np.abs(scale_i[pos] - 1.0).max()) if pos.any() else 0.0
         gov_fd, inv_fd = gov_fd * scale_i, inv_fd * scale_i
-        hh_fd = (
-            FDagg - gov_fd - inv_fd
-        )  # household is the residual, so the three sum to FDagg exactly
+        hh_fd = FDagg - gov_fd - inv_fd  # household is the residual; the three sum to FDagg exactly
 
     has_institutions = fbi is not None and (gov_fd.sum() > 0 or inv_fd.sum() > 0)
     # When the institution split is present, household FD is its own column; else it is all of FD.
@@ -191,7 +203,8 @@ def build_raw_sam(
     inst_note = (
         f" government (imputed tax {gov_fd.sum():.4g}) + investment (imputed savings "
         f"{inv_fd.sum():.4g}) routed to GOV/SAVINV from the EXIOBASE FD institution split "
-        "(tax/savings IMPUTED — no source tax detail)."
+        f"(tax/savings IMPUTED — no source tax detail; split↔FD reconciliation rescaled by at most "
+        f"{institution_rescale:.2%})."
         if has_institutions
         else " all final demand to the household (no institution split available)."
     )
@@ -754,6 +767,163 @@ def _add_multi_capital_transfers(m: pd.DataFrame, regions: list[str], sectors: l
             m.loc[f"HOH_{borrower}", f"HOH_{lender}"] += amount
 
 
+def _bilateral_trade_by_route(
+    io: IOSystem, regions: list[str], sectors: list[str]
+) -> dict[tuple[str, str, str], float]:
+    """Bilateral trade value on each PER-SECTOR route ``(o, d, s)`` (o≠d) — o's product ``s``
+    consumed by d (intermediates + final demand). This is exactly the granularity
+    ``build_multi_sam``
+    checks for dust (a route is one ``a_<o>_<s> → c_<d>_<s>`` cell), so ``aggregate_dust_regions``
+    must merge on the same granularity to eliminate it."""
+    labels = list(io.A.columns)
+    x, _ = _gross_output(io)
+    A = io.A.to_numpy(dtype=float)
+    Z = A * x[None, :]
+    fd_region = io.fd_by_region()
+    out: dict[tuple[str, str, str], float] = {}
+
+    def region_of(lb):
+        return lb.split(":", 1)[0]
+
+    def sector_of(lb):
+        return lb.split(":", 1)[1]
+
+    for a, lb_a in enumerate(labels):
+        ra, sa = region_of(lb_a), sector_of(lb_a)
+        if fd_region is not None:
+            for d in regions:
+                if d != ra:
+                    v = float(fd_region[d].get(lb_a, 0.0))
+                    if v:
+                        out[(ra, d, sa)] = out.get((ra, d, sa), 0.0) + v
+        for b, lb_b in enumerate(labels):
+            rb = region_of(lb_b)
+            if rb != ra and Z[a, b]:
+                out[(ra, rb, sa)] = out.get((ra, rb, sa), 0.0) + float(Z[a, b])
+    return out
+
+
+def aggregate_dust_regions(
+    io: IOSystem,
+    satellites: list | None = None,
+    *,
+    materiality: float = _ROUTE_MATERIALITY,
+    build_id: str | None = None,
+):
+    """Fold low-trade region pairs into coarser region GROUPS so that no surviving bilateral route
+    is dust (review P1 round 14, 2026-07-28) — the explicit upstream workflow the dust-rejection
+    error points to. Greedily merges the region with the most sub-threshold outgoing trade into its
+    largest trading partner, repeating until every remaining cross-group bilateral flow is
+    ≥ ``materiality × global GDP`` (so ``build_multi_sam`` accepts the result). Trade *within* a
+    merged group becomes intra-regional (domestic) and drops out of the bilateral block, which is
+    exactly where negligible inter-region trade belongs.
+
+    Returns ``(coarse_io, coarse_satellites, grouping)`` where ``grouping`` maps each ORIGINAL
+    region to its GROUP label (the recorded transformation). A build that already has no dust
+    returns the identity grouping and the input unchanged (aggregated trivially)."""
+    from datetime import date
+
+    from cge.data.aggregate import aggregate_io
+    from cge.data.concordance.concordance import one_to_one
+    from cge.data.metadata import BuildMeta
+
+    satellites = satellites or []
+    regions = list(io.regions.labels)
+    gdp = float(io.final_demand.sum(axis=1).sum())  # total absorption ≈ GDP scale for the threshold
+    threshold = materiality * max(gdp, 1.0)
+
+    # Group assignment (union-find), seeded with each region its own group.
+    group = {r: r for r in regions}
+
+    def _find(r):
+        while group[r] != r:
+            group[r] = group[group[r]]
+            r = group[r]
+        return r
+
+    def _merge(a, b):
+        group[_find(a)] = _find(b)
+
+    routes = _bilateral_trade_by_route(io, regions, list(io.sectors.labels))
+    for _ in range(len(regions)):  # at most nr merges reach a single group
+        # A group PAIR is dust if ANY per-sector route between the groups is a nonzero sub-threshold
+        # flow (the builder rejects at that granularity). Track, per group pair, the total trade
+        # (to merge sensibly) and whether it has a dust route.
+        grp: dict[tuple[str, str], list[float]] = {}  # (go,gd) -> [total, has_dust(0/1)]
+        for (o, d, _s), v in routes.items():
+            go, gd = _find(o), _find(d)
+            if go == gd:
+                continue
+            entry = grp.setdefault((go, gd), [0.0, 0.0])
+            entry[0] += v
+            if 0.0 < v < threshold:
+                entry[1] = 1.0
+        dusty = {pair: tot for pair, (tot, hasdust) in grp.items() if hasdust}
+        if not dusty:
+            break
+        # Merge the dusty group pair carrying the MOST total trade (minimal, sensible transformation
+        # — fold the pair that is most connected, so the merged group's internal trade is genuine).
+        (o, d), _tot = max(dusty.items(), key=lambda kv: kv[1])
+        _merge(o, d)
+
+    grouping = {r: _find(r) for r in regions}
+    # Rename groups to a compact, stable label = the sorted members joined (so it is auditable).
+    members: dict[str, list[str]] = {}
+    for r, g in grouping.items():
+        members.setdefault(g, []).append(r)
+    label_of = {g: "+".join(sorted(ms)) if len(ms) > 1 else ms[0] for g, ms in members.items()}
+    grouping = {r: label_of[g] for r, g in grouping.items()}
+
+    n_groups = len(set(grouping.values()))
+    if n_groups < 2:
+        raise ValueError(
+            "aggregate_dust_regions collapsed to a single region: this build's inter-region trade "
+            "is entirely dust at the sector granularity (every region pair has a sub-threshold "
+            "sector route), so no genuine multi-region structure survives. Aggregate SECTORS too "
+            "(a coarser sector map raises per-route flows above the threshold), lower "
+            "`materiality` if the flows are real-but-small trade, or model this build with the "
+            "single-region closed CGE. (This is the offline pymrio test MRIO's situation — its "
+            "cross-region trade is genuinely negligible; the coarse 2×3 custom build in the "
+            "validation suite has real "
+            "trade and does build.)"
+        )
+
+    region_cmap = one_to_one(
+        grouping,
+        from_classification=io.regions.name,
+        to_classification="dust-aggregated-regions",
+        provenance=io.provenance,
+    )
+    sector_cmap = one_to_one(
+        {s: s for s in io.sectors.labels},
+        from_classification=io.sectors.name,
+        to_classification=io.sectors.name,
+        provenance=io.provenance,
+    )
+    meta = BuildMeta(
+        build_id=io.provenance.build_id or "io",
+        source=io.provenance.source,
+        source_version=io.provenance.source_version,
+        licence=io.provenance.licence,
+        reference_year=io.provenance.reference_year,
+        currency=io.currency,
+        monetary_unit=io.unit,
+        final_demand_kind=io.final_demand_kind,
+        retrieved=io.provenance.retrieved or date.today().isoformat(),
+    )
+    new_id = build_id or f"{meta.build_id}-dustagg"
+    coarse_io, coarse_sats, _m = aggregate_io(
+        io,
+        satellites,
+        sector_cmap=sector_cmap,
+        region_cmap=region_cmap,
+        meta=meta,
+        new_build_id=new_id,
+        aggregation_name="dust-region-aggregation",
+    )
+    return coarse_io, coarse_sats, grouping
+
+
 def build_multi_sam(
     io: IOSystem,
     *,
@@ -855,9 +1025,13 @@ def _reject_dust_cells(
             f"threshold {dust_threshold:.3e} (materiality × global GDP) — e.g. {o}→{d} sector {s} "
             f"= {v:.3e}. A bilateral route must be genuine trade (≥ threshold) or exactly zero; a "
             "tiny route gets a near-singular price column the solver cannot pin, and there is no "
-            "exact balance-preserving way to remove it. Aggregate to coarser regions so no dust "
-            "remains, or clean the source data (raise `materiality` only if the flow really is "
-            "negligible trade, not a real link)."
+            "exact balance-preserving way to remove it. Fix upstream: call "
+            "``aggregate_dust_regions(io, ...)`` to fold low-trade region pairs into coarser "
+            "groups (recording the transformation) so no dust remains, OR — if these flows really "
+            "are negligible non-trade — LOWER ``materiality`` so they fall below it and are "
+            "treated as structural zeros. (Raising ``materiality`` does the OPPOSITE: it "
+            "classifies MORE "
+            "routes as dust.)"
         )
 
 

@@ -83,6 +83,16 @@ G^{\text{real}}_r = \frac{1+G^{\text{nom}}_r}{1+D_r}-1. \tag{5} $$
 Per-good real GVA change uses the same regional deflator:
 $g^{\text{real}}_i=(1+g^{\text{nom}}_i)/(1+D_{r(i)})-1$.
 
+**Expenditure-side GDP and the multi-region deflator (review P1 round 14).** The engine reports GDP
+by the **expenditure identity** ($C+I+G+X-M$), forming a benchmark-price *volume* index
+(`gdp_change_real`) and a *current-price* aggregate (`gdp_change_nominal`); the reported deflator is
+their ratio, $(1+\text{nominal})/(1+\text{volume})-1$. In the **multi-region** variant the net-exports
+term $X-M$ is valued at the **current bilateral route prices** $p^e_{o,s,d}$ for both exports and
+imports — not a single domestic price — so the deflator honestly reflects terms-of-trade movements
+(covered by `test_multi_gdp_deflator_uses_current_bilateral_trade_prices`). The value-added-weighted
+$D_r$ in (4) is the production-side counterpart used for per-sector real GVA; the two agree in the
+closed single-region case and are reported side by side.
+
 **Index-number convention (be explicit — review P2).** The deflator $D_r$ (4) is a **value-added-
 weighted price index** on base-year VA shares (a Laspeyres-type price index), and "real" means
 nominal deflated by it. Two consequences to read correctly: (i) $G^{\text{real}}_r$ is a

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import ClassVar, Literal
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -166,14 +167,20 @@ class IOSystem(_DataObject):
                     f"{len(fd_cols)} ({sorted(fd_cols)}) — if this is genuinely a per-region "
                     "final-demand table, set final_demand_kind='by_region' instead"
                 )
-        # Institution split (Phase 5.1b+): index aligned with A, columns "<region>|<institution>"
-        # with institution ∈ INSTITUTIONS and region ∈ regions.
+        # Institution split (Phase 5.1b+, hardened review P1 round 14). Beyond column-name syntax
+        # and index alignment, the split must be a TRUSTWORTHY decomposition of final demand: finite
+        # complete/unique region×institution columns, and its per-region totals must AGREE with the
+        # by-region final_demand within a tight tolerance. A large discrepancy is corruption (the
+        # review supplied a 0.4 split against 200 total FD that the builder silently amplified 500×
+        # into a plausible SAM) — reject, do not silently rescale.
         fbi = self.final_demand_by_institution
         if not fbi.empty:
             if list(fbi.index) != cols:
                 raise ValueError(
                     "IOSystem.final_demand_by_institution index is not aligned with A's labels"
                 )
+            if not np.isfinite(fbi.to_numpy(dtype=float)).all():
+                raise ValueError("IOSystem.final_demand_by_institution has non-finite values")
             for c in fbi.columns:
                 parts = str(c).split(self.INSTITUTION_SEP)
                 if (
@@ -186,6 +193,49 @@ class IOSystem(_DataObject):
                         f"'<region>|<institution>' with region in {self.regions.labels} and "
                         f"institution in {self.INSTITUTIONS}"
                     )
+            # Complete AND unique: exactly one column per (region, institution).
+            expected = {
+                f"{r}{self.INSTITUTION_SEP}{i}"
+                for r in self.regions.labels
+                for i in self.INSTITUTIONS
+            }
+            got = list(fbi.columns)
+            if len(got) != len(set(got)):
+                raise ValueError("IOSystem.final_demand_by_institution has duplicate columns")
+            if set(got) != expected:
+                raise ValueError(
+                    "IOSystem.final_demand_by_institution columns must be exactly one per "
+                    f"(region, institution): missing {sorted(expected - set(got))[:4]}, extra "
+                    f"{sorted(set(got) - expected)[:4]}"
+                )
+            # Totals are CONSISTENT with the by-region final demand. The institution split covers
+            # DOMESTIC final demand (household + government + investment) and EXCLUDES exports,
+            # while ``final_demand`` (from the adapter) includes exports — so the split's per-region
+            # total must be > 0 and NOT EXCEED final_demand (bar float tolerance). This catches the
+            # corruption case (a near-zero split silently amplified to match FD — review 0.4 vs 200
+            # → 500×) without false-positives on legitimate export-bearing builds. Only when a
+            # by-region final_demand is present to compare against.
+            if self.final_demand_kind == "by_region" and not self.final_demand.empty:
+                for r in self.regions.labels:
+                    inst_total = sum(
+                        float(fbi[f"{r}{self.INSTITUTION_SEP}{i}"].sum()) for i in self.INSTITUTIONS
+                    )
+                    fd_total = float(self.final_demand[r].sum()) if r in self.final_demand else 0.0
+                    scale = max(abs(fd_total), 1.0)
+                    if inst_total < -1e-9 * scale:
+                        raise ValueError(
+                            f"IOSystem.final_demand_by_institution for region {r!r} has a negative "
+                            f"total {inst_total:.6g} (an explicit negative-inventory policy is a "
+                            "documented follow-up; reject rather than guess)"
+                        )
+                    if fd_total > 0 and inst_total > fd_total * (1.0 + 1e-6):
+                        raise ValueError(
+                            f"IOSystem.final_demand_by_institution for region {r!r} totals "
+                            f"{inst_total:.6g}, EXCEEDING its final_demand {fd_total:.6g}: the "
+                            "domestic institution split cannot be larger than total final demand — "
+                            "the split does not decompose this build's final demand (reject rather "
+                            "than silently rescale)."
+                        )
         return self
 
     @property

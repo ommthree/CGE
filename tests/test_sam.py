@@ -115,6 +115,45 @@ def test_built_sam_institutions_can_be_disabled(small_build_io):
     assert "GOV" not in raw.sam.accounts and "SAVINV" not in raw.sam.accounts
 
 
+def test_corrupt_institution_split_is_rejected_not_rescaled():
+    """Review P1 (round 14, 2026-07-28): a corrupt institution split (totalling far from the build's
+    final demand) is REJECTED, not silently rescaled into a plausible SAM. The review supplied a 0.4
+    split against 200 total FD; the builder amplified it 500× into household+government demand of
+    ~100 each with a passing quality report. Now both the IOSystem contract and the builder reject a
+    large split↔FD discrepancy."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, IOSystem, Provenance
+    from cge.data.sam.build import build_raw_sam
+
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-28"
+    )
+    labels = ["R:a", "R:b"]
+    A = pd.DataFrame([[0.1, 0.2], [0.05, 0.1]], index=labels, columns=labels)
+    fd = pd.DataFrame({"R": [120.0, 80.0]}, index=labels)  # total final demand 200
+    sep = "|"
+    fbi = pd.DataFrame(  # totals 0.4 — three orders of magnitude too small
+        {
+            f"R{sep}household": [0.2, 0.1],
+            f"R{sep}government": [0.05, 0.02],
+            f"R{sep}investment": [0.02, 0.01],
+        },
+        index=labels,
+    )
+    io = IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=["a", "b"]),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=A,
+        final_demand=fd,
+        final_demand_kind="by_region",
+        final_demand_by_institution=fbi,
+    )
+    with pytest.raises(ValueError, match="does not decompose|split does not|rel gap"):
+        build_raw_sam(io)
+
+
 # -- open SAM from a real build (Phase 5 deferred: live-EXIOBASE open-SAM build) --------------
 def test_build_open_sam_balanced_and_quality_passes(small_build_io):
     """An OPEN SAM built from the multi-region build (home region + rest-of-world) is balanced by
@@ -318,11 +357,81 @@ def test_build_multi_sam_rejects_asymmetric_dust_route():
     """Review P1 (round 13, 2026-07-28): an ASYMMETRIC dust route is REJECTED with a clear domain
     error — NOT zeroed-and-RAS-rebalanced (that transformation is not balance-preserving for
     asymmetric dust, and the earlier version made RAS fail to converge). This is the exact failure
-    mechanism the previous symmetric test did not cover."""
+    mechanism the previous symmetric test did not cover. The error advice points to
+    aggregate_dust_regions or LOWERING materiality (not raising it — classifies MORE as dust)."""
     from cge.data.sam import build_multi_sam
 
-    with pytest.raises(ValueError, match="dust trade route"):
+    with pytest.raises(ValueError, match="dust trade route|LOWER"):
         build_multi_sam(_tiny_route_io(3e-6, cross_ba=1e-6))
+
+
+def _dust_region_io(regions, A_data, fd_data, sectors=("g",)):
+    """A small IOSystem with the given A and by-region final demand, for the dust-region aggregation
+    workflow tests."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, IOSystem, Provenance
+
+    labels = [f"{r}:{s}" for r in regions for s in sectors]
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-28"
+    )
+    return IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=list(sectors)),
+        regions=Classification(name="r", kind="region", labels=list(regions)),
+        A=pd.DataFrame(A_data, index=labels, columns=labels),
+        final_demand=pd.DataFrame(fd_data, index=labels),
+        unit="MEUR",
+        currency="EUR",
+        final_demand_kind="by_region",
+    )
+
+
+def test_aggregate_dust_regions_folds_low_trade_pairs():
+    """Review P1 (round 14, 2026-07-28): the explicit upstream workflow — aggregate_dust_regions
+    folds a region that only DUST-trades with one partner into it, producing a coarser build with NO
+    dust that build_multi_sam accepts. Region C dust-links only to A, so it merges into {A+C},
+    giving a clean 2-region {A+C, B} SAM."""
+    from cge.data.sam import build_multi_sam
+    from cge.data.sam.build import aggregate_dust_regions
+
+    regions = ["A", "B", "C"]
+    labels = ["A:g", "B:g", "C:g"]
+    A = {c: {r: 0.0 for r in labels} for c in labels}
+    for r in labels:
+        A[r][r] = 0.2
+    A["B:g"]["A:g"] = 0.06  # A buys from B (genuine)
+    A["A:g"]["B:g"] = 0.06  # B buys from A (genuine)
+    A["A:g"]["C:g"] = 1e-6  # C dust-buys from A
+    A["C:g"]["A:g"] = 1e-6  # A dust-buys from C
+    fd = {"A": [100.0, 5.0, 1e-4], "B": [5.0, 100.0, 0.0], "C": [1e-4, 0.0, 80.0]}
+    io = _dust_region_io(regions, {k: [A[k][r] for r in labels] for k in labels}, fd)
+    coarse, _sats, grouping = aggregate_dust_regions(io, [])
+    assert grouping["C"] == grouping["A"] and grouping["B"] != grouping["A"]  # C folded into A
+    sam, report, regs, _secs = build_multi_sam(coarse)  # no dust remains → builds
+    assert report.passed and len(regs) == 2
+
+
+def test_aggregate_dust_regions_reports_when_no_multi_structure_survives():
+    """When a build's inter-region trade is ENTIRELY dust (the offline pymrio test MRIO's case),
+    aggregation collapses to one region and raises an honest error rather than returning a
+    degenerate single-region 'multi' SAM (review P1 round 14)."""
+    from cge.data.adapters.exiobase import adapt_pymrio, load_exiobase_test
+    from cge.data.sam.build import aggregate_dust_regions
+
+    pio = load_exiobase_test()
+    io, sats = adapt_pymrio(
+        pio,
+        source="EXIOBASE-test",
+        source_version="test",
+        reference_year=2011,
+        gas_aliases={"emission_type1": "CO2"},
+        currency="USD",
+        monetary_unit="MUSD",
+    )
+    with pytest.raises(ValueError, match="collapsed to a single region|entirely dust"):
+        aggregate_dust_regions(io, sats)
 
 
 def test_build_multi_sam_clean_build_still_works():

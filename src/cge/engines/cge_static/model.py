@@ -175,6 +175,33 @@ def _hh_demand(income, demand_per_income, s, cal, p, inv_closure, d_adapt, stric
     return (income - savings) * demand_per_income, ID, savings
 
 
+def _demand_decomposition(cal, p, s, inv_closure, d_adapt):
+    """Return ``(u, d0)`` such that the household's total FINAL demand (consumption ``FD`` +
+    investment ``ID``) equals ``I·u + d0`` — the income-linear part ``u`` (= ∂(FD+ID)/∂I) and the
+    income-INDEPENDENT part ``d0`` (demand at I=0). This is the SINGLE source of truth for the
+    revenue-recycling fixed point's marginal coefficient, so it can never drift from ``_hh_demand``
+    (review P1 round 14): the earlier code hard-coded the savings-driven derivative even for
+    ``fixed_real``, giving a false equilibrium.
+
+    - No investment account: FD = I·(γ/p), ID = 0 ⇒ u = γ/p, d0 = 0.
+    - ``savings_driven``: FD = (1−s)·I·(γ/p), ID = s·I·(inv_gamma/p) + d_adapt ⇒
+      u = (1−s)·γ/p + s·inv_gamma/p, d0 = d_adapt (nominally zero-sum).
+    - ``fixed_real``: ID = INV0 (constant); FD = (I − p·INV0)·(γ/p) ⇒ u = γ/p (consumption only),
+      d0 = INV0 − (p·INV0)·(γ/p) = INV0 − savings·(γ/p) + d_adapt (the fixed investment plus the
+      fixed downward shift in consumption that pays for it)."""
+    demand_per_income = cal.gamma / p
+    if not cal.has_investment:
+        return demand_per_income, np.zeros(len(cal.sectors)) + d_adapt
+    if inv_closure == "savings_driven":
+        u = (1.0 - s) * cal.gamma / p + s * cal.inv_gamma / p
+        return u, d_adapt.copy() if hasattr(d_adapt, "copy") else d_adapt
+    # fixed_real: investment is constant INV0, only consumption is income-linear.
+    savings = float(np.dot(p, cal.INV0))
+    u = demand_per_income  # γ/p — consumption only
+    d0 = cal.INV0 - savings * demand_per_income + d_adapt
+    return u, d0
+
+
 def derive_state(
     cal: CalibratedModel,
     p: np.ndarray,
@@ -395,18 +422,16 @@ def derive_state(
                 elif carbon_revenue_recipient == "household":
                     # R recycles to the HOUSEHOLD (as under lump-sum); the government spends only
                     # the tax, so GD = tax·γ^g. Household income fixed point I = FI − tax + R_hh,
-                    # R_hh = cc_eff·L·(FD+ID+GD): FD, ID linear in I (coeff k); GD is the fixed
-                    # tax·γ^g (constant revenue c_gd). I = (FI − tax + c_gd)/(1 − k).
+                    # R_hh = cc_eff·L·(FD+ID+GD). Total household demand FD+ID = I·u + d0 from the
+                    # SHARED decomposition (correct for savings_driven AND fixed_real, review P1
+                    # round 14), so R_hh = I·k + c with k = cc_eff·L·u and c = cc_eff·L·(d0 + GD),
+                    # and I = (FI − tax + c)/(1 − k).
                     gov_income = tax
                     GD = gov_income * gov_demand_per_income
                     if recycles:
-                        u = (
-                            ((1.0 - s) * cal.gamma + s * cal.inv_gamma) / p
-                            if cal.has_investment
-                            else demand_per_income
-                        )
+                        u, d0 = _demand_decomposition(cal, p, s, inv_closure, d_adapt)
                         k = float(cc_eff @ (leontief @ u))
-                        c_gd = float(cc_eff @ (leontief @ (GD + d_adapt)))
+                        c_gd = float(cc_eff @ (leontief @ (d0 + GD)))
                     else:
                         k, c_gd = 0.0, 0.0
                     if strict and k >= 1.0 - 1e-12:
