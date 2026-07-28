@@ -365,29 +365,63 @@ def derive_state(
                 )
             # Household income is factor income net of the benchmark direct tax. The tax is a RATE
             # on factor income (rate·w·FF), so the benchmark government replicates and homogeneity
-            # survives. Under deficit_financed the household ALSO absorbs the fiscal residual
-            # (below), keeping the closed economy's circular flow intact.
+            # survives. Under deficit_financed the deficit is financed by CROWDING OUT investment
+            # (below), not by the household absorbing the residual (review P1 round 12).
             tax = cal.gov_tax_rate0 * factor_income
             gov_demand_per_income = cal.gov_gamma / p
 
             if gov_closure == "balanced_budget":
-                # Government spending exactly exhausts its income each period (fiscal_balance ≡ 0);
-                # the household is poorer by exactly the tax, no fiscal residual to absorb.
-                income = factor_income - tax
-                FD, ID, savings = _hh_demand(
-                    income, demand_per_income, s, cal, p, inv_closure, d_adapt, strict
-                )
-                if recycles:
-                    r0 = float(cc_eff @ (leontief @ (FD + ID)))
-                    kg = float(cc_eff @ (leontief @ gov_demand_per_income))
-                else:
-                    r0, kg = 0.0, 0.0
-                if strict and kg >= 1.0 - 1e-12:
-                    raise ValueError(
-                        f"government revenue-recycling fixed point diverges (kg={kg:.3f} ≥ 1)"
+                # Government spending exactly exhausts its income each period (fiscal_balance ≡ 0).
+                # Who receives carbon revenue R is carbon_revenue_recipient (review P1 round 13):
+                if carbon_revenue_recipient == "government":
+                    # R funds the government alongside the tax; the household pays the tax and gets
+                    # no carbon revenue. gov_income = (tax + R) with R recycled into gov demand
+                    # (a fixed point because gov spending itself is a taxed demand: coefficient kg).
+                    income = factor_income - tax
+                    FD, ID, savings = _hh_demand(
+                        income, demand_per_income, s, cal, p, inv_closure, d_adapt, strict
                     )
-                gov_income = (tax + r0) / _safe_denom(1.0 - kg)
-                GD = gov_income * gov_demand_per_income
+                    if recycles:
+                        r0 = float(cc_eff @ (leontief @ (FD + ID)))
+                        kg = float(cc_eff @ (leontief @ gov_demand_per_income))
+                    else:
+                        r0, kg = 0.0, 0.0
+                    if strict and kg >= 1.0 - 1e-12:
+                        raise ValueError(
+                            f"government revenue-recycling fixed point diverges (kg={kg:.3f} ≥ 1)"
+                        )
+                    gov_income = (tax + r0) / _safe_denom(1.0 - kg)
+                    GD = gov_income * gov_demand_per_income
+                elif carbon_revenue_recipient == "household":
+                    # R recycles to the HOUSEHOLD (as under lump-sum); the government spends only
+                    # the tax, so GD = tax·γ^g. Household income fixed point I = FI − tax + R_hh,
+                    # R_hh = cc_eff·L·(FD+ID+GD): FD, ID linear in I (coeff k); GD is the fixed
+                    # tax·γ^g (constant revenue c_gd). I = (FI − tax + c_gd)/(1 − k).
+                    gov_income = tax
+                    GD = gov_income * gov_demand_per_income
+                    if recycles:
+                        u = (
+                            ((1.0 - s) * cal.gamma + s * cal.inv_gamma) / p
+                            if cal.has_investment
+                            else demand_per_income
+                        )
+                        k = float(cc_eff @ (leontief @ u))
+                        c_gd = float(cc_eff @ (leontief @ (GD + d_adapt)))
+                    else:
+                        k, c_gd = 0.0, 0.0
+                    if strict and k >= 1.0 - 1e-12:
+                        raise ValueError(
+                            f"household revenue-recycling fixed point diverges (k={k:.3f} ≥ 1)"
+                        )
+                    income = (factor_income - tax + c_gd) / _safe_denom(1.0 - k)
+                    FD, ID, savings = _hh_demand(
+                        income, demand_per_income, s, cal, p, inv_closure, d_adapt, strict
+                    )
+                else:
+                    raise ValueError(
+                        f"unsupported carbon_revenue_recipient {carbon_revenue_recipient!r}; use "
+                        "'government' (default) or 'household'."
+                    )
                 fiscal_balance = 0.0
             else:  # deficit_financed (Phase 5d.7, redesigned 2026-07-26)
                 # Government spends a FIXED REAL amount (its benchmark real level gov_income0·γ^g),

@@ -1,15 +1,24 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: PHASE 5 COMPLETE — 5d.1–5d.7 + §5.1b (live multi-region SAM build) all done; engine
-v0.9.9 after two review-remediation rounds.** Round 11 (commits `241fec8`/`a344e4e`): five P1 fixes
-(energy-nest carbon contract, signed foreign savings, route materiality, real deficit financing,
-one-factor wage floor) + P2 capital stock–flow bridge, multi-region name inference, lint, docs.
-Round 12 (2026-07-27): three further P1 fixes (carbon-revenue recipient made explicit under the
-deficit closure, deficit×adaptation componentwise-nonnegative investment guard, trade-route
-materiality centralised in the calibrator with a dust-rejection gate + builder RAS-rebalance) plus
-the **standardized output schema across all variants** (real GDP incl. multi, GVA, named
-wage/capital-return, employment, emissions, energy use, relative GDP deflator), capital
-implied-growth-rate honesty, and system-level validation gates for these interactions. 5d.1:
+**Status: PHASE 5 model blocks COMPLETE (5d.1–5d.7 + §5.1b); engine v0.9.10 after three
+review-remediation rounds. Real-data institutionalization landed for the closed variant; open/multi
+institution routing + sourced tax detail remain follow-ups.** Round 11 (`241fec8`/`a344e4e`): five
+P1 fixes (energy-nest carbon contract, signed foreign savings, route materiality, real deficit
+financing, one-factor wage floor) + P2 capital stock–flow bridge, name inference, lint, docs.
+Round 12 (`72f1ee2`): three P1 fixes (carbon-revenue recipient explicit under the deficit closure,
+deficit×adaptation componentwise-nonnegative investment, route materiality centralised) + the
+standardized output schema, capital implied-growth honesty, validation gates. Round 13 (2026-07-28):
+six further P1 fixes — **GDP is now a VOLUME index** (benchmark prices) with a separate current-price
+series and a **genuine (non-zero) relative GDP deflator**, consistent across variants; dust routes
+are **rejected** (the zero+RAS repair was not balance-safe for asymmetric dust); the carbon-revenue
+recipient **bites under balanced_budget** too (not just the deficit closure); a **strict per-variant
+config contract** rejects unknown keys / invalid enums / unsupported controls before calibration;
+emissions are **covered physical emissions** weighted by the price-free intensity (well-defined
+every year), renamed `covered_emissions_change`; and the **IO→SAM pipeline routes GOV/SAVINV** from
+the EXIOBASE final-demand institution split (imputed tax/savings) so the macro closures run on a
+real built SAM. Plus P2s: energy output renamed `energy_sector_output_volume_change`, nonpositive
+value added is fatal (not clipped), a shared finite-range capital-rate validator, GVA
+income/volume split, and GUI/doc sync. 5d.1:
 government account in all three variants (`GOV` / `GOV_<r>` per region, balanced-budget closure,
 benchmark direct tax as a rate on factor income, `fiscal_balance`/`gov_spending` outputs —
 `docs/models/cge-static.md` §4b; `deficit_financed` delivered in 5d.7, below). 5d.2: savings-investment

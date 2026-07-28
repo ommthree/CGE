@@ -1235,7 +1235,7 @@ def test_multi_emits_standard_output_schema():
         "wage_change",
         "capital_return_change",
         "employment_change",
-        "emissions_change",
+        "covered_emissions_change",
         "welfare_change",
         "real_consumption_change",
         "import_change",
@@ -1245,3 +1245,57 @@ def test_multi_emits_standard_output_schema():
     # gdp_change_real is emitted for every region.
     gdp_regions = set(res.data[res.data["variable"] == "gdp_change_real"]["region"].unique())
     assert {"N", "S"} <= gdp_regions
+
+
+# -- strict config validation (review P1 round 13, 2026-07-28) -------------------------------
+def test_config_rejects_unknown_and_unsupported_keys():
+    """Every variant has a strict config contract: unknown keys, invalid enum values, and controls
+    the variant does not implement fail BEFORE calibration — so a scenario file cannot silently
+    request a policy closure that is never executed (the review's silent-passthrough defect)."""
+    from cge.contracts.engine import registry
+    from cge.data.sam import toy_open_sam
+
+    eng = registry.get("cge_static")
+    cs_open = {"BRD": 2.0, "MIL": 0.5}
+    cc_multi = {"N": {"BRD": 0.3}}
+    shocks = [CarbonPrice(price=0.3)]
+    bad = [
+        {"SAM": toy_multi_sam(), "carbon_cost_share": cc_multi, "gov_closure": "martians"},
+        {
+            "SAM": toy_open_sam(),
+            "carbon_cost_share": cs_open,
+            "adaptation_investment": {"BRD": 0.02},
+        },
+        {"SAM": toy_open_sam(), "carbon_cost_share": cs_open, "labour_floor": 0.75},
+        {"SAM": toy_multi_sam(), "carbon_cost_share": cc_multi, "gov_closure": "deficit_financed"},
+        {"SAM": toy_open_sam(), "carbon_cost_share": cs_open, "carbon_revenue_recipient": "mars"},
+        {"SAM": toy_multi_sam(), "carbon_cost_share": cc_multi, "typo_key": 1},
+    ]
+    for data in bad:
+        with pytest.raises(ValueError, match="unsupported config key|invalid"):
+            eng.run(data=data, shocks=shocks, years=[2020])
+
+
+def test_config_accepts_supported_keys():
+    """The strict gate does not reject legitimate per-variant controls."""
+    from cge.contracts.engine import registry
+    from cge.data.sam import toy_open_sam
+
+    eng = registry.get("cge_static")
+    # Open: inv-related + trade closure are fine.
+    eng.run(
+        data={
+            "SAM": toy_open_sam(),
+            "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5},
+            "trade_closure": "fixed_foreign_savings",
+            "armington_elast": 2.5,
+        },
+        shocks=[CarbonPrice(price=0.1)],
+        years=[2020],
+    )
+    # Multi: elasticities + materiality are fine.
+    eng.run(
+        data={"SAM": toy_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}, "cet_elast": 2.5},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )

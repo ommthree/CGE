@@ -6,6 +6,7 @@ negative real GDP; GDP aggregates sector GVA; and bands propagate to the aggrega
 """
 
 import numpy as np
+import pytest
 
 from cge.accounting import (
     ECONOMY_SECTOR,
@@ -42,6 +43,35 @@ def test_base_year_value_added_matches_final_demand():
     fd = io.final_demand.sum(axis=1).reindex(labels).fillna(0.0).sum()
     assert np.isclose(va.sum(), fd, rtol=1e-9)
     assert (va > 0).all()  # every toy sector has positive value added
+
+
+def test_negative_value_added_is_fatal_not_clipped():
+    """Review P2 (round 13, 2026-07-28): a column whose intermediate input share exceeds 1 has
+    NEGATIVE value added; the spectral-radius admissibility check does not rule this out. It is now
+    FATAL (raises) rather than silently clipped to 0 — clipping changed aggregate production-side
+    GDP and broke the GDP identity."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, IOSystem, Provenance
+
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="x"
+    )
+    labels = ["R:a", "R:b"]
+    # Column 'R:b' has intermediate input share 0.6 + 0.7 = 1.3 > 1 → negative VA. Spectral radius
+    # of A stays < 1 (the other column is light), so the admissibility guard would accept it.
+    A = pd.DataFrame([[0.1, 0.6], [0.05, 0.7]], index=labels, columns=labels)
+    io = IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=["a", "b"]),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=A,
+        final_demand=pd.DataFrame({"fd": [100.0, 20.0]}, index=labels),
+        unit="MEUR",
+        currency="EUR",
+    )
+    with pytest.raises(ValueError, match="nonpositive base-year value added"):
+        base_year_value_added(io)
 
 
 def test_macro_variables_present_after_run():

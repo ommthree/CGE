@@ -516,7 +516,7 @@ _STANDARD_ECONOMY_VARS = {
     "wage_change",
     "capital_return_change",
     "employment_change",
-    "emissions_change",
+    "covered_emissions_change",
     "welfare_change",
 }
 
@@ -534,6 +534,47 @@ def test_closed_emits_standard_output_schema():
     assert "consumption_change" in emitted
 
 
+def test_gdp_is_a_volume_index_and_deflator_is_nonzero():
+    """Review P1 (round 13, 2026-07-28) — ECONOMIC MEANING, not just schema presence. Under a carbon
+    shock: (1) gdp_change_real is a VOLUME index (quantities at benchmark prices) — it equals the
+    hand-computed benchmark-price aggregate, NOT the current-price; (2) gdp_change_nominal is the
+    current-price aggregate and DIFFERS from the volume; (3) gdp_deflator_change = nominal/volume is
+    the genuine (non-zero) relative GDP-price move, not the hard-coded 0 the old code emitted."""
+    eng = registry.get("cge_static")
+    cs = {"BRD": 2.0, "MIL": 0.5}
+    data = {"SAM": toy_sam(), "carbon_cost_share": cs}
+    res = eng.run(data=data, shocks=[CarbonPrice(price=0.3)], years=[2020])
+    d = res.data
+
+    def val(v):
+        return float(d[d["variable"] == v]["value"].iloc[0])
+
+    gdp_real, gdp_nom, defl = (
+        val("gdp_change_real"),
+        val("gdp_change_nominal"),
+        val("gdp_deflator_change"),
+    )
+    # Recompute the volume/current aggregates directly from the solved state to pin the meaning.
+    cal = calibrate(toy_sam(), sectors=_SECTORS, factors=_FACTORS)
+    _b, base = _solve(cal)
+    _s, st = _solve(cal, carbon_cost=0.3 * _EMISSIONS)
+    vol = (
+        float(np.dot(base.p, st.FD + st.GD + st.ID))
+        / float(np.dot(base.p, base.FD + base.GD + base.ID))
+        - 1.0
+    )
+    cur = (
+        float(np.dot(st.p, st.FD + st.GD + st.ID))
+        / float(np.dot(base.p, base.FD + base.GD + base.ID))
+        - 1.0
+    )
+    assert gdp_real == pytest.approx(vol, abs=1e-6)  # volume = benchmark-price aggregate
+    assert gdp_nom == pytest.approx(cur, abs=1e-6)  # nominal = current-price aggregate
+    assert abs(gdp_nom - gdp_real) > 1e-4  # they genuinely differ under a shock
+    assert abs(defl) > 1e-4  # the deflator is a real relative-price move, NOT hard-coded 0
+    assert defl == pytest.approx((1 + cur) / (1 + vol) - 1.0, abs=1e-6)  # nominal / volume
+
+
 def test_energy_use_emitted_only_with_the_nest():
     """``energy_use_change`` is a named standard output, emitted only when the energy nest is
     active (a flat run stays byte-identical)."""
@@ -549,10 +590,12 @@ def test_energy_use_emitted_only_with_the_nest():
         shocks=[CarbonPrice(price=0.3)],
         years=[2020],
     )
-    assert (nest.data["variable"] == "energy_use_change").any()
-    assert not (flat.data["variable"] == "energy_use_change").any()
+    assert (nest.data["variable"] == "energy_sector_output_volume_change").any()
+    assert not (flat.data["variable"] == "energy_sector_output_volume_change").any()
     # A fossil carbon price cuts total energy throughput.
-    eu = float(nest.data[nest.data["variable"] == "energy_use_change"]["value"].iloc[0])
+    eu = float(
+        nest.data[nest.data["variable"] == "energy_sector_output_volume_change"]["value"].iloc[0]
+    )
     assert eu < 0.0
 
 
@@ -1934,6 +1977,29 @@ def test_carbon_revenue_recipient_controls_ownership_not_the_closure():
     assert hh.gov_income == pytest.approx(tax, rel=1e-6)
     # The two recipients give genuinely different real allocations under the same closure.
     assert not np.allclose(gov.X, hh.X, atol=1e-5)
+
+
+def test_carbon_revenue_recipient_bites_under_balanced_budget():
+    """Review P1 (round 13, 2026-07-28): the recipient must ALSO bite under balanced_budget — an
+    earlier version only honoured it in the deficit branch, so a balanced-budget run with
+    recipient='household' was numerically identical to 'government' (the manifest claimed an
+    assumption that did not affect the model). Now 'government' funds the budget with tax + revenue;
+    'household' gives the government the tax only and recycles revenue to the household, changing
+    real output."""
+    cal = _cal_gov_inv()
+    cc = 0.3 * _EMISSIONS
+    _sg, gov = _solve_gov_closure(cal, "balanced_budget", cc=cc)  # default: government
+    _sh, hh = _solve_gov_closure(
+        cal, "balanced_budget", cc=cc, carbon_revenue_recipient="household"
+    )
+    tax = cal.gov_tax_rate0 * gov.factor_income
+    assert gov.gov_income > tax + 1e-4  # government gets tax + revenue
+    assert hh.gov_income == pytest.approx(tax, rel=1e-6)  # government gets tax only
+    assert not np.allclose(
+        gov.X, hh.X, atol=1e-5
+    )  # the choice changes real output, not just the manifest
+    assert gov.fiscal_balance == pytest.approx(0.0, abs=1e-9)  # still balanced under both
+    assert hh.fiscal_balance == pytest.approx(0.0, abs=1e-9)
 
 
 def test_unsupported_carbon_revenue_recipient_rejected():

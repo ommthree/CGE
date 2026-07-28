@@ -207,7 +207,14 @@ def _real_sam_replication():
     sam, report, sectors = build_sam(io)
     if not report.passed:
         return False, "SAM quality gate failed on the built SAM", None, None
-    cal = calibrate(sam, sectors=sectors, factors=["CAP", "LAB"])
+    # The IO build now carries GOV/SAVINV (institution split, review P1 round 13); name them so the
+    # macro closures calibrate — this gate now also proves the closures run on a REAL built SAM.
+    institutions = {"household": "HOH"}
+    if "GOV" in sam.accounts:
+        institutions["government"] = "GOV"
+    if "SAVINV" in sam.accounts:
+        institutions["savings_investment"] = "SAVINV"
+    cal = calibrate(sam, sectors=sectors, factors=["CAP", "LAB"], institutions=institutions)
     sol = solve(lambda z: M.residuals(cal, z), M.initial_guess(cal) * 1.05, prefer="scipy")
     ns = len(sectors)
     st = M.derive_state(cal, sol.x[:ns], sol.x[ns:])
@@ -771,7 +778,7 @@ def _standard_output_schema():
         "wage_change",
         "capital_return_change",
         "employment_change",
-        "emissions_change",
+        "covered_emissions_change",
         "welfare_change",
         "gdp_deflator_change",
     }

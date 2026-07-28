@@ -13,7 +13,7 @@ here are the stable envelope around them.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import ClassVar, Literal
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -106,6 +106,13 @@ class IOSystem(_DataObject):
             "never inferred from the column set."
         ),
     )
+    # Final demand split by consuming region AND institution (Phase 5.1b+, review P1 round 13): the
+    # producing-label-indexed table whose columns are "<region>|<institution>" with institution ∈
+    # {household, government, investment}. Present when the source (EXIOBASE Y categories) lets us
+    # separate household consumption, government consumption and gross capital formation — so the
+    # SAM builders can route them to HOH / GOV / SAVINV instead of lumping everything into HOH.
+    # Empty when the source carries only an aggregate/by-region column (the older behaviour).
+    final_demand_by_institution: pd.DataFrame = Field(default_factory=pd.DataFrame)
 
     @model_validator(mode="after")
     def _payloads_aligned(self) -> IOSystem:
@@ -159,6 +166,26 @@ class IOSystem(_DataObject):
                     f"{len(fd_cols)} ({sorted(fd_cols)}) — if this is genuinely a per-region "
                     "final-demand table, set final_demand_kind='by_region' instead"
                 )
+        # Institution split (Phase 5.1b+): index aligned with A, columns "<region>|<institution>"
+        # with institution ∈ INSTITUTIONS and region ∈ regions.
+        fbi = self.final_demand_by_institution
+        if not fbi.empty:
+            if list(fbi.index) != cols:
+                raise ValueError(
+                    "IOSystem.final_demand_by_institution index is not aligned with A's labels"
+                )
+            for c in fbi.columns:
+                parts = str(c).split(self.INSTITUTION_SEP)
+                if (
+                    len(parts) != 2
+                    or parts[0] not in self.regions.labels
+                    or (parts[1] not in self.INSTITUTIONS)
+                ):
+                    raise ValueError(
+                        f"IOSystem.final_demand_by_institution column {c!r} must be "
+                        f"'<region>|<institution>' with region in {self.regions.labels} and "
+                        f"institution in {self.INSTITUTIONS}"
+                    )
         return self
 
     @property
@@ -173,6 +200,22 @@ class IOSystem(_DataObject):
         if self.final_demand_kind == "by_region" and not self.final_demand.empty:
             return self.final_demand
         return None
+
+    # The institution split's column separator ("A|household"), chosen not to collide with region
+    # or sector names (which use "A:energy").
+    INSTITUTION_SEP: ClassVar[str] = "|"
+    INSTITUTIONS: ClassVar[tuple[str, ...]] = ("household", "government", "investment")
+
+    def fd_by_institution(self) -> pd.DataFrame | None:
+        """The final demand split by consuming region AND institution, or ``None`` if the source
+        did not carry the category detail. Columns are ``"<region>|<institution>"`` (see
+        ``final_demand_by_institution``); institutions are ``INSTITUTIONS``. Lets the SAM builders
+        route household consumption / government consumption / gross capital formation to
+        HOH / GOV / SAVINV rather than lumping all final demand into the household (review P1
+        round 13)."""
+        if self.final_demand_by_institution.empty:
+            return None
+        return self.final_demand_by_institution
 
 
 class SatelliteAccount(_DataObject):

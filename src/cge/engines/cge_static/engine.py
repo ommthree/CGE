@@ -4,8 +4,9 @@ Wraps the calibrated pilot CGE (``calibrate`` + ``model`` + ``solver``) behind t
 protocol, so the GUI/CLI pick it up via the registry with no changes. Given a benchmark ``SAM``,
 it calibrates the model to reproduce the base year exactly, applies a ``CarbonPrice`` as a
 per-unit emissions cost wedge, solves for the new equilibrium, and emits a ``ResultSet`` of price
-and volume changes plus GE outputs (factor prices, real GDP, welfare, carbon revenue). The CPI is
-the numéraire, so there is no separate deflator/inflation output.
+and volume changes plus GE outputs (factor prices, real/volume GDP, current-price GDP, a relative
+GDP deflator, welfare, carbon revenue). The CPI is the numéraire, so the deflator is a *relative*
+GDP-price index (GDP basket vs the CPI numéraire), NOT absolute inflation.
 
 **Scope:** the correctness-first pilot from `docs/phase-5-plan.md` §5.2a — Leontief intermediates,
 CES/Cobb-Douglas value added, Cobb-Douglas household demand, CPI numéraire, with **revenue
@@ -63,7 +64,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.9"
+VERSION = "0.9.10"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -79,6 +80,87 @@ _GOV_ACCOUNT = "GOV"
 # for now (open/multi generalisation — where foreign savings route into the investment pool
 # instead of household income — is the remaining 5d.2 work).
 _SAVINV_ACCOUNT = "SAVINV"
+
+# Strict per-variant configuration contract (review P1 round 13, 2026-07-28). Each variant declares
+# the ``data`` keys it USES; any other (non-internal) key is a hard error, so a scenario file cannot
+# silently request a control the variant ignores. Keys starting with ``_`` are engine-internal
+# (injected by the IO-backed paths) and always allowed. The data inputs (SAM/IOSystem/...) and the
+# shared carbon/elasticity controls are common; the government/investment/labour/adaptation/trade
+# closures are gated by variant below.
+_COMMON_CONFIG_KEYS = frozenset(
+    {
+        # Data inputs (from the store / toy loaders) — not policy controls.
+        "SAM",
+        "IOSystem",
+        "SatelliteAccount",
+        "satellites",
+        "sectors",
+        "regions",
+        # Shared controls every variant reads.
+        "carbon_cost_share",
+        "capital_share",
+        "va_elast",
+        "energy_sectors",
+        "energy_elasticities",
+    }
+)
+_VARIANT_CONFIG_KEYS = {
+    # Closed: the full macro-closure surface (government/investment/labour/adaptation live here).
+    "closed": _COMMON_CONFIG_KEYS
+    | {
+        "gov_closure",
+        "carbon_revenue_recipient",
+        "inv_closure",
+        "labour_floor",
+        "adaptation_investment",
+    },
+    # Open: Armington/CET + savings-investment + the trade closure; NO deficit gov closure, NO
+    # wage floor, NO adaptation (those generalisations are documented follow-ups, so they are
+    # rejected rather than silently ignored).
+    "open": _COMMON_CONFIG_KEYS
+    | {"open_home_region", "inv_closure", "armington_elast", "cet_elast", "trade_closure"},
+    # Multi: bilateral trade + savings-investment; NO deficit gov closure, NO recipient choice, NO
+    # wage floor, NO adaptation, NO flexible-trade closure (all documented follow-ups).
+    "multi": _COMMON_CONFIG_KEYS
+    | {"multi_region", "inv_closure", "armington_elast", "cet_elast", "multi_materiality"},
+}
+_ENUM_CONFIG = {
+    "gov_closure": ("balanced_budget", "deficit_financed"),
+    "inv_closure": ("savings_driven", "fixed_real"),
+    "carbon_revenue_recipient": ("government", "household"),
+    "trade_closure": ("fixed_foreign_savings", "flexible_balance"),
+}
+
+
+def _validate_config(data: dict, variant: str) -> None:
+    """Strict typed config gate (review P1 round 13). Reject, BEFORE calibration: (1) any non-
+    internal ``data`` key the variant does not use — including a control another variant supports
+    (e.g. ``adaptation_investment`` on open/multi, ``labour_floor`` on open/multi, a deficit
+    ``gov_closure`` or non-default ``carbon_revenue_recipient`` on open/multi); (2) any enum control
+    with an invalid value (e.g. ``gov_closure='martians'``). This makes the manifest's recorded
+    config truthful — the run cannot proceed under a closure the scenario did not actually get."""
+    allowed = _VARIANT_CONFIG_KEYS[variant]
+    unknown = sorted(k for k in data if not k.startswith("_") and k not in allowed)
+    if unknown:
+        variant_only = sorted(
+            k for k in unknown if any(k in ks for ks in _VARIANT_CONFIG_KEYS.values())
+        )
+        hint = (
+            f" ({variant_only} are supported by other variants but not '{variant}' — that closure "
+            "is a documented follow-up here, rejected rather than silently ignored)"
+            if variant_only
+            else ""
+        )
+        raise ValueError(
+            f"unsupported config key(s) for the {variant!r} CGE variant: {unknown}{hint}. "
+            f"Allowed keys: {sorted(allowed)}."
+        )
+    for key, choices in _ENUM_CONFIG.items():
+        if key in data and data[key] not in choices:
+            raise ValueError(
+                f"invalid {key}={data[key]!r} for the {variant!r} variant; use one of {choices}."
+            )
+
 
 ASSUMPTIONS = {
     "model": (
@@ -108,8 +190,9 @@ ASSUMPTIONS = {
     ),
     "closure": (
         "numéraire = the exact Cobb-Douglas consumer price index (Π p_i^γ_i = 1), the unit of "
-        "account, so no inflation/deflator is reported; outputs are real quantities and relative "
-        "(CPI-unit) prices. Factor SUPPLY is fixed. Factor-market closure: flexible wage / full "
+        "account, so no ABSOLUTE inflation is identified; the reported GDP deflator is a RELATIVE "
+        "index (GDP basket vs the CPI numéraire). Factor SUPPLY is fixed. Factor-market closure: "
+        "flexible wage / full "
         "employment by default (see labour_closure); an optional labour_floor switches on a wage "
         "floor with involuntary unemployment (Phase 5d.4). Savings/investment and a government "
         "account are opt-in via SAM accounts (Phase 5d.1/5d.2; see the government_account / "
@@ -340,13 +423,28 @@ class CGEStaticEngine:
         # otherwise the CLOSED pilot. Each variant has its own calibration/model.
         supplied_sam = data.get("SAM")
         if supplied_sam is not None and _is_multi_region_sam(supplied_sam):
-            return _run_multi(self.meta, data, shocks, years)
-        if supplied_sam is not None and "ROW" in supplied_sam.accounts:
-            return _run_open(self.meta, data, shocks, years)
-        if data.get("IOSystem") is not None and data.get("open_home_region") is not None:
-            return _run_open_from_io(self.meta, data, shocks, years)
-        if data.get("IOSystem") is not None and data.get("multi_region"):
+            variant = "multi"
+        elif supplied_sam is not None and "ROW" in supplied_sam.accounts:
+            variant = "open"
+        elif data.get("IOSystem") is not None and data.get("open_home_region") is not None:
+            variant = "open"  # IO-backed open (build_open_sam)
+        elif data.get("IOSystem") is not None and data.get("multi_region"):
+            variant = "multi"  # IO-backed multi (build_multi_sam)
+        else:
+            variant = "closed"
+        # Strict config contract (review P1 round 13, 2026-07-28): reject unknown keys, invalid enum
+        # values, and controls a variant does not implement — BEFORE calibration — so a scenario
+        # file cannot silently request a policy closure that is never executed.
+        _validate_config(data, variant)
+
+        if variant == "multi":
+            if supplied_sam is not None and _is_multi_region_sam(supplied_sam):
+                return _run_multi(self.meta, data, shocks, years)
             return _run_multi_from_io(self.meta, data, shocks, years)
+        if variant == "open":
+            if supplied_sam is not None:
+                return _run_open(self.meta, data, shocks, years)
+            return _run_open_from_io(self.meta, data, shocks, years)
 
         inp = _resolve_inputs(data)
         sam, sectors, factors = (
@@ -557,7 +655,11 @@ class CGEStaticEngine:
                 adapt_amount=adapt_amount,
                 adapt_gamma=adapt_gamma,
             )
-            _emit(records, cal, base, st, year, cc=cc)
+            # Price-free emission intensity for the physical covered-emissions output: the supplied
+            # cost share (toy path), else the year's effective cost cc (IO path — proportional to
+            # intensity at a single carbon price). Both are physically meaningful weights.
+            intensity = inp.cost_share if inp.cost_share is not None else cc
+            _emit(records, cal, base, st, year, cc=cc, intensity=intensity)
 
         # Emissions provenance: the effective aligned cost-share vector per year + the satellite
         # identity, so a changed satellite / gas selection / doubled emissions moves the manifest
@@ -924,16 +1026,24 @@ def _solve(
     return floor_sol, labour_floor
 
 
-def _emit(records, cal, base, st, year: int, cc=None) -> None:
+def _emit(records, cal, base, st, year: int, cc=None, intensity=None) -> None:
     """Append price/volume changes and GE outputs (relative to the benchmark) for one year. ``cc``
-    is the year's per-sector carbon cost (for the emissions-change output); None ⇒ unpriced."""
+    is the year's per-sector carbon cost; ``intensity`` is the PRICE-FREE per-sector emission
+    intensity (the supplied carbon_cost_share) for the physical covered-emissions output."""
     for i, sector in enumerate(cal.sectors):
         records.append(_rec("price_change", sector, year, st.p[i] / base.p[i] - 1.0))
         records.append(_rec("volume_change", sector, year, st.X[i] / base.X[i] - 1.0))
-        # Sector GVA (value added = pv·va_qty·X): the sector's contribution to GDP (standard output
-        # schema). va_share·X (flat) or the KL quantity·X (energy nest) valued at the VA unit cost.
+        # Sector GVA — INCOME (current factor payments) AND VOLUME (factor quantity at benchmark
+        # prices), named separately so a report does not read a nominal move as a volume move
+        # (review P1 round 13). gva_change is kept as the income series for back-compat.
         records.append(
-            _rec("gva_change", sector, year, _gva(cal, st, i) / _gva(cal, base, i) - 1.0)
+            _rec("gva_change", sector, year, _gva_income(st, i) / _gva_income(base, i) - 1.0)
+        )
+        records.append(
+            _rec("gva_income_change", sector, year, _gva_income(st, i) / _gva_income(base, i) - 1.0)
+        )
+        records.append(
+            _rec("gva_volume_change", sector, year, _gva_volume(st, i) / _gva_volume(base, i) - 1.0)
         )
     # Factor prices: the generic change AND the named wage / capital-return variables (standard
     # schema — a report should not have to know that CAP's factor price IS the capital return).
@@ -949,28 +1059,20 @@ def _emit(records, cal, base, st, year: int, cc=None) -> None:
         emp_base = float(base.F[f_idx, :].sum())
         var = "employment_change" if factor == "LAB" else f"factor_use_change_{factor}"
         records.append(_rec(var, factor, year, emp / emp_base - 1.0))
-    # GDP. The **numéraire is the household's exact CD price index** P_cd = Π p_i^γ_i, pinned to 1
-    # (see model.residuals). So all prices are expressed in CPI units and there is **no separate
-    # deflator to report** — the CPI is fixed to 1 by definition, and a "deflator" derived from it
-    # would be a mechanical numéraire artifact, not inflation (review P1). We therefore report:
-    #   • gdp_change_real — the real (CPI-numéraire) change in expenditure-side GDP =
-    #     Σ p·(FD+GD+ID): household consumption + government consumption (Phase 5d.1) +
-    #     investment (Phase 5d.2 — C+G+I, the closed-economy expenditure identity; GD/ID are zero
-    #     without the accounts, preserving the old value exactly). Prices are in CPI units, so
-    #     this aggregate is already real;
-    #   • gdp_change_nominal_in_factor_units — the same aggregate valued with a factor price as the
-    #     unit of account, so a "money" magnitude is still available for readers who want one.
-    real_gdp = float(np.dot(st.p, st.FD + st.GD + st.ID))
-    real_gdp_base = float(np.dot(base.p, base.FD + base.GD + base.ID))
-    records.append(_rec("gdp_change_real", "__economy__", year, real_gdp / real_gdp_base - 1.0))
-    # A factor-price-numéraire nominal GDP (unit of account = labour), for a "nominal" reference
-    # that is NOT mechanically tied to the CPI numéraire.
-    lab = cal.factors.index("LAB") if "LAB" in cal.factors else 0
-    nom_gdp = real_gdp / st.w[lab]
-    nom_gdp_base = real_gdp_base / base.w[lab]
-    records.append(
-        _rec("gdp_change_nominal_wage", "__economy__", year, nom_gdp / nom_gdp_base - 1.0)
-    )
+    # GDP (review P1 round 13, 2026-07-28). Expenditure GDP = C + G + I = Σ (FD + GD + ID) (GD/ID
+    # zero without their accounts). Three named series, consistent with open/multi:
+    #   • gdp_change_real  — VOLUME: quantities at BENCHMARK prices (a Laspeyres quantity index).
+    #     This is the fix — the earlier code valued at CURRENT prices, which under the CPI numéraire
+    #     is a real-INCOME/purchasing-power measure, not GDP volume.
+    #   • gdp_change_nominal — CURRENT-PRICE GDP (the same basket at current prices).
+    #   • gdp_deflator_change — current / volume: a genuine relative GDP-price index vs the CPI
+    #     numéraire, NOT hard-coded 0.
+    fd_agg = st.FD + st.GD + st.ID
+    fd_agg_base = base.FD + base.GD + base.ID
+    gdp_vol, gdp_cur, gdp_defl = _gdp_measures(st.p, base.p, fd_agg, fd_agg_base)
+    records.append(_rec("gdp_change_real", "__economy__", year, gdp_vol))
+    records.append(_rec("gdp_change_nominal", "__economy__", year, gdp_cur))
+    records.append(_rec("gdp_deflator_change", "__economy__", year, gdp_defl))
     # Welfare: the change in Cobb-Douglas utility U = Π FD_i^γ_i (the correct welfare measure for a
     # CD household — review P1: the earlier Σ FD sum is not utility). With a government account
     # this values HOUSEHOLD consumption only — government-provided goods carry no utility (a
@@ -979,27 +1081,21 @@ def _emit(records, cal, base, st, year: int, cc=None) -> None:
     u_base = float(np.prod(np.power(base.FD, cal.gamma)))
     records.append(_rec("welfare_change", "__economy__", year, u / u_base - 1.0))
     records.append(_rec("carbon_revenue", "__economy__", year, st.carbon_revenue / cal.gdp0))
-    # Standard-schema aggregates (review P2, 2026-07-27): household consumption, the relative
-    # GDP deflator, and priced-emissions change.
-    cons = float(np.dot(st.p, st.FD))
-    cons_base = float(np.dot(base.p, base.FD))
-    records.append(_rec("consumption_change", "__economy__", year, cons / cons_base - 1.0))
-    # Relative GDP deflator: nominal GDP / real GDP, both here already in the CPI numéraire (current
-    # prices), so this deflator's change is 0 by identity — emitted for schema completeness and to
-    # make the "no absolute inflation under a CPI numéraire" property explicit and testable (NOT
-    # inflation; see the roadmap deflator note).
-    records.append(_rec("gdp_deflator_change", "__economy__", year, 0.0))
-    em = _emissions_change(cc, base.X, st.X) if cc is not None else None
-    if em is not None:
-        records.append(_rec("emissions_change", "__economy__", year, em))
-    # Energy use (standard schema, only when the energy nest is active): the total real output of
-    # the energy sectors — a clean physical energy-throughput indicator that a flat model can't
-    # produce. Emitted only with the nest, so non-nest runs stay byte-identical.
+    # Household consumption VOLUME (benchmark prices; review P1 round 13 — same convention as GDP).
+    cons_vol = float(np.dot(base.p, st.FD))
+    cons_vol_base = float(np.dot(base.p, base.FD))
+    records.append(_rec("consumption_change", "__economy__", year, cons_vol / cons_vol_base - 1.0))
+    _emit_covered_emissions(records, intensity, base.X, st.X, year)
+    # Energy-sector output volume (only with the energy nest): total real output of the energy
+    # sectors. Renamed from energy_use_change (review P2 round 13): it is energy-sector PRODUCTION
+    # volume, not physical energy USE (it excludes imported energy and includes exported energy).
     if cal.has_energy_nest:
         eidx = cal.energy_nest.energy_idx
         eu = float(st.X[eidx].sum())
         eu_base = float(base.X[eidx].sum())
-        records.append(_rec("energy_use_change", "__economy__", year, eu / eu_base - 1.0))
+        records.append(
+            _rec("energy_sector_output_volume_change", "__economy__", year, eu / eu_base - 1.0)
+        )
     # Government account (Phase 5d.1): fiscal balance (≡0 under balanced_budget — emitted so the
     # identity is visible/pinned and a future deficit_financed closure has its output slot) and
     # government spending, as shares of benchmark GDP like carbon_revenue. Emitted ONLY when a
@@ -1044,23 +1140,79 @@ def _rec(variable: str, sector: str, year: int, value: float) -> dict:
     }
 
 
-def _gva(cal, st, i: int) -> float:
-    """Sector ``i`` gross value added = the factor payments it makes = Σ_f w[f]·F[f,i] (value added
-    is, by construction, exactly what the sector pays its factors). Works for every variant/state
-    with ``.w`` [f] and ``.F`` [f, i]. Used for the standard ``gva_change`` output."""
+def _gva_income(st, i: int) -> float:
+    """Sector ``i`` gross value added at CURRENT prices = the factor payments it makes = Σ_f
+    w[f]·F[f,i] (value added is, by construction, what the sector pays its factors). Works for every
+    variant/state with ``.w`` [f] and ``.F`` [f, i]. This is a nominal (income) measure — its change
+    conflates factor-price and factor-quantity moves."""
     return float(np.dot(st.w, st.F[:, i]))
 
 
-def _emissions_change(cc, base_X, st_X) -> float | None:
-    """Change in physical emissions ``Σ e_i·X_i`` between benchmark and shocked output. The run's
-    carbon cost ``cc = τ·e`` is proportional to the emission intensities ``e`` (same τ across
-    sectors is not required — cc is per-sector), so ``cc·X`` is proportional to physical emissions
-    at the run's prices, and the RATIO ``(cc·X_shock)/(cc·X_base)`` is exactly the emissions change
-    (τ and any per-sector scaling cancel). Returns None when nothing is priced (cc all zero)."""
-    denom = float(np.dot(cc, base_X))
+def _gva_volume(st, i: int) -> float:
+    """Sector ``i`` gross value added VOLUME = factor QUANTITY valued at BENCHMARK factor prices
+    (all = 1) = Σ_f F[f,i] (review P1 round 13, 2026-07-28). A Laspeyres quantity index, so its
+    change is a genuine volume move, not a factor-price artifact — distinct from ``_gva_income``."""
+    return float(st.F[:, i].sum())
+
+
+def _gdp_measures(p, base_p, final_demand, base_final_demand):
+    """Return ``(volume_change, current_price_change, deflator_change)`` for an expenditure GDP
+    aggregate ``final_demand`` (= FD + GD + ID, per variant) given current prices ``p`` and
+    benchmark prices ``base_p`` (all 1 at benchmark). Review P1 round 13:
+      - VOLUME GDP values quantities at BENCHMARK prices (Laspeyres): Σ base_p·fd → a real quantity
+        index. This is ``gdp_change_real``.
+      - CURRENT-PRICE GDP values them at current prices: Σ p·fd. This is ``gdp_change_nominal``.
+      - The GDP DEFLATOR is current-price / volume; its change is (nominal_ratio / volume_ratio) − 1
+        — a genuine relative-price index of the GDP basket vs the CPI numéraire, NOT hard-coded 0.
+    Consistent across closed/open/multi so the variants no longer disagree."""
+    vol = float(np.dot(base_p, final_demand))
+    vol_base = float(np.dot(base_p, base_final_demand))
+    cur = float(np.dot(p, final_demand))
+    cur_base = float(
+        np.dot(base_p, base_final_demand)
+    )  # benchmark current-price = benchmark volume
+    vol_ratio = vol / vol_base
+    cur_ratio = cur / cur_base
+    deflator_change = cur_ratio / vol_ratio - 1.0 if vol_ratio != 0 else 0.0
+    return vol_ratio - 1.0, cur_ratio - 1.0, deflator_change
+
+
+def _covered_emissions_change(intensity, base_X, st_X) -> float | None:
+    """Change in **covered physical emissions** ``Σ e_i·X_i`` between benchmark and shocked output,
+    where ``intensity`` is the PRICE-FREE per-sector emission intensity — the supplied
+    ``carbon_cost_share`` (cost per €1 of carbon price = e_i × scaling), NOT the priced cost
+    ``cc = τ·share`` (review P1 round 13, 2026-07-28). Weighting by the price-free intensity is what
+    makes this a physical-emissions measure: it is the emissions of the COVERED (priced-eligible)
+    sectors, independent of the carbon price level, so it is well-defined and emittable even in a
+    zero-price year. The earlier version weighted by ``cc`` and returned nothing at zero price — a
+    physical quantity should not vanish because the policy price is zero.
+
+    It is **covered** emissions, not territorial: only sectors with a nonzero intensity (the priced
+    subset) are counted, and it is value-weighted (the cost share), not measured in joules/tCO2 — a
+    true physical inventory needs a satellite emission-intensity vector (documented follow-up).
+    Returns None only when NO sector has a nonzero intensity (nothing to measure)."""
+    denom = float(np.dot(intensity, base_X))
     if denom <= 1e-15:
         return None
-    return float(np.dot(cc, st_X)) / denom - 1.0
+    return float(np.dot(intensity, st_X)) / denom - 1.0
+
+
+def _emit_covered_emissions(records, intensity, base_out, st_out, year, *, region=None) -> None:
+    """Emit ``covered_emissions_change`` = the change in Σ intensity·output, where ``intensity`` is
+    the PRICE-FREE per-sector emission intensity (the supplied ``carbon_cost_share``), so the
+    physical quantity is well-defined **every year, including zero-price years** (review P1 round
+    13). ``base_out``/``st_out`` are the benchmark/shocked output (X closed, Z open/multi)."""
+    if intensity is None:
+        return
+    ch = _covered_emissions_change(np.asarray(intensity, dtype=float), base_out, st_out)
+    if ch is None:
+        return
+    rec = (
+        _rec("covered_emissions_change", "__economy__", year, ch)
+        if region is None
+        else _rec_r("covered_emissions_change", "__economy__", region, year, ch)
+    )
+    records.append(rec)
 
 
 def _sam_fingerprint(sam: SAM) -> dict:
@@ -1553,7 +1705,11 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         resid_max = max(resid_max, sol.residual_norm)
         backends.add(sol.backend)
         statuses.add(sol.status)
-        _emit_open(records, cal, base, st, year, cc=cc)
+        # Price-free intensity for covered emissions: the supplied share (toy path) or the effective
+        # cc (IO path — proportional to intensity at a single carbon price).
+        _emit_open(
+            records, cal, base, st, year, cc=cc, intensity=share if share is not None else cc
+        )
 
     # Substantive provenance: the effective per-year carbon-cost vector (hashed) + the full
     # per-sector elasticity vectors, so two runs that differ only in carbon shares or in an
@@ -1630,17 +1786,23 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     return ResultSet.from_records(records, manifest)
 
 
-def _emit_open(records, cal, base, st, year: int, cc=None) -> None:
+def _emit_open(records, cal, base, st, year: int, cc=None, intensity=None) -> None:
     """Emit open-economy results: activity output (volume), domestic/import/export volumes, the
     composite price, factor prices, exchange rate, real GDP, welfare and carbon revenue. ``cc`` is
-    the year's per-sector carbon cost for the emissions-change output (None ⇒ unpriced)."""
+    the year's per-sector carbon cost; ``intensity`` the price-free emission intensity."""
     for i, sector in enumerate(cal.sectors):
         records.append(_rec("price_change", sector, year, st.pq[i] / base.pq[i] - 1.0))
         records.append(_rec("volume_change", sector, year, st.Z[i] / base.Z[i] - 1.0))
         records.append(_rec("import_change", sector, year, _ratio(st.M[i], base.M[i])))
         records.append(_rec("export_change", sector, year, _ratio(st.E[i], base.E[i])))
         records.append(
-            _rec("gva_change", sector, year, _gva(cal, st, i) / _gva(cal, base, i) - 1.0)
+            _rec("gva_change", sector, year, _gva_income(st, i) / _gva_income(base, i) - 1.0)
+        )
+        records.append(
+            _rec("gva_income_change", sector, year, _gva_income(st, i) / _gva_income(base, i) - 1.0)
+        )
+        records.append(
+            _rec("gva_volume_change", sector, year, _gva_volume(st, i) / _gva_volume(base, i) - 1.0)
         )
     for f_idx, factor in enumerate(cal.factors):
         records.append(_rec("factor_price_change", factor, year, st.w[f_idx] / base.w[f_idx] - 1.0))
@@ -1671,6 +1833,7 @@ def _emit_open(records, cal, base, st, year: int, cc=None) -> None:
                 float(st.foreign_savings - base.foreign_savings),
             )
         )
+
     # Real GDP — expenditure-side: consumption + net exports (review P1: Σ pq_i·FD_i alone is
     # household CONSUMPTION, not GDP; it only coincides with GDP when the current account is zero.
     # With non-zero foreign savings — which this model explicitly supports via the ROW capital
@@ -1681,32 +1844,40 @@ def _emit_open(records, cal, base, st, year: int, cc=None) -> None:
     # figure diverges from the correct C+X−M change (the prior code silently used the special case
     # Sf=0 as if it were the general identity — the existing GDP==welfare test only exercised a
     # zero-current-account fixture).
-    # C + G + I + (X − M): household consumption, government consumption (Phase 5d.1), investment
-    # (Phase 5d.2 — both zero without their accounts), and net exports, at CPI-numéraire prices.
-    consumption = float(np.dot(st.pq, st.FD + st.GD + st.ID))
-    consumption_base = float(np.dot(base.pq, base.FD + base.GD + base.ID))
-    net_exports = st.er * float(st.E.sum() - st.M.sum())
-    net_exports_base = base.er * float(base.E.sum() - base.M.sum())
-    real_gdp = consumption + net_exports
-    real_gdp_base = consumption_base + net_exports_base
-    records.append(_rec("gdp_change_real", "__economy__", year, real_gdp / real_gdp_base - 1.0))
+    # GDP = C + G + I + (X − M) (review P1 round 13: VOLUME at benchmark prices, consistent with
+    # closed/multi). Exports/imports both trade at the world price er·pworld = er in domestic
+    # currency; at benchmark er=1 and pq=1, so the volume aggregate values every component at 1.
+    # Current-price GDP values them at the run's pq and er; the deflator is current/volume.
+    def _open_gdp(state, price_er, price_pq):
+        absorption = float(np.dot(price_pq, state.FD + state.GD + state.ID))
+        net_exports = price_er * float(state.E.sum() - state.M.sum())
+        return absorption + net_exports
+
+    base_pq = base.pq
+    gdp_vol = _open_gdp(st, base.er, base_pq)  # quantities at benchmark prices
+    gdp_vol_base = _open_gdp(base, base.er, base_pq)
+    gdp_cur = _open_gdp(st, st.er, st.pq)  # current prices
+    gdp_cur_base = gdp_vol_base  # benchmark current == benchmark volume
+    vol_ratio = gdp_vol / gdp_vol_base
+    cur_ratio = gdp_cur / gdp_cur_base
+    records.append(_rec("gdp_change_real", "__economy__", year, vol_ratio - 1.0))
+    records.append(_rec("gdp_change_nominal", "__economy__", year, cur_ratio - 1.0))
+    records.append(_rec("gdp_deflator_change", "__economy__", year, cur_ratio / vol_ratio - 1.0))
     u = float(np.prod(np.power(st.FD, cal.gamma)))
     u_base = float(np.prod(np.power(base.FD, cal.gamma)))
     records.append(_rec("welfare_change", "__economy__", year, u / u_base - 1.0))
     records.append(_rec("carbon_revenue", "__economy__", year, st.carbon_revenue / cal.gdp0))
-    # Standard-schema aggregates (review P2, 2026-07-27): consumption, relative GDP deflator,
-    # emissions change — same conventions as the closed variant.
-    cons = float(np.dot(st.pq, st.FD))
-    cons_base = float(np.dot(base.pq, base.FD))
-    records.append(_rec("consumption_change", "__economy__", year, cons / cons_base - 1.0))
-    records.append(_rec("gdp_deflator_change", "__economy__", year, 0.0))
-    em = _emissions_change(cc, base.Z, st.Z) if cc is not None else None
-    if em is not None:
-        records.append(_rec("emissions_change", "__economy__", year, em))
+    # Household consumption VOLUME (benchmark prices), same convention as GDP.
+    cons_vol = float(np.dot(base_pq, st.FD))
+    cons_vol_base = float(np.dot(base_pq, base.FD))
+    records.append(_rec("consumption_change", "__economy__", year, cons_vol / cons_vol_base - 1.0))
+    _emit_covered_emissions(records, intensity, base.Z, st.Z, year)
     if cal.has_energy_nest:
         eidx = cal.energy_nest.energy_idx
         eu, eu_base = float(st.Z[eidx].sum()), float(base.Z[eidx].sum())
-        records.append(_rec("energy_use_change", "__economy__", year, eu / eu_base - 1.0))
+        records.append(
+            _rec("energy_sector_output_volume_change", "__economy__", year, eu / eu_base - 1.0)
+        )
     # Government account (Phase 5d.1): same emission convention as the closed variant — only when
     # a government exists, so no-government output stays byte-identical to pre-5d.1.
     if cal.has_government:
@@ -2049,7 +2220,11 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         resid_max = max(resid_max, sol.residual_norm)
         backends.add(sol.backend)
         statuses.add(sol.status)
-        _emit_multi(records, cal, base, st, year, cc=cc)
+        # Price-free per-(region,sector) intensity for covered emissions: the supplied share, else
+        # the effective cc (IO path).
+        _emit_multi(
+            records, cal, base, st, year, cc=cc, intensity=share if share is not None else cc
+        )
 
     # Substantive provenance: the effective per-year carbon-cost matrix (hashed) so two runs that
     # differ only in the carbon shares get different manifests (review P1).
@@ -2132,7 +2307,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     return ResultSet.from_records(records, manifest)
 
 
-def _emit_multi(records, cal, base, st, year: int, cc=None) -> None:
+def _emit_multi(records, cal, base, st, year: int, cc=None, intensity=None) -> None:
     """Emit multi-region results, region-tagged: per (region, sector) price/volume/import/export/GVA
     change, per-region named factor prices + employment, real GDP and real_consumption_change,
     welfare, carbon revenue and emissions (as shares of / relative to that region's OWN benchmark).
@@ -2163,10 +2338,19 @@ def _emit_multi(records, cal, base, st, year: int, cc=None) -> None:
                     _ratio(st.EX[ri, si, :].sum(), base.EX[ri, si, :].sum()),
                 )
             )
-            # Sector GVA per region = factor payments Σ_f w[f,r]·F[f,r,s] (standard schema).
-            gva = float(np.dot(st.w[:, ri], st.F[:, ri, si]))
-            gva_base = float(np.dot(base.w[:, ri], base.F[:, ri, si]))
-            records.append(_rec_r("gva_change", sector, region, year, gva / gva_base - 1.0))
+            # Sector GVA per region — INCOME (current factor payments Σ_f w·F) AND VOLUME (factor
+            # quantity Σ_f F at benchmark prices), named separately (review P1 round 13).
+            gva_inc = float(np.dot(st.w[:, ri], st.F[:, ri, si]))
+            gva_inc_b = float(np.dot(base.w[:, ri], base.F[:, ri, si]))
+            gva_vol = float(st.F[:, ri, si].sum())
+            gva_vol_b = float(base.F[:, ri, si].sum())
+            records.append(_rec_r("gva_change", sector, region, year, gva_inc / gva_inc_b - 1.0))
+            records.append(
+                _rec_r("gva_income_change", sector, region, year, gva_inc / gva_inc_b - 1.0)
+            )
+            records.append(
+                _rec_r("gva_volume_change", sector, region, year, gva_vol / gva_vol_b - 1.0)
+            )
         for fi, factor in enumerate(cal.factors):
             records.append(
                 _rec_r(
@@ -2214,14 +2398,29 @@ def _emit_multi(records, cal, base, st, year: int, cc=None) -> None:
         gd_b = base.GD[ri] if cal.has_government else np.zeros(cal.ns)
         idv = st.ID[ri] if cal.has_investment else np.zeros(cal.ns)
         idv_b = base.ID[ri] if cal.has_investment else np.zeros(cal.ns)
+        # VOLUME GDP: expenditure aggregate at BENCHMARK prices (all 1), a Laspeyres quantity index
+        # (this variant was already correct; closed/open now match it — review P1 round 13).
         net_exports = float(st.EX[ri].sum() - st.M[ri].sum())
         net_exports_b = float(base.EX[ri].sum() - base.M[ri].sum())
         gdp_r = cons + float(gd.sum()) + float(idv.sum()) + net_exports
         gdp_r_base = cons_base + float(gd_b.sum()) + float(idv_b.sum()) + net_exports_b
+        vol_ratio = gdp_r / gdp_r_base
+        records.append(_rec_r("gdp_change_real", "__economy__", region, year, vol_ratio - 1.0))
+        # CURRENT-PRICE GDP and the deflator, on the region's ABSORPTION basket (FD+GD+ID) valued at
+        # the run's composite prices pq[r] vs benchmark. The deflator is the relative price of that
+        # basket — a genuine (non-zero) index, not hard-coded 0 (review P1 round 13). (Net exports
+        # are left at volume in both series; a full trade-price deflator over the bilateral pe is a
+        # documented refinement — the absorption basket is the dominant, unambiguous component.)
+        absorb_vol = cons + float(gd.sum()) + float(idv.sum())
+        absorb_cur = float(np.dot(st.pq[ri], st.FD[ri] + gd + idv))
+        absorb_base = cons_base + float(gd_b.sum()) + float(idv_b.sum())
+        cur_ratio = (absorb_cur + net_exports) / gdp_r_base if gdp_r_base != 0 else 1.0
+        records.append(_rec_r("gdp_change_nominal", "__economy__", region, year, cur_ratio - 1.0))
+        defl = (absorb_cur / absorb_vol) if absorb_vol != 0 else 1.0
+        defl_base = (absorb_base / absorb_base) if absorb_base != 0 else 1.0
         records.append(
-            _rec_r("gdp_change_real", "__economy__", region, year, gdp_r / gdp_r_base - 1.0)
+            _rec_r("gdp_deflator_change", "__economy__", region, year, defl / defl_base - 1.0)
         )
-        records.append(_rec_r("gdp_deflator_change", "__economy__", region, year, 0.0))
         u = float(np.prod(np.power(st.FD[ri], cal.gamma[ri])))
         u_base = float(np.prod(np.power(base.FD[ri], cal.gamma[ri])))
         records.append(_rec_r("welfare_change", "__economy__", region, year, u / u_base - 1.0))
@@ -2236,20 +2435,28 @@ def _emit_multi(records, cal, base, st, year: int, cc=None) -> None:
                 "carbon_revenue", "__economy__", region, year, st.carbon_revenue[ri] / regional_gdp0
             )
         )
-        # Emissions per region (standard schema): cc[r]·Z[r] ∝ physical emissions at the run.s
-        # prices, so the ratio to the benchmark's cc[r]·Z_base[r] is the emissions change. Emitted
-        # only where the region is actually priced.
-        if cc is not None:
-            em = _emissions_change(cc[ri], base.Z[ri], st.Z[ri])
-            if em is not None:
-                records.append(_rec_r("emissions_change", "__economy__", region, year, em))
-        # Energy use per region (standard schema): total real output of the region's energy sectors,
-        # only when that region's energy nest is active.
+        # Covered physical emissions per region (review P1 round 13): change in Σ intensity·Z[r],
+        # weighted by the PRICE-FREE per-(region,sector) intensity, so it is well-defined every year
+        # (including zero-price). Falls back to cc[r] if no separate intensity was passed.
+        inten_r = None
+        if intensity is not None:
+            inten_r = intensity[ri]
+        elif cc is not None:
+            inten_r = cc[ri]
+        _emit_covered_emissions(records, inten_r, base.Z[ri], st.Z[ri], year, region=region)
+        # Energy-sector output volume per region (renamed from energy_use_change — review P2 round
+        # 13): total real output of the region's energy sectors, only with that region's nest.
         if cal.has_energy_nest:
             eidx = cal.energy_nests[ri].energy_idx
             eu, eu_base = float(st.Z[ri, eidx].sum()), float(base.Z[ri, eidx].sum())
             records.append(
-                _rec_r("energy_use_change", "__economy__", region, year, eu / eu_base - 1.0)
+                _rec_r(
+                    "energy_sector_output_volume_change",
+                    "__economy__",
+                    region,
+                    year,
+                    eu / eu_base - 1.0,
+                )
             )
         # Government accounts (Phase 5d.1): per-region fiscal balance (≡0 under balanced_budget)
         # and government spending, as shares of the region's OWN benchmark GDP (consistent with

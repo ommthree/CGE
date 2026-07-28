@@ -78,12 +78,24 @@ def _sector_of(label: str) -> str:
     return label.split(":", 1)[1]
 
 
-def build_raw_sam(io: IOSystem, *, capital_share: float = DEFAULT_CAPITAL_SHARE) -> RawSAM:
+def build_raw_sam(
+    io: IOSystem, *, capital_share: float = DEFAULT_CAPITAL_SHARE, institutions: bool = True
+) -> RawSAM:
     """Build a single-region closed-economy raw SAM from a (multi-regional) ``io``.
 
     Regions are summed into one economy. Sectors are the build's distinct sector labels. Value
     added is derived from the IO identity and split into capital/labour by ``capital_share``.
-    """
+
+    ``institutions`` (default True, Phase 5.1b+ review P1 round 13): when the build carries the
+    final-demand INSTITUTION split (``io.fd_by_institution()`` — EXIOBASE Y categories classified
+    into household/government/investment), route government consumption to a ``GOV`` account and
+    gross capital formation to a ``SAVINV`` account, instead of lumping ALL final demand into the
+    household. Government spending is financed by an IMPUTED household→gov direct tax equal to
+    that spending (EXIOBASE Y carries no tax detail — the tax is an explicit, provenance-flagged
+    imputation, not sourced), and investment by imputed household savings; the SAM stays balanced by
+    construction. This lets the macro closures (gov/investment) run on a REAL built SAM. With
+    no institution split (or ``institutions=False``) all final demand goes to the household, exactly
+    as before."""
     if not 0.0 < capital_share < 1.0:
         raise ValueError(f"capital_share must be in (0,1), got {capital_share}")
 
@@ -97,7 +109,21 @@ def build_raw_sam(io: IOSystem, *, capital_share: float = DEFAULT_CAPITAL_SHARE)
     s_index = {s: k for k, s in enumerate(sectors)}
     ns = len(sectors)
 
-    # Aggregate intermediates and final demand over regions.
+    # Institution split (national totals per sector), if the build carries it.
+    fbi = io.fd_by_institution() if institutions else None
+    gov_fd = np.zeros(ns)
+    inv_fd = np.zeros(ns)
+    hh_fd = np.zeros(ns)
+    if fbi is not None:
+        sep = IOSystem.INSTITUTION_SEP
+        for col in fbi.columns:
+            inst = str(col).split(sep)[1]
+            vec = fbi[col].reindex(labels).fillna(0.0).to_numpy(dtype=float)
+            target = {"government": gov_fd, "investment": inv_fd, "household": hh_fd}[inst]
+            for a, lb_a in enumerate(labels):
+                target[s_index[_sector_of(lb_a)]] += vec[a]
+
+    # Aggregate intermediates and (total) final demand over regions.
     Zagg = np.zeros((ns, ns))
     FDagg = np.zeros(ns)
     Xagg = np.zeros(ns)
@@ -114,8 +140,28 @@ def build_raw_sam(io: IOSystem, *, capital_share: float = DEFAULT_CAPITAL_SHARE)
     VAagg = np.clip(VAagg_raw, 0.0, None)  # guard negatives (recorded below for the audit)
     va_clip = float(np.sum(np.abs(np.minimum(VAagg_raw, 0.0))))  # total negative VA clipped
 
+    # Normalise the institution split to sum EXACTLY to total final demand FDagg per sector, so it
+    # stays consistent with the total FD that drives gross output and the SAM balance regardless of
+    # any aggregation drift (review P1 round 13 — a small drift otherwise unbalances the SAM beyond
+    # what RAS can repair given the imputed-tax structural zeros). A sector with zero split (e.g. a
+    # pure-export good) keeps its total in the household column.
+    if fbi is not None:
+        split_total = gov_fd + inv_fd + hh_fd
+        with np.errstate(divide="ignore", invalid="ignore"):
+            scale_i = np.where(split_total > 0, FDagg / split_total, 0.0)
+        gov_fd, inv_fd = gov_fd * scale_i, inv_fd * scale_i
+        hh_fd = (
+            FDagg - gov_fd - inv_fd
+        )  # household is the residual, so the three sum to FDagg exactly
+
+    has_institutions = fbi is not None and (gov_fd.sum() > 0 or inv_fd.sum() > 0)
+    # When the institution split is present, household FD is its own column; else it is all of FD.
+    hh_col = hh_fd if has_institutions else FDagg
+
     # Assemble the SAM (row = receipts, col = payments).
     accounts = sectors + FACTORS + [HOUSEHOLD]
+    if has_institutions:
+        accounts = accounts + ["GOV", "SAVINV"]
     m = pd.DataFrame(0.0, index=accounts, columns=accounts)
     # Intermediates: sector i supplies sector j.
     for i, si in enumerate(sectors):
@@ -125,13 +171,30 @@ def build_raw_sam(io: IOSystem, *, capital_share: float = DEFAULT_CAPITAL_SHARE)
     for i, si in enumerate(sectors):
         m.loc["CAP", si] = capital_share * VAagg[i]
         m.loc["LAB", si] = (1.0 - capital_share) * VAagg[i]
-    # Final demand: household buys commodities.
+    # Final demand: household buys its own consumption column.
     for i, si in enumerate(sectors):
-        m.loc[si, HOUSEHOLD] = FDagg[i]
+        m.loc[si, HOUSEHOLD] = hh_col[i]
     # Factor income to the household (closes the loop): all factor income flows to HOH.
     m.loc[HOUSEHOLD, "CAP"] = capital_share * VAagg.sum()
     m.loc[HOUSEHOLD, "LAB"] = (1.0 - capital_share) * VAagg.sum()
+    if has_institutions:
+        # Government buys its consumption column, financed by an IMPUTED HOH→GOV direct tax = its
+        # spending (EXIOBASE Y has no tax detail — flagged in provenance). Investment (SAVINV) buys
+        # gross capital formation, financed by imputed household savings. Both balance by
+        # construction: GOV row = GOV col = gov spend; SAVINV row = SAVINV col = investment.
+        for i, si in enumerate(sectors):
+            m.loc[si, "GOV"] = gov_fd[i]
+            m.loc[si, "SAVINV"] = inv_fd[i]
+        m.loc["GOV", HOUSEHOLD] = float(gov_fd.sum())  # imputed direct tax
+        m.loc["SAVINV", HOUSEHOLD] = float(inv_fd.sum())  # imputed household savings
 
+    inst_note = (
+        f" government (imputed tax {gov_fd.sum():.4g}) + investment (imputed savings "
+        f"{inv_fd.sum():.4g}) routed to GOV/SAVINV from the EXIOBASE FD institution split "
+        "(tax/savings IMPUTED — no source tax detail)."
+        if has_institutions
+        else " all final demand to the household (no institution split available)."
+    )
     prov = Provenance(
         source=io.provenance.source,
         source_version=io.provenance.source_version,
@@ -142,7 +205,8 @@ def build_raw_sam(io: IOSystem, *, capital_share: float = DEFAULT_CAPITAL_SHARE)
         generation=io.provenance.generation,
         notes=(
             f"single-region closed SAM from {io.provenance.build_id}; VA split "
-            f"cap={capital_share} (assumption); regions summed (trade folded into domestic block)."
+            f"cap={capital_share} (assumption); regions summed (trade folded into domestic block);"
+            + inst_note
         ),
     )
     sam = SAM(provenance=prov, accounts=accounts, matrix=m)
@@ -709,9 +773,17 @@ def build_multi_sam(
 
     ``materiality`` is the dust threshold as a share of global GDP (bounded contract, review P1
     2026-07-27): it must lie in ``[ROUTE_MATERIALITY_THRESHOLD, 0.1)`` — at least the calibrator's
-    threshold (so every route the builder keeps is one the calibrator accepts, and every route it
-    drops the calibrator would have rejected), and below 10% of GDP (a larger value would erase
-    real trade, not dust). Dropped dust is zeroed and RAS-rebalanced on the square SAM."""
+    threshold, and below 10% of GDP (a larger value would erase real trade, not dust).
+
+    **Dust routes are REJECTED, not repaired (review P1, round 13, 2026-07-28).** An earlier version
+    zeroed a sub-threshold bilateral cell and RAS-rebalanced; that transformation is **not**
+    balance-preserving for an *asymmetric* dust route (zeroing an off-diagonal cell can leave the
+    row and column targets incompatible with the imposed zero pattern, so RAS fails to converge —
+    reproduced). A dropped flow also has to go *somewhere*, and there is no local exact place to put
+    it (§8a: the domestic diagonal is shared between the Armington and CET identities). So the safe
+    contract is: a route is either genuine trade (≥ threshold) or exactly zero; a nonzero
+    sub-threshold route is a **domain error** the caller must fix upstream (aggregate the regions
+    coarser, or clean the source), NOT something the builder silently rewrites."""
     if not (_ROUTE_MATERIALITY <= materiality < 0.1):
         raise ValueError(
             f"materiality must be in [{_ROUTE_MATERIALITY:g}, 0.1) (a share of global GDP): at "
@@ -728,20 +800,14 @@ def build_multi_sam(
         m = balanced
         raw.sam.matrix.loc[:, :] = m
 
-    # Trade-materiality: zero DUST routes on the balanced SAM, then RAS-rebalance so every account's
-    # row=col sum is restored (review P1, 2026-07-27). A dust route is a bilateral cell below
-    # ``materiality × global GDP`` (total value added) — the SAME threshold/denominator the
-    # calibrator's ``_reject_dust_routes`` uses, so the built SAM passes that gate: every surviving
-    # bilateral route is genuine trade with a clearing equation, and dropped dust is absorbed by the
-    # re-balance rather than silently unbalancing the destination.
+    # Trade-materiality: REJECT dust routes (see the docstring). The threshold is a share of ACTUAL
+    # global GDP (total value added) — the same normalisation the calibrator uses (it divides by
+    # GDP), so a route the builder accepts is exactly one the calibrator will accept, with no
+    # ``max(GDP, 1)`` scale break (review P1 r13). ``>= threshold`` keeps; ``0 < v < threshold``
+    # rejects; exactly 0 is a structural non-route.
     gdp = float(sum(m.loc[f"{f}_{r}", :].sum() for r in raw.regions for f in FACTORS))
-    dust_threshold = materiality * max(gdp, 1.0)
-    m, dust_adjustment = _zero_dust_routes_and_rebalance(
-        m, raw.regions, raw.sectors, dust_threshold, balance_tol
-    )
-    raw.sam.matrix.loc[:, :] = m
-    if dust_adjustment is not None:
-        adjustment = dust_adjustment if adjustment is None else adjustment + dust_adjustment
+    dust_threshold = materiality * gdp
+    _reject_dust_cells(m, raw.regions, raw.sectors, dust_threshold)
 
     _assert_multi_connected(m, raw.regions, raw.sectors, dust_threshold)
 
@@ -763,19 +829,17 @@ def build_multi_sam(
     return raw.sam, report, raw.regions, raw.sectors
 
 
-def _zero_dust_routes_and_rebalance(
-    m: pd.DataFrame,
-    regions: list[str],
-    sectors: list[str],
-    dust_threshold: float,
-    balance_tol: float,
-) -> tuple[pd.DataFrame, pd.DataFrame | None]:
-    """Zero every bilateral trade cell ``a_<o>_<s> → c_<d>_<s>`` (o≠d) below ``dust_threshold`` and
-    RAS-rebalance so the SAM stays square/balanced (review P1, 2026-07-27). Returns
-    ``(balanced_matrix, adjustment)`` where ``adjustment`` (pre − post) is None if no dust was
-    found. Zeroing on the whole square matrix + re-balance is the balance-safe way to drop a route
-    (unlike folding it into one side, which leaves the other side's uses dangling)."""
-    dust_cells = []
+def _reject_dust_cells(
+    m: pd.DataFrame, regions: list[str], sectors: list[str], dust_threshold: float
+) -> None:
+    """Reject a built SAM carrying a **dust** bilateral trade cell ``a_<o>_<s> → c_<d>_<s>`` (o≠d)
+    that is positive but below ``dust_threshold`` (review P1 round 13, 2026-07-28). A route is
+    either genuine trade (≥ threshold, which gets a clearing equation at calibration) or exactly
+    zero; a sub-threshold nonzero cell would get a near-singular price column, so — since there is
+    no exact, balance-preserving way to remove it locally — it is a domain error the caller must fix
+    upstream (aggregate to coarser regions, or clean the source data), not something the builder
+    silently rewrites."""
+    dust = []
     for o in regions:
         for d in regions:
             if o == d:
@@ -783,27 +847,30 @@ def _zero_dust_routes_and_rebalance(
             for s in sectors:
                 v = float(m.loc[f"a_{o}_{s}", f"c_{d}_{s}"])
                 if 0.0 < v < dust_threshold:
-                    dust_cells.append((f"a_{o}_{s}", f"c_{d}_{s}"))
-    if not dust_cells:
-        return m, None
-    pre = m.copy()
-    for row, col in dust_cells:
-        m.loc[row, col] = 0.0
-    # Re-balance to each account's mean(row,col) total (standard RAS target).
-    target = (m.sum(axis=1) + m.sum(axis=0)) / 2.0
-    balanced = ras_balance(m, target, tol=balance_tol)
-    return balanced, pre - balanced
+                    dust.append((o, d, s, v))
+    if dust:
+        o, d, s, v = dust[0]
+        raise ValueError(
+            f"built multi-region SAM has {len(dust)} dust trade route(s) below the materiality "
+            f"threshold {dust_threshold:.3e} (materiality × global GDP) — e.g. {o}→{d} sector {s} "
+            f"= {v:.3e}. A bilateral route must be genuine trade (≥ threshold) or exactly zero; a "
+            "tiny route gets a near-singular price column the solver cannot pin, and there is no "
+            "exact balance-preserving way to remove it. Aggregate to coarser regions so no dust "
+            "remains, or clean the source data (raise `materiality` only if the flow really is "
+            "negligible trade, not a real link)."
+        )
 
 
 def _assert_multi_connected(
     m: pd.DataFrame, regions: list[str], sectors: list[str], threshold: float
 ) -> None:
     """Reject a disconnected region-trade graph (Phase 5.1b topology validation). Two regions are
-    linked if they trade ANY good in EITHER direction at or above ``threshold`` (the SAME absolute
-    GDP-based dust threshold used to zero routes, review P1 2026-07-27, so a link is exactly a route
-    that survives to be cleared at calibration); the graph must be a single connected component or
-    the multi-region closure (one numéraire, one dropped factor equation) is under-determined.
-    Mirrors MultiCalibratedModel.connected_components but rejects here with a clear message."""
+    linked if they trade ANY good in EITHER direction at or above ``threshold`` — the SAME
+    ``>= threshold`` test the dust rejection uses to KEEP a route (review P1 round 13), so a link is
+    exactly a route that survives to be cleared at calibration (no exactly-at-threshold route that
+    is kept but counted as no link). The graph must be a single connected component or the
+    multi-region closure (one numéraire, one dropped factor equation) is under-determined. Mirrors
+    MultiCalibratedModel.connected_components but rejects here with a clear message."""
     nr = len(regions)
     parent = list(range(nr))
 
@@ -817,7 +884,7 @@ def _assert_multi_connected(
         for di, d in enumerate(regions):
             if oi == di:
                 continue
-            traded = any(float(m.loc[f"a_{o}_{s}", f"c_{d}_{s}"]) > threshold for s in sectors)
+            traded = any(float(m.loc[f"a_{o}_{s}", f"c_{d}_{s}"]) >= threshold for s in sectors)
             if traded:
                 ri, rj = find(oi), find(di)
                 if ri != rj:

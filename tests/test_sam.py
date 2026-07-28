@@ -33,9 +33,11 @@ def test_raw_sam_is_balanced_and_preserves_aggregates(small_build_io):
     raw = build_raw_sam(io)
     assert is_balanced(raw.sam.matrix)
     m = raw.sam.matrix
-    # Value added (factor cols into sectors) = final demand (HOH col) = source aggregates.
+    # Value added (factor cols into sectors) = TOTAL final demand (over HOH + GOV + SAVINV when the
+    # institution split routed them, review P1 round 13) = source aggregates.
+    fd_cols = [c for c in ("HOH", "GOV", "SAVINV") if c in m.columns]
     sam_va = m.loc[["CAP", "LAB"], raw.sectors].to_numpy().sum()
-    sam_fd = m.loc[raw.sectors, "HOH"].sum()
+    sam_fd = m.loc[raw.sectors, fd_cols].to_numpy().sum()
     assert np.isclose(sam_va, raw.source_value_added, rtol=1e-9)
     assert np.isclose(sam_fd, raw.source_final_demand, rtol=1e-9)
     assert np.isclose(sam_va, sam_fd, rtol=1e-9)  # GDP identity
@@ -64,7 +66,13 @@ def test_cge_calibrates_and_replicates_on_built_sam(small_build_io):
     (proves the SAM→calibrate→solve pipeline works on structured multi-region data)."""
     io, _store, _bid = small_build_io
     sam, _report, sectors = build_sam(io)
-    cal = calibrate(sam, sectors=sectors, factors=["CAP", "LAB"])
+    # The IO build now carries GOV/SAVINV (institution split, review P1 round 13), so name them.
+    cal = calibrate(
+        sam,
+        sectors=sectors,
+        factors=["CAP", "LAB"],
+        institutions={"household": "HOH", "government": "GOV", "savings_investment": "SAVINV"},
+    )
     # Benchmark residual is zero (normalised levels), so replication is exact.
     assert np.max(np.abs(M.residuals(cal, M.initial_guess(cal)))) < 1e-9
     sol = solve(lambda z: M.residuals(cal, z), M.initial_guess(cal) * 1.05, prefer="scipy")
@@ -72,6 +80,39 @@ def test_cge_calibrates_and_replicates_on_built_sam(small_build_io):
     st = M.derive_state(cal, sol.x[:ns], sol.x[ns:])
     assert np.allclose(sol.x, 1.0, atol=1e-8)  # all prices return to 1
     assert np.allclose(st.X, cal.X0, rtol=1e-6)  # outputs replicate
+
+
+def test_built_sam_routes_government_and_investment_from_fd_institutions(small_build_io):
+    """Review P1 (round 13, 2026-07-28): the IO→SAM pipeline now routes government consumption and
+    gross capital formation from the EXIOBASE FD institution split to GOV / SAVINV (financed
+    by imputed tax / savings), so the macro closures run on a REAL built SAM — not only on
+    hand-built fixtures. The CGE calibrates with a government AND an investment account."""
+    from cge.engines.cge_static.calibrate import calibrate
+
+    io, _store, _bid = small_build_io
+    assert io.fd_by_institution() is not None  # the build carries the institution split
+    sam, report, sectors = build_sam(io)
+    assert "GOV" in sam.accounts and "SAVINV" in sam.accounts
+    assert report.passed  # FD aggregate still preserved across HOH + GOV + SAVINV
+    cal = calibrate(
+        sam,
+        sectors=sectors,
+        factors=["CAP", "LAB"],
+        institutions={"household": "HOH", "government": "GOV", "savings_investment": "SAVINV"},
+    )
+    assert cal.has_government and cal.has_investment
+    # The imputation is provenance-flagged (tax/savings not sourced).
+    assert "IMPUTED" in sam.provenance.notes
+
+
+def test_built_sam_institutions_can_be_disabled(small_build_io):
+    """With institutions=False the builder lumps all final demand into the household (the older
+    behaviour), so no GOV/SAVINV accounts appear — a caller can opt out."""
+    from cge.data.sam.build import build_raw_sam
+
+    io, _store, _bid = small_build_io
+    raw = build_raw_sam(io, institutions=False)
+    assert "GOV" not in raw.sam.accounts and "SAVINV" not in raw.sam.accounts
 
 
 # -- open SAM from a real build (Phase 5 deferred: live-EXIOBASE open-SAM build) --------------
@@ -246,20 +287,21 @@ def test_no_retained_route_lacks_a_clearing_residual(small_build_io):
     assert worst < 1e-8
 
 
-def _tiny_route_io(cross):
-    """A 2-region EUR IOSystem with a controllable tiny cross-region intermediate/final flow, to
-    exercise the dust-drop + rebalance path (review P1, 2026-07-27)."""
+def _tiny_route_io(cross_ab, cross_ba=None):
+    """A 2-region EUR IOSystem with controllable (possibly ASYMMETRIC) tiny cross-region flows, to
+    exercise the dust-rejection path (review P1 round 13, 2026-07-28)."""
     import pandas as pd
 
     from cge.contracts.data_objects import Classification, IOSystem, Provenance
 
+    cross_ba = cross_ab if cross_ba is None else cross_ba
     prov = Provenance(
-        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-27"
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-28"
     )
     regions, sectors = ["A", "B"], ["g"]
     labels = [f"{r}:g" for r in regions]
-    A = pd.DataFrame([[0.2, cross], [cross, 0.2]], index=labels, columns=labels)
-    fd = pd.DataFrame({"A": [80.0, cross], "B": [cross, 90.0]}, index=labels)
+    A = pd.DataFrame([[0.2, cross_ba], [cross_ab, 0.2]], index=labels, columns=labels)
+    fd = pd.DataFrame({"A": [80.0, cross_ba], "B": [cross_ab, 90.0]}, index=labels)
     return IOSystem(
         provenance=prov,
         sectors=Classification(name="s", kind="sector", labels=sectors),
@@ -272,17 +314,27 @@ def _tiny_route_io(cross):
     )
 
 
-def test_build_multi_sam_drops_dust_and_rebalances_cleanly():
-    """Review P1 (2026-07-27): a built SAM with a genuinely tiny cross route drops the dust and
-    RAS-rebalances to a clean, balanced SAM (the earlier fold-into-origin left the destination's
-    uses dangling and RAS failed to converge). The calibrated model then has NO route with a share
-    but no clearing residual, and every active route clears at the solution."""
+def test_build_multi_sam_rejects_asymmetric_dust_route():
+    """Review P1 (round 13, 2026-07-28): an ASYMMETRIC dust route is REJECTED with a clear domain
+    error — NOT zeroed-and-RAS-rebalanced (that transformation is not balance-preserving for
+    asymmetric dust, and the earlier version made RAS fail to converge). This is the exact failure
+    mechanism the previous symmetric test did not cover."""
+    from cge.data.sam import build_multi_sam
+
+    with pytest.raises(ValueError, match="dust trade route"):
+        build_multi_sam(_tiny_route_io(3e-6, cross_ba=1e-6))
+
+
+def test_build_multi_sam_clean_build_still_works():
+    """A build with NO dust (all cross flows either genuine trade or exactly zero) still builds,
+    balances, and calibrates with every share aligned to a clearing route."""
     from cge.data.sam import build_multi_sam
     from cge.data.sam.balance import is_balanced
     from cge.engines.cge_static import model_multi as MM
     from cge.engines.cge_static.calibrate_multi import calibrate_multi
 
-    sam, _report, regions, sectors = build_multi_sam(_tiny_route_io(1e-5))
+    # Genuine (above-threshold) two-way trade — no dust.
+    sam, _report, regions, sectors = build_multi_sam(_tiny_route_io(0.05))
     assert is_balanced(sam.matrix, tol=1e-6)
     cal = calibrate_multi(sam, regions=regions, sectors=sectors, factors=["CAP", "LAB"])
     active = set(cal.active_routes)
@@ -732,4 +784,10 @@ def test_zero_shock_replicates_on_real_build(small_build_io):
     _io, store, bid = small_build_io
     sc = Scenario(name="cge0", engine="cge_static", years=[2020], shocks=[CarbonPrice(price=0.0)])
     res = run_scenario(sc, data_source=bid, store=store)
-    assert res.data["value"].abs().max() < 1e-7  # every change ~0 at zero carbon price
+    d = res.data
+    # Every CHANGE variable is ~0 at a zero carbon price (benchmark replication). LEVEL outputs
+    # (gov_spending / investment / savings — GDP shares that exist now the IO build carries GOV /
+    # SAVINV, review P1 round 13) are non-zero benchmark levels, not changes — exclude them.
+    levels = {"gov_spending", "investment", "savings", "fiscal_balance", "carbon_revenue"}
+    changes = d[~d["variable"].isin(levels)]
+    assert changes["value"].abs().max() < 1e-7
