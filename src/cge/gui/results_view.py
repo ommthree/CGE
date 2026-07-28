@@ -105,13 +105,21 @@ def volume_envelope(result: ResultSet) -> pd.DataFrame:
 _ECONOMY_SECTOR = "__economy__"
 
 
-_MACRO_GDP_VARS = ("gdp_change", "gdp_change_real", "gdp_change_nominal_wage", "deflator")
+# The macro GDP variables the CGE now emits (review P1 round 13): a VOLUME GDP (gdp_change_real),
+# a CURRENT-PRICE GDP (gdp_change_nominal), and a genuine relative GDP DEFLATOR
+# (gdp_deflator_change — NOT hard-coded 0). ``gdp_change`` is the PE-tier roll-up.
+_MACRO_GDP_VARS = (
+    "gdp_change",  # PE-tier nominal roll-up
+    "deflator",  # PE-tier relative GDP deflator
+    "gdp_change_real",  # CGE volume GDP (and PE-tier real)
+    "gdp_change_nominal",  # CGE current-price GDP
+    "gdp_deflator_change",  # CGE relative GDP deflator
+)
 
 
 def has_macro(result: ResultSet) -> bool:
-    # Either the PE-tier roll-up (gdp_change), the closed/open CGE's native real GDP
-    # (gdp_change_real), or the multi-region CGE's consumption index (real_consumption_change —
-    # review P2: this was previously missing, so the multi-region macro section never rendered).
+    # The PE-tier roll-up (gdp_change) or the CGE's native real GDP (gdp_change_real — emitted by
+    # every variant now, incl. per-region multi). real_consumption_change is also shown for multi.
     return (
         result.data["variable"]
         .isin(("gdp_change", "gdp_change_real", "real_consumption_change"))
@@ -121,10 +129,10 @@ def has_macro(result: ResultSet) -> bool:
 
 def macro_gdp_table(result: ResultSet) -> pd.DataFrame:
     """Per region (central band): the GDP columns that are present. The PE tier reports nominal +
-    real + a deflator; the closed/open CGE reports real (CPI-numéraire) + a wage-numéraire nominal
-    reference and NO deflator (the CPI is its numéraire); the multi-region CGE instead reports
-    ``real_consumption_change`` — a base-price household-consumption index, NOT production-side
-    GDP (review P2: exposed here so it is visible on Results, not only in a download)."""
+    real + a deflator; the CGE (all variants) reports a VOLUME GDP (gdp_change_real, benchmark
+    prices), a CURRENT-PRICE GDP (gdp_change_nominal), and a relative GDP deflator
+    (gdp_deflator_change) — review P1 round 13. The multi-region CGE also reports
+    ``real_consumption_change`` (a household-consumption index)."""
     df = result.data
     econ = df[(df["sector"] == _ECONOMY_SECTOR) & (df["scenario"] == "central")]
     wide = econ.pivot_table(index=["region", "year"], columns="variable", values="value")
@@ -133,10 +141,11 @@ def macro_gdp_table(result: ResultSet) -> pd.DataFrame:
     return wide.rename(
         columns={
             "gdp_change": "GDP Δ (nominal)",
-            "gdp_change_real": "GDP Δ (real)",
-            "gdp_change_nominal_wage": "GDP Δ (nominal, wage-numéraire)",
             "deflator": "deflator (inflation)",
-            "real_consumption_change": "Real consumption Δ (multi-region; NOT GDP)",
+            "gdp_change_real": "GDP Δ (real)",
+            "gdp_change_nominal": "GDP Δ (current price)",
+            "gdp_deflator_change": "GDP deflator Δ (relative)",
+            "real_consumption_change": "Real consumption Δ (multi-region)",
         }
     )
 

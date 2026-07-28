@@ -78,8 +78,16 @@ def sam_quality_report(
         )
     )
 
-    # 2. Aggregate preservation: SAM reproduces source EXIOBASE aggregates.
-    fd_cols = [f"HOH_{r}" for r in regions] if regions is not None else [household]
+    # 2. Aggregate preservation: SAM reproduces source EXIOBASE aggregates. Final demand is the sum
+    # over ALL final-demand institutions — household AND (when the institution split populated them)
+    # government + savings-investment — so the check is against total final demand, not just the
+    # household column (review P1 round 13).
+    if regions is not None:
+        fd_cols = [f"HOH_{r}" for r in regions]
+        fd_cols += [f"{inst}_{r}" for r in regions for inst in ("GOV", "SAVINV")]
+    else:
+        fd_cols = [household, "GOV", "SAVINV"]
+    fd_cols = [c for c in fd_cols if c in matrix.columns]
     # Factor rows are region-qualified in the multi layout (CAP_<r>/LAB_<r>), plain otherwise.
     factor_rows = (
         [f"{f}_{r}" for r in regions for f in factors] if regions is not None else list(factors)

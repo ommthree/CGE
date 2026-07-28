@@ -176,6 +176,21 @@ def test_benchmark_capital_rejects_nonpositive_user_cost():
         benchmark_capital(cal, net_return=0.0, depreciation=0.0)
 
 
+def test_benchmark_capital_rejects_out_of_range_rates():
+    """Review P2 (round 13, 2026-07-28): benchmark_capital uses the SAME finite-range validator as
+    capital_next, so a NEGATIVE depreciation (or net return) is rejected even when net_return + δ
+    stays positive — it can no longer slip into the implied-growth calculation."""
+    from cge.data.sam import toy_sam
+    from cge.engines.cge_static.calibrate import calibrate
+    from cge.engines.cge_static.capital import benchmark_capital
+
+    cal = calibrate(toy_sam(), sectors=["BRD", "MIL"], factors=["CAP", "LAB"])
+    with pytest.raises(ValueError, match="depreciation"):
+        benchmark_capital(cal, net_return=0.1, depreciation=-0.05)  # sum > 0 but δ < 0
+    with pytest.raises(ValueError, match="net_return"):
+        benchmark_capital(cal, net_return=-0.1, depreciation=0.2)
+
+
 def _inv_cal():
     """Calibrate a closed SAM with a real SAVINV account so cal.INV0 is a genuine benchmark
     investment flow (not a fabricated one) — the input for the implied-growth-rate check."""

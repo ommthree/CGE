@@ -143,20 +143,20 @@ class MultiCalibratedModel:
 
     @property
     def active_routes(self) -> list[tuple[int, int, int]]:
-        """Ordered ``(o, s, d)`` triples for routes that carry a **nonzero calibrated trade share**
-        — exactly the routes ``calibrate_multi`` did NOT reclassify as domestic dust. This is the
-        single source of truth for "which bilateral markets clear": a route is active **iff** its
-        Armington import share or CET export share is strictly positive, so there is no route that
-        has a share (used by demand/supply) yet lacks a price unknown and clearing residual, and
-        none that has a residual but no share (review P1, 2026-07-27 — the earlier version compared
-        the *raw* ``M0/EX0`` vs ``ROUTE_MATERIALITY_THRESHOLD`` while the shares were calibrated
-        off a bare ``> 0`` of the same array, so a route in the gap between the two got a share but
-        no residual, a 35%-imbalance equilibrium the solver accepted at machine-zero residual).
+        """Ordered ``(o, s, d)`` triples for routes that carry a **nonzero calibrated trade share**.
+        This is the single source of truth for "which bilateral markets clear": a route is active
+        **iff** its Armington import share or CET export share is strictly positive, so there is no
+        route that has a share (used by demand/supply) yet lacks a price unknown and clearing
+        residual, and none that has a residual but no share (review P1, 2026-07-27 — the earlier
+        version compared the *raw* ``M0/EX0`` vs ``ROUTE_MATERIALITY_THRESHOLD`` while the shares
+        were calibrated off a bare ``> 0`` of the same array, so a route in the gap between the two
+        got a share but no residual, a 35%-imbalance equilibrium the solver accepted at machine-zero
+        residual).
 
-        ``calibrate_multi`` reclassifies sub-``ROUTE_MATERIALITY_THRESHOLD`` flows as domestic
-        BEFORE calibrating the shares (``_reclassify_dust_routes``), so a dust route ends up with a
-        zero share and is correctly absent here; every surviving route has a genuine positive share
-        and is cleared."""
+        ``calibrate_multi`` **rejects** any sub-``ROUTE_MATERIALITY_THRESHOLD`` dust route up front
+        (``_reject_dust_routes``, review P1 round 13 — an earlier version tried to zero+rebalance
+        them, which is not balance-preserving for asymmetric dust), so every surviving route is
+        genuine trade with a positive share and is cleared here."""
         routes = []
         for oi in range(self.nr):
             for di in range(self.nr):
@@ -582,7 +582,10 @@ def _reject_dust_routes(M0, EX0, threshold):
     but negligibly small Armington/CET share and packed as a price unknown, giving a near-singular
     Jacobian column the solver can accept as converged while the price is effectively free (review
     P1). A route is either genuine trade (≥ threshold, cleared) or not trade at all (exactly zero) —
-    nothing in between. The builder removes dust + rebalances; a supplied SAM must be clean."""
+    nothing in between. Both the builder (``build_multi_sam``) and a supplied SAM must be clean:
+    dust is a domain error to fix upstream (aggregate coarser / clean the source), NOT something
+    the pipeline silently rewrites (review P1 round 13 — the earlier zero-then-RAS repair was not
+    balance-preserving for asymmetric dust)."""
     dust = []
     nr, ns, _ = M0.shape
     for oi in range(nr):

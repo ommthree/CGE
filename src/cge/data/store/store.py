@@ -391,6 +391,12 @@ class DataStore:
             io.final_demand.astype("float32").to_parquet(staging / "final_demand.parquet")
             if not io.value_added.empty:
                 io.value_added.astype("float32").to_parquet(staging / "value_added.parquet")
+            # Final-demand institution split (Phase 5.1b+, review P1 round 13) — persisted so the
+            # SAM builders can route GOV/SAVINV from a stored build, not only an in-memory one.
+            if not io.final_demand_by_institution.empty:
+                io.final_demand_by_institution.astype("float32").to_parquet(
+                    staging / "final_demand_by_institution.parquet"
+                )
             for sat in satellites:
                 sat.data.astype("float32").to_parquet(staging / f"satellite_{sat.name}.parquet")
                 (staging / f"satellite_{sat.name}.units.json").write_text(
@@ -499,6 +505,11 @@ class DataStore:
         )
         sectors, regions = _classifications_from_labels(list(A.columns))
         fd_kind = self._migrate_final_demand_kind(build_id, meta, final_demand, regions)
+        fbi = (
+            pd.read_parquet(d / "final_demand_by_institution.parquet")
+            if (d / "final_demand_by_institution.parquet").exists()
+            else pd.DataFrame()
+        )
         io = IOSystem(
             provenance=prov,
             sectors=sectors,
@@ -510,6 +521,7 @@ class DataStore:
             final_demand=final_demand,
             final_demand_kind=fd_kind,
             value_added=value_added,
+            final_demand_by_institution=fbi,
         )
 
         sats: dict[str, SatelliteAccount] = {}

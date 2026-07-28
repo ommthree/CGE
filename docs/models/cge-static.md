@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.9)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.10)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -520,17 +520,19 @@ CPI numéraire (so they are real). Sector- or region-tagged where the dimension 
 |---|---|
 | `price_change` | commodity/composite price $p_i$ (or $pq_{r,i}$) relative change |
 | `volume_change` | activity output $X_i$ / $Z_{r,i}$ relative change |
-| `gva_change` | sector gross value added $=\sum_f w_f F_{f,i}$ (factor payments) relative change |
-| `gdp_change_real` | expenditure-side real GDP $= p\cdot(FD+GD+ID) + \text{net exports}$, base-priced; **per region** in the multi variant |
-| `gdp_deflator_change` | GDP deflator relative to the CPI numéraire — **0 by identity** here (both baskets in CPI units); emitted for schema completeness (NOT inflation — the CPI is the numéraire, so no absolute price level is identified) |
-| `consumption_change` / `real_consumption_change` | household consumption $p\cdot FD$ (base-priced quantity index) |
+| `gva_change` / `gva_income_change` | sector GVA at CURRENT prices $=\sum_f w_f F_{f,i}$ (factor payments) — an income/nominal measure |
+| `gva_volume_change` | sector GVA VOLUME $=\sum_f F_{f,i}$ (factor quantity at benchmark prices) — a genuine volume index (review P1 round 13) |
+| `gdp_change_real` | expenditure GDP $C{+}G{+}I{+}(X{-}M)$ **at benchmark prices** — a VOLUME (Laspeyres quantity) index, consistent across closed/open/multi (review P1 round 13); **per region** in multi |
+| `gdp_change_nominal` | the same aggregate at CURRENT prices (nominal GDP) |
+| `gdp_deflator_change` | GDP deflator = current-price / volume — a **genuine (non-zero)** relative price index of the GDP basket vs the CPI numéraire (NOT hard-coded 0; NOT absolute inflation — the CPI is the numéraire) |
+| `consumption_change` / `real_consumption_change` | household consumption at benchmark prices (a volume index) |
 | `wage_change` / `capital_return_change` | the named LAB / CAP factor prices $w_f$ (also emitted generically as `factor_price_change`) |
 | `employment_change` | total LAB demand $\sum_i F_{\text{LAB},i}$ (≈0 under full employment; falls when a wage floor binds) |
 | `import_change` / `export_change` | trade volumes (open/multi) |
 | `exchange_rate_change` | $er$ (open) |
 | `carbon_revenue` | $\sum_i cc_i X_i$ as a GDP share |
-| `emissions_change` | physical emissions $\sum_i e_i X_i$ change $= (cc\cdot X_{\text{shock}})/(cc\cdot X_{\text{base}})-1$ (the run's $cc\propto e$, so τ cancels); emitted where priced |
-| `energy_use_change` | total real output of the energy sectors (only with the energy nest) |
+| `covered_emissions_change` | change in COVERED physical emissions $\sum_i e_i X_i$, weighted by the **price-free** intensity $e_i$ (the supplied `carbon_cost_share`), so it is well-defined **every year incl. zero-price** (review P1 round 13). It is the *covered/priced-eligible* subset, value-weighted — a full territorial/footprint inventory needs a satellite intensity vector (follow-up) |
+| `energy_sector_output_volume_change` | total real output of the energy sectors (only with the nest). Renamed from `energy_use_change` (review P2 round 13): it is energy-sector PRODUCTION volume, not physical energy USE (it excludes imported energy, includes exported energy) |
 | `welfare_change` | CD utility $\prod_i FD_i^{\gamma_i}$ change (household consumption only) |
 | `fiscal_balance` / `gov_spending` | with a government account (GDP shares) |
 | `investment` / `savings` | with a savings-investment account (GDP shares) |
@@ -571,6 +573,17 @@ The real-data calibration target is built by `cge.data.sam.build_sam` from an ag
    (EXIOBASE's factor detail is thin; the split is an explicit assumption recorded in the SAM
    quality report, default 0.4 capital / 0.6 labour).
 4. **Assemble** the SAM (sectors, factors CAP/LAB, one household) and **quality-gate** it.
+5. **Institution split** (Phase 5.1b+, review P1 round 13): when the build carries the final-demand
+   category detail (`io.fd_by_institution()` — the EXIOBASE Y categories classified into
+   household / government / investment by the adapter, carried through aggregation and the store),
+   government consumption is routed to a **`GOV`** account and gross capital formation to a
+   **`SAVINV`** account, instead of lumping *all* final demand into the household. Government
+   spending is financed by an **imputed** household→government direct tax equal to that spending
+   (EXIOBASE Y has no tax detail — the tax is an explicit, provenance-flagged imputation), investment
+   by imputed household savings; the SAM stays balanced by construction. **This is what lets the
+   macro closures (government, investment, the deficit closure, adaptation) run on a REAL built SAM,
+   not only on hand-built fixtures.** The open- and multi-region builders' institution routing, and
+   *sourced* (rather than imputed) tax/transfer detail, are documented follow-ups.
 
 **Balancing & quality.** A closed IO construction is balanced by construction; if a residual
 imbalance remains (thin data, fabricated cells) it is **RAS**-balanced [MillerBlair2009, §7.4] and

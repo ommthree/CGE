@@ -499,30 +499,31 @@ def test_open_residual_system_is_square():
     assert res.shape == (MO.n_unknowns(cal),)
 
 
-def test_open_gdp_change_real_uses_cpi_weighted_expenditure():
-    """P2: gdp_change_real is CPI-weighted expenditure pq·FD PLUS net exports (the full expenditure
-    identity — see the net-exports regression tests below), not the unweighted Σ FD. On a
-    ZERO-current-account fixture net exports are (and stay) zero, so this reduces to the
-    consumption-only figure and equals the Cobb-Douglas welfare move at the CPI numéraire — a
-    special case of the general identity, not the general identity itself (review P1: an earlier
-    version of gdp_change_real silently omitted net exports everywhere, which this zero-CA fixture
-    could not catch)."""
+def test_open_gdp_change_real_is_a_volume_index():
+    """Review P1 (round 13, 2026-07-28): gdp_change_real is a VOLUME index — the expenditure
+    aggregate C+G+I+(X−M) valued at BENCHMARK prices, not current prices. On a zero-current-account
+    fixture with no shock the volume change is ~0; the deflator series is emitted separately."""
     eng = registry.get("cge_static")
     data = {"SAM": toy_open_sam(), "carbon_cost_share": {"BRD": 0.2, "MIL": 0.05}}
     res = eng.run(data=data, shocks=[CarbonPrice(price=0.1)], years=[2020])
     d = res.data
-    gdp = d[(d["variable"] == "gdp_change_real")]["value"].iloc[0]
-    welfare = d[(d["variable"] == "welfare_change")]["value"].iloc[0]
-    # Under the CPI numéraire, with net exports at zero, real expenditure and CD utility move
-    # together (both = ΔI / CPI).
-    assert abs(gdp - welfare) < 1e-6
+    assert (d["variable"] == "gdp_change_real").any()
+    assert (d["variable"] == "gdp_change_nominal").any()
+    assert (d["variable"] == "gdp_deflator_change").any()
+
+
+def _open_gdp_volume(state, base_state):
+    """Expenditure GDP VOLUME = C+G+I+(X−M) at BENCHMARK prices (base.pq, base.er all 1)."""
+    absorb = float(np.dot(base_state.pq, state.FD + state.GD + state.ID))
+    nx = base_state.er * float(state.E.sum() - state.M.sum())
+    return absorb + nx
 
 
 def test_open_gdp_change_real_includes_net_exports_deficit():
-    """THE P1 regression: gdp_change_real must be C + (X − M), not just C, on a NON-ZERO current
-    account (a deficit: imports 40 > exports 30). Reproduced: the consumption-only figure and the
-    correct expenditure-GDP figure diverge — asserting they differ pins the bug against silent
-    regression, and asserting the emitted value matches the hand-computed C+X−M pins the fix."""
+    """gdp_change_real is the VOLUME of C+G+I+(X−M) — it INCLUDES net exports (review P1: an earlier
+    version omitted them). On a non-zero current account (deficit), the full-GDP volume change
+    differs from the consumption-only volume change, and the emitted value matches the hand-computed
+    benchmark-price volume."""
     sam = _build_open_sam(
         exports={"BRD": 20.0, "MIL": 10.0},
         imports={"BRD": 22.0, "MIL": 18.0},  # deficit: Σimports 40 > Σexports 30
@@ -533,14 +534,9 @@ def test_open_gdp_change_real_includes_net_exports_deficit():
     _bsol, base = _solve(cal)
     _sol, st = _solve(cal, carbon_cost=cc)
 
-    consumption_base = float(np.dot(base.pq, base.FD))
-    consumption_shock = float(np.dot(st.pq, st.FD))
-    nx_base = base.er * float(base.E.sum() - base.M.sum())
-    nx_shock = st.er * float(st.E.sum() - st.M.sum())
-    expected_gdp_change = (consumption_shock + nx_shock) / (consumption_base + nx_base) - 1.0
-    consumption_only_change = consumption_shock / consumption_base - 1.0
-    # The two metrics must actually differ on this non-zero-CA fixture (else the test is vacuous).
-    assert abs(expected_gdp_change - consumption_only_change) > 1e-4
+    expected = _open_gdp_volume(st, base) / _open_gdp_volume(base, base) - 1.0
+    cons_only = float(np.dot(base.pq, st.FD)) / float(np.dot(base.pq, base.FD)) - 1.0
+    assert abs(expected - cons_only) > 1e-4  # net exports genuinely move the aggregate
 
     eng = registry.get("cge_static")
     res = eng.run(
@@ -548,14 +544,13 @@ def test_open_gdp_change_real_includes_net_exports_deficit():
         shocks=[CarbonPrice(price=1.0)],
         years=[2020],
     )
-    d = res.data
-    emitted = d[d["variable"] == "gdp_change_real"]["value"].iloc[0]
-    assert abs(emitted - expected_gdp_change) < 1e-6
+    emitted = res.data[res.data["variable"] == "gdp_change_real"]["value"].iloc[0]
+    assert abs(emitted - expected) < 1e-6
 
 
 def test_open_gdp_change_real_includes_net_exports_surplus():
-    """The mirror case: a trade SURPLUS (exports 40 > imports 30) — net exports contribute
-    positively to GDP, and the emitted figure must reflect C + (X − M), not C alone."""
+    """The mirror case: a trade SURPLUS — net exports contribute positively; the emitted VOLUME GDP
+    reflects C+G+I+(X−M) at benchmark prices, not consumption alone."""
     sam = _build_open_sam(
         exports={"BRD": 22.0, "MIL": 18.0},  # surplus: Σexports 40 > Σimports 30
         imports={"BRD": 20.0, "MIL": 10.0},
@@ -566,13 +561,9 @@ def test_open_gdp_change_real_includes_net_exports_surplus():
     _bsol, base = _solve(cal)
     _sol, st = _solve(cal, carbon_cost=cc)
 
-    consumption_base = float(np.dot(base.pq, base.FD))
-    consumption_shock = float(np.dot(st.pq, st.FD))
-    nx_base = base.er * float(base.E.sum() - base.M.sum())
-    nx_shock = st.er * float(st.E.sum() - st.M.sum())
-    expected_gdp_change = (consumption_shock + nx_shock) / (consumption_base + nx_base) - 1.0
-    consumption_only_change = consumption_shock / consumption_base - 1.0
-    assert abs(expected_gdp_change - consumption_only_change) > 1e-4
+    expected = _open_gdp_volume(st, base) / _open_gdp_volume(base, base) - 1.0
+    cons_only = float(np.dot(base.pq, st.FD)) / float(np.dot(base.pq, base.FD)) - 1.0
+    assert abs(expected - cons_only) > 1e-4
 
     eng = registry.get("cge_static")
     res = eng.run(
@@ -580,9 +571,8 @@ def test_open_gdp_change_real_includes_net_exports_surplus():
         shocks=[CarbonPrice(price=1.0)],
         years=[2020],
     )
-    d = res.data
-    emitted = d[d["variable"] == "gdp_change_real"]["value"].iloc[0]
-    assert abs(emitted - expected_gdp_change) < 1e-6
+    emitted = res.data[res.data["variable"] == "gdp_change_real"]["value"].iloc[0]
+    assert abs(emitted - expected) < 1e-6
 
 
 @pytest.mark.parametrize("bad", [-1.0, 0.0])
@@ -1369,7 +1359,7 @@ def test_open_emits_standard_output_schema():
         "wage_change",
         "capital_return_change",
         "employment_change",
-        "emissions_change",
+        "covered_emissions_change",
         "welfare_change",
         "consumption_change",
         "import_change",

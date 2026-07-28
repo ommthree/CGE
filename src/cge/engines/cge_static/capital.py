@@ -97,6 +97,21 @@ _CAPITAL_FACTOR = "CAP"
 DEFAULT_NET_RETURN = 0.04
 
 
+def _validate_capital_rates(*, net_return: float, depreciation: float) -> None:
+    """Shared finite-range validation for the capital-bridge rates (review P2 round 13). The
+    depreciation δ must be a finite scalar in [0, 1] — the SAME range ``capital_next`` enforces, so
+    a negative δ cannot pass ``benchmark_capital`` merely because ``net_return + δ`` stays positive.
+    The net return must be a finite scalar ≥ 0."""
+    d = float(depreciation)
+    if not np.isfinite(d) or d < 0.0 or d > 1.0:
+        raise ValueError(
+            f"depreciation rate δ must be a finite value in [0, 1]; got {depreciation}"
+        )
+    nr = float(net_return)
+    if not np.isfinite(nr) or nr < 0.0:
+        raise ValueError(f"net_return must be a finite value ≥ 0; got {net_return}")
+
+
 def benchmark_capital(
     cal,
     *,
@@ -144,6 +159,10 @@ def benchmark_capital(
             f"model has no {_CAPITAL_FACTOR!r} factor; capital accumulation needs a capital "
             f"factor to track (factors are {factors})."
         )
+    # Shared finite-range validation (review P2 round 13): δ ∈ [0,1] and net_return finite ≥ 0,
+    # the SAME range capital_next enforces on δ — so a negative depreciation cannot slip through
+    # benchmark_capital and into the implied-growth calculation just because the SUM is positive.
+    _validate_capital_rates(net_return=net_return, depreciation=depreciation)
     user_cost = float(net_return) + float(depreciation)
     if not np.isfinite(user_cost) or user_cost <= 0:
         raise ValueError(

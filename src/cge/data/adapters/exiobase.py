@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pymrio
 
@@ -211,6 +212,61 @@ def _ghg_satellite(
     )
 
 
+# Classify each EXIOBASE final-demand category into a modelled institution (Phase 5.1b+, review P1
+# round 13). Matched case-insensitively by keyword on the category label. 'household' = households +
+# NPISH; 'government' = government consumption; 'investment' = gross fixed capital formation +
+# inventory/valuables changes. 'Export' is NOT a domestic institution (it is trade) — excluded.
+_FD_CATEGORY_INSTITUTION = [
+    ("government", ("government",)),
+    ("household", ("household", "npish", "non-profit")),
+    ("investment", ("capital formation", "inventor", "valuable")),
+]
+_FD_EXCLUDED = ("export",)
+
+
+def _classify_fd_category(category: str) -> str | None:
+    """Map a pymrio FD category label to 'household'/'government'/'investment', or None to exclude
+    (Export). An unrecognised category raises — a silent drop would understate final demand."""
+    low = str(category).lower()
+    if any(k in low for k in _FD_EXCLUDED):
+        return None
+    for institution, keywords in _FD_CATEGORY_INSTITUTION:
+        if any(k in low for k in keywords):
+            return institution
+    raise ValueError(
+        f"unrecognised final-demand category {category!r}; add it to _FD_CATEGORY_INSTITUTION "
+        "(household/government/investment) or _FD_EXCLUDED (trade); do not drop it silently"
+    )
+
+
+def _final_demand_by_institution(pio: pymrio.IOSystem, labels: list[str]) -> pd.DataFrame:
+    """Aggregate pymrio's Y (columns = (consuming region, FD category)) to a producing-label-indexed
+    table with columns '<region>|<institution>' (review P1 round 13). Categories are summed within
+    each (region, institution); Export is excluded. Empty columns (an institution with no flow) are
+    kept at zero so the SAM builder sees every institution."""
+    from cge.contracts.data_objects import IOSystem
+
+    sep = IOSystem.INSTITUTION_SEP
+    regions = list(dict.fromkeys(r for r, _ in pio.A.index))
+    Y = pio.Y.reindex(pio.A.index)
+    if Y.isna().any().any():
+        raise ValueError("final demand (Y) is not aligned with A's products after reindexing")
+    cols: dict[str, np.ndarray] = {}
+    for region, category in pio.Y.columns:
+        inst = _classify_fd_category(category)
+        if inst is None:
+            continue
+        key = f"{region}{sep}{inst}"
+        col = Y[(region, category)].to_numpy(dtype=float)
+        cols[key] = cols.get(key, np.zeros(len(labels))) + col
+    # Ensure every (region, institution) exists (zero if the source had none), for a uniform shape.
+    for region in regions:
+        for inst in IOSystem.INSTITUTIONS:
+            cols.setdefault(f"{region}{sep}{inst}", np.zeros(len(labels)))
+    ordered = [f"{r}{sep}{i}" for r in regions for i in IOSystem.INSTITUTIONS]
+    return pd.DataFrame({k: cols[k] for k in ordered}, index=labels)
+
+
 def adapt_pymrio(
     pio: pymrio.IOSystem,
     *,
@@ -261,6 +317,13 @@ def adapt_pymrio(
         columns=[str(c) for c in y_by_region.columns],
     )
 
+    # Final demand by consuming region AND institution (Phase 5.1b+, review P1 round 13). pymrio's
+    # Y columns are (consuming region, FD category); classify each category into a modelled
+    # institution (household / government / investment) so the SAM builders can populate GOV and
+    # SAVINV instead of lumping everything into the household. Export is EXCLUDED (it is trade,
+    # captured by the inter-regional A blocks, not a domestic final-demand institution).
+    fd_by_institution = _final_demand_by_institution(pio, labels)
+
     sectors, regions = [], []
     for region, sector in pio.A.index:
         if sector not in sectors:
@@ -278,6 +341,7 @@ def adapt_pymrio(
         A=A,
         final_demand=final_demand,
         final_demand_kind="by_region",  # one column per consuming region (review P2)
+        final_demand_by_institution=fd_by_institution,
     )
 
     satellites: list[SatelliteAccount] = []

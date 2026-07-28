@@ -93,12 +93,12 @@ def render() -> None:
         if is_cge:
             st.caption(
                 "GDP and welfare are **native CGE equilibrium outputs** — not a post-hoc roll-up — "
-                "for the **closed and open** economy variants. The household's CD consumer price "
-                "index is the **numéraire**, so *real* GDP is in CPI units and there is **no "
-                "separate inflation/deflator** (a wage-numéraire nominal figure is shown for "
-                "reference). The **multi-region** variant instead reports "
-                "**real_consumption_change** — a base-price household-consumption index, "
-                "explicitly *not* production-side GDP (see the model doc). Shown as percent."
+                "for **every** variant (closed, open and multi-region). **Real / volume** GDP "
+                "values the expenditure basket at benchmark prices (a Laspeyres quantity index); "
+                "**current-price** GDP at the run's prices; the **relative GDP deflator** "
+                "is their ratio (the GDP basket's price vs the CPI numéraire — not absolute "
+                "inflation, since the CPI is the numéraire). The multi-region variant also reports "
+                "**real_consumption_change** (a household-consumption index). Shown as percent."
             )
         else:
             st.caption(
@@ -109,17 +109,10 @@ def render() -> None:
                 "(Engine 2) shows real GDP falling. Shown as percent."
             )
         gdp = rv.macro_gdp_table(result).copy()
-        for c in (
-            "GDP Δ (nominal)",
-            "GDP Δ (real)",
-            "GDP Δ (nominal, wage-numéraire)",
-            "deflator (inflation)",
-            # THE P2 regression (review round 10): this column was missing from the conversion
-            # loop, so the multi-region CGE's consumption index displayed as a raw fraction
-            # (e.g. 0.0015) while the caption above claims every value shown is a percent.
-            "Real consumption Δ (multi-region; NOT GDP)",
-        ):
-            if c in gdp.columns:
+        # Convert EVERY non-index column to percent (review P2 round 13 — do not hard-code the label
+        # list, which drifted out of sync with the emitted variables; any value column is a change).
+        for c in gdp.columns:
+            if c not in ("region", "year"):
                 gdp[c] = (gdp[c] * 100).round(2)
         st.dataframe(gdp, width="stretch", hide_index=True)
         with st.expander("Value added by sector (nominal & real)", expanded=False):

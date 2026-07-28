@@ -122,6 +122,24 @@ def aggregate_io(
         fd_agg_df = pd.DataFrame({"final_demand": f_agg}, index=target_labels)
         fd_kind = "aggregate"
 
+    # Institution split (Phase 5.1b+, review P1 round 13): aggregate the '<region>|<institution>'
+    # table — producing labels through B, and the region part of each column through the region
+    # bridge, keeping the institution fixed — so a coarse build still feeds GOV/SAVINV.
+    fbi = io.fd_by_institution()
+    fbi_agg_df = pd.DataFrame()
+    if fbi is not None:
+        sep = IOSystem.INSTITUTION_SEP
+        agg_cols: dict[str, np.ndarray] = {}
+        for col in fbi.columns:
+            src_region, inst = str(col).split(sep)
+            vec = B @ fbi[col].reindex(labels).fillna(0.0).to_numpy(dtype=float)
+            # A source consuming-region maps to its target region(s) with the concordance weights
+            # (1.0 for a one-to-one aggregation), keeping the institution fixed.
+            for tgt_region, wr in region_cmap.weights[src_region].items():
+                tgt_col = f"{tgt_region}{sep}{inst}"
+                agg_cols[tgt_col] = agg_cols.get(tgt_col, np.zeros(len(target_labels))) + wr * vec
+        fbi_agg_df = pd.DataFrame(agg_cols, index=target_labels)
+
     tr_sectors: list[str] = []
     tr_regions: list[str] = []
     for label in target_labels:
@@ -150,6 +168,7 @@ def aggregate_io(
         A=A_agg_df,
         final_demand=fd_agg_df,
         final_demand_kind=fd_kind,
+        final_demand_by_institution=fbi_agg_df,
     )
 
     # Satellites: intensities -> totals (× x) -> aggregate -> back to intensities (÷ x_agg).

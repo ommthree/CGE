@@ -55,17 +55,34 @@ _VA_EPS = 1e-12
 
 def base_year_value_added(io: IOSystem) -> pd.Series:
     """Base-year value added per good (index = 'region:sector' labels), derived from the IO
-    system: VA_i = x_i · (1 − Σ_j A_{ji}), with x = (I−A)⁻¹ y. Requires a productive A (checked
-    by the engines before this runs). Negative VA (a non-productive column) is clipped to 0 so it
-    cannot flip an aggregate weight; such a build would already fail the engines' admissibility
-    guard, but we stay defensive."""
+    system: VA_i = x_i · (1 − Σ_j A_{ji}), with x = (I−A)⁻¹ y.
+
+    **Nonpositive value added is FATAL for macro reporting (review P2 round 13, 2026-07-28).** A
+    column whose intermediate input share Σ_j A_{ji} exceeds 1 has NEGATIVE value added — the sector
+    consumes more intermediates than it produces. A spectral-radius-<1 admissibility check does NOT
+    rule this out (it bounds the whole matrix, not each column), so it is checked here. Earlier this
+    was silently CLIPPED to 0, which is not an accounting identity: it changed aggregate
+    production-side GDP (e.g. from 2 to 3 on a constructed case) and broke the GDP identity. We now
+    RAISE — a build with a non-productive column is not a valid macro benchmark; fix or exclude it
+    rather than present a clipped, inconsistent GDP."""
     labels = list(io.A.columns)
     A = io.A.to_numpy(dtype=float)
     y = io.final_demand.sum(axis=1).reindex(labels).fillna(0.0).to_numpy(dtype=float)
     x = np.linalg.solve(np.eye(A.shape[0]) - A, y)
     va_share = 1.0 - A.sum(axis=0)  # column sum = intermediate input share per unit output
-    va = np.clip(x * va_share, 0.0, None)
-    return pd.Series(va, index=labels, name="value_added")
+    va = x * va_share
+    scale = max(float(np.abs(va).sum()), 1.0)
+    negative = np.where(va < -1e-9 * scale)[0]
+    if negative.size:
+        worst = int(negative[np.argmin(va[negative])])
+        raise ValueError(
+            f"nonpositive base-year value added for {labels[worst]!r} (VA={va[worst]:.4g}, "
+            f"intermediate input share {A.sum(axis=0)[worst]:.4g} > 1): the sector consumes more "
+            "intermediates than it produces, so production-side GDP is not well-defined. This is "
+            "fatal for macro/CGE reporting (an earlier version silently clipped it to 0, breaking "
+            "the GDP identity) — fix or exclude the offending column."
+        )
+    return pd.Series(np.clip(va, 0.0, None), index=labels, name="value_added")
 
 
 def _rec(variable: str, sector: str, region: str, year: int, scenario: str, value: float) -> dict:
