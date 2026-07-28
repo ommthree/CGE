@@ -64,7 +64,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.10"
+VERSION = "0.9.11"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -87,42 +87,33 @@ _SAVINV_ACCOUNT = "SAVINV"
 # (injected by the IO-backed paths) and always allowed. The data inputs (SAM/IOSystem/...) and the
 # shared carbon/elasticity controls are common; the government/investment/labour/adaptation/trade
 # closures are gated by variant below.
-_COMMON_CONFIG_KEYS = frozenset(
-    {
-        # Data inputs (from the store / toy loaders) — not policy controls.
-        "SAM",
-        "IOSystem",
-        "SatelliteAccount",
-        "satellites",
-        "sectors",
-        "regions",
-        # Shared controls every variant reads.
-        "carbon_cost_share",
-        "capital_share",
-        "va_elast",
-        "energy_sectors",
-        "energy_elasticities",
-    }
+# Data-input keys accepted on ANY entry (the store / toy loaders write these).
+_DATA_INPUT_KEYS = frozenset({"SAM", "IOSystem", "SatelliteAccount", "satellites"})
+# Shared PUBLIC controls every variant's model reads.
+_SHARED_CONTROLS = frozenset(
+    {"carbon_cost_share", "va_elast", "energy_sectors", "energy_elasticities"}
 )
-_VARIANT_CONFIG_KEYS = {
-    # Closed: the full macro-closure surface (government/investment/labour/adaptation live here).
-    "closed": _COMMON_CONFIG_KEYS
-    | {
+# Keys that only make sense on the IO-BACKED entry (they drive the SAM BUILD, not a supplied SAM):
+# capital_share (the build's VA split), multi_materiality (dust threshold), open_home_region /
+# multi_region (the build's dispatch flags).
+_IO_ONLY_KEYS = frozenset(
+    {"capital_share", "multi_materiality", "open_home_region", "multi_region"}
+)
+# The ``sectors`` axis hint is a legitimate explicit sector-ORDER on any entry (read by the
+# supplied-SAM resolver and the multi run). ``regions`` is only meaningful for the multi variant
+# (closed/open are single-region), so it is gated there.
+_SECTORS_KEY = frozenset({"sectors"})
+# Public model-CLOSURE controls, per variant (entry-independent).
+_VARIANT_CLOSURE_KEYS = {
+    "closed": {
         "gov_closure",
         "carbon_revenue_recipient",
         "inv_closure",
         "labour_floor",
         "adaptation_investment",
     },
-    # Open: Armington/CET + savings-investment + the trade closure; NO deficit gov closure, NO
-    # wage floor, NO adaptation (those generalisations are documented follow-ups, so they are
-    # rejected rather than silently ignored).
-    "open": _COMMON_CONFIG_KEYS
-    | {"open_home_region", "inv_closure", "armington_elast", "cet_elast", "trade_closure"},
-    # Multi: bilateral trade + savings-investment; NO deficit gov closure, NO recipient choice, NO
-    # wage floor, NO adaptation, NO flexible-trade closure (all documented follow-ups).
-    "multi": _COMMON_CONFIG_KEYS
-    | {"multi_region", "inv_closure", "armington_elast", "cet_elast", "multi_materiality"},
+    "open": {"inv_closure", "armington_elast", "cet_elast", "trade_closure"},
+    "multi": {"inv_closure", "armington_elast", "cet_elast", "regions"},
 }
 _ENUM_CONFIG = {
     "gov_closure": ("balanced_budget", "deficit_financed"),
@@ -132,34 +123,80 @@ _ENUM_CONFIG = {
 }
 
 
-def _validate_config(data: dict, variant: str) -> None:
-    """Strict typed config gate (review P1 round 13). Reject, BEFORE calibration: (1) any non-
-    internal ``data`` key the variant does not use — including a control another variant supports
-    (e.g. ``adaptation_investment`` on open/multi, ``labour_floor`` on open/multi, a deficit
-    ``gov_closure`` or non-default ``carbon_revenue_recipient`` on open/multi); (2) any enum control
-    with an invalid value (e.g. ``gov_closure='martians'``). This makes the manifest's recorded
-    config truthful — the run cannot proceed under a closure the scenario did not actually get."""
-    allowed = _VARIANT_CONFIG_KEYS[variant]
+def _allowed_config_keys(variant: str, entry: str) -> set[str]:
+    """The PUBLIC config keys a (variant, entry) combination may carry. ``entry`` is 'supplied' (a
+    supplied SAM) or 'io' (an IOSystem-backed build). IO-only keys (capital_share, axis hints, the
+    build dispatch flags) are rejected on a supplied SAM — where they are ignored (review P1 round
+    14)."""
+    keys = (
+        set(_DATA_INPUT_KEYS)
+        | set(_SHARED_CONTROLS)
+        | set(_SECTORS_KEY)
+        | set(_VARIANT_CLOSURE_KEYS[variant])
+    )
+    if entry == "io":
+        keys |= _IO_ONLY_KEYS
+    return keys
+
+
+def _validate_config(data: dict, variant: str, entry: str) -> None:
+    """Strict, ENTRY-PATH-SPECIFIC config gate (review P1 rounds 13/14). Reject, BEFORE calibration:
+    (1) any non-internal ``data`` key the (variant, entry) does not USE — a control another variant
+    supports, OR an IO-build key (``capital_share``/``open_home_region``/...) on a SUPPLIED SAM
+    where it is silently ignored; (2) any enum control with an invalid value; (3) an out-of-range
+    ``capital_share`` or an ``open_home_region`` not in the build. Keys starting with ``_`` are
+    engine-internal (IO-path injected state) and always allowed — they are set by the engine, never
+    by a scenario file. This makes the manifest's recorded config truthful."""
+    allowed = _allowed_config_keys(variant, entry)
     unknown = sorted(k for k in data if not k.startswith("_") and k not in allowed)
     if unknown:
-        variant_only = sorted(
-            k for k in unknown if any(k in ks for ks in _VARIANT_CONFIG_KEYS.values())
-        )
-        hint = (
-            f" ({variant_only} are supported by other variants but not '{variant}' — that closure "
-            "is a documented follow-up here, rejected rather than silently ignored)"
-            if variant_only
-            else ""
-        )
         raise ValueError(
-            f"unsupported config key(s) for the {variant!r} CGE variant: {unknown}{hint}. "
-            f"Allowed keys: {sorted(allowed)}."
+            f"unsupported config key(s) for the {variant!r} CGE variant on the {entry!r} entry "
+            f"path: {unknown}. These are either unknown, supported only by another variant, or "
+            f"(for capital_share / axis / build-dispatch keys) meaningful only on an IO-backed "
+            f"build — not a supplied SAM. Allowed here: {sorted(allowed)}."
         )
     for key, choices in _ENUM_CONFIG.items():
         if key in data and data[key] not in choices:
             raise ValueError(
                 f"invalid {key}={data[key]!r} for the {variant!r} variant; use one of {choices}."
             )
+    # Value checks for the IO-build controls.
+    if "capital_share" in data:
+        cs = data["capital_share"]
+        if not isinstance(cs, (int, float)) or not (0.0 < float(cs) < 1.0):
+            raise ValueError(f"capital_share must be a number in (0, 1); got {cs!r}.")
+    if entry == "io" and variant == "open" and "open_home_region" in data:
+        io = data.get("IOSystem")
+        if io is not None and data["open_home_region"] not in list(io.regions.labels):
+            raise ValueError(
+                f"open_home_region={data['open_home_region']!r} is not a region of the build "
+                f"{list(io.regions.labels)}."
+            )
+
+
+def _effective_public_config(data: dict, variant: str, entry: str) -> dict:
+    """The complete EFFECTIVE public configuration for the manifest (review P1 round 14): every
+    validated public control the run actually uses, with its effective value (the supplied value or
+    the documented default). Data inputs and the SAM itself are recorded elsewhere; this is the
+    policy/parameter surface, so a reader can see exactly what closure/parameters produced the run.
+    """
+    keys = _allowed_config_keys(variant, entry) - _DATA_INPUT_KEYS
+    defaults = {
+        "gov_closure": "balanced_budget",
+        "inv_closure": "savings_driven",
+        "carbon_revenue_recipient": "government",
+        "trade_closure": "fixed_foreign_savings",
+        "capital_share": 0.4 if entry == "io" else None,  # build.DEFAULT_CAPITAL_SHARE
+    }
+    cfg = {"variant": variant, "entry": entry}
+    for k in sorted(keys):
+        if k in data:
+            v = data[k]
+            cfg[k] = v if isinstance(v, (str, int, float, bool)) else "supplied"
+        elif k in defaults and defaults[k] is not None:
+            cfg[k] = defaults[k]
+    return cfg
 
 
 ASSUMPTIONS = {
@@ -423,19 +460,22 @@ class CGEStaticEngine:
         # otherwise the CLOSED pilot. Each variant has its own calibration/model.
         supplied_sam = data.get("SAM")
         if supplied_sam is not None and _is_multi_region_sam(supplied_sam):
-            variant = "multi"
+            variant, entry = "multi", "supplied"
         elif supplied_sam is not None and "ROW" in supplied_sam.accounts:
-            variant = "open"
+            variant, entry = "open", "supplied"
+        elif supplied_sam is not None:
+            variant, entry = "closed", "supplied"
         elif data.get("IOSystem") is not None and data.get("open_home_region") is not None:
-            variant = "open"  # IO-backed open (build_open_sam)
+            variant, entry = "open", "io"  # IO-backed open (build_open_sam)
         elif data.get("IOSystem") is not None and data.get("multi_region"):
-            variant = "multi"  # IO-backed multi (build_multi_sam)
+            variant, entry = "multi", "io"  # IO-backed multi (build_multi_sam)
         else:
-            variant = "closed"
-        # Strict config contract (review P1 round 13, 2026-07-28): reject unknown keys, invalid enum
-        # values, and controls a variant does not implement — BEFORE calibration — so a scenario
-        # file cannot silently request a policy closure that is never executed.
-        _validate_config(data, variant)
+            variant, entry = "closed", "io"  # IO-backed closed (build_sam)
+        # Strict, entry-path-specific config contract (review P1 rounds 13/14): reject unknown keys,
+        # keys meaningful only on another variant or only on an IO build, invalid enum values, and
+        # out-of-range values — BEFORE calibration — so a scenario file cannot silently request a
+        # closure/param that is never executed.
+        _validate_config(data, variant, entry)
 
         if variant == "multi":
             if supplied_sam is not None and _is_multi_region_sam(supplied_sam):
@@ -571,6 +611,9 @@ class CGEStaticEngine:
         # Per-year carbon cost share (dimensionless, gas/coverage/units handled like Engine 1).
         cc_by_year = {y: _carbon_cost_by_sector(inp, carbon_shocks, y) for y in years}
         emissions_priced = any(np.any(cc != 0.0) for cc, _ in cc_by_year.values())
+        # Price-FREE emission intensity (review P1 round 14) — computed once, year-independent, so
+        # covered emissions are emitted for EVERY year including a zero-price year.
+        emission_intensity = _carbon_intensity_by_sector(inp, carbon_shocks)
 
         # A closed CGE cannot destroy carbon revenue (it breaks Walras' law). When a positive
         # carbon price would raise revenue but the scenario left recycling at the default `none`,
@@ -655,11 +698,7 @@ class CGEStaticEngine:
                 adapt_amount=adapt_amount,
                 adapt_gamma=adapt_gamma,
             )
-            # Price-free emission intensity for the physical covered-emissions output: the supplied
-            # cost share (toy path), else the year's effective cost cc (IO path — proportional to
-            # intensity at a single carbon price). Both are physically meaningful weights.
-            intensity = inp.cost_share if inp.cost_share is not None else cc
-            _emit(records, cal, base, st, year, cc=cc, intensity=intensity)
+            _emit(records, cal, base, st, year, cc=cc, intensity=emission_intensity)
 
         # Emissions provenance: the effective aligned cost-share vector per year + the satellite
         # identity, so a changed satellite / gas selection / doubled emissions moves the manifest
@@ -672,6 +711,9 @@ class CGEStaticEngine:
             scenario={"shocks": [s.model_dump(mode="json") for s in shocks], "years": years},
             assumptions={
                 **ASSUMPTIONS,
+                # The complete effective PUBLIC configuration (review P1 round 14): every validated
+                # control the run used, with its effective value — so provenance is truthful.
+                "effective_config": _effective_public_config(data, variant, entry),
                 "sectors": sectors,
                 "factors": factors,
                 # VA elasticity materially changes results, so it belongs in the manifest — two runs
@@ -910,6 +952,33 @@ def _validate_cge_shock_controls(inp: _Inputs, carbon_shocks: list[CarbonPrice])
                 "already per-sector and single-region); set coverage via carbon_cost_share values, "
                 "or use an IOSystem+satellite build."
             )
+
+
+def _carbon_intensity_by_sector(
+    inp: _Inputs, carbon_shocks: list[CarbonPrice]
+) -> np.ndarray | None:
+    """Per-sector **price-free** emission intensity for the covered-emissions output (review P1
+    round 14). This is the effective cost share at a UNIT carbon price (price=1) — it honours the
+    scenario's gases and coverage but NOT the price level, so ``covered_emissions_change`` is
+    well-defined **every year, including a zero-price year** (an emissions quantity must not vanish
+    because the policy price is 0). Returns None only when there is genuinely nothing to weight (no
+    satellite / no carbon shocks / no coverage hits).
+
+    Supplied-SAM path: the supplied ``cost_share`` IS the price-free intensity (the τ=1 wedge).
+    IO path: re-run ``carbon_cost_vector`` with the shocks' price forced to 1."""
+    if not carbon_shocks:
+        return None
+    if inp.io is None:
+        return inp.cost_share  # already price-free (the τ=1 dimensionless wedge), or None
+    if inp.sat is None:
+        return None
+    # Force a flat unit price (clearing any price path) so the vector is intensity-only: gases and
+    # coverage are honoured, the price level is removed.
+    unit_shocks = [s.model_copy(update={"price": 1.0, "path": None}) for s in carbon_shocks]
+    cc, _prov = _carbon_cost_by_sector(
+        inp, unit_shocks, 0
+    )  # any year: unit price is year-invariant
+    return cc if np.any(cc != 0.0) else None
 
 
 def _carbon_cost_by_sector(
@@ -1431,6 +1500,10 @@ def _run_open_from_io(meta, data: dict, shocks: list[Shock], years: list[int]) -
         inner["_effective_cc_by_year"] = (
             cc_by_year  # per-year [ns] cost, consumed as-is by _run_open
         )
+    # Price-FREE emission intensity (review P1 round 14): the effective cost at a UNIT carbon price,
+    # so covered emissions are well-defined every year including zero-price. Honours gases/coverage,
+    # not the price level.
+    inner["_emission_intensity"] = _open_intensity_from_io(io, sat, carbon_shocks, home, sectors)
     # Record the satellite's identity whenever one was actually consulted, even if the effective
     # cost it produced is zero (coverage excludes home, or genuinely zero intensity there) — the
     # manifest should reflect that a real satellite was read, not just that pricing happened to be
@@ -1438,6 +1511,20 @@ def _run_open_from_io(meta, data: dict, shocks: list[Shock], years: list[int]) -
     if sat is not None:
         inner["_emissions_provenance"] = _sat_identity(sat)
     return _run_open(meta, inner, shocks, years)
+
+
+def _open_intensity_from_io(io, sat, carbon_shocks, home, sectors):
+    """Price-free per-sector emission intensity for the open IO path (review P1 round 14): the
+    effective cost at a UNIT carbon price (gases/coverage honoured, price removed). Returns None if
+    nothing to weight."""
+    if not carbon_shocks or sat is None:
+        return None
+    unit_shocks = [s.model_copy(update={"price": 1.0, "path": None}) for s in carbon_shocks]
+    out = _open_effective_cc_from_io(io, sat, unit_shocks, home, sectors, [0])
+    if out is None:
+        return None
+    v = out[0]
+    return v if np.any(v != 0.0) else None
 
 
 def _open_effective_cc_from_io(io, sat, carbon_shocks, home, sectors, years):
@@ -1504,6 +1591,9 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     # verbatim, review P0), or a supplied dimensionless share re-scaled by the price per year.
     io_backed = bool(data.get("_io_backed"))
     eff_by_year = data.get("_effective_cc_by_year")
+    io_intensity = data.get(
+        "_emission_intensity"
+    )  # price-free intensity from the IO path (or None)
     # Apply/reject every CarbonPrice control (review P1: the open path ignored gases + coverage).
     # The supplied-SAM path carries a single dimensionless cost share, so — like the supplied-SAM
     # closed path — it cannot express gas selection or spatial coverage; reject them rather than
@@ -1705,11 +1795,11 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         resid_max = max(resid_max, sol.residual_norm)
         backends.add(sol.backend)
         statuses.add(sol.status)
-        # Price-free intensity for covered emissions: the supplied share (toy path) or the effective
-        # cc (IO path — proportional to intensity at a single carbon price).
-        _emit_open(
-            records, cal, base, st, year, cc=cc, intensity=share if share is not None else cc
-        )
+        # Price-free intensity for covered emissions (review P1 round 14): the IO path's unit-price
+        # intensity, else the supplied share (toy path). Both are price-independent, so covered
+        # emissions are emitted every year including a zero-price year.
+        emission_intensity = io_intensity if io_backed else share
+        _emit_open(records, cal, base, st, year, cc=cc, intensity=emission_intensity)
 
     # Substantive provenance: the effective per-year carbon-cost vector (hashed) + the full
     # per-sector elasticity vectors, so two runs that differ only in carbon shares or in an
@@ -1737,6 +1827,9 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         scenario={"shocks": [s.model_dump(mode="json") for s in shocks], "years": years},
         assumptions={
             **OPEN_ASSUMPTIONS,
+            "effective_config": _effective_public_config(
+                data, "open", "io" if io_backed else "supplied"
+            ),
             "sectors": sectors,
             "factors": factors,
             "recycling_mode": recycling,
@@ -2050,6 +2143,13 @@ def _run_multi_from_io(meta, data: dict, shocks: list[Shock], years: list[int]) 
     inner["sectors"] = list(sectors)
     if cc_by_year is not None:
         inner["_effective_cc_by_year"] = cc_by_year  # per-year [nr, ns] cost, consumed as-is
+    # Price-FREE per-(region,sector) intensity (review P1 round 14): unit-price effective cost, so
+    # covered emissions are emitted every year including zero-price.
+    if sat is not None and carbon_shocks:
+        unit = [s.model_copy(update={"price": 1.0, "path": None}) for s in carbon_shocks]
+        iens = _multi_effective_cc_from_io(io, sat, unit, regions, sectors, [0])
+        if iens is not None:
+            inner["_emission_intensity"] = iens[0]
     if sat is not None:
         inner["_emissions_provenance"] = _sat_identity(sat)
     return _run_multi(meta, inner, shocks, years)
@@ -2139,6 +2239,11 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         raise ValueError(
             "a positive carbon price on the multi-region CGE requires carbon_cost_share"
         )
+    # Price-free emission intensity for covered emissions (review P1 round 14): the IO path's
+    # unit-price intensity, else the supplied share — captured BEFORE ``share`` is zeroed below, so
+    # the fallback is not lost (the earlier code replaced a None share with zeros first, so the
+    # IO-path fallback never fired and covered emissions never emitted).
+    emission_intensity = data.get("_emission_intensity") if io_backed else share
     share = share if share is not None else np.zeros((nr, ns))
 
     # Each region has one household, so labour_tax_cut ≡ lump_sum within a region (same aggregate
@@ -2220,11 +2325,9 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         resid_max = max(resid_max, sol.residual_norm)
         backends.add(sol.backend)
         statuses.add(sol.status)
-        # Price-free per-(region,sector) intensity for covered emissions: the supplied share, else
-        # the effective cc (IO path).
-        _emit_multi(
-            records, cal, base, st, year, cc=cc, intensity=share if share is not None else cc
-        )
+        # Price-free per-(region,sector) intensity for covered emissions (review P1 round 14) —
+        # captured above, so covered emissions emit every year including zero-price.
+        _emit_multi(records, cal, base, st, year, cc=cc, intensity=emission_intensity)
 
     # Substantive provenance: the effective per-year carbon-cost matrix (hashed) so two runs that
     # differ only in the carbon shares get different manifests (review P1).
@@ -2255,6 +2358,9 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         scenario={"shocks": [s.model_dump(mode="json") for s in shocks], "years": years},
         assumptions={
             **MULTI_ASSUMPTIONS,
+            "effective_config": _effective_public_config(
+                data, "multi", "io" if io_backed else "supplied"
+            ),
             "regions": regions,
             "sectors": sectors,
             "factors": factors,
@@ -2398,28 +2504,32 @@ def _emit_multi(records, cal, base, st, year: int, cc=None, intensity=None) -> N
         gd_b = base.GD[ri] if cal.has_government else np.zeros(cal.ns)
         idv = st.ID[ri] if cal.has_investment else np.zeros(cal.ns)
         idv_b = base.ID[ri] if cal.has_investment else np.zeros(cal.ns)
-        # VOLUME GDP: expenditure aggregate at BENCHMARK prices (all 1), a Laspeyres quantity index
-        # (this variant was already correct; closed/open now match it — review P1 round 13).
-        net_exports = float(st.EX[ri].sum() - st.M[ri].sum())
-        net_exports_b = float(base.EX[ri].sum() - base.M[ri].sum())
-        gdp_r = cons + float(gd.sum()) + float(idv.sum()) + net_exports
-        gdp_r_base = cons_base + float(gd_b.sum()) + float(idv_b.sum()) + net_exports_b
+        # VOLUME GDP: expenditure aggregate C+G+I+(X−M) at BENCHMARK prices (all 1), a Laspeyres
+        # quantity index. Net exports at benchmark prices: Σ EX[ri] − Σ M[ri].
+        net_exports_vol = float(st.EX[ri].sum() - st.M[ri].sum())
+        gdp_r = cons + float(gd.sum()) + float(idv.sum()) + net_exports_vol
+        gdp_r_base = (
+            cons_base
+            + float(gd_b.sum())
+            + float(idv_b.sum())
+            + float(base.EX[ri].sum() - base.M[ri].sum())
+        )
         vol_ratio = gdp_r / gdp_r_base
         records.append(_rec_r("gdp_change_real", "__economy__", region, year, vol_ratio - 1.0))
-        # CURRENT-PRICE GDP and the deflator, on the region's ABSORPTION basket (FD+GD+ID) valued at
-        # the run's composite prices pq[r] vs benchmark. The deflator is the relative price of that
-        # basket — a genuine (non-zero) index, not hard-coded 0 (review P1 round 13). (Net exports
-        # are left at volume in both series; a full trade-price deflator over the bilateral pe is a
-        # documented refinement — the absorption basket is the dominant, unambiguous component.)
-        absorb_vol = cons + float(gd.sum()) + float(idv.sum())
+        # CURRENT-PRICE GDP: the SAME basket at the run's prices — absorption at composite prices
+        # pq[ri], and net exports at CURRENT BILATERAL ROUTE prices pe for BOTH exports and imports
+        # (review P1 round 14 — the earlier version priced net exports at benchmark, understating
+        # the move and the deflator). Exports from ri: pe[ri,s,d]·EX[ri,s,d]; imports of ri from o:
+        # pe[o,s,ri]·M[ri,s,o] (the o→ri route price). Deflator = current-price GDP / volume GDP.
+        exports_cur = float((st.pe[ri, :, :] * st.EX[ri, :, :]).sum())
+        imports_cur = float((st.pe[:, :, ri].transpose(1, 0) * st.M[ri, :, :]).sum())
         absorb_cur = float(np.dot(st.pq[ri], st.FD[ri] + gd + idv))
-        absorb_base = cons_base + float(gd_b.sum()) + float(idv_b.sum())
-        cur_ratio = (absorb_cur + net_exports) / gdp_r_base if gdp_r_base != 0 else 1.0
+        gdp_cur = absorb_cur + exports_cur - imports_cur
+        cur_ratio = gdp_cur / gdp_r_base if gdp_r_base != 0 else 1.0
         records.append(_rec_r("gdp_change_nominal", "__economy__", region, year, cur_ratio - 1.0))
-        defl = (absorb_cur / absorb_vol) if absorb_vol != 0 else 1.0
-        defl_base = (absorb_base / absorb_base) if absorb_base != 0 else 1.0
+        # deflator = (1+nominal) / (1+volume) − 1: the GDP basket's price move vs the CPI numéraire.
         records.append(
-            _rec_r("gdp_deflator_change", "__economy__", region, year, defl / defl_base - 1.0)
+            _rec_r("gdp_deflator_change", "__economy__", region, year, cur_ratio / vol_ratio - 1.0)
         )
         u = float(np.prod(np.power(st.FD[ri], cal.gamma[ri])))
         u_base = float(np.prod(np.power(base.FD[ri], cal.gamma[ri])))

@@ -126,7 +126,9 @@ def test_has_macro_recognises_multi_region_real_consumption_change():
     assert (result.data["variable"] == "real_consumption_change").any()
     assert rv.has_macro(result)
     gdp = rv.macro_gdp_table(result)
-    assert "Real consumption Δ (multi-region)" in gdp.columns
+    # The label carries an explicit "NOT GDP" clarifier so the consumption index is never misread
+    # as a GDP column (review P2 round 14).
+    assert "Real consumption Δ (multi-region; NOT GDP)" in gdp.columns
 
 
 def test_has_trade_and_trade_table_open_economy():

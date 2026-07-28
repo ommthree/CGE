@@ -29,6 +29,14 @@
   build**, and **per-cell (rather than uniform) trade elasticities** are the remaining sub-phases;
   magnitudes are illustrative.
 
+  **Institution scope of the IO→SAM builders (review round 14).** The IOSystem-driven *institution*
+  split (EXIOBASE Y categories → household/`GOV`/`SAVINV` with imputed direct tax and savings,
+  validated by the `final_demand_by_institution` contract) is wired for the **closed** builder only.
+  `build_open_sam` and `build_multi_sam` route *all* final demand to a single household (`HOH` /
+  `HOH_<r>`) account. Government and savings-investment therefore enter the open/multi variants via a
+  **supplied SAM that already carries `GOV`/`SAVINV` accounts**, not by imputation from an IOSystem.
+  Extending the institution imputation to the open/multi builders is a follow-up.
+
 ## 1. Purpose & scope
 
 Compute the **general-equilibrium** response to a carbon price: prices, output volumes, and factor
@@ -254,8 +262,12 @@ the government budget (consistent across `balanced_budget` — where it is spent
 closure. This was made explicit because an earlier `deficit_financed` implementation *silently*
 recycled all revenue to the household, so switching the closure also switched revenue ownership —
 a defect: the recipient is now its own documented, manifest-recorded assumption
-(`carbon_revenue_recipient`). Under `balanced_budget` revenue funds the government by construction,
-so the choice only bites under `deficit_financed`.
+(`carbon_revenue_recipient`). The recipient bites under **every** closure, including
+`balanced_budget`: routing revenue to `household` there raises household income (and, under
+`fixed_real` demand, changes the goods-market fixed point), whereas `government` spends it on
+$\gamma^g$ — an earlier version mishandled the household-recipient/`fixed_real`/`balanced_budget`
+combination and violated Walras' law at the dropped market (review P1 round 14, now covered by
+`test_carbon_revenue_recipient_bites_under_balanced_budget`).
 
 **Semantics, stated plainly:** with a `GOV` account, the scenario's `revenue_recycling` mode routes
 carbon revenue **to the government budget** (spent on $\gamma^g$) by default, *not* to household

@@ -38,8 +38,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
     print(f"Scenario hash: {result.manifest.scenario_hash}")
     print("Assumptions:")
     print(json.dumps(result.manifest.assumptions, indent=2))
-    # Macro headline (Phase 4b): GDP change + deflator per region, if the run carries them.
-    gdp = df[(df["variable"] == "gdp_change") & (df["scenario"] == "central")]
+    # Macro headline (Phase 4b): GDP change + deflator per region, if the run carries them. The
+    # PE/accounting roll-up emits nominal GDP as ``gdp_change``; the CGE engine emits it as
+    # ``gdp_change_nominal``. Accept BOTH (review P2 round 14: the CGE rename left this block
+    # silently empty for CGE runs).
+    nominal_gdp_var = (
+        "gdp_change_nominal" if (df["variable"] == "gdp_change_nominal").any() else "gdp_change"
+    )
+    gdp = df[(df["variable"] == nominal_gdp_var) & (df["scenario"] == "central")]
     if not gdp.empty:
         print("\nMacro aggregates (central band):")
         econ = df[df["sector"] == "__economy__"]
@@ -55,7 +61,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 return float(s.iloc[0]) if not s.empty else float("nan")
 
             print(
-                f"  {region} {year}: GDP {_v('gdp_change') * 100:+.2f}% nominal / "
+                f"  {region} {year}: GDP {_v(nominal_gdp_var) * 100:+.2f}% nominal / "
                 f"{_v('gdp_change_real') * 100:+.2f}% real  ·  "
                 f"deflator {_v('deflator') * 100:+.2f}%"
             )

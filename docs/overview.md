@@ -213,12 +213,14 @@ Three cross-cutting disciplines, applied at the same bar to every component:
   that the *numbers* are still right, not just that the code runs.
   → [`docs/validation.md`](validation.md).
 
-The platform has been through **seven rounds of independent adversarial review** (units,
-concurrency, crash-safety, validation edge cases), all remediated with the fixes and reasoning
-recorded → [`docs/review-2026-07-remediation.md`](review-2026-07-remediation.md). The honest
-current status: **cost answers are validated against live data; volume answers are indicative;
-the CGE pilot (with revenue recycling) is implemented on EXIOBASE-shaped data; the open-economy
-CGE and nature extensions are the next work.**
+The platform has been through **fourteen rounds of independent adversarial review** (units,
+concurrency, crash-safety, validation edge cases, CGE closure/Walras correctness, GDP index-number
+conventions, IO→SAM institution pipeline), all remediated with the fixes and reasoning recorded →
+[`docs/review-2026-07-remediation.md`](review-2026-07-remediation.md). The honest current status:
+**cost answers are validated against live data; volume answers are indicative; the static CGE
+(revenue recycling, government closures, adaptation/transition investment, KL-E-M energy nest) runs
+in closed, open, and multi-region variants on EXIOBASE-shaped data; a live-EXIOBASE multi-region SAM
+build (§5.1b) and the nature extensions are the next work.**
 
 ---
 

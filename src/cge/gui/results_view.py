@@ -145,7 +145,7 @@ def macro_gdp_table(result: ResultSet) -> pd.DataFrame:
             "gdp_change_real": "GDP Δ (real)",
             "gdp_change_nominal": "GDP Δ (current price)",
             "gdp_deflator_change": "GDP deflator Δ (relative)",
-            "real_consumption_change": "Real consumption Δ (multi-region)",
+            "real_consumption_change": "Real consumption Δ (multi-region; NOT GDP)",
         }
     )
 
@@ -220,17 +220,29 @@ def welfare_table(result: ResultSet) -> pd.DataFrame:
 def macro_gva_table(result: ResultSet) -> pd.DataFrame:
     """Per sector×region (central band): nominal & real GVA change, sorted by real (worst first)."""
     df = result.data
+    # Two macro paths name the real GVA series differently: the PE/Phase-4b accounting roll-up
+    # emits ``gva_change_real``, the CGE engine emits ``gva_volume_change`` (a benchmark-price
+    # volume index). Accept BOTH and coalesce — the old code named only ``gva_change_real``,
+    # leaving the CGE real column permanently empty (review P2 round 14). ``gva_change`` is the
+    # shared nominal series.
+    real_names = ("gva_change_real", "gva_volume_change")
     sel = (
-        df["variable"].isin(["gva_change", "gva_change_real"])
+        df["variable"].isin(("gva_change", *real_names))
         & (df["sector"] != _ECONOMY_SECTOR)
         & (df["scenario"] == "central")
     )
     wide = df[sel].pivot_table(
         index=["region", "sector", "year"], columns="variable", values="value"
     )
-    keep = [c for c in ("gva_change", "gva_change_real") if c in wide.columns]
-    wide = wide[keep].reset_index()
-    wide = wide.rename(columns={"gva_change": "GVA Δ (nominal)", "gva_change_real": "GVA Δ (real)"})
+    present_real = [c for c in real_names if c in wide.columns]
+    if present_real:
+        wide["GVA Δ (real)"] = wide[present_real].bfill(axis=1).iloc[:, 0]
+    keep = ["region", "sector", "year"]
+    out = wide.reset_index()
+    cols = keep + (["gva_change"] if "gva_change" in wide.columns else [])
+    cols += ["GVA Δ (real)"] if present_real else []
+    out = out[cols].rename(columns={"gva_change": "GVA Δ (nominal)"})
+    wide = out
     if "GVA Δ (real)" in wide.columns:
         wide = wide.sort_values("GVA Δ (real)")
     return wide.reset_index(drop=True)

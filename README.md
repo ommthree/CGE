@@ -30,8 +30,12 @@ the revenue-recycling effect and dirty→clean reallocation. It also runs as an 
 (Armington imports + CET exports + a rest-of-world account, CES value added, elasticity sweeps),
 where a carbon price causes textbook **carbon leakage**, and as a **true multi-region economy**
 with bilateral trade between build regions (destination-specific route prices, explicit bilateral
-market clearing, cross-region leakage; an IOSystem-driven multi-region SAM build is the remaining
-sub-phase). Volume magnitudes are indicative; cost answers are validated. See
+market clearing, cross-region leakage). **Phase 5d** extends the CGE with an explicit **government
+account** (balanced-budget and deficit-financed closures), **adaptation/transition investment**, and
+a **KL-E-M energy nest** across all three variants. An IOSystem-driven multi-region SAM build is the
+remaining data sub-phase (§5.1b: the offline test MRIO's inter-region trade is dust at the sector
+granularity, so the live-EXIOBASE build with genuine bilateral trade is the outstanding step).
+Volume magnitudes are indicative; cost answers are validated. See
 [`docs/models/cge-static.md`](docs/models/cge-static.md).
 
 ```bash

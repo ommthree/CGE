@@ -1046,6 +1046,24 @@ def _eur_multi_io_sat():
     return io, sat
 
 
+def test_engine_multi_from_io_emits_covered_emissions():
+    """Review P1 (round 14, 2026-07-28): an IO-backed multi run emitted emissions_priced=True but
+    NO covered-emissions rows (the None share was zeroed before the fallback fired). Now price-free
+    intensity is passed through, so every region gets a covered_emissions_change observation."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    io, sat = _eur_multi_io_sat()
+    res = eng.run(
+        data={"IOSystem": io, "SatelliteAccount": sat, "multi_region": True},
+        shocks=[CarbonPrice(price=100.0)],
+        years=[2020],
+    )
+    ce = res.data[res.data["variable"] == "covered_emissions_change"]
+    assert set(ce["region"]) == {"A", "B"}  # emitted per region, not silently absent
+    assert (ce["value"] < 0.0).all()  # a carbon price cuts covered emissions
+
+
 def test_engine_multi_from_io_carbon_price_moves_all_regions():
     """The IO-backed multi path prices carbon from the satellite per (region, sector): energy
     contracts and manufacturing expands in BOTH regions, and the higher-intensity region's energy
@@ -1214,6 +1232,38 @@ def _prov():
     )
 
 
+def test_multi_gdp_deflator_uses_current_bilateral_trade_prices():
+    """Review P1 (round 14, 2026-07-28): multi-region CURRENT-PRICE GDP prices net exports at the
+    CURRENT bilateral route prices pe (both exports and imports), not benchmark/volume prices, and
+    the deflator = (1+nominal)/(1+real)−1. The earlier version priced net exports at benchmark and
+    called the absorption-only ratio the GDP deflator."""
+    from cge.contracts.engine import registry
+
+    eng = registry.get("cge_static")
+    # Zero shock: the deflator is ~0 (benchmark replicates).
+    z = eng.run(
+        data={"SAM": toy_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.0}}},
+        shocks=[CarbonPrice(price=0.0)],
+        years=[2020],
+    )
+    assert z.data[z.data["variable"] == "gdp_deflator_change"]["value"].abs().max() < 1e-9
+    # Under a shock, the deflator satisfies the identity (1+nominal)/(1+real)−1 for every region.
+    res = eng.run(
+        data={"SAM": toy_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}},
+        shocks=[CarbonPrice(price=0.3)],
+        years=[2020],
+    )
+    d = res.data
+    for r in ("N", "S"):
+
+        def v(var, region=r):
+            return float(d[(d["variable"] == var) & (d["region"] == region)]["value"].iloc[0])
+
+        nom, real, defl = v("gdp_change_nominal"), v("gdp_change_real"), v("gdp_deflator_change")
+        assert defl == pytest.approx((1 + nom) / (1 + real) - 1, abs=1e-9)
+        assert abs(defl) > 1e-4  # a genuine, non-trivial relative-price move
+
+
 def test_multi_emits_standard_output_schema():
     """Review P2 (2026-07-27): the multi-region variant emits the full standard schema PER REGION,
     including real GDP (gdp_change_real) — previously it emitted only real_consumption_change."""
@@ -1274,6 +1324,41 @@ def test_config_rejects_unknown_and_unsupported_keys():
     for data in bad:
         with pytest.raises(ValueError, match="unsupported config key|invalid"):
             eng.run(data=data, shocks=shocks, years=[2020])
+
+
+def test_config_entry_path_specific_and_values_validated():
+    """Review P1 (round 14, 2026-07-28): validation is ENTRY-PATH specific and validates VALUES —
+    a supplied SAM rejects IO-build-only keys (capital_share, open_home_region, multi_region,
+    regions on closed) that it would otherwise silently ignore, and an out-of-range capital_share
+    fails. The manifest records the complete effective public config."""
+    from cge.contracts.engine import registry
+    from cge.data.sam import toy_open_sam, toy_sam
+
+    eng = registry.get("cge_static")
+    shocks = [CarbonPrice(price=0.3)]
+    bad = [
+        {"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}, "capital_share": -999},
+        {"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}, "regions": ["fake"]},
+        {
+            "SAM": toy_open_sam(),
+            "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5},
+            "open_home_region": "X",
+        },
+        {"SAM": toy_multi_sam(), "carbon_cost_share": {"N": {"BRD": 0.3}}, "multi_region": False},
+    ]
+    for data in bad:
+        with pytest.raises(ValueError, match="unsupported config key|capital_share"):
+            eng.run(data=data, shocks=shocks, years=[2020])
+    # The manifest records the effective public config.
+    res = eng.run(
+        data={"SAM": toy_sam(), "carbon_cost_share": {"BRD": 2.0, "MIL": 0.5}},
+        shocks=[CarbonPrice(price=0.1)],
+        years=[2020],
+    )
+    ec = res.manifest.assumptions["effective_config"]
+    assert ec["variant"] == "closed" and ec["entry"] == "supplied"
+    assert ec["gov_closure"] == "balanced_budget"  # default recorded
+    assert ec["carbon_revenue_recipient"] == "government"
 
 
 def test_config_accepts_supported_keys():

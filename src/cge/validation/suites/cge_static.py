@@ -272,7 +272,15 @@ def _multi_real_sam_replication():
     machine precision — proving the IOSystem→multi-SAM→calibrate→solve pipeline works on structured
     multi-region data (offline pymrio test MRIO, not live EXIOBASE), and that the built SAM's
     trade-materiality/connectivity survives calibration (active_routes ≠ ∅, one connected
-    component)."""
+    component).
+
+    **Scope (review P1 round 14):** this gate validates the COARSE 2-region × 3-sector aggregated
+    build — whose cross-region trade is above the materiality threshold. The FULL 6-region ×
+    8-sector
+    ``exiobase-test`` fixture has entirely-dust inter-region trade at the sector granularity, so
+    ``build_multi_sam`` correctly rejects it and ``aggregate_dust_regions`` reports that no genuine
+    multi-region structure survives (both behaviours are unit-tested in ``test_sam.py``). A
+    live-EXIOBASE multi-region build with real cross-region trade is the remaining data step."""
     import tempfile
 
     from cge.data.build import build_test
@@ -283,7 +291,9 @@ def _multi_real_sam_replication():
 
     store = DataStore(tempfile.mkdtemp())
     build_test(store=store)
-    # The aggregated small build is the 2-region × 3-sector multi-region system.
+    # The aggregated small build is the 2-region × 3-sector multi-region system (coarse; the full
+    # 6×8 fixture's cross-region trade is dust — see the docstring and the aggregate_dust_regions
+    # workflow tests).
     bid = next(b for b in store.build_ids() if b != "exiobase-test")
     io = store.load(bid)["IOSystem"]
     sam, report, regions, sectors = build_multi_sam(io)
@@ -694,6 +704,41 @@ def _deficit_investment_nonnegative():
         rejected = True
     ok = min_id >= -1e-12 and rejected
     return ok, f"min ID={min_id:.3e}; over-earmark rejected={rejected}", min_id, -1e-12
+
+
+@check(SUITE, "every_closure_combination_clears_every_market")
+def _every_closure_clears_every_market():
+    """THE false-equilibrium gate (review P1 round 14): for EVERY supported closure combination
+    (gov_closure × inv_closure × carbon_revenue_recipient) the ACCEPTED equilibrium must clear
+    EVERY factor market — including the Walras-dropped one, whose residual the solver never sees.
+    The earlier fixed_real + household-recipient case returned solver success while carrying a
+    ~0.577% capital-market gap (its revenue fixed point used the savings-driven demand deriv.)."""
+    cal = _gov_inv_cal()
+    cc = 0.3 * _EMISSIONS
+    ns, nf = len(cal.sectors), len(cal.factors)
+    worst = 0.0
+    worst_combo = ""
+    for gov in ("balanced_budget", "deficit_financed"):
+        for inv in ("savings_driven", "fixed_real"):
+            for recip in ("government", "household"):
+                if gov == "deficit_financed" and inv == "fixed_real":
+                    continue  # deficit_financed is savings_driven-only (rejected loudly elsewhere)
+                kw = dict(
+                    carbon_cost=cc,
+                    recycling="lump_sum",
+                    gov_closure=gov,
+                    inv_closure=inv,
+                    carbon_revenue_recipient=recip,
+                )
+                sol = solve(
+                    lambda z, kw=kw: M.residuals(cal, z, **kw), M.initial_guess(cal), prefer="scipy"
+                )
+                st = M.derive_state(cal, sol.x[:ns], sol.x[ns:], strict=True, **kw)
+                gap = max(abs(float(st.F[f, :].sum()) - cal.endowment[f]) for f in range(nf))
+                if gap > worst:
+                    worst, worst_combo = gap, f"{gov}/{inv}/{recip}"
+    ok = worst < 1e-9
+    return ok, f"worst factor-market gap {worst:.2e} at {worst_combo or 'n/a'}", worst, 1e-9
 
 
 @check(SUITE, "multi_dust_route_rejected")
