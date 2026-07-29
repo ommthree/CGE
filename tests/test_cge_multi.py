@@ -1424,6 +1424,50 @@ def test_config_boundary_rejects_injected_internal_keys_and_ambiguous_inputs():
         )
 
 
+def test_config_matrix_rejects_controls_ignored_by_the_selected_path():
+    """Review P1 (round 16, 2026-07-30): the allowed-key set is an EXPLICIT per-(variant, entry)
+    table, so a control that the SELECTED path does not read is REJECTED rather than accepted and
+    recorded in effective_config. On a CLOSED IO-backed run the reviewer confirmed all of these were
+    (wrongly) accepted and produced baseline-identical results while being recorded as supplied:
+    multi_materiality (multi-only), a bogus sectors hint (the closed IO build infers its own), and
+    carbon_cost_share (the IO wedge is satellite-derived). A supplied SAM also wrongly accepted an
+    ignored SatelliteAccount (a supplied SAM has no satellite path)."""
+    import tempfile
+
+    from cge.contracts.engine import registry
+    from cge.data.build import build_test
+    from cge.data.sam import toy_sam
+    from cge.data.store import DataStore
+
+    store = DataStore(tempfile.mkdtemp())
+    build_test(store=store)
+    small = next(b for b in store.build_ids() if b != "exiobase-test")
+    io = store.load(small)["IOSystem"]
+    eng = registry.get("cge_static")
+    shocks = [CarbonPrice(price=0.1)]
+
+    # Closed IO-backed run: each of these keys is ignored on that path → must be rejected.
+    for bad in (
+        {"multi_materiality": 0.05},
+        {"sectors": ["BOGUS"]},
+        {"carbon_cost_share": {"e": 9}},
+    ):
+        with pytest.raises(ValueError, match="unsupported config key"):
+            eng.run(data={"IOSystem": io, **bad}, shocks=shocks, years=[2020])
+
+    # Supplied SAM with an ignored SatelliteAccount (a supplied SAM takes carbon from the share).
+    with pytest.raises(ValueError, match="unsupported config key"):
+        eng.run(
+            data={
+                "SAM": toy_sam(),
+                "carbon_cost_share": {"BRD": 1.0, "MIL": 0.5},
+                "SatelliteAccount": object(),
+            },
+            shocks=shocks,
+            years=[2020],
+        )
+
+
 def test_config_accepts_supported_keys():
     """The strict gate does not reject legitimate per-variant controls."""
     from cge.contracts.engine import registry

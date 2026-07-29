@@ -64,7 +64,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.12"
+VERSION = "0.9.13"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -81,40 +81,73 @@ _GOV_ACCOUNT = "GOV"
 # instead of household income — is the remaining 5d.2 work).
 _SAVINV_ACCOUNT = "SAVINV"
 
-# Strict per-variant configuration contract (review P1 round 13, 2026-07-28). Each variant declares
-# the ``data`` keys it USES; any other (non-internal) key is a hard error, so a scenario file cannot
-# silently request a control the variant ignores. Keys starting with ``_`` are engine-internal
-# (injected by the IO-backed paths) and always allowed. The data inputs (SAM/IOSystem/...) and the
-# shared carbon/elasticity controls are common; the government/investment/labour/adaptation/trade
-# closures are gated by variant below.
-# Data-input keys accepted on ANY entry (the store / toy loaders write these).
-_DATA_INPUT_KEYS = frozenset({"SAM", "IOSystem", "SatelliteAccount", "satellites"})
-# Shared PUBLIC controls every variant's model reads.
-_SHARED_CONTROLS = frozenset(
-    {"carbon_cost_share", "va_elast", "energy_sectors", "energy_elasticities"}
-)
-# Keys that only make sense on the IO-BACKED entry (they drive the SAM BUILD, not a supplied SAM):
-# capital_share (the build's VA split), multi_materiality (dust threshold), open_home_region /
-# multi_region (the build's dispatch flags).
-_IO_ONLY_KEYS = frozenset(
-    {"capital_share", "multi_materiality", "open_home_region", "multi_region"}
-)
-# The ``sectors`` axis hint is a legitimate explicit sector-ORDER on any entry (read by the
-# supplied-SAM resolver and the multi run). ``regions`` is only meaningful for the multi variant
-# (closed/open are single-region), so it is gated there.
-_SECTORS_KEY = frozenset({"sectors"})
-# Public model-CLOSURE controls, per variant (entry-independent).
-_VARIANT_CLOSURE_KEYS = {
-    "closed": {
-        "gov_closure",
-        "carbon_revenue_recipient",
-        "inv_closure",
-        "labour_floor",
-        "adaptation_investment",
-    },
-    "open": {"inv_closure", "armington_elast", "cet_elast", "trade_closure"},
-    "multi": {"inv_closure", "armington_elast", "cet_elast", "regions"},
+# Strict per-variant configuration contract (review P1 rounds 13/14/16). The promise is: EVERY
+# accepted public ``data`` key affects the SELECTED (variant, entry) path — no key is accepted only
+# to be ignored (that would make the recorded ``effective_config`` misleading). Keys starting with
+# ``_`` are engine-internal and rejected from public input entirely (see ``run``). Round-16: the
+# earlier union-of-shared-sets construction was too broad — it accepted IO-only controls across
+# every IO variant and ``carbon_cost_share`` / ``sectors`` on paths that ignore them. So the allowed
+# set is now an EXPLICIT table per (variant, entry), each entry listing exactly the keys that path
+# reads.
+#
+# What each key drives, and hence where it is allowed:
+#   SAM                    — the supplied-SAM entry only.
+#   IOSystem               — the IO-backed entry only.
+#   SatelliteAccount       — the satellite carbon source; read ONLY on the IO entry (a supplied SAM
+#                            takes its carbon from carbon_cost_share, never a satellite).
+#   satellites             — alias accepted alongside IOSystem on the IO entry only.
+#   carbon_cost_share      — the supplied-SAM carbon wedge; on the IO entry the wedge comes from
+#                            the satellite, so it is IGNORED there → not allowed on IO.
+#   va_elast/energy_*      — model controls every variant's calibrator reads (both entries).
+#   sectors                — an explicit sector ORDER: read by the supplied-SAM resolver (any
+#                            variant) and by the multi IO build; the closed/open IO build infers its
+#                            own sectors, so a hint there is ignored → not allowed.
+#   regions                — multi only (supplied multi validates it; multi IO reads it).
+#   capital_share          — the build VA split — IO entry only.
+#   multi_materiality      — the dust threshold — multi IO only.
+#   open_home_region       — open IO build dispatch — open IO only.
+#   multi_region           — multi IO build dispatch flag — multi IO only.
+#   closure controls       — per variant (gov/inv/labour/adaptation/trade/elasticities), both
+#                            entries of that variant.
+_MODEL_CONTROLS = frozenset({"va_elast", "energy_sectors", "energy_elasticities"})
+_CLOSURE_KEYS = {
+    "closed": frozenset(
+        {
+            "gov_closure",
+            "carbon_revenue_recipient",
+            "inv_closure",
+            "labour_floor",
+            "adaptation_investment",
+        }
+    ),
+    "open": frozenset({"inv_closure", "armington_elast", "cet_elast", "trade_closure"}),
+    "multi": frozenset({"inv_closure", "armington_elast", "cet_elast", "regions"}),
 }
+
+
+def _build_allowed_table() -> dict[tuple[str, str], frozenset[str]]:
+    """The EXPLICIT allowed-key table: (variant, entry) → the exact public keys that path reads."""
+    tbl: dict[tuple[str, str], frozenset[str]] = {}
+    for variant in ("closed", "open", "multi"):
+        common = _MODEL_CONTROLS | _CLOSURE_KEYS[variant]
+        # Supplied-SAM entry: SAM + supplied carbon wedge + sector/region hints the resolver reads.
+        supplied = {"SAM", "carbon_cost_share"} | common | {"sectors"}
+        if variant == "multi":
+            supplied = supplied | {"regions"}  # already in closure keys, explicit for clarity
+        # IO entry: IOSystem (+ satellite) + build controls; NO carbon_cost_share (satellite-based).
+        io = {"IOSystem", "SatelliteAccount", "satellites", "capital_share"} | common
+        if variant == "open":
+            io = io | {"open_home_region"}
+        if variant == "multi":
+            io = io | {"multi_region", "multi_materiality", "sectors", "regions"}
+        tbl[(variant, "supplied")] = frozenset(supplied)
+        tbl[(variant, "io")] = frozenset(io)
+    return tbl
+
+
+_ALLOWED_CONFIG = _build_allowed_table()
+# Data-input keys (kept for _effective_public_config to exclude from the recorded policy surface).
+_DATA_INPUT_KEYS = frozenset({"SAM", "IOSystem", "SatelliteAccount", "satellites"})
 _ENUM_CONFIG = {
     "gov_closure": ("balanced_budget", "deficit_financed"),
     "inv_closure": ("savings_driven", "fixed_real"),
@@ -124,19 +157,9 @@ _ENUM_CONFIG = {
 
 
 def _allowed_config_keys(variant: str, entry: str) -> set[str]:
-    """The PUBLIC config keys a (variant, entry) combination may carry. ``entry`` is 'supplied' (a
-    supplied SAM) or 'io' (an IOSystem-backed build). IO-only keys (capital_share, axis hints, the
-    build dispatch flags) are rejected on a supplied SAM — where they are ignored (review P1 round
-    14)."""
-    keys = (
-        set(_DATA_INPUT_KEYS)
-        | set(_SHARED_CONTROLS)
-        | set(_SECTORS_KEY)
-        | set(_VARIANT_CLOSURE_KEYS[variant])
-    )
-    if entry == "io":
-        keys |= _IO_ONLY_KEYS
-    return keys
+    """The PUBLIC config keys a (variant, entry) combination may carry — an EXPLICIT per-cell table
+    (review P1 round 16), so no key is accepted only to be ignored on the selected path."""
+    return set(_ALLOWED_CONFIG[(variant, entry)])
 
 
 def _validate_config(data: dict, variant: str, entry: str) -> None:
@@ -147,6 +170,15 @@ def _validate_config(data: dict, variant: str, entry: str) -> None:
     ``capital_share`` or an ``open_home_region`` not in the build. Keys starting with ``_`` are
     engine-internal (IO-path injected state) and always allowed — they are set by the engine, never
     by a scenario file. This makes the manifest's recorded config truthful."""
+    # Ambiguous entry (review P1 round 15): a SUPPLIED SAM takes precedence and the IOSystem is
+    # silently ignored — so a run carrying BOTH is under-specified (which one produced the result?).
+    # Checked FIRST so it gives its clear message rather than a generic "unsupported key: IOSystem".
+    if entry == "supplied" and data.get("IOSystem") is not None:
+        raise ValueError(
+            "both a supplied 'SAM' and an 'IOSystem' were provided: the supplied SAM would be used "
+            "and the IOSystem silently ignored. Supply exactly one entry (a SAM, or an IOSystem to "
+            "build from) so the run's provenance is unambiguous."
+        )
     allowed = _allowed_config_keys(variant, entry)
     unknown = sorted(k for k in data if not k.startswith("_") and k not in allowed)
     if unknown:
@@ -173,15 +205,6 @@ def _validate_config(data: dict, variant: str, entry: str) -> None:
                 f"open_home_region={data['open_home_region']!r} is not a region of the build "
                 f"{list(io.regions.labels)}."
             )
-    # Ambiguous entry (review P1 round 15): a SUPPLIED SAM takes precedence and the IOSystem is
-    # silently ignored — so a run carrying BOTH is under-specified (which one produced the result?).
-    # Reject rather than quietly drop one input.
-    if entry == "supplied" and data.get("IOSystem") is not None:
-        raise ValueError(
-            "both a supplied 'SAM' and an 'IOSystem' were provided: the supplied SAM would be used "
-            "and the IOSystem silently ignored. Supply exactly one entry (a SAM, or an IOSystem to "
-            "build from) so the run's provenance is unambiguous."
-        )
     # Axis hints on a SUPPLIED SAM must MATCH the SAM (review P1 round 15): a bogus 'sectors' or
     # 'regions' axis was previously accepted and could silently reorder/mislabel results. Validate
     # them against the SAM's own accounts rather than trusting the caller's list.

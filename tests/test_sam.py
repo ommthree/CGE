@@ -236,6 +236,74 @@ def test_institution_split_consistent_per_sector_still_builds():
     assert report.passed
 
 
+def _two_region_io_with_split(fd_by_region, split):
+    """A 2-region 1-sector IOSystem. ``fd_by_region`` maps consuming region → [producerA, producerB]
+    final demand; ``split`` maps '<consuming_region>|<institution>' → [producerA, producerB]."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, IOSystem, Provenance
+
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-30"
+    )
+    labels = ["A:g", "B:g"]
+    A = pd.DataFrame([[0.1, 0.05], [0.05, 0.1]], index=labels, columns=labels)
+    fd = pd.DataFrame({d: v for d, v in fd_by_region.items()}, index=labels)
+    fbi = pd.DataFrame({col: v for col, v in split.items()}, index=labels)
+    return IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=["g"]),
+        regions=Classification(name="r", kind="region", labels=["A", "B"]),
+        A=A,
+        final_demand=fd,
+        final_demand_kind="by_region",
+        final_demand_by_institution=fbi,
+    )
+
+
+def test_offsetting_cross_region_institution_corruption_is_rejected():
+    """Review P1 (round 16, 2026-07-30): the institution validator must check EVERY (product,
+    consuming-region) cell, not just the domestic diagonal. final_demand columns are the CONSUMING
+    region; rows are the PRODUCING label. The earlier validator derived the region from the
+    producing label and only checked that column, so an imported-final-demand cell (producer A →
+    consumer B) was never validated. Reviewer's exact case: cross-region final demand 20 and 10, an
+    institution split of 30 and 0 for those cells, with matching domestic cells and matching
+    sector/global totals — accepted, and 30 was misattributed to government. It must now be rejected
+    (the B-consumed split total 30 exceeds B's final demand of that product)."""
+    sep = "|"
+    # Consuming-region final demand: A consumes [A:g=100, B:g=20]; B consumes [A:g=10, B:g=90].
+    fd_by_region = {"A": [100.0, 20.0], "B": [10.0, 90.0]}
+    # Corrupt split: for product A:g consumed by B, government=30 (> the 10 final demand there),
+    # offset so the producing-region-A domestic column and the sector/global totals still match.
+    split = {
+        f"A{sep}household": [100.0, 0.0],
+        f"A{sep}government": [0.0, 0.0],
+        f"A{sep}investment": [0.0, 0.0],
+        f"B{sep}household": [0.0, 90.0],  # product A:g consumed by B → household 0
+        f"B{sep}government": [30.0, 0.0],  # product A:g consumed by B → gov 30 (> fd 10) — corrupt
+        f"B{sep}investment": [0.0, 0.0],
+    }
+    with pytest.raises(ValueError, match="consumed by region|EXCEEDING|round 16"):
+        _two_region_io_with_split(fd_by_region, split)
+
+
+def test_consistent_cross_region_institution_split_is_accepted():
+    """Regression guard against over-rejection: a split that decomposes final demand in EVERY
+    (product, consuming-region) cell is accepted."""
+    sep = "|"
+    fd_by_region = {"A": [100.0, 20.0], "B": [10.0, 90.0]}
+    split = {
+        f"A{sep}household": [70.0, 15.0],
+        f"A{sep}government": [20.0, 3.0],
+        f"A{sep}investment": [10.0, 2.0],  # A-consumed: A:g=100, B:g=20 ✓
+        f"B{sep}household": [7.0, 60.0],
+        f"B{sep}government": [2.0, 20.0],
+        f"B{sep}investment": [1.0, 10.0],  # B-consumed: A:g=10, B:g=90 ✓
+    }
+    io = _two_region_io_with_split(fd_by_region, split)  # constructs without error
+    assert io.fd_by_institution() is not None
+
+
 # -- open SAM from a real build (Phase 5 deferred: live-EXIOBASE open-SAM build) --------------
 def test_build_open_sam_balanced_and_quality_passes(small_build_io):
     """An OPEN SAM built from the multi-region build (home region + rest-of-world) is balanced by
@@ -527,6 +595,23 @@ def test_aggregate_dust_regions_merges_flows_not_original_routes():
     assert grouping["C"] == grouping["A"] and grouping["B"] != grouping["A"]  # C folded into A
     sam, report, regs, _secs = build_multi_sam(coarse, materiality=mat)  # summed flows clear it
     assert report.passed and len(regs) == 2
+
+
+def test_aggregate_dust_regions_enforces_same_materiality_range_as_builder():
+    """Review P2 (round 16, 2026-07-30): aggregate_dust_regions must enforce the SAME materiality
+    range as build_multi_sam [1e-6, 0.1). Otherwise a value the helper accepts (e.g. 0) produces a
+    build that build_multi_sam then rejects at the same setting — an inconsistent contract."""
+    from cge.data.sam.build import aggregate_dust_regions
+
+    io = _dust_region_io(
+        ["A", "B"],
+        {"A:g": [0.2, 0.05], "B:g": [0.05, 0.2]},
+        {"A": [50.0, 5.0], "B": [5.0, 50.0]},
+    )
+    with pytest.raises(ValueError, match="materiality must be in"):
+        aggregate_dust_regions(io, [], materiality=0.0)
+    with pytest.raises(ValueError, match="materiality must be in"):
+        aggregate_dust_regions(io, [], materiality=0.5)
 
 
 def test_aggregate_dust_regions_reports_when_no_multi_structure_survives():

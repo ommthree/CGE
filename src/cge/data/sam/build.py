@@ -838,6 +838,16 @@ def aggregate_dust_regions(
     from cge.data.metadata import BuildMeta
 
     satellites = satellites or []
+    # SAME materiality contract as build_multi_sam (review P2 round 16): the whole point of this
+    # helper is to produce a build that build_multi_sam then accepts AT THE SAME THRESHOLD, so a
+    # materiality it would reject (e.g. 0 — every route is "genuine", nothing folds, and the builder
+    # then rejects the range) must be rejected HERE too, with the identical bounds.
+    if not (_ROUTE_MATERIALITY <= materiality < 0.1):
+        raise ValueError(
+            f"materiality must be in [{_ROUTE_MATERIALITY:g}, 0.1) (a share of global GDP), the "
+            "same range build_multi_sam enforces — this helper produces a build for "
+            f"build_multi_sam to accept at the same threshold; got {materiality}."
+        )
     regions = list(io.regions.labels)
     gdp = float(io.final_demand.sum(axis=1).sum())  # total absorption ≈ GDP scale for the threshold
     threshold = materiality * max(gdp, 1.0)
@@ -1044,11 +1054,11 @@ def _reject_dust_cells(
             "tiny route gets a near-singular price column the solver cannot pin, and there is no "
             "exact balance-preserving way to remove it. Fix upstream: call "
             "``aggregate_dust_regions(io, ...)`` to fold low-trade region pairs into coarser "
-            "groups (recording the transformation) so no dust remains, OR — if these flows really "
-            "are negligible non-trade — LOWER ``materiality`` so they fall below it and are "
-            "treated as structural zeros. (Raising ``materiality`` does the OPPOSITE: it "
-            "classifies MORE "
-            "routes as dust.)"
+            "groups (recording the transformation) so no dust remains, OR — if these small flows "
+            "really are genuine trade you want to KEEP — LOWER ``materiality`` so the threshold "
+            "drops BELOW them and they count as active routes. (Raising ``materiality`` does the "
+            "OPPOSITE: it lifts the threshold ABOVE more small routes, classifying MORE of them as "
+            "dust — it never turns a positive route into a structural zero.)"
         )
 
 
