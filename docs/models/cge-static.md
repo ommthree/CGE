@@ -1,6 +1,6 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.10)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.12)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps)
 - **Capabilities:** general_equilibrium, prices, volumes
@@ -13,7 +13,9 @@
   model calibrates to a hand-checkable 2-sector SAM *and* to a SAM built from an aggregated
   **EXIOBASE-shaped** build (§5a); the open model calibrates to a hand-checkable open SAM *and* to
   one built from an EXIOBASE-shaped IOSystem; the multi-region model calibrates to a hand-checkable
-  multi-region SAM (an IOSystem-driven multi-region build is a remaining sub-phase — §8a). All pass
+  multi-region SAM **and** to one built from an EXIOBASE-shaped IOSystem via `build_multi_sam`
+  (the `multi_region_live_replicates_on_built_sam` gate; a **live-EXIOBASE** multi-region build with
+  genuine above-threshold cross-region trade is the remaining data step — §8a). All pass
   the standard CGE correctness battery (benchmark replication, homogeneity, Walras) plus the
   recycling-effect checks, with theory-consistent carbon-price responses; the open and multi-region
   models additionally exhibit **carbon leakage** (`cge_static` validation suite), and the
@@ -25,9 +27,12 @@
   SAM from an EXIOBASE-shaped **IOSystem** (`build_open_sam`: a home region + rest-of-world, with
   Armington import / CET export / ROW accounts derived from the MRIO's inter-regional blocks) and
   replicates that built benchmark to machine precision — the `open_replicates_on_built_sam` gate.
-  A **live-EXIOBASE** SAM build for all three variants, an **IOSystem-driven multi-region SAM
-  build**, and **per-cell (rather than uniform) trade elasticities** are the remaining sub-phases;
-  magnitudes are illustrative.
+  The IOSystem-driven multi-region SAM build (`build_multi_sam`) is **implemented and gated** on the
+  offline test MRIO (aggregated to a coarse 2-region × 3-sector system whose cross-region trade is
+  above the materiality threshold). What remains is a **live-EXIOBASE** SAM build for all three
+  variants — the live test MRIO's inter-region trade is dust at the sector granularity, so it must
+  first be coarsened via `aggregate_dust_regions` or aggregated to fewer regions/sectors — and
+  **per-cell (rather than uniform) trade elasticities**; magnitudes are illustrative.
 
   **Institution scope of the IO→SAM builders (review round 14).** The IOSystem-driven *institution*
   split (EXIOBASE Y categories → household/`GOV`/`SAVINV` with imputed direct tax and savings,
@@ -760,12 +765,16 @@ zero-share route's price anyway (`cal.active_routes`, `model_multi.py`). "Genuin
 above `ROUTE_MATERIALITY_THRESHOLD` (a GDP-share threshold, since benchmark flows are
 GDP-normalised) — a bare `>0` check would treat numerical dust from upstream aggregation/RAS noise
 (e.g. a route at ~1e-10 of GDP) as active, producing a near-singular Jacobian that a
-tolerance-based solver could accept as converged while that route's price is actually free. The
-`build_multi_sam` builder uses the **same** threshold and denominator to drop dust routes (folding
-them into domestic sales), so a built SAM has **no route that is retained-but-inactive** — every
-route with a nonzero Armington/CET share gets a clearing residual and clears (review P1, corrected
-2026-07-27; earlier the builder's `1e-9`-of-regional-output drop and this `1e-6`-of-global-GDP test
-disagreed, leaving in-between routes used by demand but never cleared).
+tolerance-based solver could accept as converged while that route's price is actually free. The `build_multi_sam` builder uses the **same** threshold and denominator to detect dust routes.
+It does **not** silently zero-and-rebalance them: a nonzero sub-threshold ("dust") bilateral route
+is **rejected** with a domain error (review P1 round 13 — zeroing-then-RAS is not balance-preserving
+for asymmetric dust, and it produced non-converging rebalances), and the error directs the user to
+the explicit upstream fix, `aggregate_dust_regions`, which folds dust-linked regions into coarser
+GROUPS so the summed cross-group flows clear the threshold (or reports honestly when a build's
+inter-region trade is entirely dust). A SAM that passes therefore has **no route that is
+retained-but-inactive** — every route with a nonzero Armington/CET share gets a clearing residual
+and clears. (Earlier the builder's `1e-9`-of-regional-output drop and this `1e-6`-of-global-GDP test
+disagreed, leaving in-between routes used by demand but never cleared; both now use one threshold.)
 Foreign savings per region ``Sf[r]=ΣM−ΣE`` is fixed at benchmark and globally zero-sum (financed by
 household capital transfers); there is no exchange rate and no external rest-of-world — trade is
 entirely among the build's own regions.

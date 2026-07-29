@@ -208,33 +208,42 @@ class IOSystem(_DataObject):
                     f"(region, institution): missing {sorted(expected - set(got))[:4]}, extra "
                     f"{sorted(set(got) - expected)[:4]}"
                 )
-            # Totals are CONSISTENT with the by-region final demand. The institution split covers
-            # DOMESTIC final demand (household + government + investment) and EXCLUDES exports,
-            # while ``final_demand`` (from the adapter) includes exports — so the split's per-region
-            # total must be > 0 and NOT EXCEED final_demand (bar float tolerance). This catches the
-            # corruption case (a near-zero split silently amplified to match FD — review 0.4 vs 200
-            # → 500×) without false-positives on legitimate export-bearing builds. Only when a
+            # Totals are CONSISTENT with the by-region final demand, PER (region, sector). The
+            # institution split covers DOMESTIC final demand (household + government + investment)
+            # and EXCLUDES exports, while ``final_demand`` (from the adapter) includes exports — so
+            # for EACH sector the split total must be ≥ 0 and NOT EXCEED that sector's final demand
+            # (bar float tolerance). Checking per-sector (not just the region-wide total) is what
+            # catches the review-P1-round-15 case: a split whose SECTOR distribution is [1, 199]
+            # against a final demand of [120, 80] has the SAME region total (200) so a region-total
+            # check passes, yet it silently rewrites a sector by ~11,900% downstream. A region-total
+            # check is necessary but not sufficient; the per-sector check subsumes it. (The
+            # round-14 aggregate "0.4 vs 200" corruption is also caught, per sector.) Only when a
             # by-region final_demand is present to compare against.
             if self.final_demand_kind == "by_region" and not self.final_demand.empty:
-                for r in self.regions.labels:
-                    inst_total = sum(
-                        float(fbi[f"{r}{self.INSTITUTION_SEP}{i}"].sum()) for i in self.INSTITUTIONS
+                region_set = set(self.regions.labels)
+                for a, lbl in enumerate(cols):  # A's labels: '<region>:<sector>'
+                    r = str(lbl).split(":", 1)[0]  # region prefix of this producing label
+                    if r not in region_set or r not in self.final_demand:
+                        continue
+                    inst_cell = sum(
+                        float(fbi.iloc[a][f"{r}{self.INSTITUTION_SEP}{i}"])
+                        for i in self.INSTITUTIONS
                     )
-                    fd_total = float(self.final_demand[r].sum()) if r in self.final_demand else 0.0
-                    scale = max(abs(fd_total), 1.0)
-                    if inst_total < -1e-9 * scale:
+                    fd_cell = float(self.final_demand[r].iloc[a])
+                    scale = max(abs(fd_cell), abs(float(self.final_demand[r].mean())), 1.0)
+                    if inst_cell < -1e-9 * scale:
                         raise ValueError(
-                            f"IOSystem.final_demand_by_institution for region {r!r} has a negative "
-                            f"total {inst_total:.6g} (an explicit negative-inventory policy is a "
+                            f"IOSystem.final_demand_by_institution for {lbl!r} has a negative "
+                            f"total {inst_cell:.6g} (an explicit negative-inventory policy is a "
                             "documented follow-up; reject rather than guess)"
                         )
-                    if fd_total > 0 and inst_total > fd_total * (1.0 + 1e-6):
+                    if inst_cell > fd_cell + 1e-6 * scale:
                         raise ValueError(
-                            f"IOSystem.final_demand_by_institution for region {r!r} totals "
-                            f"{inst_total:.6g}, EXCEEDING its final_demand {fd_total:.6g}: the "
-                            "domestic institution split cannot be larger than total final demand — "
-                            "the split does not decompose this build's final demand (reject rather "
-                            "than silently rescale)."
+                            f"IOSystem.final_demand_by_institution for {lbl!r} totals "
+                            f"{inst_cell:.6g}, EXCEEDING that sector's final_demand {fd_cell:.6g}: "
+                            "the domestic institution split cannot exceed final demand SECTOR-BY-"
+                            "SECTOR (an aggregate/region match can still hide a large per-sector "
+                            "rewrite — review P1 round 15). Reject rather than silently rescale."
                         )
         return self
 

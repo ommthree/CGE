@@ -82,6 +82,32 @@ def test_energy_is_most_carbon_exposed():
     assert energy > agri > 0
 
 
+def test_cli_prints_a_real_deflator_for_cge_runs():
+    """Review P2 (round 15, 2026-07-29): the CLI macro headline for a CGE run must print a REAL
+    deflator, not ``+nan%``. The CGE emits ``gdp_deflator_change``; the headline used to request the
+    PE variable ``deflator`` which a CGE run does not carry."""
+    import argparse
+
+    from cge.cli import _cmd_run
+
+    cge_example = Path(__file__).resolve().parents[1] / "examples" / "carbon_price_cge.yaml"
+    args = argparse.Namespace(scenario=str(cge_example), data="toy")
+    out = io_capture(lambda: _cmd_run(args))
+    macro_lines = [ln for ln in out.splitlines() if "deflator" in ln]
+    assert macro_lines, "no macro headline printed for the CGE run"
+    assert "nan" not in " ".join(macro_lines).lower()  # a real deflator, not +nan%
+
+
+def io_capture(fn):
+    import contextlib
+    import io as _io
+
+    buf = _io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        fn()
+    return buf.getvalue()
+
+
 def test_engine_rejects_unsupported_shock():
     from cge.contracts.shocks import NatureStress
 

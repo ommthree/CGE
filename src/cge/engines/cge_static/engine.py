@@ -64,7 +64,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.11"
+VERSION = "0.9.12"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -173,6 +173,61 @@ def _validate_config(data: dict, variant: str, entry: str) -> None:
                 f"open_home_region={data['open_home_region']!r} is not a region of the build "
                 f"{list(io.regions.labels)}."
             )
+    # Ambiguous entry (review P1 round 15): a SUPPLIED SAM takes precedence and the IOSystem is
+    # silently ignored — so a run carrying BOTH is under-specified (which one produced the result?).
+    # Reject rather than quietly drop one input.
+    if entry == "supplied" and data.get("IOSystem") is not None:
+        raise ValueError(
+            "both a supplied 'SAM' and an 'IOSystem' were provided: the supplied SAM would be used "
+            "and the IOSystem silently ignored. Supply exactly one entry (a SAM, or an IOSystem to "
+            "build from) so the run's provenance is unambiguous."
+        )
+    # Axis hints on a SUPPLIED SAM must MATCH the SAM (review P1 round 15): a bogus 'sectors' or
+    # 'regions' axis was previously accepted and could silently reorder/mislabel results. Validate
+    # them against the SAM's own accounts rather than trusting the caller's list.
+    if entry == "supplied":
+        sam = data.get("SAM")
+        if sam is not None and variant == "multi" and ("sectors" in data or "regions" in data):
+            # Anchor on the UNAMBIGUOUS regions (the full suffix of each HOH_<r>, never split on a
+            # further '_'), then require the claimed axes to REPRODUCE the SAM's a_<r>_<s> accounts
+            # as a cross product. This validates a bogus 'regions'-only or 'sectors'-only hint too,
+            # without brittle string-splitting of names that may contain '_' (review P1 round 15).
+            true_regions = sorted({a[len("HOH_") :] for a in sam.accounts if a.startswith("HOH_")})
+            acts = {a for a in sam.accounts if a.startswith("a_")}
+            claimed_r = (
+                sorted(str(r) for r in data["regions"]) if "regions" in data else true_regions
+            )
+            if "regions" in data and claimed_r != true_regions:
+                raise ValueError(
+                    f"the supplied 'regions' axis {claimed_r} does not match the multi-region "
+                    f"SAM's regions {true_regions} (from its HOH_<r> households); a mismatched "
+                    "axis silently reorders/mislabels results — omit the hint or supply the SAM's."
+                )
+            if "sectors" in data:
+                claimed_s = [str(s) for s in data["sectors"]]
+                expected = {f"a_{r}_{s}" for r in true_regions for s in claimed_s}
+                if expected != acts:
+                    raise ValueError(
+                        f"the supplied 'sectors' axis {sorted(claimed_s)} does not reproduce the "
+                        f"multi-region SAM's activity accounts (expected {sorted(expected)[:3]}…, "
+                        f"SAM has {sorted(acts)[:3]}…); a mismatched axis silently reorders/"
+                        "mislabels results — omit the hint or supply the SAM's own sectors."
+                    )
+        elif sam is not None and "sectors" in data:
+            factors = [f for f in _DEFAULT_FACTORS if f in sam.accounts]
+            # If the SAM's matrix axes are themselves inconsistent with its accounts, let the
+            # deeper _validate_supplied_sam raise its clean error rather than tripping on a KeyError
+            # here — _infer_sectors reads sam.matrix.loc, which a malformed SAM cannot satisfy.
+            try:
+                actual = sorted(_infer_sectors(sam, factors))
+            except (KeyError, ValueError):
+                actual = None
+            if actual is not None and sorted(str(s) for s in data["sectors"]) != actual:
+                raise ValueError(
+                    f"the supplied 'sectors' axis {sorted(str(s) for s in data['sectors'])} does "
+                    f"not match the SAM's sectors {actual}; a mismatched axis silently "
+                    "reorders/mislabels results — supply the SAM's own sectors or omit the hint."
+                )
 
 
 def _effective_public_config(data: dict, variant: str, entry: str) -> dict:
@@ -454,6 +509,22 @@ class CGEStaticEngine:
     )
 
     def run(self, *, data: dict, shocks: list[Shock], years: list[int]) -> ResultSet:
+        # SECURITY BOUNDARY (review P1 round 15): underscore-prefixed keys are ENGINE-INTERNAL state
+        # (``_io_backed``, ``_effective_cc_by_year``, ``_emission_intensity``, ``_sam_quality``,
+        # ``_emissions_provenance``, …) that the IO-backed build paths inject into a FRESH ``inner``
+        # dict AFTER dispatch. A public caller must never be able to supply them: doing so let a
+        # supplied-SAM run forge an IO-backed carbon wedge and mislabel its own provenance. So
+        # reject ANY ``_``-prefixed key in the incoming ``data`` up front — legitimate callers never
+        # one (run_scenario / data_overrides / the store loaders write only public keys). This runs
+        # before dispatch so it cannot be bypassed by the variant/entry choice.
+        injected = sorted(k for k in data if str(k).startswith("_"))
+        if injected:
+            raise ValueError(
+                f"reserved engine-internal config key(s) supplied by caller: {injected}. Keys "
+                "starting with '_' are injected by the engine's own IO-backed build paths and must "
+                "not appear in scenario data / data_overrides (they would forge IO-backed state or "
+                "provenance on a run that did not build from an IOSystem)."
+            )
         # Dispatch by SAM structure: MULTI-REGION (bilateral trade — several HOH_<r> households) →
         # _run_multi; OPEN (a single ROW account) → _run_open; an IOSystem + open_home_region builds
         # an open SAM; an IOSystem + multi_region=True builds an R-region SAM (Phase 5.1b);

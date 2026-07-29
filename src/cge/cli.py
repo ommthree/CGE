@@ -42,9 +42,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # PE/accounting roll-up emits nominal GDP as ``gdp_change``; the CGE engine emits it as
     # ``gdp_change_nominal``. Accept BOTH (review P2 round 14: the CGE rename left this block
     # silently empty for CGE runs).
-    nominal_gdp_var = (
-        "gdp_change_nominal" if (df["variable"] == "gdp_change_nominal").any() else "gdp_change"
-    )
+    is_cge = (df["variable"] == "gdp_change_nominal").any()
+    nominal_gdp_var = "gdp_change_nominal" if is_cge else "gdp_change"
+    # The deflator is named differently by the two paths too: the CGE emits ``gdp_deflator_change``,
+    # the PE roll-up emits ``deflator``. Requesting the wrong one printed ``deflator +nan%`` for CGE
+    # runs (review P2 round 15).
+    deflator_var = "gdp_deflator_change" if is_cge else "deflator"
     gdp = df[(df["variable"] == nominal_gdp_var) & (df["scenario"] == "central")]
     if not gdp.empty:
         print("\nMacro aggregates (central band):")
@@ -63,7 +66,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             print(
                 f"  {region} {year}: GDP {_v(nominal_gdp_var) * 100:+.2f}% nominal / "
                 f"{_v('gdp_change_real') * 100:+.2f}% real  ·  "
-                f"deflator {_v('deflator') * 100:+.2f}%"
+                f"deflator {_v(deflator_var) * 100:+.2f}%"
             )
 
     print("\nResults (head):")
