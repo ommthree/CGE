@@ -111,7 +111,9 @@ def run_scenario(
     data = load_data(data_source, store=store)
     # Optional engine parameters supplied by the caller (e.g. the GUI's CGE elasticity controls:
     # armington_elast / cet_elast / va_elast / open_home_region). Merged into the data dict the
-    # engine consumes; unknown keys are simply ignored by engines that don't read them.
+    # engine consumes. Engines that don't read a key ignore it; the CGE engine is deliberately
+    # STRICT — it rejects unknown/other-variant keys and reserved engine-internal ``_`` keys (so a
+    # data_override cannot forge IO-backed state or mislabel provenance — review P1 round 15).
     if data_overrides:
         data = {**data, **data_overrides}
     missing = [d for d in engine.meta.required_data if d not in data]

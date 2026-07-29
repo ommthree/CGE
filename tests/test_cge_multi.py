@@ -1361,6 +1361,69 @@ def test_config_entry_path_specific_and_values_validated():
     assert ec["carbon_revenue_recipient"] == "government"
 
 
+def test_config_boundary_rejects_injected_internal_keys_and_ambiguous_inputs():
+    """Review P1 (round 15, 2026-07-28): the strict boundary is no longer bypassable.
+    (1) A caller cannot inject engine-internal ``_``-prefixed keys (``_io_backed``,
+        ``_effective_cc_by_year``, …) to forge an IO-backed wedge / provenance on a supplied SAM —
+        run_scenario(..., data_overrides=...) would previously pass these straight through.
+    (2) Supplying BOTH a SAM and an IOSystem (one silently ignored) is rejected as ambiguous.
+    (3) A bogus ``sectors`` axis on an open SAM and a bogus ``regions`` axis on a multi SAM are
+        rejected (they silently reorder/mislabel results)."""
+    import numpy as np
+
+    from cge.contracts.engine import registry
+    from cge.data.sam import toy_open_sam, toy_sam
+
+    eng = registry.get("cge_static")
+    shocks = [CarbonPrice(price=0.3)]
+    cc = {"BRD": 2.0, "MIL": 0.5}
+
+    # (1) Injected internal keys — the reviewer's exact forge (supplied open SAM, no satellite, a
+    # fabricated per-year wedge, marked IO-backed).
+    with pytest.raises(ValueError, match="reserved engine-internal|_io_backed|internal config"):
+        eng.run(
+            data={
+                "SAM": toy_open_sam(),
+                "carbon_cost_share": cc,
+                "_io_backed": True,
+                "_effective_cc_by_year": [np.zeros(2)],
+            },
+            shocks=shocks,
+            years=[2020],
+        )
+
+    # (2) Both SAM and IOSystem present — ambiguous entry.
+    class _FakeIO:  # only needs to be non-None for the ambiguity check
+        pass
+
+    with pytest.raises(ValueError, match="both a supplied 'SAM' and an 'IOSystem'|ambiguous"):
+        eng.run(
+            data={"SAM": toy_sam(), "carbon_cost_share": cc, "IOSystem": _FakeIO()},
+            shocks=shocks,
+            years=[2020],
+        )
+
+    # (3a) Bogus sectors axis on an open SAM.
+    with pytest.raises(ValueError, match="does not match the SAM's sectors|reorders"):
+        eng.run(
+            data={"SAM": toy_open_sam(), "carbon_cost_share": cc, "sectors": ["WRONG", "MIL"]},
+            shocks=shocks,
+            years=[2020],
+        )
+
+    # (3b) Bogus regions axis on a multi SAM.
+    with pytest.raises(ValueError, match="does not match the multi-region SAM's regions|reorders"):
+        eng.run(
+            data={
+                "SAM": toy_multi_sam(),
+                "carbon_cost_share": {"N": {"BRD": 0.3}},
+                "regions": ["N", "BOGUS"],
+            },
+            shocks=[CarbonPrice(price=0.3)],
+            years=[2020],
+        )
+
+
 def test_config_accepts_supported_keys():
     """The strict gate does not reject legitimate per-variant controls."""
     from cge.contracts.engine import registry

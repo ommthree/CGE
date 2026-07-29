@@ -154,6 +154,88 @@ def test_corrupt_institution_split_is_rejected_not_rescaled():
         build_raw_sam(io)
 
 
+def _one_region_io_with_split(fd_sectors, split_by_inst):
+    """A one-region two-sector IOSystem carrying a by-institution split, for the per-sector
+    consistency tests. ``split_by_inst`` maps institution → [sector_a, sector_b]."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, IOSystem, Provenance
+
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-28"
+    )
+    labels = ["R:a", "R:b"]
+    A = pd.DataFrame([[0.1, 0.2], [0.05, 0.1]], index=labels, columns=labels)
+    fd = pd.DataFrame({"R": list(fd_sectors)}, index=labels)
+    sep = "|"
+    fbi = pd.DataFrame({f"R{sep}{inst}": vec for inst, vec in split_by_inst.items()}, index=labels)
+    return IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=["a", "b"]),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=A,
+        final_demand=fd,
+        final_demand_kind="by_region",
+        final_demand_by_institution=fbi,
+    )
+
+
+def test_institution_split_with_matching_region_total_but_wrong_sector_shape_is_rejected():
+    """Review P1 (round 15, 2026-07-28): a split whose REGION total matches final demand but whose
+    SECTOR distribution is wildly off is REJECTED — an aggregate/region-total check alone passed it
+    and the builder then silently rewrote a sector by ~11,900%. Reviewer's exact case: split totals
+    [1, 199] against a final demand of [120, 80] (both sum to 200). Both the IOSystem contract
+    (construction time) and the builder must reject it per-sector."""
+    from cge.contracts.data_objects import IOSystem
+    from cge.data.sam.build import build_raw_sam
+
+    split = {"household": [1.0, 199.0], "government": [0.0, 0.0], "investment": [0.0, 0.0]}
+    # The contract rejects at construction (sector 'a' split 1 exceeds nothing, but sector 'b'
+    # split 199 EXCEEDS its final demand 80).
+    with pytest.raises(ValueError, match="SECTOR-BY-SECTOR|per-sector|EXCEEDING"):
+        _one_region_io_with_split([120.0, 80.0], split)
+
+    # And even if a caller bypasses the contract (an AGGREGATE-final-demand build, which the
+    # contract's per-sector check does not cover because there is no per-region column to compare),
+    # the builder's per-sector reconciliation still rejects it.
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, Provenance
+
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-28"
+    )
+    labels = ["R:a", "R:b"]
+    io = IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=["a", "b"]),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=pd.DataFrame([[0.1, 0.2], [0.05, 0.1]], index=labels, columns=labels),
+        final_demand=pd.DataFrame({"total": [120.0, 80.0]}, index=labels),  # single aggregate col
+        final_demand_kind="aggregate",
+        final_demand_by_institution=pd.DataFrame(
+            {"R|household": [1.0, 199.0], "R|government": [0.0, 0.0], "R|investment": [0.0, 0.0]},
+            index=labels,
+        ),
+    )
+    with pytest.raises(ValueError, match="SECTOR-BY-SECTOR|does not decompose|per-sector|rel gap"):
+        build_raw_sam(io)
+
+
+def test_institution_split_consistent_per_sector_still_builds():
+    """The tightened per-sector guard does NOT reject a legitimate split that decomposes final
+    demand sector-by-sector (regression guard against over-rejection)."""
+    split = {
+        "household": [80.0, 50.0],
+        "government": [25.0, 20.0],
+        "investment": [15.0, 10.0],
+    }  # per sector: a=120, b=80 — exactly final demand
+    io = _one_region_io_with_split([120.0, 80.0], split)
+    sam, report, _sectors = build_sam(io)
+    assert "GOV" in sam.accounts and "SAVINV" in sam.accounts
+    assert report.passed
+
+
 # -- open SAM from a real build (Phase 5 deferred: live-EXIOBASE open-SAM build) --------------
 def test_build_open_sam_balanced_and_quality_passes(small_build_io):
     """An OPEN SAM built from the multi-region build (home region + rest-of-world) is balanced by
@@ -413,6 +495,40 @@ def test_aggregate_dust_regions_folds_low_trade_pairs():
     assert report.passed and len(regs) == 2
 
 
+def test_aggregate_dust_regions_merges_flows_not_original_routes():
+    """Review P1 (round 15, 2026-07-28): dust must be judged on the SUMMED flow between MERGED
+    groups at ``build_multi_sam``'s granularity, NOT on the original constituent routes. Three
+    regions A, B, C: A↔B is genuine; C has one dust route to A (A→C sub-threshold) so C folds into
+    A, but C's OTHER flows (C→A, C→B) are genuine. After the merge, {A+C}↔B is the SUM of A's and
+    C's flows to/from B and clears the threshold — so a VALID 2-group build survives. The earlier
+    code re-tested the original A→C constituent route after the merge and kept collapsing, wrongly
+    rejecting this valid coarse multi-region system."""
+    from cge.data.sam import build_multi_sam
+    from cge.data.sam.build import aggregate_dust_regions
+
+    mat = 0.01  # threshold ≈ 2.32; A→C and B→C (≈1.63) are dust, C→A and C→B (≈5.07) are genuine
+    regions = ["A", "B", "C"]
+    labels = ["A:g", "B:g", "C:g"]
+    A = {c: {r: 0.0 for r in labels} for c in labels}
+    for r in labels:
+        A[r][r] = 0.2
+    A["B:g"]["A:g"] = 0.10  # A buys from B (genuine, large)
+    A["A:g"]["B:g"] = 0.10  # B buys from A (genuine, large)
+    A["A:g"]["C:g"] = 0.03  # C buys from A
+    A["C:g"]["A:g"] = 0.03  # A buys from C
+    A["B:g"]["C:g"] = 0.03  # C buys from B
+    A["C:g"]["B:g"] = 0.03  # B buys from C
+    fd = {"A": [100.0, 5.0, 0.5], "B": [5.0, 100.0, 0.5], "C": [0.5, 0.5, 20.0]}
+    io = _dust_region_io(regions, {k: [A[k][r] for r in labels] for k in labels}, fd)
+
+    coarse, _sats, grouping = aggregate_dust_regions(io, [], materiality=mat)
+    n_groups = len(set(grouping.values()))
+    assert n_groups == 2, f"expected a 2-group aggregation, got {grouping}"
+    assert grouping["C"] == grouping["A"] and grouping["B"] != grouping["A"]  # C folded into A
+    sam, report, regs, _secs = build_multi_sam(coarse, materiality=mat)  # summed flows clear it
+    assert report.passed and len(regs) == 2
+
+
 def test_aggregate_dust_regions_reports_when_no_multi_structure_survives():
     """When a build's inter-region trade is ENTIRELY dust (the offline pymrio test MRIO's case),
     aggregation collapses to one region and raises an honest error rather than returning a
@@ -432,6 +548,43 @@ def test_aggregate_dust_regions_reports_when_no_multi_structure_survives():
     )
     with pytest.raises(ValueError, match="collapsed to a single region|entirely dust"):
         aggregate_dust_regions(io, sats)
+
+
+def test_aggregate_dust_regions_output_is_always_dust_free_or_honestly_collapses():
+    """Property-style (review round 15): across a sweep of materiality thresholds on a random-ish
+    4-region fixture, aggregate_dust_regions must ALWAYS either (a) return a coarse build that
+    build_multi_sam accepts at the SAME threshold (no surviving dust — the invariant the workflow
+    promises), or (b) raise the honest single-region collapse. It must NEVER return a coarse build
+    that build_multi_sam then rejects for dust (that would be the round-14/15 bug class)."""
+    import numpy as np
+
+    from cge.data.sam import build_multi_sam
+    from cge.data.sam.build import aggregate_dust_regions
+
+    rng = np.random.default_rng(20260729)
+    regions = ["A", "B", "C", "D"]
+    labels = [f"{r}:g" for r in regions]
+    for _ in range(8):
+        A = {c: {r: 0.0 for r in labels} for c in labels}
+        for r in labels:
+            A[r][r] = 0.2
+        # Random small-to-moderate cross-region coefficients (a mix of genuine and dust flows).
+        for ri in labels:
+            for rj in labels:
+                if ri != rj:
+                    A[ri][rj] = float(rng.choice([0.0, 0.005, 0.02, 0.08], p=[0.3, 0.3, 0.2, 0.2]))
+        fd = {r: [40.0 if f"{r}:g" == lb else 0.5 for lb in labels] for r in regions}
+        io = _dust_region_io(regions, {k: [A[k][r] for r in labels] for k in labels}, fd)
+        for mat in (0.004, 0.008, 0.015, 0.03):
+            try:
+                coarse, _s, grouping = aggregate_dust_regions(io, [], materiality=mat)
+            except ValueError as e:
+                assert "collapsed to a single region" in str(e) or "entirely dust" in str(e)
+                continue
+            # The coarse build MUST pass build_multi_sam at the same threshold — no dust survived.
+            sam, report, regs, _sec = build_multi_sam(coarse, materiality=mat)
+            assert report.passed, f"mat={mat} grouping={grouping} produced a build that failed QA"
+            assert len(regs) == len(set(grouping.values()))
 
 
 def test_build_multi_sam_clean_build_still_works():

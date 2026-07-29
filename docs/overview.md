@@ -235,16 +235,19 @@ build (§5.1b) and the nature extensions are the next work.**
 | 4 — Engine 2 (volume) | partial-equilibrium volume response with bands | ✅ [status](phase-4-status.md) |
 | 4b — Macro aggregates | GVA/GDP/deflators, real vs nominal (PE tier) | ✅ [model doc](models/macro-aggregates.md) |
 | 5 — Engine 3 (CGE) | GE price+volume, **revenue recycling**, **open economy** (Armington/CET, carbon leakage), **CES value added**, elasticity sweeps, **true multi-region** (bilateral trade, destination-specific prices) — pilot core complete; government/investment/energy nest reopened as 5d | ✅ [model doc](models/cge-static.md) |
-| 5d — Macro closure | government/fiscal account, savings-investment + capital accumulation, energy nest, labour market — reopened Phase 5 debt, not new scope | ⬜ [roadmap](../roadmap.md) |
+| 5d — Macro closure | government/fiscal account (balanced-budget + deficit-financed), savings-investment + capital identity, KL-E-M energy nest, wage-floor labour market, adaptation investment, trade closures — all three variants | ✅ [model doc](models/cge-static.md) |
 | 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | ⬜ [roadmap](../roadmap.md) |
 | 7 — Pathway stack | NGFS-driven dynamics + FaIR climate | ⬜ [roadmap](../roadmap.md) |
 
 The completed work is the minimum viable version of the original ask, and then some (cost +
 volume + a general-equilibrium CGE pilot with revenue recycling — closed, open, **and true
-multi-region bilateral trade** — on real data, with a GUI). The remaining economics — the
-macroeconomic closure (government, investment, energy nest — Phase 5d), the nature/pathway
-extensions, and a live-EXIOBASE multi-region SAM build (§5.1b) — is still ahead. Full plan and
-honest feasibility assessment: [`roadmap.md`](../roadmap.md).
+multi-region bilateral trade** — on real data, with a GUI), plus the Phase-5d macroeconomic closure
+(government/fiscal account, savings-investment + capital identity, KL-E-M energy nest, wage-floor
+labour market, adaptation investment). The remaining economics — the nature (Phase 6) and pathway
+(Phase 7) extensions, and a **live-EXIOBASE** multi-region SAM build with genuine above-threshold
+cross-region trade (§5.1b; the offline test MRIO's cross-region trade is dust at the sector
+granularity) — is still ahead. Full plan and honest feasibility assessment:
+[`roadmap.md`](../roadmap.md).
 
 ---
 

@@ -140,24 +140,34 @@ def build_raw_sam(
     VAagg = np.clip(VAagg_raw, 0.0, None)  # guard negatives (recorded below for the audit)
     va_clip = float(np.sum(np.abs(np.minimum(VAagg_raw, 0.0))))  # total negative VA clipped
 
-    # Reconcile the institution split with total final demand FDagg per sector. In this CLOSED
+    # Reconcile the institution split with total final demand FDagg PER SECTOR. In this CLOSED
     # (region-summed) build the institution split (household+gov+investment) should already sum to
-    # FDagg — the only legitimate gap is small aggregation/rounding DRIFT. A LARGE gap means the
-    # split does not decompose this build's final demand: REJECT it rather than silently rescale
-    # (review P1 round 14 — a 0.4 split against 200 FD was amplified 500× into a plausible SAM).
-    # a small drift is normalised, and its magnitude is recorded for the quality audit.
+    # FDagg for EACH sector — the only legitimate gap is small aggregation/rounding DRIFT. A LARGE
+    # gap in ANY sector means the split does not decompose this build's final demand: REJECT it
+    # rather than silently rescale.
+    #
+    # Review P1 round 14 (aggregate case): a 0.4 split against 200 FD was amplified 500×.
+    # Review P1 round 15 (per-sector case): a split whose SECTOR distribution is [1, 199] against a
+    #   final demand of [120, 80] has the SAME aggregate total (200) — an aggregate-only check
+    #   passes — yet the per-sector rescale silently rewrites sector 1 by ~11,900%, materially
+    #   changing government/investment composition and the equilibrium. So the guard is per-sector.
     institution_rescale = 0.0
     if fbi is not None:
         split_total = gov_fd + inv_fd + hh_fd
-        agg_split = float(split_total.sum())
-        agg_fd = float(FDagg.sum())
-        rel_gap = abs(agg_split - agg_fd) / max(abs(agg_fd), 1.0)
-        if rel_gap > 0.01:  # >1% aggregate gap is corruption, not drift
+        # Per-sector relative gap; the denominator floors at a tiny share of the build's mean FD so
+        # a genuinely-zero-FD sector with a near-zero split does not divide by ~0.
+        fd_floor = max(float(np.abs(FDagg).mean()), 1.0) * 1e-6
+        denom = np.maximum(np.abs(FDagg), fd_floor)
+        sector_gap = np.abs(split_total - FDagg) / denom
+        worst = int(np.argmax(sector_gap))
+        if float(sector_gap[worst]) > 0.01:  # >1% gap in ANY sector is corruption, not drift
             raise ValueError(
-                f"final-demand institution split totals {agg_split:.6g} but total final demand is "
-                f"{agg_fd:.6g} (rel gap {rel_gap:.2%} > 1%): the split does not decompose this "
-                "build's final demand. Rejecting rather than rescaling it into a plausible SAM "
-                "(supply a split consistent with final_demand, or disable institutions)."
+                f"final-demand institution split for sector {sectors[worst]!r} totals "
+                f"{split_total[worst]:.6g} but that sector's final demand is {FDagg[worst]:.6g} "
+                f"(rel gap {sector_gap[worst]:.2%} > 1%): the split does not decompose this "
+                "build's final demand SECTOR-BY-SECTOR (an aggregate match can still hide a large "
+                "per-sector rewrite). Rejecting rather than rescaling it into a plausible SAM "
+                "(supply a split consistent with final_demand per sector, or disable institutions)."
             )
         with np.errstate(divide="ignore", invalid="ignore"):
             scale_i = np.where(split_total > 0, FDagg / split_total, 0.0)
@@ -846,19 +856,26 @@ def aggregate_dust_regions(
 
     routes = _bilateral_trade_by_route(io, regions, list(io.sectors.labels))
     for _ in range(len(regions)):  # at most nr merges reach a single group
-        # A group PAIR is dust if ANY per-sector route between the groups is a nonzero sub-threshold
-        # flow (the builder rejects at that granularity). Track, per group pair, the total trade
-        # (to merge sensibly) and whether it has a dust route.
-        grp: dict[tuple[str, str], list[float]] = {}  # (go,gd) -> [total, has_dust(0/1)]
-        for (o, d, _s), v in routes.items():
+        # Dust is a property of the SUMMED per-sector flow between the MERGED GROUPS, exactly the
+        # granularity ``build_multi_sam`` checks (a route is one ``a_<go>_<s> → c_<gd>_<s>`` cell,
+        # whose value is the sum of all constituent original routes). So first ROLL UP every
+        # original ``(o, d, s)`` route into its ``(group_o, group_d, s)`` merged route, THEN test
+        # each merged route against the threshold. (Review P1 round 15: the earlier code tested each
+        # ORIGINAL constituent route, so it kept flagging a pair as dusty even after a merge summed
+        # two below-threshold flows into one above-threshold flow — collapsing valid aggregations.)
+        merged_routes: dict[tuple[str, str, str], float] = {}
+        group_totals: dict[tuple[str, str], float] = {}
+        for (o, d, s), v in routes.items():
             go, gd = _find(o), _find(d)
             if go == gd:
-                continue
-            entry = grp.setdefault((go, gd), [0.0, 0.0])
-            entry[0] += v
+                continue  # now intra-group (domestic) — no longer a bilateral route
+            merged_routes[(go, gd, s)] = merged_routes.get((go, gd, s), 0.0) + v
+            group_totals[(go, gd)] = group_totals.get((go, gd), 0.0) + v
+        # A group PAIR is dusty iff its MERGED per-sector route is a nonzero sub-threshold flow.
+        dusty: dict[tuple[str, str], float] = {}
+        for (go, gd, _s), v in merged_routes.items():
             if 0.0 < v < threshold:
-                entry[1] = 1.0
-        dusty = {pair: tot for pair, (tot, hasdust) in grp.items() if hasdust}
+                dusty[(go, gd)] = group_totals[(go, gd)]
         if not dusty:
             break
         # Merge the dusty group pair carrying the MOST total trade (minimal, sensible transformation
