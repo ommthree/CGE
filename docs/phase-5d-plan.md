@@ -1,8 +1,10 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: PHASE 5 model blocks COMPLETE (5d.1–5d.7 + §5.1b); engine v0.9.10 after three
-review-remediation rounds. Real-data institutionalization landed for the closed variant; open/multi
-institution routing + sourced tax detail remain follow-ups.** Round 11 (`241fec8`/`a344e4e`): five
+**Status: PHASE 5 model blocks COMPLETE (5d.1–5d.7 + §5.1b); engine v0.9.13 after six
+review-remediation rounds (11–16). Real-data institutionalization landed for the closed variant;
+open/multi institution routing + sourced tax detail remain follow-ups. NB wage-floor labour (5d.4)
+and adaptation investment (5d.6) are CLOSED-variant only; government/investment/energy-nest span all
+three variants.** Round 11 (`241fec8`/`a344e4e`): five
 P1 fixes (energy-nest carbon contract, signed foreign savings, route materiality, real deficit
 financing, one-factor wage floor) + P2 capital stock–flow bridge, name inference, lint, docs.
 Round 12 (`72f1ee2`): three P1 fixes (carbon-revenue recipient explicit under the deficit closure,

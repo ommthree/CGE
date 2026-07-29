@@ -307,30 +307,35 @@ deferred items, explicitly, since Phase 7b (harmonization) and Phase 8 (empirica
 cannot credibly operate on the current hand-built supplied multi-region SAM.**
 - ✅ `build_multi_sam(io)` (data/sam/build.py) generalises `build_open_sam` to R regions; bilateral
   trade read directly from the MRIO blocks; measured FD (by-region required, aggregate rejected);
-  trade-materiality dust-dropping + `TopologyError` connectivity gate; HOH↔HOH capital-account
-  closure; RAS-balanced + quality-reported (the `regions=` layout added to `sam_quality_report`).
+  trade-materiality **dust REJECTION** (a sub-threshold bilateral route is a domain error, not
+  silently zeroed — zero+RAS is not balance-safe for asymmetric dust; the explicit upstream fix is
+  `aggregate_dust_regions`, which folds dust-linked regions into coarser groups) + `TopologyError`
+  connectivity gate; HOH↔HOH capital-account closure; RAS-balanced + quality-reported (the
+  `regions=` layout added to `sam_quality_report`).
 - ✅ `_run_multi_from_io` engine entry point (`data={"IOSystem": io, "multi_region": True}`);
   per-(region,sector) effective carbon cost consumed as-is (price-applied-once, guarded by test);
   satellite/SAM-quality provenance in the manifest.
 - ✅ `multi_region_live_replicates_on_built_sam` validation gate (machine-precision replication on
-  the offline pymrio-test MRIO aggregated to 2 regions × 3 sectors). 52 validation checks, all
-  green. NB the live EXIOBASE *download* wrapper `build_exiobase` was already present (§5.1); 5.1b
+  the offline pymrio-test MRIO aggregated to 2 regions × 3 sectors). 58 validation checks, all
+  green (as of v0.9.13; was 52 at v0.9.6). NB the live EXIOBASE *download* wrapper `build_exiobase`
+  was already present (§5.1); 5.1b
   is the multi-region SAM *reduction* + engine wiring on top of it.
   How each DoD item was met (all ✅): the **IOSystem→multi-region-SAM builder** generalises
   `build_open_sam` from home+ROW to R genuine regions; **satellite alignment** via
   `_multi_effective_cc_from_io` (the `carbon_cost_vector` per-year effective cost, per build region);
   **final-demand attribution** reuses the by-region `final_demand_kind` machinery (aggregate-only
   builds rejected, not imputed); **trade-materiality** reuses `ROUTE_MATERIALITY_THRESHOLD` — and
-  the 2026-07-27 remediation unified the builder's drop threshold/denominator with the calibrator's
-  `active_routes` so there is no retained-but-inactive route; **topology validation** raises
+  the 2026-07-27 remediation unified the builder's threshold/denominator with the calibrator's
+  `active_routes` so there is no retained-but-inactive route (a sub-threshold route is now REJECTED
+  with guidance to `aggregate_dust_regions`, not zeroed); **topology validation** raises
   `TopologyError` on a disconnected region graph before calibration; and the **live-data
   replication gate** `multi_region_live_replicates_on_built_sam` calibrates on the built SAM and
   replicates to machine precision. **Unblocked:** Phase 7b (harmonization) and Phase 8 (empirical
   validation) can now operate on a build-driven multi-region SAM, not a hand-built one.
 
-**5.2 Model core (2–4 wk) — ✅ pilot done; government/investment/energy-nest reopened as 5d**
+**5.2 Model core (2–4 wk) — ✅ pilot done; government/investment/energy-nest delivered in 5d**
 - ✅ Static CGE in pyomo/scipy: Armington imports / CET exports, household demand (Cobb-Douglas), carbon-tax revenue with recycling options (lump-sum vs labour-tax cut, as a same-period pass-through), square-model and degrees-of-freedom checks (proven square via the replication gate).
-- ⏳ **Not built, reopened as 5d:** nested CES production with a genuine **energy nest** (KL–E–M, so carbon pricing can shift substitution *within* the energy bundle, not just KL); a **government/fiscal account** (the tax is collected and recycled same-period with no balance sheet — cannot carry a deficit/surplus or fund non-recycled spending); **investment/savings** (standard closure choices — savings-driven, fixed trade balance — were never implemented; there is no capital-accumulation mechanism for 7.1 to update between years).
+- ✅ **Delivered in Phase 5d** (see below): nested CES production with a genuine **energy nest** (KL–E–M, so carbon pricing shifts substitution *within* the energy bundle, not just KL — 5d.5, all three variants); a **government/fiscal account** with balanced-budget AND deficit-financed closures (5d.1/5d.7); **investment/savings** with savings-driven + fixed-real closures and a standalone capital-accumulation identity for 7.1 (5d.2/5d.3); a wage-floor labour market (5d.4, closed variant) and adaptation investment (5d.6, closed variant).
 - Pilot single-region model first; extend to multi-region only once the pilot passes 5.3's tests. (Done — see "Also complete" above and §8a in cge-static.md.)
 - **DoD:** model solves from the SAM; equation/variable count documented; closures switchable by config. **Met for the pilot's own scope**; not met for the government/investment/energy-nest scope this section originally specified — see 5d.
 
@@ -617,8 +622,8 @@ P0 ─▶ P1 ─▶ P2 ─▶ P3 (GUI v1)
 | End P4 | ~8–13 wk | Add production-**volume** responses (finite-change demand → Leontief propagation) with explicit uncertainty ranges |
 | End P4b | ~9–15 wk | **GVA per sector/country, GDP per country, and a deflator** per time-step, in **real and nominal** terms (indicative PE tier; native and exact in the CGE) |
 | End P6 (skipping P5) | ~11–19 wk | Nature dependency/impact exposure of any good, incl. via its supply chain, plus nature stress runs |
-| End P5 | ~16–25 wk | General-equilibrium price + volume answers with carbon-tax revenue recycling (Armington/CET open economy + true multi-region bilateral trade — no government account, investment, or energy nest yet: see P5d; and the multi-region SAM is still hand-built, not live-EXIOBASE: see §5.1b) |
-| End §5.1b ✅ | done (v0.9.6) | A build-driven multi-region SAM reduction (`build_multi_sam`: bilateral trade from the MRIO blocks, measured FD attribution, trade-materiality dust-dropping, `TopologyError` connectivity gate, machine-precision `multi_region_live_replicates_on_built_sam` gate) + `_run_multi_from_io` engine wiring — the data-side prerequisite Phase 7b/8 need before they can credibly operate on multi-region output |
+| End P5 | ~16–25 wk | General-equilibrium price + volume answers with carbon-tax revenue recycling (Armington/CET open economy + true multi-region bilateral trade). Government account, investment, and the energy nest are delivered in P5d (✅). The multi-region SAM is now build-driven via `build_multi_sam` (§5.1b ✅); a **live-EXIOBASE** multi-region build with genuine above-threshold cross-region trade is the remaining data step |
+| End §5.1b ✅ | done (v0.9.6) | A build-driven multi-region SAM reduction (`build_multi_sam`: bilateral trade from the MRIO blocks, measured FD attribution, trade-materiality dust REJECTION with the `aggregate_dust_regions` upstream fix, `TopologyError` connectivity gate, machine-precision `multi_region_live_replicates_on_built_sam` gate) + `_run_multi_from_io` engine wiring — the data-side prerequisite Phase 7b/8 need before they can credibly operate on multi-region output |
 | End P5d | ~27–42 wk (revised — review P2, round 10: Phase 5d's own header corrected from 4–8 wk to 8–12 wk solo FTE to match its task total) | A government/fiscal account, savings-investment with capital accumulation, an energy nest, and the full standard scenario output set (GDP, GVA, consumption, investment, employment, wages, fiscal balance, capital returns, and a relative cost-of-living index — not "inflation", which the CPI-numéraire closure cannot identify) — the macro closure Phase 5 originally specified |
 | End P6b | ~34–56 wk | Physically-grounded nature scenarios (degradation/restoration state, not a bare productivity-shock number) |
 | Full incl. P7 pathway stack | 6–12 months | NGFS-driven dynamic pathways to 2050 with temperature reporting, multi-source data, scenario library |
