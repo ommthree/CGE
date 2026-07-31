@@ -281,6 +281,56 @@ def test_all_io_backed_engine_paths_reject_a_mutated_A():
             )
 
 
+def test_io_integrity_guard_rejects_nonfinite_and_mislabelled_payloads():
+    """Review P2 (round 18, 2026-07-31): the boundary integrity guard also rejects (a) a NaN/inf
+    final-demand or A cell — which previously slipped past the SAM quality gate because
+    final_demand.sum() silently skips NaN — and (b) A labels that are not the region × sector
+    cross product of the declared classifications (alignment alone does not confirm the labels
+    correspond to the declared regions/sectors)."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, IOSystem, Provenance
+
+    def _io():
+        prov = Provenance(
+            source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-31"
+        )
+        labels = ["R:a", "R:b"]
+        return IOSystem(
+            provenance=prov,
+            sectors=Classification(name="s", kind="sector", labels=["a", "b"]),
+            regions=Classification(name="r", kind="region", labels=["R"]),
+            A=pd.DataFrame([[0.1, 0.2], [0.05, 0.1]], index=labels, columns=labels),
+            final_demand=pd.DataFrame({"R": [120.0, 80.0]}, index=labels),
+            final_demand_kind="by_region",
+        )
+
+    # (a) NaN in final_demand, mutated post-construction → assert_integrity rejects.
+    io = _io()
+    fd = io.final_demand.copy()
+    fd.iloc[0, 0] = np.nan
+    io.final_demand = fd
+    with pytest.raises(ValueError, match="non-finite"):
+        io.assert_integrity()
+
+    # (a′) inf in A.
+    io = _io()
+    a = io.A.copy()
+    a.iloc[1, 1] = np.inf
+    io.A = a
+    with pytest.raises(ValueError, match="non-finite"):
+        io.assert_integrity()
+
+    # (b) A labels aligned (rows == cols) but NOT the declared region × sector cross product.
+    io = _io()
+    bad = ["R:a", "X:z"]  # 'X:z' is not in regions{R} × sectors{a,b}
+    a = pd.DataFrame(io.A.to_numpy(), index=bad, columns=bad)
+    io.A = a
+    io.final_demand = pd.DataFrame({"R": [120.0, 80.0]}, index=bad)
+    with pytest.raises(ValueError, match="cross product|cross-product"):
+        io.assert_integrity()
+
+
 def _two_region_io_with_split(fd_by_region, split):
     """A 2-region 1-sector IOSystem. ``fd_by_region`` maps consuming region → [producerA, producerB]
     final demand; ``split`` maps '<consuming_region>|<institution>' → [producerA, producerB]."""
