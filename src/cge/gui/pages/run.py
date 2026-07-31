@@ -26,15 +26,24 @@ def render() -> None:
 
     build_ids = svc.build_ids()
     # 'toy' is the Engine 1/2 fixture; toy_cge* are the hand-checkable CGE SAMs (closed / open /
-    # multi-region) so the CGE variants run without a data build; the rest are store builds.
-    data_options = ["toy", "toy_cge", "toy_cge_open", "toy_cge_multi"] + build_ids
+    # multi-region, plus the Phase 5d government and energy-nest variants) so the CGE variants run
+    # without a data build; the rest are store builds.
+    data_options = [
+        "toy",
+        "toy_cge",
+        "toy_cge_open",
+        "toy_cge_multi",
+        "toy_cge_gov",
+        "toy_cge_energy",
+    ] + build_ids
     data_source = st.selectbox(
         "Data",
         data_options,
         help=(
             "'toy' is the Engine 1/2 fixture. 'toy_cge' / 'toy_cge_open' / 'toy_cge_multi' are the "
-            "built-in CGE SAMs (closed, open economy, multi-region) — pick one with the cge_static "
-            "engine. Others are store builds."
+            "built-in CGE SAMs (closed, open economy, multi-region); 'toy_cge_gov' adds a "
+            "government + savings-investment account and 'toy_cge_energy' a KL-E-M energy nest "
+            "(Phase 5d) — pick one with the cge_static engine. Others are store builds."
         ),
     )
 
@@ -60,7 +69,13 @@ def render() -> None:
             }
         )
 
-    is_cge_toy = data_source in ("toy_cge", "toy_cge_open", "toy_cge_multi")
+    is_cge_toy = data_source in (
+        "toy_cge",
+        "toy_cge_open",
+        "toy_cge_multi",
+        "toy_cge_gov",
+        "toy_cge_energy",
+    )
     # Region coverage options come from the build's labels (empty for the toys → text is clearer).
     labels = svc.label_axis(data_source) if data_source not in ("toy",) and not is_cge_toy else []
     regions = sorted({lab.split(":", 1)[0] for lab in labels}) if labels else []

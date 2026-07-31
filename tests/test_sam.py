@@ -796,6 +796,61 @@ def test_build_multi_sam_clean_build_still_works():
     assert worst < 1e-8
 
 
+def test_toy_5d_sams_balance_calibrate_and_replicate():
+    """The shipped Phase-5d toy SAMs (user-guide Step 8) are exactly balanced and calibrate +
+    replicate their benchmark to machine precision — the gov/SAVINV SAM carries a real government
+    and investment account, and the energy SAM activates the KL-E-M nest."""
+    from cge.data.sam.balance import is_balanced
+    from cge.data.sam.toy_5d import ENERGY_SECTORS, toy_energy_sam, toy_gov_sam
+    from cge.engines.cge_static import model as MOD
+
+    gov = toy_gov_sam()
+    assert is_balanced(gov.matrix, tol=1e-9)
+    cal_g = calibrate(
+        gov,
+        sectors=["BRD", "MIL"],
+        factors=["CAP", "LAB"],
+        institutions={"household": "HOH", "government": "GOV", "savings_investment": "SAVINV"},
+    )
+    assert cal_g.has_government and cal_g.has_investment
+    assert np.max(np.abs(MOD.residuals(cal_g, MOD.initial_guess(cal_g)))) < 1e-9
+
+    energy = toy_energy_sam()
+    assert is_balanced(energy.matrix, tol=1e-9)
+    cal_e = calibrate(
+        energy,
+        sectors=ENERGY_SECTORS,
+        factors=["CAP", "LAB"],
+        energy_sectors=["DIRTY", "CLEAN"],
+    )
+    assert cal_e.has_energy_nest
+    assert np.max(np.abs(MOD.residuals(cal_e, MOD.initial_guess(cal_e)))) < 1e-9
+
+
+def test_toy_5d_data_sources_run_end_to_end_and_emit_5d_variables():
+    """The 'toy_cge_gov' and 'toy_cge_energy' data sources run through the runner and emit their
+    Phase-5d result variables (fiscal balance / investment; energy-sector output volume) — so the
+    user guide's Step 8 examples are runnable out of the box."""
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import load_scenario
+
+    sc = load_scenario("examples/carbon_price_cge.yaml")
+
+    gov = run_scenario(sc, data_source="toy_cge_gov").data
+    gov_vars = set(gov["variable"].unique())
+    assert {"fiscal_balance", "gov_spending", "investment", "savings"} <= gov_vars
+
+    # A deficit-financed closure opens a non-zero fiscal balance (crowds out investment).
+    gov_def = run_scenario(
+        sc, data_source="toy_cge_gov", data_overrides={"gov_closure": "deficit_financed"}
+    ).data
+    fb = gov_def[gov_def["variable"] == "fiscal_balance"]["value"]
+    assert not fb.empty and abs(float(fb.iloc[0])) > 1e-6
+
+    energy = run_scenario(sc, data_source="toy_cge_energy").data
+    assert "energy_sector_output_volume_change" in set(energy["variable"].unique())
+
+
 def test_build_multi_sam_materiality_bounds_validated():
     """The user-facing ``materiality`` has a bounded, documented contract: at least the calibrator's
     threshold (so the built SAM passes the calibrator's dust gate) and below 0.1 of GDP (so real
