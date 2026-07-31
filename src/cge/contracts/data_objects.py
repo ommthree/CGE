@@ -231,12 +231,30 @@ class IOSystem(_DataObject):
                 fd_regions = [d for d in self.regions.labels if d in self.final_demand]
                 for a, lbl in enumerate(cols):  # a = producing label row
                     for d in fd_regions:  # d = CONSUMING region (every one, not just domestic)
-                        inst_cell = sum(
-                            float(fbi.iloc[a][f"{d}{self.INSTITUTION_SEP}{i}"])
+                        comp = {
+                            i: float(fbi.iloc[a][f"{d}{self.INSTITUTION_SEP}{i}"])
                             for i in self.INSTITUTIONS
-                        )
+                        }
                         fd_cell = float(self.final_demand[d].iloc[a])
                         scale = max(abs(fd_cell), abs(float(self.final_demand[d].mean())), 1.0)
+                        # Per-INSTITUTION sign (review P1 round 17): household and government
+                        # consumption cannot be negative — otherwise offsetting components (e.g.
+                        # household −50, government +150, total 100) pass a total-only check yet
+                        # produce a nonsensical fiscal structure once aggregated (the SAM quality
+                        # gate never sees the negatives because they cancel). Investment MAY be
+                        # negative (an inventory drawdown is legitimate), so it is exempt here; the
+                        # cell TOTAL is still bounded below by 0 (next check).
+                        for inst in ("household", "government"):
+                            if comp[inst] < -1e-9 * scale:
+                                raise ValueError(
+                                    f"final_demand_by_institution for product {lbl!r} consumed by "
+                                    f"region {d!r} has NEGATIVE {inst} demand {comp[inst]:.6g}: "
+                                    "household and government final demand must be non-negative "
+                                    "per cell (only investment may be negative, as an inventory "
+                                    "drawdown). Offsetting components that cancel in the total are "
+                                    "rejected (review P1 round 17), not silently aggregated."
+                                )
+                        inst_cell = sum(comp.values())
                         if inst_cell < -1e-9 * scale:
                             raise ValueError(
                                 f"final_demand_by_institution for product {lbl!r} consumed by "
@@ -255,6 +273,18 @@ class IOSystem(_DataObject):
                                 "cross-region rewrite (review P1 round 16). Reject, do not rescale."
                             )
         return self
+
+    def assert_integrity(self) -> IOSystem:
+        """Re-run the full construction-time integrity validator on the CURRENT payloads (review P1
+        round 17). The pydantic model-validator runs only at construction, but the pandas payloads
+        (``A``, ``final_demand``, ``final_demand_by_institution``) stay MUTABLE afterwards — a
+        caller can reverse ``A``'s rows or corrupt the split post-construction and slip past it.
+        Every
+        engine boundary that consumes an IOSystem must call this so a direct ``Engine.run()`` is as
+        safe as the build pipeline: it re-checks A squareness/alignment, final-demand shape, and the
+        institution-split alignment/consistency. Returns ``self`` for chaining; raises on any
+        inconsistency."""
+        return self._payloads_aligned()
 
     @property
     def n(self) -> int:

@@ -236,6 +236,51 @@ def test_institution_split_consistent_per_sector_still_builds():
     assert report.passed
 
 
+def test_negative_household_or_government_component_is_rejected_even_if_total_ok():
+    """Review P1 (round 17, 2026-07-31): household and government final demand must be non-negative
+    PER CELL — offsetting components that cancel in the total (household −50, government +150, total
+    100 = final demand) previously passed a total-only check and then produced a nonsensical fiscal
+    structure the SAM quality gate never saw (the negatives cancelled). Investment MAY be negative
+    (inventory drawdown), so it is exempt."""
+    # household −50, government +150 for sector a; total 100 = final demand → total check passes.
+    split = {"household": [-50.0, 80.0], "government": [150.0, 0.0], "investment": [0.0, 0.0]}
+    with pytest.raises(ValueError, match="NEGATIVE household|NEGATIVE government|non-negative"):
+        _one_region_io_with_split([100.0, 80.0], split)
+    # A negative INVESTMENT component is allowed (inventory drawdown) as long as the cell total ≥ 0.
+    ok = {"household": [90.0, 80.0], "government": [15.0, 0.0], "investment": [-5.0, 0.0]}
+    io = _one_region_io_with_split([100.0, 80.0], ok)  # constructs without error
+    assert io.fd_by_institution() is not None
+
+
+def test_all_io_backed_engine_paths_reject_a_mutated_A():
+    """Review P1 (round 17, 2026-07-31): EVERY IO-backed entry (closed/open/multi) re-runs the full
+    IOSystem integrity guard at the engine boundary. The IOSystem's pandas payloads stay MUTABLE
+    after construction, so a caller can reverse A's rows post-validation; the closed path caught
+    this (assert_io_aligned) but open/multi dispatched straight to their builders and returned
+    plausible-but-wrong results with a passing 8/8 SAM quality report. Now all three reject."""
+    from cge.contracts.engine import registry
+
+    store = DataStore(tempfile.mkdtemp())
+    build_test(store=store)
+    small = next(b for b in store.build_ids() if b != "exiobase-test")
+    loaded = store.load(small)
+    io, sat = loaded["IOSystem"], loaded.get("SatelliteAccount")
+    io.A = io.A.iloc[::-1]  # reverse rows AFTER construction — bypasses the constructor validator
+    eng = registry.get("cge_static")
+    entries = [
+        {"open_home_region": io.regions.labels[0]},  # open IO
+        {"multi_region": True},  # multi IO
+        {},  # closed IO
+    ]
+    for extra in entries:
+        with pytest.raises(ValueError, match="row and column labels|square|aligned|integrity"):
+            eng.run(
+                data={"IOSystem": io, "SatelliteAccount": sat, **extra},
+                shocks=[CarbonPrice(price=0.1)],
+                years=[2020],
+            )
+
+
 def _two_region_io_with_split(fd_by_region, split):
     """A 2-region 1-sector IOSystem. ``fd_by_region`` maps consuming region → [producerA, producerB]
     final demand; ``split`` maps '<consuming_region>|<institution>' → [producerA, producerB]."""

@@ -64,7 +64,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.13"
+VERSION = "0.9.14"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -93,9 +93,12 @@ _SAVINV_ACCOUNT = "SAVINV"
 # What each key drives, and hence where it is allowed:
 #   SAM                    — the supplied-SAM entry only.
 #   IOSystem               — the IO-backed entry only.
-#   SatelliteAccount       — the satellite carbon source; read ONLY on the IO entry (a supplied SAM
-#                            takes its carbon from carbon_cost_share, never a satellite).
-#   satellites             — alias accepted alongside IOSystem on the IO entry only.
+#   SatelliteAccount       — the satellite carbon source the engine READS; IO entry only (a supplied
+#                            SAM takes its carbon from carbon_cost_share, never a satellite).
+#   satellites             — the store's raw bundle of ALL satellites (a DATA passthrough the
+#                            loader attaches alongside IOSystem, NOT a control the engine reads —
+#                            the engine reads SatelliteAccount). Accepted on the IO entry as a data
+#                            input, excluded from the recorded effective_config.
 #   carbon_cost_share      — the supplied-SAM carbon wedge; on the IO entry the wedge comes from
 #                            the satellite, so it is IGNORED there → not allowed on IO.
 #   va_elast/energy_*      — model controls every variant's calibrator reads (both entries).
@@ -126,7 +129,11 @@ _CLOSURE_KEYS = {
 
 
 def _build_allowed_table() -> dict[tuple[str, str], frozenset[str]]:
-    """The EXPLICIT allowed-key table: (variant, entry) → the exact public keys that path reads."""
+    """The EXPLICIT allowed-key table: (variant, entry) → the exact public keys that path READS.
+    A key is listed ONLY if that path consumes it — no key is accepted merely to be ignored (review
+    P1 rounds 16/17). Notably: the multi IO build DERIVES its own regions/sectors axes and
+    OVERWRITES any hint, so ``sectors``/``regions`` are NOT accepted there; ``satellites`` is a data
+    passthrough (the engine reads ``SatelliteAccount``) recorded as a data input, not a control."""
     tbl: dict[tuple[str, str], frozenset[str]] = {}
     for variant in ("closed", "open", "multi"):
         common = _MODEL_CONTROLS | _CLOSURE_KEYS[variant]
@@ -134,12 +141,14 @@ def _build_allowed_table() -> dict[tuple[str, str], frozenset[str]]:
         supplied = {"SAM", "carbon_cost_share"} | common | {"sectors"}
         if variant == "multi":
             supplied = supplied | {"regions"}  # already in closure keys, explicit for clarity
-        # IO entry: IOSystem (+ satellite) + build controls; NO carbon_cost_share (satellite-based).
+        # IO entry: IOSystem (+ the SatelliteAccount read + the store's raw `satellites` bundle
+        # passthrough) + build controls; NO carbon_cost_share (satellite-based), and NO
+        # sectors/regions on multi (the builder derives and overwrites them).
         io = {"IOSystem", "SatelliteAccount", "satellites", "capital_share"} | common
         if variant == "open":
             io = io | {"open_home_region"}
         if variant == "multi":
-            io = io | {"multi_region", "multi_materiality", "sectors", "regions"}
+            io = (io | {"multi_region", "multi_materiality"}) - {"regions"}
         tbl[(variant, "supplied")] = frozenset(supplied)
         tbl[(variant, "io")] = frozenset(io)
     return tbl
@@ -147,6 +156,8 @@ def _build_allowed_table() -> dict[tuple[str, str], frozenset[str]]:
 
 _ALLOWED_CONFIG = _build_allowed_table()
 # Data-input keys (kept for _effective_public_config to exclude from the recorded policy surface).
+# ``satellites`` is the store's raw multi-satellite bundle — a data passthrough, not a policy
+# control — so it is excluded from the effective config too.
 _DATA_INPUT_KEYS = frozenset({"SAM", "IOSystem", "SatelliteAccount", "satellites"})
 _ENUM_CONFIG = {
     "gov_closure": ("balanced_budget", "deficit_financed"),
@@ -252,6 +263,32 @@ def _validate_config(data: dict, variant: str, entry: str) -> None:
                     "reorders/mislabels results — supply the SAM's own sectors or omit the hint."
                 )
 
+    # CROSS-FIELD applicability (review P1 round 17): a control that only takes effect together with
+    # another is rejected when the other is absent — a static per-key allow-list cannot express
+    # this, so it must be checked explicitly, or the recorded effective_config claims a control had
+    # effect when it did not.
+    # (a) energy_elasticities parameterise the energy nest; without energy_sectors there is no nest.
+    if "energy_elasticities" in data and not data.get("energy_sectors"):
+        raise ValueError(
+            "energy_elasticities was supplied without energy_sectors: the elasticities "
+            "parameterise the KL-E-M energy nest, which is inactive unless energy_sectors names "
+            "the energy commodities — so they have no effect. Supply energy_sectors, or drop the "
+            "elasticities."
+        )
+    # (b) carbon_revenue_recipient only bites when a government account exists. On a supplied SAM we
+    # can see this directly (a GOV account); reject the control if there is none, so the manifest
+    # does not record a recipient choice that the run reports as 'n/a (no government)'. On an IO
+    # build the government comes from the institution split, which is not resolved until build time,
+    # so it is accepted there (and recorded honestly by the run).
+    if "carbon_revenue_recipient" in data and entry == "supplied":
+        sam = data.get("SAM")
+        if sam is not None and _GOV_ACCOUNT not in sam.accounts:
+            raise ValueError(
+                "carbon_revenue_recipient was supplied but the SAM has no government (GOV) "
+                "account, so the choice has no effect (revenue recycles to the household). Add a "
+                "GOV account or drop carbon_revenue_recipient."
+            )
+
 
 def _effective_public_config(data: dict, variant: str, entry: str) -> dict:
     """The complete EFFECTIVE public configuration for the manifest (review P1 round 14): every
@@ -271,10 +308,32 @@ def _effective_public_config(data: dict, variant: str, entry: str) -> dict:
     for k in sorted(keys):
         if k in data:
             v = data[k]
-            cfg[k] = v if isinstance(v, (str, int, float, bool)) else "supplied"
+            if isinstance(v, (str, int, float, bool)):
+                cfg[k] = v
+            else:
+                # Non-scalar controls (e.g. adaptation_investment's sector→share vector,
+                # energy_elasticities) were previously collapsed to the opaque string "supplied",
+                # which hid the COMPOSITION: two runs allocating the same total adaptation amount to
+                # DIFFERENT sectors produced different results yet identical manifests (review P1
+                # round 17). Record a CONTENT HASH (+ a small readable summary) so the effective
+                # config — and the scenario hash derived from it — distinguishes them.
+                cfg[k] = {"content_hash": content_hash(v), "summary": _summarise_config_value(v)}
         elif k in defaults and defaults[k] is not None:
             cfg[k] = defaults[k]
     return cfg
+
+
+def _summarise_config_value(v):
+    """A short, JSON-safe readable summary of a non-scalar config value for the manifest (the
+    content hash is authoritative; this is the human-readable companion)."""
+    if isinstance(v, dict):
+        return {
+            str(k): (round(float(x), 6) if isinstance(x, (int, float)) else str(x))
+            for k, x in list(v.items())[:16]
+        }
+    if isinstance(v, (list, tuple)):
+        return [round(float(x), 6) if isinstance(x, (int, float)) else str(x) for x in v[:16]]
+    return str(v)[:120]
 
 
 ASSUMPTIONS = {
@@ -570,6 +629,18 @@ class CGEStaticEngine:
         # out-of-range values — BEFORE calibration — so a scenario file cannot silently request a
         # closure/param that is never executed.
         _validate_config(data, variant, entry)
+
+        # Boundary integrity guard for EVERY IO-backed entry (review P1 round 17). The closed IO
+        # path checked this inside _resolve_inputs (assert_io_aligned), but the open and multi IO
+        # paths dispatched straight to their builders — so a caller who MUTATED io.A (e.g. reversed
+        # its rows) after construction slipped past the contract's construction-time validator and
+        # got plausible-but-wrong results with a passing SAM quality report. Re-run the FULL
+        # IOSystem integrity check (A alignment, final-demand shape, institution-split alignment and
+        # per-cell consistency) here so all three IO variants are guarded identically.
+        if entry == "io":
+            io = data.get("IOSystem")
+            if io is not None:
+                io.assert_integrity()
 
         if variant == "multi":
             if supplied_sam is not None and _is_multi_region_sam(supplied_sam):

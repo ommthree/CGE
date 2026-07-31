@@ -1,6 +1,6 @@
 # Phase 5d plan — the macro closure (government, investment, energy nest, labour market)
 
-**Status: PHASE 5 model blocks COMPLETE (5d.1–5d.7 + §5.1b); engine v0.9.13 after six
+**Status: PHASE 5 model blocks COMPLETE (5d.1–5d.7 + §5.1b); engine v0.9.14 after six
 review-remediation rounds (11–16). Real-data institutionalization landed for the closed variant;
 open/multi institution routing + sourced tax detail remain follow-ups. NB wage-floor labour (5d.4)
 and adaptation investment (5d.6) are CLOSED-variant only; government/investment/energy-nest span all
