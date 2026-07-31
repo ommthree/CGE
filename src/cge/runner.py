@@ -53,12 +53,39 @@ def _toy_cge_multi() -> dict:
     }
 
 
-# Built-in CGE toy SAMs selectable as a data source (closed / open / multi-region). Each returns the
-# data dict the CGE engine consumes; the engine dispatches on SAM structure.
+def _toy_cge_gov() -> dict:
+    from cge.data.sam.toy_5d import toy_gov_sam
+
+    # The closed SAM plus a government + savings-investment account (Phase 5d fiscal/investment
+    # closures). The carbon wedge is on the dirty sector, as for the plain closed SAM.
+    return {
+        "SAM": toy_gov_sam(),
+        "carbon_cost_share": {"BRD": _TOY_DIRTY_SHARE, "MIL": _TOY_CLEAN_SHARE},
+    }
+
+
+def _toy_cge_energy() -> dict:
+    from cge.data.sam.toy_5d import toy_energy_sam
+
+    # A 3-sector SAM with two energy commodities (DIRTY fossil / CLEAN electricity). Declaring
+    # ``energy_sectors`` activates the KL-E-M nest so a fossil carbon price substitutes within the
+    # energy bundle. The wedge sits on the fossil commodity.
+    return {
+        "SAM": toy_energy_sam(),
+        "carbon_cost_share": {"DIRTY": _TOY_DIRTY_SHARE, "CLEAN": 0.0, "MFG": 0.0},
+        "energy_sectors": ["DIRTY", "CLEAN"],
+    }
+
+
+# Built-in CGE toy SAMs selectable as a data source (closed / open / multi-region, plus the Phase
+# 5d government and energy-nest variants). Each returns the data dict the CGE engine consumes; the
+# engine dispatches on SAM structure.
 _CGE_TOY_SAMS = {
     "toy_cge": _toy_cge_closed,
     "toy_cge_open": _toy_cge_open,
     "toy_cge_multi": _toy_cge_multi,
+    "toy_cge_gov": _toy_cge_gov,
+    "toy_cge_energy": _toy_cge_energy,
 }
 
 

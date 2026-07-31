@@ -7,7 +7,8 @@ the previous one. Follow it top to bottom the first time; afterwards it doubles 
 pass-through; **Engine 2 (`partial_eq`)**, production-**volume** response; and **Engine 3
 (`cge_static`)**, a general-equilibrium **CGE** with revenue recycling, an **open economy**
 (Armington/CET, carbon leakage), **CES value added**, elasticity sweeps and **multiple regions**
-(bilateral trade) — plus **macro aggregates** (GVA/GDP/deflators, real vs nominal) on every run, a
+(bilateral trade), plus the **macro closure** (a government/fiscal account, savings-investment, and a
+KL-E-M energy nest) — plus **macro aggregates** (GVA/GDP/deflators, real vs nominal) on every run, a
 data layer (build, store, quality), and a web GUI. Nature (ENCORE) and the pathway stack are planned
 (see [`roadmap.md`](../roadmap.md)); this guide covers what runs now.
 
@@ -229,7 +230,7 @@ never makes it into the store.
 **USD** (the pymrio fixture's real currency). Engine 1 applies a euro-specific cost-share scaling and
 therefore **refuses a non-EUR build** — this is correct behaviour, not a bug: it would rather reject
 the run than return a wrongly-scaled number. So the `--test` build is for exercising the **data layer**
-(build → store → quality → the Explorer in Step 8), while a *priced* `io_price`/`partial_eq` run needs
+(build → store → quality → the Explorer in Step 9), while a *priced* `io_price`/`partial_eq` run needs
 a **EUR** build, which the live EXIOBASE build (Step 6) provides. You can still point a run at a build
 with `--data <build_id>`:
 
@@ -481,13 +482,141 @@ result neither the closed nor the single-region-open model can express.
 > own destination-specific price (no law-of-one-price shortcut), and every bilateral market clears
 > explicitly under a shock, not just at the benchmark. Magnitudes are illustrative; the value is the
 > **direction and mechanism** — which are textbook-correct and replicate their benchmark to machine
-> precision. Running on real EXIOBASE-shaped data needs an IOSystem-driven multi-region SAM build,
-> which (unlike the single-region open economy's `build_open_sam`) is a documented follow-up —
-> today the multi-region model requires a supplied SAM.
+> precision. An IOSystem-driven multi-region SAM build (`build_multi_sam`) exists and is validated on
+> an EXIOBASE-shaped fixture; a **live-EXIOBASE** multi-region build with genuine above-threshold
+> cross-region trade is the remaining data step (the offline test MRIO's cross-region trade is
+> below the materiality threshold, so it must first be coarsened — see §5.1b in the roadmap).
 
 ---
 
-## Step 8 — The web GUI (full tour)
+## Step 8 — The macro closure: government, investment, and the energy nest (Phase 5d)
+
+Steps 7a–7f are a complete GE core, but they leave three things simplified: carbon revenue is
+recycled the *same period* with no government balance sheet; there is no saving or investment; and
+energy is just another input, so a carbon price cannot shift substitution *within* the energy bundle.
+Phase 5d adds all three. Like Step 7, each piece is concept-first, then a run you do yourself. Two
+new built-in SAMs carry the extra accounts, so everything here runs offline with no data build:
+`toy_cge_gov` (adds a government + savings-investment account) and `toy_cge_energy` (adds two energy
+commodities for the nest).
+
+### 8a — A government account and fiscal closures
+
+In Step 7b the carbon revenue was handed straight back to the household. A real **government account
+(`GOV`)** instead holds the revenue and *spends* it, and it can run a **deficit or surplus**. The
+`toy_cge_gov` SAM adds a `GOV` account (it levies a benchmark direct tax and spends on the two goods)
+and a savings-investment account (`SAVINV`, covered in 8b). Which fiscal rule the government follows
+is the **`gov_closure`** control:
+
+- **`balanced_budget`** (default) — the government spends exactly what it takes in. Carbon revenue
+  raises spending; the budget always balances, so `fiscal_balance` is 0.
+- **`deficit_financed`** — the government spends a **fixed real amount** regardless of revenue, and
+  any shortfall is a genuine **deficit that crowds out private investment** (it draws on the national
+  savings pool). Now `fiscal_balance` moves, and you can see investment fall.
+
+**CLI.** Run the default balanced-budget closure, then the deficit-financed one:
+
+```bash
+$ cge run --scenario examples/carbon_price_cge.yaml --data toy_cge_gov
+$ cge run --scenario examples/carbon_price_cge.yaml --data toy_cge_gov \
+    --set gov_closure=deficit_financed
+```
+
+(`--set key=value` passes an engine config override; it is repeatable.)
+
+New result variables appear: `fiscal_balance` and `gov_spending` (shares of benchmark GDP), plus
+`investment` and `savings`. Under `balanced_budget`, `fiscal_balance` is 0. Under `deficit_financed`,
+a carbon shock opens a non-zero `fiscal_balance` and `investment` falls — the deficit crowding out
+private capital formation, a real second-round cost the same-period recycling of Step 7b cannot show.
+
+> **Who gets the revenue is a separate choice.** `carbon_revenue_recipient` picks whether carbon
+> revenue accrues to the **`government`** (the default — it funds spending) or is recycled to the
+> **`household`**. It only means something when a government exists: on a SAM with no `GOV` account
+> the engine rejects it rather than recording a choice that has no effect.
+
+**GUI.** Select **Data → `toy_cge_gov`** and run; on **Results**, the fiscal rows (`fiscal_balance`,
+`gov_spending`, `investment`, `savings`) are shown alongside the usual price/volume/factor tables.
+(The closure *controls* — `gov_closure`, `carbon_revenue_recipient` — are set on the CLI / in the
+scenario; the GUI surfaces the fiscal *outputs*.)
+
+### 8b — Savings, investment, and how the economy closes
+
+A carbon shock changes not just what is consumed but what is **saved and invested**. The `SAVINV`
+account turns household saving into investment demand, and the **`inv_closure`** control chooses how
+that market closes:
+
+- **`savings_driven`** (default) — investment is whatever savings finance (saving determines
+  investment). The savings-investment identity substitutes in closed form, so the model stays square.
+- **`fixed_real`** — the *quantity* of investment is pinned at its benchmark level and savings adjust
+  to fund it. This is the classic "investment-driven" alternative.
+
+The two closures answer a carbon price differently: under `savings_driven`, a shock that lowers income
+lowers investment; under `fixed_real`, investment holds and the adjustment falls elsewhere. Both emit
+`investment` and `savings` (equal under `savings_driven`; they can differ once foreign savings enter in
+the open economy).
+
+**CLI.**
+
+```bash
+$ cge run --scenario examples/carbon_price_cge.yaml --data toy_cge_gov \
+    --set inv_closure=fixed_real
+```
+
+Compare `investment` and `savings` against the default run. This is the same accounting a
+recursive-dynamic model (a future phase) would step forward year to year: today's investment is next
+year's capital stock. The standalone capital-accumulation identity that does that stepping already
+exists (`K_{t+1} = (1−δ)(1−r)K_t + I`), ready for that phase.
+
+> **Adaptation investment.** A related control, `adaptation_investment`, earmarks a share of
+> investment to specific sectors (climate adaptation/transition spending). It **crowds out** other
+> investment one-for-one under the default closure — an explicit choice against a "free lunch"
+> assumption — and its full sector composition (not just the total) is recorded in the run's
+> provenance, so two different allocations are distinguishable after the fact.
+
+### 8c — The energy nest: substitution *within* energy (KL-E-M)
+
+In Steps 7a–7c a sector combined capital and labour (the CES value-added nest), with every other
+input — energy included — entering as a fixed Leontief recipe. That means a carbon price on fossil
+energy could not make a firm switch **from fossil to electricity**; it could only shrink output. Real
+firms do switch fuels, and that substitution is often the largest channel by which carbon pricing cuts
+emissions. The **KL-E-M energy nest** captures it with a three-level production structure:
+
+- **outer:** a bundle of {capital-labour-energy} versus **materials** (M);
+- **middle:** {capital-labour} (KL) versus **energy** (E);
+- **inner:** substitution *among the energy commodities themselves* (e.g. fossil ↔ electricity).
+
+Each level has its own elasticity (`kle_m`, `kl_e`, `energy`). The inner one is the new capability:
+with it, a fossil carbon price shifts the energy mix toward electricity, not just down.
+
+The `toy_cge_energy` SAM has three sectors — `DIRTY` (fossil), `CLEAN` (electricity), and `MFG`
+(manufacturing, which buys both) — and ships with `energy_sectors = ['DIRTY', 'CLEAN']` so the nest is
+active. Without that declaration the model stays flat Leontief (bit-identical to Step 7), so you can see
+the nest's effect by turning it on.
+
+**CLI.**
+
+```bash
+$ cge run --scenario examples/carbon_price_cge.yaml --data toy_cge_energy
+```
+
+Put a carbon price on `DIRTY` and read the reallocation: **fossil output falls, electricity output
+rises**, and manufacturing's fuel mix shifts from fossil toward electricity — substitution *within* the
+energy bundle. A new result variable, `energy_sector_output_volume_change`, reports the energy sectors'
+volume response. This is the mechanism a carbon-literate reviewer looks for first, and it is exactly
+what the flat model in Step 7 could not express.
+
+**GUI.** Select **Data → `toy_cge_energy`** and run; the energy sectors appear in the price/volume
+tables and the energy-output volume row is on **Results**. Raise the carbon price and watch fossil
+output fall faster than total output — the difference is the fuel switching.
+
+> **Scope, honestly.** Government/investment/energy-nest are all delivered across the closed, open,
+> and multi-region variants for the model core; the wage-floor labour market and adaptation investment
+> are currently closed-variant only (open/multi are documented follow-ups). As with Step 7, these toy
+> SAMs are hand-checkable and replicate their benchmark to machine precision — the value is the
+> **direction and mechanism**, with magnitudes illustrative until run on live data.
+
+---
+
+## Step 9 — The web GUI (full tour)
 
 You've already used the GUI's Run and Results pages throughout Step 7. Here is the whole app — walk
 the pages left to right; they mirror this guide:
@@ -498,7 +627,8 @@ the pages left to right; they mirror this guide:
 - **Quality** — the quality report per build, colour-coded by severity.
 - **Build** — trigger a `--test` (or live) build from the browser.
 - **Run scenario** — pick a **data source** (`toy` for Engines 1–2; `toy_cge` / `toy_cge_open` /
-  `toy_cge_multi` for the CGE variants from Step 7; or a store build), pick an **engine** (it
+  `toy_cge_multi` for the CGE variants from Step 7, and `toy_cge_gov` / `toy_cge_energy` for the
+  Phase-5d government and energy-nest variants from Step 8; or a store build), pick an **engine** (it
   auto-selects `cge_static` for the CGE SAMs), set a **carbon price**, choose **revenue recycling**
   (GE engines), open **CGE options** for the value-added / Armington / CET **elasticity** sliders, and
   add any number of **energy-carrier price** shocks (Engines 1–2). Everything is composed into one
@@ -515,7 +645,7 @@ the pages left to right; they mirror this guide:
 
 ---
 
-## Step 9 — Trust the numbers: provenance and validation
+## Step 10 — Trust the numbers: provenance and validation
 
 Two habits make results defensible:
 

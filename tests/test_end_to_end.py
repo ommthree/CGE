@@ -91,11 +91,32 @@ def test_cli_prints_a_real_deflator_for_cge_runs():
     from cge.cli import _cmd_run
 
     cge_example = Path(__file__).resolve().parents[1] / "examples" / "carbon_price_cge.yaml"
-    args = argparse.Namespace(scenario=str(cge_example), data="toy")
+    args = argparse.Namespace(scenario=str(cge_example), data="toy", set=None)
     out = io_capture(lambda: _cmd_run(args))
     macro_lines = [ln for ln in out.splitlines() if "deflator" in ln]
     assert macro_lines, "no macro headline printed for the CGE run"
     assert "nan" not in " ".join(macro_lines).lower()  # a real deflator, not +nan%
+
+
+def test_cli_set_flag_passes_config_overrides_to_the_engine():
+    """The `cge run --set key=value` flag (user-guide Step 8) passes engine config overrides
+    through to the run — e.g. --set gov_closure=deficit_financed switches the fiscal closure,
+    recorded in the manifest. Values are coerced (numbers/bools); closure names stay strings."""
+    import argparse
+
+    from cge.cli import _cmd_run, _parse_set
+
+    assert _parse_set(["gov_closure=deficit_financed", "va_elast=0.4", "flag=true"]) == {
+        "gov_closure": "deficit_financed",
+        "va_elast": 0.4,
+        "flag": True,
+    }
+    cge_example = Path(__file__).resolve().parents[1] / "examples" / "carbon_price_cge.yaml"
+    args = argparse.Namespace(
+        scenario=str(cge_example), data="toy_cge_gov", set=["gov_closure=deficit_financed"]
+    )
+    out = io_capture(lambda: _cmd_run(args))
+    assert '"gov_closure": "deficit_financed"' in out  # the override reached the manifest
 
 
 def io_capture(fn):

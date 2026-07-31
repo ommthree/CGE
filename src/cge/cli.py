@@ -30,9 +30,34 @@ def _cmd_engines(_: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_set(pairs: list[str] | None) -> dict:
+    """Parse ``--set key=value`` pairs into a data_overrides dict. Values are coerced to int/float/
+    bool when they look numeric/boolean, else kept as strings (so closure names stay strings and
+    elasticities become numbers). A missing '=' is a usage error."""
+
+    def _coerce(raw: str) -> object:
+        if raw in ("true", "false"):
+            return raw == "true"
+        for cast in (int, float):
+            try:
+                return cast(raw)
+            except ValueError:
+                continue
+        return raw  # keep as string (e.g. a closure name)
+
+    out: dict = {}
+    for item in pairs or []:
+        if "=" not in item:
+            raise ValueError(f"--set expects key=value, got {item!r}")
+        key, _, raw = item.partition("=")
+        out[key.strip()] = _coerce(raw.strip())
+    return out
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     scenario = load_scenario(args.scenario)
-    result = run_scenario(scenario, data_source=args.data)
+    overrides = _parse_set(args.set)
+    result = run_scenario(scenario, data_source=args.data, data_overrides=overrides or None)
     df = result.data
     print(f"Scenario: {scenario.name}  (engine={scenario.engine}, rows={len(df)})")
     print(f"Scenario hash: {result.manifest.scenario_hash}")
@@ -150,6 +175,12 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run", help="run a scenario file")
     run.add_argument("--scenario", required=True, help="path to a scenario YAML")
     run.add_argument("--data", default="toy", help="data source: 'toy' or a build id")
+    run.add_argument(
+        "--set",
+        action="append",
+        metavar="KEY=VALUE",
+        help="engine config override, e.g. --set gov_closure=deficit_financed (repeatable)",
+    )
     run.set_defaults(func=_cmd_run)
 
     build = sub.add_parser("build", help="build a dataset into the store")

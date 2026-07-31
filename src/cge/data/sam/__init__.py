@@ -15,6 +15,7 @@ from cge.data.sam.build import (
     build_sam,
 )
 from cge.data.sam.toy import toy_sam
+from cge.data.sam.toy_5d import toy_energy_sam, toy_gov_sam
 from cge.data.sam.toy_multi import toy_multi_sam
 from cge.data.sam.toy_open import toy_open_sam
 
@@ -22,6 +23,8 @@ __all__ = [
     "toy_sam",
     "toy_open_sam",
     "toy_multi_sam",
+    "toy_gov_sam",
+    "toy_energy_sam",
     "build_sam",
     "build_raw_sam",
     "build_open_sam",
