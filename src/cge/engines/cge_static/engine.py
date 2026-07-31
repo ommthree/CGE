@@ -64,7 +64,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.14"
+VERSION = "0.9.15"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -275,6 +275,18 @@ def _validate_config(data: dict, variant: str, entry: str) -> None:
             "the energy commodities — so they have no effect. Supply energy_sectors, or drop the "
             "elasticities."
         )
+    # (a′) energy_elasticities keys must be EXACTLY the three nest elasticities the calibrator reads
+    # (kle_m/kl_e/energy) — anything else (e.g. a typo) is silently dropped by the ``el.get(name)``
+    # lookups and recorded as effective when it had no effect (review P2 round 18).
+    if isinstance(data.get("energy_elasticities"), dict):
+        allowed_elast = {"kle_m", "kl_e", "energy"}
+        bad = sorted(k for k in data["energy_elasticities"] if k not in allowed_elast)
+        if bad:
+            raise ValueError(
+                f"energy_elasticities has unknown key(s) {bad}; the KL-E-M nest reads exactly "
+                f"{sorted(allowed_elast)} (a mistyped key is silently ignored and would be "
+                "recorded as effective though it had no effect)."
+            )
     # (b) carbon_revenue_recipient only bites when a government account exists. On a supplied SAM we
     # can see this directly (a GOV account); reject the control if there is none, so the manifest
     # does not record a recipient choice that the run reports as 'n/a (no government)'. On an IO
@@ -727,6 +739,18 @@ class CGEStaticEngine:
             raise ValueError(
                 f"gov_closure={gov_closure!r} needs a {_GOV_ACCOUNT!r} account in the SAM; this "
                 "SAM has none, so the closure choice would silently do nothing."
+            )
+        # POST-BUILD applicability of carbon_revenue_recipient (review P2 round 18). The
+        # construction-time check only sees a SUPPLIED SAM's accounts; on an IO build the government
+        # comes from the institution split and is not known until here. If the caller EXPLICITLY set
+        # a recipient but the built SAM has no government, the choice is a no-op (revenue recycles
+        # to the household regardless) — reject so the effective_config never records a recipient
+        # the run reports as 'n/a (no government)'.
+        if "carbon_revenue_recipient" in data and not cal.has_government:
+            raise ValueError(
+                "carbon_revenue_recipient was supplied but the built SAM has no government (GOV) "
+                "account, so the choice has no effect (revenue recycles to the household). Provide "
+                "an institution split with a government, or drop carbon_revenue_recipient."
             )
         if gov_closure == "deficit_financed" and not cal.has_investment:
             # The deficit is financed by crowding out private investment (review remediation

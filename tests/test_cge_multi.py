@@ -1517,6 +1517,56 @@ def test_config_matrix_round17_path_and_cross_field_cases():
         )
 
 
+def test_config_round18_energy_elast_keys_and_postbuild_recipient():
+    """Review P2 (round 18, 2026-07-31): two remaining config no-ops are rejected.
+    (a) energy_elasticities keys must be exactly {kle_m, kl_e, energy} — a typo key is silently
+        dropped by the calibrator's el.get() lookups yet recorded as effective.
+    (b) carbon_revenue_recipient on an IO build whose built SAM has NO government (no institution
+        split) is a no-op — the construction-time check only sees a supplied SAM's accounts, so a
+        POST-BUILD check rejects it once the built SAM's government status is known."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Classification, IOSystem, Provenance
+    from cge.contracts.engine import registry
+    from cge.data.sam import toy_sam
+
+    eng = registry.get("cge_static")
+
+    # (a) energy_elasticities typo key (with an active nest via energy_sectors).
+    with pytest.raises(ValueError, match="unknown key|kle_m"):
+        eng.run(
+            data={
+                "SAM": toy_sam(),
+                "carbon_cost_share": {"BRD": 1.0, "MIL": 0.5},
+                "energy_sectors": ["BRD"],
+                "energy_elasticities": {"TYPO": 9.0},
+            },
+            shocks=[CarbonPrice(price=0.1)],
+            years=[2020],
+        )
+
+    # (b) recipient on a closed IO build with NO institution split (so the built SAM has no GOV).
+    prov = Provenance(
+        source="x", source_version="1", licence="x", reference_year=2020, retrieved="2026-07-31"
+    )
+    labels = ["R:a", "R:b"]
+    io = IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=["a", "b"]),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=pd.DataFrame([[0.1, 0.2], [0.05, 0.1]], index=labels, columns=labels),
+        final_demand=pd.DataFrame({"R": [120.0, 80.0]}, index=labels),
+        final_demand_kind="by_region",
+    )
+    assert io.fd_by_institution() is None  # no institution split → the built SAM has no GOV
+    with pytest.raises(ValueError, match="built SAM has no government|no effect"):
+        eng.run(
+            data={"IOSystem": io, "carbon_revenue_recipient": "household"},
+            shocks=[CarbonPrice(price=0.0)],
+            years=[2020],
+        )
+
+
 def test_adaptation_composition_is_recorded_in_provenance():
     """Review P1 (round 17, 2026-07-31): a non-scalar control's COMPOSITION must reach the manifest.
     Allocating the same 2% adaptation to BRD vs MIL produces different results, but the effective

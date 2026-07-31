@@ -141,6 +141,33 @@ class IOSystem(_DataObject):
             )
         if not self.final_demand.empty and list(self.final_demand.index) != cols:
             raise ValueError("IOSystem.final_demand index is not aligned with A's labels")
+        # FINITE payloads (review P2 round 18): the pandas frames stay mutable after construction,
+        # so a caller can set a cell to NaN/inf post-validation. That slips past the SAM quality
+        # gate because ``final_demand.sum(axis=1)`` silently skips NaN — the run then produces
+        # plausible but wrong numbers. Reject non-finite A / final_demand here (the stored-build
+        # pipeline already rejects non-finite data upstream; this guards the direct-input /
+        # post-mutation entry paths, which ``assert_integrity`` re-runs at the engine boundary).
+        if not np.isfinite(a.to_numpy(dtype=float)).all():
+            raise ValueError("IOSystem.A has non-finite (NaN/inf) values")
+        if (
+            not self.final_demand.empty
+            and not np.isfinite(self.final_demand.to_numpy(dtype=float)).all()
+        ):
+            raise ValueError("IOSystem.final_demand has non-finite (NaN/inf) values")
+        # A's labels must be exactly the region × sector CROSS PRODUCT of the declared
+        # classifications (review P2 round 18): alignment alone (rows == cols) does not confirm the
+        # labels correspond to the declared regions/sectors, so a matrix whose axis was replaced
+        # with arbitrary-but-consistent labels would pass. Labels are ``"<region>:<sector>"``.
+        expected_labels = {f"{r}:{s}" for r in self.regions.labels for s in self.sectors.labels}
+        if set(cols) != expected_labels:
+            missing = sorted(expected_labels - set(cols))[:3]
+            extra = sorted(set(cols) - expected_labels)[:3]
+            raise ValueError(
+                "IOSystem.A labels are not the region × sector cross product of the declared "
+                f"classifications ({len(expected_labels)} expected, {len(cols)} present; "
+                f"missing e.g. {missing}, unexpected e.g. {extra}). A mislabelled axis silently "
+                "mis-attributes results."
+            )
         if self.final_demand_kind == "by_region" and not self.final_demand.empty:
             fd_cols = list(self.final_demand.columns)
             if len(set(fd_cols)) != len(fd_cols):
