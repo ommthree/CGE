@@ -1468,6 +1468,100 @@ def test_config_matrix_rejects_controls_ignored_by_the_selected_path():
         )
 
 
+def test_config_matrix_round17_path_and_cross_field_cases():
+    """Review P1 (round 17, 2026-07-31): the boundary rejects further ignored/inapplicable controls.
+    (1) multi IO DERIVES its own axes and overwrites hints → regions/sectors are rejected there;
+    (2) energy_elasticities without energy_sectors has no effect (the nest is inactive) → rejected;
+    (3) carbon_revenue_recipient on a SAM with no GOV account has no effect → rejected."""
+    import tempfile
+
+    from cge.contracts.engine import registry
+    from cge.data.build import build_test
+    from cge.data.sam import toy_sam
+    from cge.data.store import DataStore
+
+    store = DataStore(tempfile.mkdtemp())
+    build_test(store=store)
+    small = next(b for b in store.build_ids() if b != "exiobase-test")
+    io = store.load(small)["IOSystem"]
+    eng = registry.get("cge_static")
+    shocks = [CarbonPrice(price=0.1)]
+
+    # (1) multi IO derives its own axes; a hint is ignored → rejected.
+    for bad in ({"regions": ["BOGUS"]}, {"sectors": ["WRONG"]}):
+        with pytest.raises(ValueError, match="unsupported config key"):
+            eng.run(data={"IOSystem": io, "multi_region": True, **bad}, shocks=shocks, years=[2020])
+
+    # (2) energy_elasticities without energy_sectors (cross-field applicability).
+    with pytest.raises(ValueError, match="energy_elasticities .*without energy_sectors"):
+        eng.run(
+            data={
+                "SAM": toy_sam(),
+                "carbon_cost_share": {"BRD": 1.0, "MIL": 0.5},
+                "energy_elasticities": {"kle_m": 0.5},
+            },
+            shocks=shocks,
+            years=[2020],
+        )
+
+    # (3) carbon_revenue_recipient on a SAM with no government account.
+    with pytest.raises(ValueError, match="no government|has no.*GOV"):
+        eng.run(
+            data={
+                "SAM": toy_sam(),
+                "carbon_cost_share": {"BRD": 1.0, "MIL": 0.5},
+                "carbon_revenue_recipient": "household",
+            },
+            shocks=shocks,
+            years=[2020],
+        )
+
+
+def test_adaptation_composition_is_recorded_in_provenance():
+    """Review P1 (round 17, 2026-07-31): a non-scalar control's COMPOSITION must reach the manifest.
+    Allocating the same 2% adaptation to BRD vs MIL produces different results, but the effective
+    config previously reduced the dict to the opaque 'supplied' — so the two runs had identical
+    assumption dumps. The effective_config now records a content hash + summary that distinguishes
+    them."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import SAM, Provenance
+    from cge.contracts.engine import registry
+    from cge.data.sam import toy_sam
+
+    base = toy_sam()
+    acc = list(base.accounts) + ["GOV", "SAVINV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[base.accounts, base.accounts] = base.matrix
+    m.loc["GOV", "HOH"] = 18.1
+    m.loc["BRD", "GOV"] = 10.0
+    m.loc["MIL", "GOV"] = 8.1
+    m.loc["SAVINV", "HOH"] = 16.29
+    m.loc["BRD", "SAVINV"] = 9.0
+    m.loc["MIL", "SAVINV"] = 7.29
+    m.loc["BRD", "HOH"] -= 19.0
+    m.loc["MIL", "HOH"] -= 15.39
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=0, retrieved="2026-07-31"
+    )
+    sam = SAM(provenance=prov, accounts=acc, matrix=m)
+    eng = registry.get("cge_static")
+    cc = {"BRD": 1.0, "MIL": 0.5}
+
+    def _adapt_cfg(sector):
+        res = eng.run(
+            data={"SAM": sam, "carbon_cost_share": cc, "adaptation_investment": {sector: 0.02}},
+            shocks=[CarbonPrice(price=0.0)],
+            years=[2020],
+        )
+        return res.manifest.assumptions["effective_config"]["adaptation_investment"]
+
+    brd, mil = _adapt_cfg("BRD"), _adapt_cfg("MIL")
+    assert brd != mil  # the composition, not just the aggregate, is recorded
+    assert brd["content_hash"] != mil["content_hash"]
+    assert brd["summary"] == {"BRD": 0.02} and mil["summary"] == {"MIL": 0.02}
+
+
 def test_config_accepts_supported_keys():
     """The strict gate does not reject legitimate per-variant controls."""
     from cge.contracts.engine import registry

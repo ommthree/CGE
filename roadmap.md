@@ -266,25 +266,21 @@ parallelism reduces calendar time for a team, never the total work for a solo bu
 > acknowledged but unowned by any numbered task; Phase 7b/8 cannot credibly operate on a hand-built
 > supplied multi-region SAM); and per-cell (rather than uniform) trade elasticities.
 >
-> **Correction (2026-07, prompted by an independent review): Phase 5 is not fully complete —
-> government, savings/investment, and the energy nest were dropped silently, not carried forward.**
-> The pilot above ("5.2a") is a genuine, correctness-first CGE core: it replicates its benchmark,
-> satisfies homogeneity and Walras, and demonstrates revenue recycling, Armington/CET trade, CES
-> value added, and true multi-region bilateral clearing. But **5.2's own original spec** (below)
-> called for a **government/fiscal account**, **savings/investment** (capital accumulation, not
-> just a factor endowment), and a **genuine energy nest** (KL–E–M, not KL with energy as a plain
-> intermediate) — **none of which exist in the implemented model.** Carbon-tax revenue is a
-> pass-through (collected and immediately recycled in the same period; there is no government
-> balance sheet to hold it), there is no investment/savings mechanism (so **Phase 7.1's recursive
-> dynamics, which explicitly need "savings/investment → next-year capital stock", currently have
-> no real mechanism to update from** — capital accumulation there would be imposed bookkeeping, not
-> a modelled decision), and energy is just another Leontief/CES input with no separable nest a
-> carbon price can shift substitution within. These were listed as "remaining, later enhancement"
-> in earlier drafts of this roadmap but dropped from the "remaining (deferred)" list above when
-> Phase 5's header was marked complete — an honesty gap in the roadmap itself, not just the model.
-> **They are reopened as Phase 5d below** — carried-forward Phase 5 debt, not new scope — and are a
-> prerequisite for Phase 7b (a baseline/pathway harmonizer is low-value without a government
-> account and an energy nest to harmonize NGFS's fiscal- and energy-transition pathways against).
+> **History (2026-07, prompted by an independent review) — RESOLVED in Phase 5d.** An earlier
+> review found that Phase 5's original spec called for a **government/fiscal account**,
+> **savings/investment** (capital accumulation, not just a factor endowment), and a **genuine energy
+> nest** (KL–E–M, not KL with energy as a plain intermediate) — none of which the correctness-first
+> pilot ("5.2a") shipped, and which had been silently dropped from the "remaining (deferred)" list
+> when Phase 5's header was first marked complete. These were reopened as **Phase 5d** (carried-
+> forward Phase 5 debt, not new scope) and are now **DELIVERED** (see Phase 5d below, engine
+> v0.9.14): a government account with balanced-budget AND deficit-financed closures (5d.1/5d.7);
+> savings/investment with `savings_driven`+`fixed_real` closures and a standalone capital-
+> accumulation identity for 7.1 (5d.2/5d.3); a KL-E-M energy nest across all three variants (5d.5);
+> plus a wage-floor labour market (5d.4, closed variant) and adaptation investment (5d.6, closed
+> variant). Carbon-tax revenue is no longer only a same-period pass-through — with a GOV account it
+> is collected and spent/deficit-financed on a real fiscal balance sheet. This unblocked Phase 7b
+> (a baseline/pathway harmonizer needs a government account and an energy nest to harmonize NGFS's
+> fiscal- and energy-transition pathways against).
 
 > **Detailed plan: [`docs/phase-5-plan.md`](docs/phase-5-plan.md)** — solver-first sequencing,
 > equation-level model structure, SAM balancing with an audit trail, the standard CGE
@@ -317,7 +313,7 @@ cannot credibly operate on the current hand-built supplied multi-region SAM.**
   satellite/SAM-quality provenance in the manifest.
 - ✅ `multi_region_live_replicates_on_built_sam` validation gate (machine-precision replication on
   the offline pymrio-test MRIO aggregated to 2 regions × 3 sectors). 58 validation checks, all
-  green (as of v0.9.13; was 52 at v0.9.6). NB the live EXIOBASE *download* wrapper `build_exiobase`
+  green (as of v0.9.14; was 52 at v0.9.6). NB the live EXIOBASE *download* wrapper `build_exiobase`
   was already present (§5.1); 5.1b
   is the multi-region SAM *reduction* + engine wiring on top of it.
   How each DoD item was met (all ✅): the **IOSystem→multi-region-SAM builder** generalises
@@ -337,7 +333,7 @@ cannot credibly operate on the current hand-built supplied multi-region SAM.**
 - ✅ Static CGE in pyomo/scipy: Armington imports / CET exports, household demand (Cobb-Douglas), carbon-tax revenue with recycling options (lump-sum vs labour-tax cut, as a same-period pass-through), square-model and degrees-of-freedom checks (proven square via the replication gate).
 - ✅ **Delivered in Phase 5d** (see below): nested CES production with a genuine **energy nest** (KL–E–M, so carbon pricing shifts substitution *within* the energy bundle, not just KL — 5d.5, all three variants); a **government/fiscal account** with balanced-budget AND deficit-financed closures (5d.1/5d.7); **investment/savings** with savings-driven + fixed-real closures and a standalone capital-accumulation identity for 7.1 (5d.2/5d.3); a wage-floor labour market (5d.4, closed variant) and adaptation investment (5d.6, closed variant).
 - Pilot single-region model first; extend to multi-region only once the pilot passes 5.3's tests. (Done — see "Also complete" above and §8a in cge-static.md.)
-- **DoD:** model solves from the SAM; equation/variable count documented; closures switchable by config. **Met for the pilot's own scope**; not met for the government/investment/energy-nest scope this section originally specified — see 5d.
+- **DoD:** model solves from the SAM; equation/variable count documented; closures switchable by config. **Met for the pilot's own scope, and the government/investment/energy-nest scope this section originally specified is now met too — delivered in Phase 5d (below).**
 
 **5.3 Calibration & credibility tests (2–4 wk) — ✅ correctness battery + revenue recycling + elasticity sensitivity sweeps done**
 - ✅ Benchmark replication (zero shock reproduces the SAM to machine precision), ✅ homogeneity, ✅ Walras' law — in CI (toy + real EXIOBASE SAM).
@@ -374,20 +370,24 @@ accumulation in the dynamic wrapper is imposed bookkeeping, not a modelled decis
 CGE run — closed, open, or multi-region — reports real GDP (`gdp_change_real`, including per region
 in the multi variant), GVA (`gva_change` per sector), consumption, investment (with the accounts),
 employment (`employment_change`), wages (`wage_change`), capital returns (`capital_return_change`),
-a **relative GDP-deflator index** (`gdp_deflator_change` — NOT "inflation"; under the CPI numéraire
-the GDP deflator relative to the consumption basket is 0 by identity, emitted for schema
-completeness and to make that property explicit/testable — see the deflator note below), trade
+a **relative GDP-deflator index** (`gdp_deflator_change` — NOT absolute "inflation"; it is the
+GDP-basket price change RELATIVE TO the CPI numéraire, a **genuine non-zero** number computed as
+current-price GDP / volume GDP − 1, review round 13 — NOT hard-coded 0; the CPI numéraire fixes only
+the *level*, not relative prices — see the deflator note below), trade
 (`import_change`/`export_change`, open/multi), fiscal balance (with a government), emissions
-(`emissions_change`, where priced), and energy use (`energy_use_change`, with the nest) as named
-result variables. Verified by the `standard_output_schema_all_variants` validation gate.
+(`covered_emissions_change`, where priced), and energy-sector output
+(`energy_sector_output_volume_change`, with the nest) as named result variables. Verified by the
+`standard_output_schema_all_variants` validation gate.
 
-**"Inflation" corrected to a relative deflator (review P2, round 10).** An earlier draft of this
-output set promised "inflation" as a standard per-run output. The model fixes the household's CPI
-as the **numéraire** (Π pq^γ = 1, pinned by construction — see §4b.2 above, which already states
-this correctly: "there is no separate inflation/deflator" for the CGE tier), so there is no
-nominal/monetary anchor identifying an absolute price *level*, and therefore no absolute inflation
-rate — only *relative* price movements (which good got more expensive relative to which, and
-relative to the numéraire) are identified. Adding a government account, investment, or an energy
+**"Inflation" corrected to a relative deflator (review P2, round 10; deflator made genuinely
+non-zero, round 13).** An earlier draft of this output set promised "inflation" as a standard
+per-run output. The model fixes the household's CPI as the **numéraire** (Π pq^γ = 1, pinned by
+construction), so there is no nominal/monetary anchor identifying an absolute price *level*, and
+therefore no absolute inflation rate. What IS identified — and what `gdp_deflator_change` reports —
+is the **relative** price of the GDP basket against the CPI numéraire: current-price GDP / volume
+GDP − 1, a genuine non-zero number (round 13 corrected an earlier version that emitted it as a
+hard-coded 0). So "no absolute inflation" and "a non-zero relative GDP deflator" are both true and
+consistent: only relative price movements are identified, and the deflator is one of them. Adding a government account, investment, or an energy
 nest (5d.1/5d.2/5d.5) does not change this: none of them introduce a money-demand equation, a
 central-bank reaction function, or a fixed money stock — the actual missing ingredient for
 identifying a nominal price level. What the model CAN honestly report, and what "inflation" in
@@ -661,7 +661,7 @@ Two requested capabilities that fit the existing seams rather than adding new ph
 - **Provenance everywhere.** No result exists without its data version, engine version, scenario hash, and assumption dump. This is what lets the tool be trusted and compared across runs.
 - **Documentation as a deliverable — to equation level, with citations.** Every engine, module, and non-trivial data transformation ships a **model-description doc** stating the method *to equation level* (numbered equations, well-posedness argued) and citing the peer work it derives from (papers/textbooks in `docs/references.md`, institutional reports for applied choices). This is a **definition-of-done criterion** per phase, not optional — it is what makes results defensible to reviewers who know the field. The standard is `docs/documentation-standard.md`; the worked example is `docs/models/io-price-model.md`. Each doc's assumptions must match the engine's `RunManifest.assumptions`. ADRs record cross-cutting *why* (data format, closures, concordance choices).
 - **Assumptions visible in the GUI.** Every run page prints the assumptions behind its numbers. For a screening/stress tool this is the single highest-leverage credibility feature.
-- **A learning-path user guide (`docs/user-guide.md`) — kept current with each engine.** Distinct from the equation-level model docs (which target a CGE-literate reviewer): a *slow, hands-on* walkthrough that leads a new operator from the simplest run to the full feature set, **explaining the methodology conceptually** (what a Leontief inverse is, why a numéraire matters, what revenue recycling / carbon leakage / a double dividend *mean*) alongside **practical examples the reader runs themselves** after each step. It is a deliverable, not an afterthought: **every engine/feature that lands adds its guided step + a runnable example scenario before the phase is done.** The Phase 5 CGE arc (closed run → revenue recycling → open economy + carbon leakage → CES substitution → elasticity sweeps → multi-region bilateral trade) is done. **Owed, at the appropriate point in each new phase:** a 5d step (government account, savings/investment, the energy nest — what a fiscal closure and a KL–E–M nest mean conceptually, with a runnable example once implemented); a 6b step (physical nature-state scenarios, distinct from the existing 6.x ENCORE-exposure step); a 7b step (what a harmonized baseline is and why NGFS's raw numbers aren't run as-is); a 7c step (reading a driver-decomposition chart, what the uncertainty/sensitivity outputs mean); Phase 8 is delivery infrastructure, not new modelling — it does not need a guide arc of its own, but any new client-facing output format it introduces should get a short "how to read this deliverable" note.
+- **A learning-path user guide (`docs/user-guide.md`) — kept current with each engine.** Distinct from the equation-level model docs (which target a CGE-literate reviewer): a *slow, hands-on* walkthrough that leads a new operator from the simplest run to the full feature set, **explaining the methodology conceptually** (what a Leontief inverse is, why a numéraire matters, what revenue recycling / carbon leakage / a double dividend *mean*) alongside **practical examples the reader runs themselves** after each step. It is a deliverable, not an afterthought: **every engine/feature that lands adds its guided step + a runnable example scenario before the phase is done.** The Phase 5 CGE arc (closed run → revenue recycling → open economy + carbon leakage → CES substitution → elasticity sweeps → multi-region bilateral trade) is done. **Owed, at the appropriate point in each new phase:** a **5d user-guide step** — the 5d MODEL work is delivered (government account, savings/investment, KL–E–M energy nest — engine v0.9.14), but its guided walkthrough + runnable example (what a fiscal closure and a KL–E–M nest mean conceptually) is the one remaining 5d deliverable, since documentation is a phase completion criterion; a 6b step (physical nature-state scenarios, distinct from the existing 6.x ENCORE-exposure step); a 7b step (what a harmonized baseline is and why NGFS's raw numbers aren't run as-is); a 7c step (reading a driver-decomposition chart, what the uncertainty/sensitivity outputs mean); Phase 8 is delivery infrastructure, not new modelling — it does not need a guide arc of its own, but any new client-facing output format it introduces should get a short "how to read this deliverable" note.
 - **Versioning.** Contracts are semver-tagged; **scenarios** are content-hashed (`scenario_hash`); **data builds** have deterministic human-readable ids (source-version-year-aggregation) and record their reference year and aggregation in provenance. Results record the build id, scenario hash, and versions that produced them. (Content-hashing data builds too — so identical inputs collide and changed inputs diverge — is a tracked improvement, not yet done.)
 
 ---
