@@ -2272,16 +2272,51 @@ def test_productivity_shock_registered_as_supported():
     assert "productivity" in registry.get("cge_static").meta.supported_shocks
 
 
-def test_productivity_shock_rejected_on_open_variant():
-    """The open/multi variants don't consume ProductivityShock yet — they must REJECT it (with a
-    pointer to the closed variant / Engine 2), not silently ignore it and report a zero-impact run.
-    """
+def test_productivity_shock_consumed_by_open_variant():
+    """The open economy now consumes a ProductivityShock too: a −20% hit on BRD raises its price and
+    cuts its output, while the un-shocked run is byte-clean (zeros)."""
     from cge.data.sam import toy_open_sam
 
     eng = registry.get("cge_static")
-    with pytest.raises(ValueError, match="does not yet consume ProductivityShock"):
-        eng.run(
-            data={"SAM": toy_open_sam()},
-            shocks=[ProductivityShock(delta=-0.2, coverage_sectors=["BRD"])],
-            years=[2020],
-        )
+    base = eng.run(data={"SAM": toy_open_sam()}, shocks=[], years=[2020])
+    shocked = eng.run(
+        data={"SAM": toy_open_sam()},
+        shocks=[ProductivityShock(delta=-0.2, coverage_sectors=["BRD"])],
+        years=[2020],
+    )
+
+    def _p(res, var, sector):
+        d = res.data
+        row = d[(d["variable"] == var) & (d["sector"] == sector) & (d["scenario"] == "central")]
+        return float(row.iloc[0]["value"])
+
+    assert _p(base, "price_change", "BRD") == pytest.approx(0.0, abs=1e-9)
+    assert _p(shocked, "price_change", "BRD") > 0.0
+    assert _p(shocked, "volume_change", "BRD") < 0.0
+    shocked.validate_schema()
+
+
+def test_productivity_shock_multi_region_scoped_and_leaks():
+    """The multi-region CGE honours the shock's REGION coverage (unlike the single-region variants):
+    a −20% hit on region N's BRD cuts N:BRD output, and production LEAKS to the un-degraded region —
+    S:BRD output rises (the nature analogue of carbon leakage)."""
+    from cge.data.sam.toy_multi import REGIONS, SECTORS, toy_multi_sam
+
+    eng = registry.get("cge_static")
+    data = {"SAM": toy_multi_sam(), "regions": REGIONS, "sectors": SECTORS}
+    ps = ProductivityShock(delta=-0.2, coverage_sectors=["BRD"], coverage_regions=["N"])
+    res = eng.run(data=dict(data), shocks=[ps], years=[2020])
+
+    def _vol(region, sector):
+        d = res.data
+        row = d[
+            (d["variable"] == "volume_change")
+            & (d["region"] == region)
+            & (d["sector"] == sector)
+            & (d["scenario"] == "central")
+        ]
+        return float(row.iloc[0]["value"])
+
+    assert _vol("N", "BRD") < 0.0  # the degraded region/sector contracts
+    assert _vol("S", "BRD") > 0.0  # production leaks to the un-degraded region
+    res.validate_schema()

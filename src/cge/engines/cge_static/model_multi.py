@@ -160,7 +160,7 @@ def _cet_price(cal: MultiCalibratedModel, pd: np.ndarray, pe: np.ndarray) -> np.
     return pz
 
 
-def _intermediate_coeffs(cal, pq, pv, cc):
+def _intermediate_coeffs(cal, pq, pv, cc, productivity=None):
     """Per-region intermediate coefficients ``a[r]`` (each [s,i] — composite s per unit output i in
     region r), value-added (KL) quantity per unit output ``va_qty[r,i]``, and effective per-output
     carbon cost ``cc_eff[r,i]``. Flat model: fixed ``cal.ax[r]`` + ``cal.va_share`` + cc_eff=cc.
@@ -168,10 +168,20 @@ def _intermediate_coeffs(cal, pq, pv, cc):
     (imports included). **cc_eff = cc** — the carbon cost is a per-OUTPUT wedge (review remediation
     2026-07-26), identical to the flat model, so total revenue = Σ cc[r,i]·Z[r,i] with or without
     the nest. Substitution flows through pq (a taxed sector's output price rises via zero-profit),
-    NOT a separate energy-price add-on (the original formulation that dropped process emissions)."""
+    NOT a separate energy-price add-on (the original formulation that dropped process emissions).
+
+    **Productivity shock (Phase 6.4 GE tier).** ``productivity`` is a per-(region,sector)
+    Hicks-neutral multiplier θ[r,i] (θ=1 ⇒ no shock; a nature degradation gives θ<1). A sector needs
+    1/θ of its whole per-output bundle, so ``a[r,:,i]``, ``va_qty[r,i]`` and ``cc_eff[r,i]`` each
+    scale by 1/θ[r,i] — the single choke point all quantities flow through, matched by /θ in the
+    zero-profit residual. θ=1 is byte-identical to the pre-6.4 code."""
     nr, ns = cal.nr, cal.ns
+    inv_theta = (
+        np.ones((nr, ns)) if productivity is None else 1.0 / np.asarray(productivity, dtype=float)
+    )
     if not cal.has_energy_nest:
-        return cal.ax, cal.va_share, cc
+        # Scale column i of each region's a by 1/θ[r,i]: a[r,:,i] *= inv_theta[r,i].
+        return cal.ax * inv_theta[:, None, :], cal.va_share * inv_theta, cc * inv_theta
     from cge.engines.cge_static.energy_nest import nest_demands
 
     a = np.zeros((nr, ns, ns))  # a[r, s, i] = composite s per unit output i in region r
@@ -186,10 +196,11 @@ def _intermediate_coeffs(cal, pq, pv, cc):
         va_qty[ri] = kl_qty
     # cc_eff = cc: per-OUTPUT carbon wedge per (region,sector), identical contract to the flat model
     # (review remediation 2026-07-26) — total revenue = Σ cc[r,i]·Z[r,i] with or without the nest.
-    return a, va_qty, cc
+    # All three scale by 1/θ[r,i] for the productivity shock.
+    return a * inv_theta[:, None, :], va_qty * inv_theta, cc * inv_theta
 
 
-def _quantities(cal, pd, pq, pe, pz, FD, *, pv=None, carbon_cost=None):
+def _quantities(cal, pd, pq, pe, pz, FD, *, pv=None, carbon_cost=None, productivity=None):
     """Given prices and per-region final demand FD[r,s], solve for composite supply Q, output Z, the
     domestic split D, bilateral import demand M[d,s,o] and export supply EX[o,s,d].
 
@@ -243,7 +254,9 @@ def _quantities(cal, pd, pq, pe, pz, FD, *, pv=None, carbon_cost=None):
     ratio = sD / sZd  # [r,s]
     # Intermediate coefficients: fixed Leontief cal.ax, or the price-responsive energy-nest demands
     # per region (Phase 5d.5). a[r] is [s,i] — composite s per unit output i in region r.
-    a = cal.ax if not cal.has_energy_nest else _intermediate_coeffs(cal, pq, pv, carbon_cost)[0]
+    # Always route through _intermediate_coeffs so the productivity scaling (1/θ) applies in the
+    # flat case too, not only the nest case (Phase 6.4). θ=1 leaves cal.ax unchanged.
+    a = _intermediate_coeffs(cal, pq, pv, carbon_cost, productivity)[0]
     # Composite market per region (block-diagonal — intermediates are within-region):
     #   Q[r,s] = Σ_i a[r,s,i]·ratio[r,i]·Q[r,i] + FD[r,s].
     Q = np.zeros((nr, ns))
@@ -278,6 +291,7 @@ def derive_multi_state(
     strict: bool = False,
     gov_closure: str = "balanced_budget",
     inv_closure: str = "savings_driven",
+    productivity: np.ndarray | None = None,
 ) -> MultiModelState:
     """Close the multi-region model at prices (pd, pq, pe, w): derive all quantities and per-region
     income. ``carbon_cost`` is [r,s]. Income per region = factor income + Sf transfer + recycled
@@ -315,11 +329,13 @@ def derive_multi_state(
     sf = cal.foreign_savings  # [r] fixed nominal capital-account inflow
     # Effective per-output carbon cost (Phase 5d.5): cc for the flat model, energy-weighted per
     # region for the nest. Revenue and every recycling/government coefficient use cc_eff·Z.
-    cc_eff = _intermediate_coeffs(cal, pq, pv, cc)[2]
+    cc_eff = _intermediate_coeffs(cal, pq, pv, cc, productivity)[2]
 
     def _k_of(demand):
         """Per-region marginal carbon revenue of a demand array [r,s] (exact: block-diagonal)."""
-        _, z_d, *_ = _quantities(cal, pd, pq, pe, pz, demand, pv=pv, carbon_cost=cc)
+        _, z_d, *_ = _quantities(
+            cal, pd, pq, pe, pz, demand, pv=pv, carbon_cost=cc, productivity=productivity
+        )
         return (cc_eff * z_d).sum(axis=1)
 
     if not cal.has_government:
@@ -432,10 +448,13 @@ def derive_multi_state(
         gov_income = (tax + r0) / (1.0 - kg)  # [r]
         GD = cal.gov_gamma * gov_income[:, None] / pq
 
-    Q, Z, D, EX, M = _quantities(cal, pd, pq, pe, pz, FD + GD + ID, pv=pv, carbon_cost=cc)
+    Q, Z, D, EX, M = _quantities(
+        cal, pd, pq, pe, pz, FD + GD + ID, pv=pv, carbon_cost=cc, productivity=productivity
+    )
     carbon_revenue = (cc_eff * Z).sum(axis=1)  # [r] (cc_eff = cc flat, energy-weighted for nest)
-    # VA quantity per unit output: va_share (flat) or the price-responsive KL quantity (nest).
-    va_qty = cal.va_share if not cal.has_energy_nest else _intermediate_coeffs(cal, pq, pv, cc)[1]
+    # VA quantity per unit output: va_share (flat) or the price-responsive KL quantity (nest), each
+    # scaled by 1/θ so a less-productive sector draws proportionally more value added (Phase 6.4).
+    va_qty = _intermediate_coeffs(cal, pq, pv, cc, productivity)[1]
     va_cost = va_qty * pv * Z
     F = _factor_demand(cal, w, pv, va_cost)
     return MultiModelState(
@@ -497,16 +516,31 @@ def residuals(
     recycling: str = "lump_sum",
     drop_factor: int = 0,
     inv_closure: str = "savings_driven",
+    productivity: np.ndarray | None = None,
 ) -> np.ndarray:
     nr, ns, nf = cal.nr, cal.ns, cal.nf
     pd, pq, pe, w = _unpack(cal, z)
     cc = np.zeros((nr, ns)) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
 
     st = derive_multi_state(
-        cal, pd, pq, pe, w, carbon_cost=cc, recycling=recycling, inv_closure=inv_closure
+        cal,
+        pd,
+        pq,
+        pe,
+        w,
+        carbon_cost=cc,
+        recycling=recycling,
+        inv_closure=inv_closure,
+        productivity=productivity,
     )
     pv = _va_unit_cost(cal, w)
     pz = _cet_price(cal, pd, pe)
+    # Per-(region,sector) productivity multiplier θ[r,i] (Phase 6.4 GE tier): the zero-profit unit
+    # cost divides by θ, matching the 1/θ scaling _intermediate_coeffs applies to the physical
+    # coefficients. θ=1 (default) is byte-identical to the pre-6.4 residual.
+    inv_theta = (
+        np.ones((nr, ns)) if productivity is None else 1.0 / np.asarray(productivity, dtype=float)
+    )
 
     res: list[float] = []
     # 1. Armington price identity: pq = CES cost of (pd_d, {pe[o,s,d]}).  [nr·ns]
@@ -521,14 +555,13 @@ def residuals(
         for ri in range(nr):
             px_r = nest_unit_cost(cal.energy_nests[ri], pq[ri], pv[ri], cc[ri])
             for ii in range(ns):
-                res.append(pz[ri, ii] - px_r[ii])
+                res.append(pz[ri, ii] - px_r[ii] * inv_theta[ri, ii])
     else:
         for ri in range(nr):
             for ii in range(ns):
                 intermediate = float(np.dot(cal.ax[ri, :, ii], pq[ri]))
-                res.append(
-                    pz[ri, ii] - (intermediate + cal.va_share[ri, ii] * pv[ri, ii] + cc[ri, ii])
-                )
+                unit_cost = intermediate + cal.va_share[ri, ii] * pv[ri, ii] + cc[ri, ii]
+                res.append(pz[ri, ii] - unit_cost * inv_theta[ri, ii])
     # 3. Bilateral goods-market clearing: import demand = export supply on each ACTIVE route only
     # (review P1: a route with zero benchmark trade got a free price unknown and no way to pin it —
     # Jacobian rank-deficient by exactly the number of zero routes; see cal.active_routes).
@@ -557,7 +590,14 @@ def n_unknowns(cal: MultiCalibratedModel) -> int:
 
 
 def unpack_state(
-    cal, x, *, carbon_cost=None, recycling="lump_sum", strict=True, inv_closure="savings_driven"
+    cal,
+    x,
+    *,
+    carbon_cost=None,
+    recycling="lump_sum",
+    strict=True,
+    inv_closure="savings_driven",
+    productivity=None,
 ):
     """Convenience: derive the model state from a solved unknown vector (used by the engine)."""
     pd, pq, pe, w = _unpack(cal, x)
@@ -571,4 +611,5 @@ def unpack_state(
         recycling=recycling,
         strict=strict,
         inv_closure=inv_closure,
+        productivity=productivity,
     )
