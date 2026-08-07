@@ -14,6 +14,7 @@ import streamlit as st
 from cge.gui.pages import build as build_page
 from cge.gui.pages import catalogue as catalogue_page
 from cge.gui.pages import explorer as explorer_page
+from cge.gui.pages import nature as nature_page
 from cge.gui.pages import quality as quality_page
 from cge.gui.pages import results as results_page
 from cge.gui.pages import run as run_page
@@ -28,6 +29,7 @@ def main() -> None:
         st.Page(quality_page.render, title="Data quality", icon="✅"),
         st.Page(build_page.render, title="Build data", icon="🏗️"),
         st.Page(run_page.render, title="Run scenario", icon="▶️"),
+        st.Page(nature_page.render, title="Nature", icon="🌱"),
         st.Page(results_page.render, title="Results", icon="📊"),
     ]
     st.navigation(pages).run()

@@ -423,8 +423,13 @@ that the general-equilibrium solve responds to (degraded sector's price rises / 
 + relative-price reallocation economy-wide; the open variant substitutes toward imports, the
 multi-region variant shows cross-region **leakage**; θ=1 byte-identical in every variant, so
 replication/homogeneity/Walras hold). A `NatureStress` scenario now runs end-to-end to a
-schema-valid `ResultSet` in PE and in all GE variants. **Remaining: 6.5** (GUI heatmaps / drill-down
-/ nature-run) is the only outstanding Phase-6 sub-task.
+schema-valid `ResultSet` in PE and in all GE variants. 6.5 adds the **nature GUI page**
+(`gui/pages/nature.py`): the good×service dependency heatmap (direct or direct+upstream,
+weighted_mean/max toggle), a per-good supply-chain drill-down (direct vs. inherited exposure), and a
+nature-scenario runner (pick services + severities → the full exposure→NatureStress→ProductivityShock
+→engine chain → per-good output response). **Phase 6 is complete** — a curated full ENCORE↔EXIOBASE
+concordance (replacing the illustrative fixture) is the only remaining nature enhancement, tracked
+under Phase 6b.
 
 | # | Task | Effort |
 |---|---|---|
@@ -432,7 +437,7 @@ schema-valid `ResultSet` in PE and in all GE variants. **Remaining: 6.5** (GUI h
 | 6.2 ✅ | ENCORE↔EXIOBASE concordance via the P1 framework, **seeded from published central-bank mappings** (DNB "Indebted to nature", ECB/EIOPA, World Bank) rather than built from scratch; document every weighting judgement | 1–2 wk |
 | 6.3 ✅ | Exposure engine: direct dependency/impact scores per sector → upstream propagation through the input–output structure (reusing P2 machinery) → "good X depends on pollination/water/… directly and via inputs"; aggregation choice (max vs weighted mean) exposed as a parameter, not buried | 1–2 wk |
 | 6.4 ✅ | `NatureStress` shocks: degradation scenario → productivity shocks per sector/region scaled by dependency scores → fed to the engines through the standard shock vocabulary (consumed by Engine 2 and by **all three** Engine-3 CGE variants as a Hicks-neutral θ — closed, open, multi-region with cross-region leakage); start from published scenario sets (NGFS nature scenarios, World Bank/PIK) | 1–2 wk |
-| 6.5 | GUI: dependency/impact heatmaps (good × ecosystem service), supply-chain dependency drill-down, nature-scenario runner — within the P3 framework | 2–3 d |
+| 6.5 ✅ | GUI: dependency/impact heatmaps (good × ecosystem service), supply-chain dependency drill-down, nature-scenario runner — within the P3 framework (`gui/pages/nature.py`, driven by `GuiService.nature_exposure`/`run_nature`; headless-render + service tests green) | 2–3 d |
 
 **DoD:** for any good: ranked ecosystem-service dependencies (direct + upstream) and impact drivers, in the GUI; at least one `NatureStress` scenario runs end-to-end through an economic engine and produces a schema-valid `ResultSet`; **model doc exists** covering the propagation equations, the materiality→numeric scale, and the ENCORE↔EXIOBASE concordance with its published sources.
 **Decisions forced:** the materiality→numeric scale (document it; it drives everything downstream); aggregation rule for propagated scores (max is conservative and defensible; weighted-mean is smoother — expose both); which published concordance to anchor on.

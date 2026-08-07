@@ -12,7 +12,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 
 from cge.data.build import build_test  # noqa: E402
 
-PAGES = ["catalogue", "explorer", "quality", "build", "run", "results"]
+PAGES = ["catalogue", "explorer", "quality", "build", "run", "nature", "results"]
 
 _RESULTS_SETUP = """
 import streamlit as st
