@@ -98,7 +98,13 @@ def _factor_demand(cal: CalibratedModel, w: np.ndarray, pv: np.ndarray, va_cost:
     return F
 
 
-def _leontief_and_va(cal: CalibratedModel, p: np.ndarray, pv: np.ndarray, cc: np.ndarray):
+def _leontief_and_va(
+    cal: CalibratedModel,
+    p: np.ndarray,
+    pv: np.ndarray,
+    cc: np.ndarray,
+    productivity: np.ndarray | None = None,
+):
     """Return ``(leontief, va_qty_per_x, cc_eff)`` — the (I − A(p))⁻¹ intermediate-inverse, the
     value-added (KL) quantity per unit output, and an **effective per-output carbon cost**.
 
@@ -114,11 +120,26 @@ def _leontief_and_va(cal: CalibratedModel, p: np.ndarray, pv: np.ndarray, cc: np
     enabling the nest cannot change a scenario's emissions/revenue meaning. The nest still shifts
     substitution away from taxed energy because a taxed fossil sector's output price rises via
     zero-profit and reaches energy inputs through pq (NOT via a separate energy-price add-on, which
-    was the original formulation and silently dropped process/household emissions)."""
+    was the original formulation and silently dropped process/household emissions).
+
+    **Productivity shock (Phase 6.4 GE tier).** ``productivity`` is a per-sector Hicks-neutral
+    output multiplier θ[i] (θ=1 ⇒ no shock; a nature degradation lands here as θ<1). A sector with
+    productivity θ needs ``1/θ`` times its whole input bundle — intermediates, value added, AND the
+    per-output carbon cost — to make one unit of output. Scaling the effective coefficients by 1/θ
+    at this single choke point is what makes it consistent everywhere downstream: zero-profit gives
+    ``p[i] = unit_cost[i]/θ[i]`` (a degraded sector's price rises), and goods-market and factor
+    clearing read the same scaled requirements, so a less-productive sector draws proportionally
+    more inputs/factors per unit output with no separate bookkeeping. θ=1 is byte-identical to the
+    pre-6.4 code (the ``inv_theta`` factors are exactly 1), so benchmark replication / homogeneity /
+    Walras are untouched. NB θ scales *technology*, not the carbon *wedge's* physical meaning:
+    covered emissions per unit output are unchanged, only more output-inputs are needed per unit."""
     ns = len(cal.sectors)
+    inv_theta = np.ones(ns) if productivity is None else 1.0 / np.asarray(productivity, dtype=float)
     if not cal.has_energy_nest:
-        leontief = np.linalg.inv(np.eye(ns) - cal.ax)
-        return leontief, cal.va_share, cc
+        # Scale each sector i's input column by 1/θ[i]: ax[:, i]/θ[i], va_share[i]/θ[i], cc[i]/θ[i].
+        ax_eff = cal.ax * inv_theta[np.newaxis, :]
+        leontief = np.linalg.inv(np.eye(ns) - ax_eff)
+        return leontief, cal.va_share * inv_theta, cc * inv_theta
     from cge.engines.cge_static.energy_nest import nest_demands
 
     nest = cal.energy_nest
@@ -129,12 +150,15 @@ def _leontief_and_va(cal: CalibratedModel, p: np.ndarray, pv: np.ndarray, cc: np
         a[j, :] += energy_use[k, :]
     for k, j in enumerate(nest.mat_idx):
         a[j, :] += materials_use[k, :]
+    # Productivity scales the whole nested input bundle per unit output by 1/θ[i] (column i), the
+    # same Hicks-neutral treatment as the flat model.
+    a = a * inv_theta[np.newaxis, :]
     leontief = np.linalg.inv(np.eye(ns) - a)
-    # cc_eff = cc: the carbon cost is a per-OUTPUT wedge (review remediation 2026-07-26), identical
-    # to the flat model, so total revenue = Σ_i cc[i]·X[i] with or without the nest. The nest still
+    # cc_eff = cc/θ: the carbon cost is a per-OUTPUT wedge (review remediation 2026-07-26), same as
+    # the flat model, so total revenue = Σ_i cc[i]·X[i] with or without the nest. The nest still
     # substitutes away from taxed energy because a taxed fossil sector's output price rises via
     # zero-profit and flows into the energy-input price through pq.
-    return leontief, kl_qty, cc
+    return leontief, kl_qty * inv_theta, cc * inv_theta
 
 
 # Smooth positive floor on the recycling denominator (1−k). Identity for x ≫ δ, asymptotes to δ as
@@ -216,6 +240,7 @@ def derive_state(
     labour_floor: float | None = None,
     adapt_amount: float = 0.0,
     adapt_gamma: np.ndarray | None = None,
+    productivity: np.ndarray | None = None,
 ) -> ModelState:
     """Close the model at equilibrium prices (p, w): compute VA cost, outputs, demands and income.
 
@@ -276,7 +301,7 @@ def derive_state(
     # price moves) — computed from the nest's Shephard demands, so goods-market clearing and factor
     # demand stay consistent. cc is zero here for the flat model's recycling coefficients; the
     # nest reads the actual carbon cost so substitution responds to it (see below).
-    leontief, va_qty_per_x, cc_eff = _leontief_and_va(cal, p, pv, cc)
+    leontief, va_qty_per_x, cc_eff = _leontief_and_va(cal, p, pv, cc, productivity)
     demand_per_income = cal.gamma / p  # FD = I · demand_per_income
     recycles = recycling != "none"
     if cal.has_investment and inv_closure not in ("savings_driven", "fixed_real"):
@@ -654,6 +679,7 @@ def residuals(
     labour_floor: float | None = None,
     adapt_amount: float = 0.0,
     adapt_gamma: np.ndarray | None = None,
+    productivity: np.ndarray | None = None,
 ) -> np.ndarray:
     """Equilibrium residual vector F(z) for z = [p (ns), w (nf)].
 
@@ -706,24 +732,35 @@ def residuals(
         labour_floor=labour_floor,
         adapt_amount=adapt_amount,
         adapt_gamma=adapt_gamma,
+        productivity=productivity,
+    )
+
+    # Per-sector productivity multiplier θ[i] (Phase 6.4 GE tier): a sector with productivity θ
+    # needs 1/θ times its whole input bundle per unit output, so its zero-profit unit cost divides
+    # by θ. θ=1 (the default) is byte-identical to the pre-6.4 residual — the ``inv_theta`` factors
+    # are exactly 1 — so replication / homogeneity / Walras are untouched.
+    inv_theta = (
+        np.ones(ns) if productivity is None else 1.0 / np.asarray(productivity, dtype=float)
     )
 
     res = []
     if cal.has_energy_nest:
-        # Zero-profit with the KL-E-M nest (Phase 5d.5): p[i] = px[i], the nest's output unit cost.
-        # Carbon is a per-OUTPUT wedge added to px (review remediation 2026-07-26) — NOT an add-on
-        # inside the nest — so the emissions/revenue contract is identical to the flat model.
+        # Zero-profit with the KL-E-M nest (Phase 5d.5): p[i] = px[i]/θ[i], the nest's output unit
+        # cost scaled by the productivity requirement. Carbon is a per-OUTPUT wedge added to px
+        # (review remediation 2026-07-26) — NOT an add-on inside the nest — so the emissions/revenue
+        # contract is identical to the flat model.
         from cge.engines.cge_static.energy_nest import nest_unit_cost
 
         px = nest_unit_cost(cal.energy_nest, np.asarray(p, dtype=float), state.pv, cc)
         for i in range(ns):
-            res.append(p[i] - px[i])
+            res.append(p[i] - px[i] * inv_theta[i])
     else:
-        # Flat model: p[i] = Σ_j ax[j,i]·p[j] + va_share[i]·pv[i] + carbon cost. (Object-dtype
+        # Flat model: p[i] = (Σ_j ax[j,i]·p[j] + va_share[i]·pv[i] + cc[i])/θ[i]. (Object-dtype
         # safe for the dormant pyomo hook.)
         for i in range(ns):
             intermediate = sum(cal.ax[j, i] * p[j] for j in range(ns))
-            res.append(p[i] - (intermediate + cal.va_share[i] * state.pv[i] + cc[i]))
+            unit_cost = intermediate + cal.va_share[i] * state.pv[i] + cc[i]
+            res.append(p[i] - unit_cost * inv_theta[i])
     # Factor clearing (drop one by Walras). Under a binding wage floor (Phase 5d.4), the LAB row
     # becomes the wage pin w[LAB] = floor instead of quantity-clearing — labour demand ≤ supply is
     # then slack, the gap reported as unemployment.
