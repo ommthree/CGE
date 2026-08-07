@@ -8,7 +8,16 @@ from cge.validation.suites import (  # noqa: F401
     exiobase_live,
     io_price,
     macro,
+    nature,
     partial_eq,
 )
 
-__all__ = ["io_price", "data_layer", "exiobase_live", "partial_eq", "macro", "cge_static"]
+__all__ = [
+    "io_price",
+    "data_layer",
+    "exiobase_live",
+    "partial_eq",
+    "macro",
+    "cge_static",
+    "nature",
+]

@@ -440,25 +440,28 @@ and heatmaps are NOT implemented (dependencies only).
   the full nature provenance (ENCORE + concordance content hashes, materiality scale, exposure rule,
   incidence) so a nature run is reconstructible from its manifest.
 
-**STILL OPEN before Phase-6 sign-off (a second review, 2026-08-07 round 2, corrected the earlier
-"only the adapter remains" claim — it was incomplete):**
+**DONE since round 2** (2026-08-07): **store persistence of nature data** — `DataStore.save`/`load`
+now round-trip `EncoreDependencies` + `ConcordanceMap`, so a *stored* build can drive a NatureStress
+scenario through the standard runner (not only override injection); and a **`nature` validation
+suite** (6 checks) is in the standing battery (64/64) covering the exposure invariant, the
+emissions/revenue identity under productivity, the time-path, region-scope, incidence, and manifest
+provenance — so a regression re-surfaces in the battery, not just pytest.
+
+**STILL OPEN before Phase-6 sign-off:**
 1. **Real-ENCORE-export adapter** — current-version format, preserved N/A-vs-ND semantics,
    separately-typed pressure/impact ratings, with golden-file ingestion tests.
 2. **A real published ENCORE↔EXIOBASE concordance** — only the synthetic one-to-one toy concordance
    exists today (6.2).
-3. **Store persistence + load of nature data** — `DataStore` does not yet save/load
-   `EncoreDependencies`/`ConcordanceMap`, so a nature run on a *stored* build currently requires
-   injecting them via `data_overrides` (which now works) rather than the store carrying them.
-4. **Consulting-readiness methodology blockers (not just data plumbing):** empirical calibration of
+3. **Consulting-readiness methodology blockers (not just data plumbing):** empirical calibration of
    the severity→productivity mapping, ecosystem-service interactions, regional output weights, and
    cross-model sensitivity. ENCORE ratings are indicators of *potential* significance, not calibrated
    output/TFP elasticities; the linear materiality ramp and the noisy-OR + engine-incidence choices
    are transparent *assumptions*, not published methods.
 
 The *engineering* pathway (exposure → per-engine incidence → time-path-aware shock → engine →
-standard-runner provenance → GUI) is complete and auditable, and the round-1 + round-2 review P1s are
-fixed. But until 1–4 land, Phase 6 is **experimental**: results are illustrative of the method, not
-calibrated nature risk, and must not be used in consulting work.
+standard-runner provenance → store persistence → GUI) is complete, auditable, and battery-gated, and
+the round-1 + round-2 review P1s are fixed. But until 1–3 land, Phase 6 is **experimental**: results
+are illustrative of the method, not calibrated nature risk, and must not be used in consulting work.
 
 | # | Task | Effort |
 |---|---|---|
