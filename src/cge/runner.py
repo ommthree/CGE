@@ -130,33 +130,49 @@ def load_data(source: str, *, store: DataStore | None = None) -> dict:
     return store.load(source)
 
 
-def _preprocess_nature(scenario: Scenario, data: dict, engine) -> tuple[list, dict | None]:
+# Nature scenario controls a caller may set via ``data_overrides`` (review P2 2026-08-07 — the rule,
+# incidence and max-link threshold were previously hardcoded and unreachable from YAML/CLI/GUI).
+# are extracted BEFORE nature preprocessing (unlike other overrides, which merge afterwards) and
+# never reach the engine.
+_NATURE_CONTROL_KEYS = (
+    "nature_rule",
+    "nature_incidence",
+    "nature_max_link_threshold",
+    "EncoreDependencies",
+    "ConcordanceMap",
+)
+
+
+def _preprocess_nature(
+    scenario: Scenario, data: dict, engine, overrides: dict
+) -> tuple[list, dict | None]:
     """Translate any ``NatureStress`` in the scenario into ``ProductivityShock``s BEFORE the engine
     runs (review P1 2026-08-07 — nature runs through the standard pipeline, not a GUI-only path).
 
     Returns ``(shocks, nature_stamp)``: ``shocks`` is the scenario's shocks with every
     ``NatureStress`` replaced by its derived per-good ``ProductivityShock``s (other shocks kept),
-    and ``nature_stamp`` is the provenance dict to append to the run manifest (ENCORE + concordance
-    identity, materiality scale, exposure rule, incidence mode) so a nature run is reconstructible
-    from its manifest — or ``None`` when the scenario has no NatureStress.
+    and ``nature_stamp`` is the provenance dict to append to the run manifest — or ``None`` when the
+    scenario has no NatureStress.
 
-    ``EncoreDependencies``/``ConcordanceMap`` are read from ``data`` and **popped** so the engine
-    (which may strictly reject unknown keys) never sees them. A NatureStress scenario on a data
-    source lacking them is rejected with guidance rather than silently doing nothing."""
+    ``EncoreDependencies``/``ConcordanceMap`` are read from the data source OR injected via
+    ``overrides`` (so a run can supply nature data even when the stored build does not carry it —
+    review P1 2026-08-07), then **removed** so the engine (which may strictly reject unknown keys)
+    never sees them. The exposure rule, incidence and max-link threshold are selectable via
+    ``overrides`` (``nature_rule``/``nature_incidence``/``nature_max_link_threshold``); with none
+    set, the rule defaults to ``weighted_mean`` and incidence to the engine's default."""
     from cge.contracts.shocks import NatureStress
 
     nature = [s for s in scenario.shocks if isinstance(s, NatureStress)]
+    # Injected/override nature data takes precedence over what the source carries.
+    encore = overrides.get("EncoreDependencies", data.pop("EncoreDependencies", None))
+    concordance = overrides.get("ConcordanceMap", data.pop("ConcordanceMap", None))
     if not nature:
-        data.pop("EncoreDependencies", None)  # not needed; keep the engine's data clean
-        data.pop("ConcordanceMap", None)
         return list(scenario.shocks), None
 
     from cge.nature import DEFAULT_INCIDENCE, INCIDENCE_BY_ENGINE
     from cge.nature.encore import MATERIALITY_SCALE
-    from cge.nature.translate import build_nature_shocks
+    from cge.nature.translate import NATURE_TRANSLATION_VERSION, build_nature_shocks
 
-    encore = data.pop("EncoreDependencies", None)
-    concordance = data.pop("ConcordanceMap", None)
     io = data.get("IOSystem")
     missing = [
         name
@@ -170,13 +186,26 @@ def _preprocess_nature(scenario: Scenario, data: dict, engine) -> tuple[list, di
     if missing:
         raise ValueError(
             f"a NatureStress scenario needs an IOSystem, an EncoreDependencies object and a "
-            f"ConcordanceMap; the data source is missing {missing}. Use the 'toy' source (which "
-            "ships the illustrative fixture) or a build carrying ENCORE data."
+            f"ConcordanceMap; got neither from the data source nor from data_overrides: {missing}. "
+            "Use the 'toy' source (which ships the illustrative fixture), a build carrying ENCORE "
+            "data, or inject them via data_overrides (EncoreDependencies + ConcordanceMap)."
         )
 
-    rule = "weighted_mean"
-    incidence = INCIDENCE_BY_ENGINE.get(scenario.engine, DEFAULT_INCIDENCE)
-    derived = build_nature_shocks(nature, io, encore, concordance, rule=rule, incidence=incidence)
+    rule = overrides.get("nature_rule", "weighted_mean")
+    incidence = overrides.get(
+        "nature_incidence", INCIDENCE_BY_ENGINE.get(scenario.engine, DEFAULT_INCIDENCE)
+    )
+    threshold = float(overrides.get("nature_max_link_threshold", 0.0))
+    derived = build_nature_shocks(
+        nature,
+        io,
+        encore,
+        concordance,
+        rule=rule,
+        incidence=incidence,
+        max_link_threshold=threshold,
+        years=list(scenario.years),  # so a NatureStress time path becomes a per-year shock path
+    )
     # Keep any non-nature shocks (e.g. a carbon price alongside the degradation), then append the
     # derived productivity shocks.
     shocks = [s for s in scenario.shocks if not isinstance(s, NatureStress)] + derived
@@ -184,7 +213,10 @@ def _preprocess_nature(scenario: Scenario, data: dict, engine) -> tuple[list, di
     from cge.contracts.provenance import content_hash
 
     stamp = {
-        "stresses": [{"service": s.service, "severity": s.severity} for s in nature],
+        "translation_version": NATURE_TRANSLATION_VERSION,
+        "stresses": [
+            {"service": s.service, "severity": s.severity, "path": s.path} for s in nature
+        ],
         "encore_source": encore.provenance.source,
         "encore_version": encore.provenance.source_version,
         "encore_content_hash": content_hash(encore.ratings.to_dict(orient="records")),
@@ -193,6 +225,7 @@ def _preprocess_nature(scenario: Scenario, data: dict, engine) -> tuple[list, di
         "materiality_scale": dict(MATERIALITY_SCALE),
         "exposure_rule": rule,
         "incidence": incidence,
+        "max_link_threshold": threshold,
         "derived_productivity_shocks": len(derived),
     }
     return shocks, stamp
@@ -221,8 +254,9 @@ def run_scenario(
             f"Engine {engine.meta.name!r} does not support shock types: {sorted(set(unsupported))}"
         )
 
+    overrides = dict(data_overrides or {})
     data = load_data(data_source, store=store)
-    shocks, nature_stamp = _preprocess_nature(scenario, data, engine)
+    shocks, nature_stamp = _preprocess_nature(scenario, data, engine, overrides)
     # A NatureStress that produced productivity shocks needs an engine that consumes them.
     if nature_stamp is not None and not engine.meta.supports_type("productivity"):
         raise ValueError(
@@ -233,9 +267,12 @@ def run_scenario(
     # armington_elast / cet_elast / va_elast / open_home_region). Merged into the data dict the
     # engine consumes. Engines that don't read a key ignore it; the CGE engine is deliberately
     # STRICT — it rejects unknown/other-variant keys and reserved engine-internal ``_`` keys (so a
-    # data_override cannot forge IO-backed state or mislabel provenance — review P1 round 15).
-    if data_overrides:
-        data = {**data, **data_overrides}
+    # data_override cannot forge IO-backed state or mislabel provenance — review P1 round 15). The
+    # nature-control keys are consumed by _preprocess_nature and stripped here so they never reach
+    # (and are never rejected by) the engine.
+    engine_overrides = {k: v for k, v in overrides.items() if k not in _NATURE_CONTROL_KEYS}
+    if engine_overrides:
+        data = {**data, **engine_overrides}
     missing = [d for d in engine.meta.required_data if d not in data]
     if missing:
         raise ValueError(f"Data source {data_source!r} is missing required objects: {missing}")
@@ -245,10 +282,18 @@ def run_scenario(
 
     # Stamp the nature translation's provenance into the manifest (review P1 2026-08-07): the engine
     # only saw the derived ProductivityShocks, so record the ENCORE snapshot, concordance,
-    # materiality scale, rule and incidence here — a nature run is then reconstructible from it.
+    # materiality scale, rule and incidence here — a nature run is reconstructible from it. Also
+    # OVERWRITE the scenario_hash with the ORIGINAL scenario's hash (the engine hashed only the
+    # derived shocks, so two nature scenarios differing only in a path endpoint would otherwise
+    # collide — review P1 2026-08-07).
     if nature_stamp is not None:
+        from cge.contracts.provenance import content_hash
+
         manifest = result.manifest.model_copy(
-            update={"assumptions": {**result.manifest.assumptions, "nature": nature_stamp}}
+            update={
+                "assumptions": {**result.manifest.assumptions, "nature": nature_stamp},
+                "scenario_hash": content_hash(scenario.model_dump(mode="json")),
+            }
         )
         result = ResultSet(data=result.data, manifest=manifest).validate_schema()
 

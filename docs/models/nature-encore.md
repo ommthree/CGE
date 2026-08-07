@@ -7,14 +7,18 @@
 - **Capabilities:** ecosystem-service dependency exposure (direct + upstream) per good; a
   `NatureStress` degradation scenario run end-to-end through an economic engine, in both the
   partial-equilibrium (Engine 2) and general-equilibrium (Engine 3, all variants) tiers
-- **Status:** implemented and tested on the toy economy with an **illustrative, published-sourced
-  ENCORE fixture**. The real ENCORE knowledge base (registration-gated) drops into the same
-  `EncoreDependencies` contract via `load_encore_csv` with **no code change**. **Phase 6 is
-  complete** (6.1–6.5): ingestion, concordance, exposure, the nature→productivity translation
-  consumed by Engine 2 and all three CGE variants, and the nature GUI page (`gui/pages/nature.py`:
-  dependency heatmap, supply-chain drill-down, nature-scenario runner). A curated full
-  ENCORE↔EXIOBASE concordance (replacing the illustrative fixture) is the only remaining nature
-  enhancement, tracked under Phase 6b.
+- **Status: BUILT, EXPERIMENTAL — not signed off.** Implemented and tested on the toy economy with a
+  **synthetic, expert-designed illustrative fixture** (informed by the qualitative pattern of the
+  central-bank literature, but NOT substantiated cell-by-cell against a published table). The
+  engineering pathway (ingestion → concordance → exposure → severity→productivity translation with
+  per-engine incidence → consumption by Engine 2 and all three CGE variants → standard-runner
+  provenance → GUI) is complete and auditable. **Remaining before sign-off:** a real-ENCORE-export
+  adapter (current format, preserved N/A-vs-ND semantics, separately-typed pressure/impact), store
+  persistence + load of nature data, and — as consulting-readiness blockers, not just data plumbing
+  — empirical calibration of the severity→productivity mapping, service interactions, regional
+  weights, and cross-model sensitivity. So the "drops in with **no code change**" claim does NOT yet
+  hold (an adapter and store wiring are still required), and results are illustrative of the method,
+  not calibrated risk. See the roadmap Phase 6 status.
 
 > **Honest scope.** Every dependency rating shipped here is a small hand-entered subset seeded from
 > the central-bank literature ([vanToor2020], [ENCORE]) and **labelled illustrative** in its
@@ -52,11 +56,15 @@ constant** (`encore.MATERIALITY_SCALE`), not a value buried in code:
 |---|---|---|---|---|---|
 | Score | 1.0 | 0.8 | 0.6 | 0.4 | 0.2 |
 
-A linear 0.2-step ramp, the mapping used by DNB's *Indebted to nature* ([vanToor2020]) and later
-central-bank studies to turn ENCORE classes into a [0, 1] dependency weight. The only load-bearing
+A linear 0.2-step ramp. **This specific numeric ramp is a synthetic / expert-designed default, NOT a
+published DNB value** (review 2026-08-07): DNB's *Indebted to nature* ([vanToor2020]) worked with the
+ordinal classes and in practice retained only the High/Very-High dependencies; it did not publish
+this 1.0/0.8/0.6/0.4/0.2 mapping. Treat the ramp as a transparent, easily-swapped **assumption to
+calibrate**, not an empirical elasticity — ENCORE itself describes its ratings as indicators of
+*potential* significance, not calibrated fractions of output or TFP loss. The only load-bearing
 property is the **strict ordering** (a more-material class must score higher); the exact spacing is a
-modelling choice. To make only the highest classes bite, swap in a convex ramp (e.g.
-VH=1.0, H=0.5, M=0.25, L=0.1, VL=0.0) — one constant, no other change.
+modelling choice. To make only the highest classes bite — closer to DNB's H/VH-only practice — swap
+in a convex ramp (e.g. VH=1.0, H=0.5, M=0.25, L=0.1, VL=0.0), one constant, no other change.
 
 ## 3. Ingestion (6.1)
 
@@ -181,9 +189,12 @@ is largely inherited upstream) — the nature-risk propagation the exposure engi
 (`cge_static`: **closed**, **open**, **multi-region**) consume the same `ProductivityShock`s as a
 per-sector **Hicks-neutral productivity multiplier** $\theta_i$ ($\theta = 1 + \text{delta}$, so a
 nature degradation gives $\theta < 1$). A sector with productivity $\theta_i$ needs $1/\theta_i$ of
-its whole input bundle — intermediates, value added, and the per-output carbon wedge — per unit
-output, so its zero-profit unit cost divides by $\theta_i$: $p_i = \text{unit cost}_i / \theta_i$.
-Because that single scaling flows into the Leontief inverse, factor demand, and goods-market
+its **technology** bundle — intermediates and value added — per unit output, so those scale by
+$1/\theta_i$. The **carbon wedge is NOT scaled**: it is emissions per unit output × price, a physical
+per-output quantity $\theta$ does not change, so it is added unscaled and the zero-profit condition
+is $p_i = \text{tech cost}_i / \theta_i + cc_i$ (scaling $cc$ by $1/\theta$ would break the
+emissions/revenue contract — reported revenue $\Sigma\,cc\cdot X$ must equal physical emissions).
+Because that scaling flows into the Leontief inverse, factor demand, and goods-market
 clearing, the equilibrium **reallocates**: the degraded sector's price rises, its output falls, and
 — unlike Engine 2's first-round quantity hit — relative prices and factor demands adjust across the
 whole economy. $\theta = 1$ leaves the residual **bit-for-bit unchanged** in every variant, so

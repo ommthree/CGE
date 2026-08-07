@@ -12,8 +12,8 @@ Three things, all within the P3 framework and driven by ``GuiService``:
    ENCORE→exposure→``NatureStress``→``ProductivityShock``→engine chain end-to-end (Phase 6.4),
    showing the resulting per-good output response.
 
-The shipped ENCORE ratings are a small, published-sourced **illustrative fixture** (the gated real
-export drops into the same contract with no code change) — surfaced honestly at the top of the page.
+The shipped ENCORE ratings are a small **synthetic / expert-designed illustrative fixture** (NOT the
+gated real export, and a real-ENCORE adapter is still required) — surfaced honestly on the page.
 """
 
 from __future__ import annotations
@@ -24,10 +24,12 @@ import streamlit as st
 from cge.gui.service import get_service
 
 _ILLUSTRATIVE = (
-    "The ENCORE dependency ratings here are a small hand-entered, **published-sourced illustrative "
-    "fixture** on the toy economy, not the full (registration-gated) ENCORE knowledge base — which "
-    "drops into the same contract with no code change. Read the numbers as *illustrative of the "
-    "method*, not as calibrated risk. See `docs/models/nature-encore.md`."
+    "**Experimental.** The ENCORE dependency ratings here are a small hand-entered **synthetic / "
+    "expert-designed** fixture on the toy economy — informed by the qualitative pattern of the "
+    "central-bank literature, but NOT the registration-gated ENCORE knowledge base and NOT "
+    "calibrated. The severity→productivity mapping is a transparent scenario assumption, not an "
+    "empirical elasticity. Read every number as *illustrative of the method*, not as risk. A real "
+    "ENCORE adapter is still required. See `docs/models/nature-encore.md`."
 )
 
 

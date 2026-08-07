@@ -1665,3 +1665,25 @@ def test_multi_productivity_theta_below_one_moves_residual():
     r0 = MM.residuals(cal, z, carbon_cost=cc)
     r1 = MM.residuals(cal, z, carbon_cost=cc, productivity=theta)
     assert float(np.abs(r0 - r1).max()) > 1e-6
+
+
+def test_multi_carbon_revenue_equals_physical_emissions_under_productivity():
+    """Review round 2: the emissions/revenue identity must hold in the MULTI-region variant too —
+    each region's reported carbon revenue = Σ_s cc[r,s]·Z[r,s] under a combined carbon+productivity
+    shock (the wedge is physical, unscaled by θ)."""
+    cal = _cal()
+    nr, ns = cal.nr, cal.ns
+    cc = np.zeros((nr, ns))
+    cc[0, 0] = 0.05
+    theta = np.ones((nr, ns))
+    theta[0, 0] = 0.8
+    sol = solve(
+        lambda z: MM.residuals(cal, z, carbon_cost=cc, recycling="lump_sum", productivity=theta),
+        MM.initial_guess(cal) * 1.03,
+        prefer="scipy",
+    )
+    st = MM.unpack_state(
+        cal, sol.x, carbon_cost=cc, recycling="lump_sum", strict=True, productivity=theta
+    )
+    expected = (cc * st.Z).sum(axis=1)  # [r]
+    assert np.allclose(st.carbon_revenue, expected, rtol=1e-9)

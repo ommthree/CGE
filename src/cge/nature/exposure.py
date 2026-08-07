@@ -94,18 +94,26 @@ def compute_exposure(
             "Apply an explicit negative-coefficient policy (consistent with Engine 1) first."
         )
 
-    # Align direct scores onto the economy's goods; a good ENCORE doesn't rate has 0 direct
-    # dependency (its exposure, if any, is entirely upstream).
+    # Validate the SUPPLIED direct cells FIRST (review P1 2026-08-07): an explicit NaN in the input
+    # is a genuine missing value that must be REJECTED, not silently turned into "no dependency" by
+    # the fillna below. Only reindex-added rows (goods the input simply doesn't rate) become 0.
+    supplied = direct.to_numpy(dtype=float)
+    if not np.isfinite(supplied).all():
+        raise ValueError(
+            "exposure: supplied direct dependency scores contain non-finite values (NaN/inf). An "
+            "explicit missing value must not silently become zero dependency — impute or drop it "
+            "first. (ENCORE distinguishes N/A from ND ('No Data'); do not conflate them.)"
+        )
+    if (supplied < 0.0).any() or (supplied > 1.0).any():
+        raise ValueError(
+            f"exposure: direct dependency scores must be in [0, 1] (got range "
+            f"[{supplied.min():.4f}, {supplied.max():.4f}])"
+        )
+    # Now align onto the economy's goods; a good the input does NOT rate (absent row) has 0 direct
+    # dependency (its exposure, if any, is entirely upstream). fillna only touches these new rows.
     D = direct.reindex(index=goods).fillna(0.0)
     services = list(D.columns)
     Dv = D.to_numpy(dtype=float)
-    if not np.isfinite(Dv).all():
-        raise ValueError("exposure: direct dependency scores contain non-finite values (NaN/inf)")
-    if (Dv < 0.0).any() or (Dv > 1.0).any():
-        raise ValueError(
-            f"exposure: direct dependency scores must be in [0, 1] (got range "
-            f"[{Dv.min():.4f}, {Dv.max():.4f}])"
-        )
 
     rho = a.sum(axis=0)  # good j's intermediate-input share of gross output (value added = 1 − rho)
     if float(rho.max()) >= 1.0:
@@ -115,6 +123,7 @@ def compute_exposure(
         )
 
     converged = False
+    last_residual = float("nan")  # the final step's change, for the non-convergence diagnostic
     if rule == "weighted_mean":
         # E[j] = D[j] + (1 − D[j]) · Σ_i A[i,j]·E[i]  (noisy-OR: upstream only adds, scaled by
         # headroom). Monotone non-decreasing in E, bounded above by 1; Σ_i A[i,j] < 1 makes it a
@@ -125,11 +134,11 @@ def compute_exposure(
             upstream = aT @ Ev  # Σ_i A[i,j]·E[i] per good j
             new = Dv + (1.0 - Dv) * upstream
             new = np.clip(new, 0.0, 1.0)
-            if np.max(np.abs(new - Ev)) < tol:
-                Ev = new
+            last_residual = float(np.max(np.abs(new - Ev)))  # captured BEFORE Ev is overwritten
+            Ev = new
+            if last_residual < tol:
                 converged = True
                 break
-            Ev = new
     elif rule == "max":
         # E[j, k] = max( D[j, k], max over inputs i (A[i,j] > threshold) of E[i, k] ). Not linear →
         # iterate to a fixed point. Monotone non-decreasing and bounded above by 1, so it converges.
@@ -142,16 +151,16 @@ def compute_exposure(
                 if inputs.size:
                     upstream[j] = Ev[inputs].max(axis=0)
             new = np.maximum(Dv, upstream)
-            if np.max(np.abs(new - Ev)) < tol:
-                Ev = new
+            last_residual = float(np.max(np.abs(new - Ev)))  # captured BEFORE Ev is overwritten
+            Ev = new
+            if last_residual < tol:
                 converged = True
                 break
-            Ev = new
     else:
         raise ValueError(f"unknown aggregation rule {rule!r}; use 'weighted_mean' or 'max'")
 
     if not converged:
-        residual = float(np.max(np.abs(new - Ev))) if max_iter else float("nan")
+        residual = last_residual
         raise ValueError(
             f"exposure: {rule!r} fixed-point iteration did not converge within {max_iter} "
             f"iterations (final residual {residual:.3e} ≥ tol {tol:.1e}). Refusing to return an "

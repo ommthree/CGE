@@ -533,16 +533,18 @@ generalisation is a documented follow-up.
 The engine consumes a **`ProductivityShock`** as a per-sector **Hicks-neutral productivity
 multiplier** $\theta_i$ (the shock's $1 + \text{delta}$; a nature degradation translated by the
 ENCORE exposure engine, see `docs/models/nature-encore.md` §7, gives $\theta_i < 1$). A sector with
-productivity $\theta_i$ needs $1/\theta_i$ of its **entire** input bundle — intermediates, value
-added, and the per-output carbon wedge — to make one unit of output, so its zero-profit condition
-becomes
+productivity $\theta_i$ needs $1/\theta_i$ of its **technology** bundle — intermediates and value
+added — to make one unit of output, so those scale by $1/\theta_i$. The **carbon wedge $cc_i$ is NOT
+scaled**: it is emissions per unit output × price, a physical per-output quantity $\theta$ does not
+change (scaling it would make reported revenue $\Sigma\,cc\cdot X$ diverge from physical emissions —
+review P1 2026-08-07). The zero-profit condition is therefore
 
-$$ p_i \;=\; \frac{\text{unit cost}_i}{\theta_i} \;=\; \frac{\sum_j a_{ji}\,p_j + \text{va}_i\,pv_i + cc_i}{\theta_i}. $$
+$$ p_i \;=\; \frac{\sum_j a_{ji}\,p_j + \text{va}_i\,pv_i}{\theta_i} \;+\; cc_i. $$
 
-Scaling the input column by $1/\theta_i$ at that single point is what keeps the whole system
+Scaling only the technology part by $1/\theta_i$ at that single point keeps the whole system
 consistent: the $(I - A)^{-1}$ inverse, factor demand $F$, and goods-market clearing all read the
 scaled requirements, so a less-productive sector draws proportionally more inputs and factors per
-unit output with no separate bookkeeping. The general-equilibrium consequence is the point of doing
+unit output with no separate bookkeeping, while the emissions/revenue accounting is untouched. The general-equilibrium consequence is the point of doing
 this in the CGE rather than only in Engine 2: the degraded sector's **price rises**, its **output
 falls**, and — because factor and product markets re-clear — **relative prices and factor demands
 adjust economy-wide** (the degraded sector's suppliers and its competitors-for-factors all move),

@@ -64,7 +64,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -1249,30 +1249,47 @@ def _productivity_by_sector(
     """Per-sector Hicks-neutral productivity multiplier θ[i] for ``year`` (Phase 6.4 GE tier).
 
     The closed/open CGE is **single-region**, but ``build_nature_shocks`` on a multi-region economy
-    emits ONE shock per good — i.e. the same sector's degradation tagged with each region. Naively
-    multiplying every shock that matches a sector then DOUBLE-COUNTS: two regions each losing 20%
-    would give 0.8·0.8 = 0.64, a spurious 36% aggregate loss (review P1 2026-08-07).
+    emits ONE shock per good — the same sector's degradation tagged with each region. Two failure
+    modes to avoid (both found in review):
 
-    Correct single-region aggregation: **group the matching shocks by region, compose
-    multiplicatively WITHIN a region** (independent services on the same good are genuine
-    compounding hits), **then average the per-region surviving fractions ACROSS regions** —
-    collapsing the region dimension the closed model does not have (equal weights: the collapsed
-    model has already summed
-    the regions' output into one sector, so it carries no per-region output split to weight by). A
-    sector with no shock has θ = 1 (byte-identical to a pure carbon run). θ is floored at a small
-    positive value so a fully-degraded sector cannot drive the zero-profit unit cost non-finite."""
+    1. Naively **multiplying** every shock matching a sector DOUBLE-COUNTS: two regions each losing
+       20% would give 0.8·0.8 = 0.64, a spurious 36% aggregate loss (review P1 2026-08-07 round 1).
+    2. **Averaging only the regions that were shocked** makes a region-scoped shock ECONOMY-WIDE: a
+       shock on region A alone gives θ_A = 0.8 with no B term, identical to shocking both — B (θ=1)
+       must be included (review P1 2026-08-07 round 2).
+
+    Correct single-region aggregation: recover the **full source-region set** as the union of every
+    productivity shock's ``coverage_regions`` (on a nature run every good in each region is shocked,
+    so this is the whole economy). For each sector, compute each source region's surviving
+    productivity — Π over that region's shocks of (1 + δ), and **1.0 for a region with no shock on
+    this sector** — then average across ALL source regions. A shock with empty region coverage is
+    economy-wide (applies to every source region). Equal weights across regions: the collapsed model
+    summed the regions' output into one sector, so it carries no per-region split to weight by.
+
+    A sector with no shock anywhere has θ = 1 (byte-identical to a pure carbon run). θ is floored at
+    a small positive value so a fully-degraded sector cannot drive the unit cost non-finite."""
+    # Full set of source regions the shocks span (empty-coverage shocks contribute no explicit
+    # region). With no region-tagged shocks at all, collapse to a single implicit region.
+    source_regions = sorted({r for s in prod_shocks for r in s.coverage_regions})
+    if not source_regions:
+        source_regions = ["__single__"]
+
     theta = np.ones(len(sectors))
     for i, sec in enumerate(sectors):
-        # Per-region surviving productivity: Π over that region's shocks of (1 + δ).
-        by_region: dict[str, float] = {}
+        # Surviving productivity per source region: start each region at 1.0 (unshocked), then apply
+        # each shock covering this sector to the region(s) it covers (empty coverage → all regions).
+        surviving = dict.fromkeys(source_regions, 1.0)
+        applied = False
         for s in prod_shocks:
             if s.coverage_sectors and sec not in s.coverage_sectors:
                 continue
-            # Explicit region coverage groups by region; an empty coverage is economy-wide.
-            key = s.coverage_regions[0] if s.coverage_regions else "__all__"
-            by_region[key] = by_region.get(key, 1.0) * (1.0 + s._path_level_at(year, s.delta))
-        if by_region:
-            theta[i] = float(np.mean(list(by_region.values())))  # average across matched regions
+            applied = True
+            factor = 1.0 + s._path_level_at(year, s.delta)
+            covered = s.coverage_regions or source_regions  # empty coverage = economy-wide
+            for r in covered:
+                surviving[r] *= factor
+        if applied:
+            theta[i] = float(np.mean(list(surviving.values())))  # average across ALL source regions
     return np.clip(theta, 1e-6, None)
 
 

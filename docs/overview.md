@@ -244,7 +244,7 @@ resolving its methodological/provenance follow-ups and the live-EXIOBASE build a
 | 4b — Macro aggregates | GVA/GDP/deflators, real vs nominal (PE tier) | ✅ [model doc](models/macro-aggregates.md) |
 | 5 — Engine 3 (CGE) | GE price+volume, **revenue recycling**, **open economy** (Armington/CET, carbon leakage), **CES value added**, elasticity sweeps, **true multi-region** (bilateral trade, destination-specific prices) — pilot core complete; government/investment/energy nest reopened as 5d | ✅ [model doc](models/cge-static.md) |
 | 5d — Macro closure | government/fiscal account (balanced-budget + deficit-financed), savings-investment + capital identity, KL-E-M energy nest, wage-floor labour market, adaptation investment, trade closures — all three variants | ✅ [model doc](models/cge-static.md) |
-| 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | ⬜ [roadmap](../roadmap.md) |
+| 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | 🧪 built, experimental (synthetic fixture; real-ENCORE adapter + calibration outstanding) [roadmap](../roadmap.md) |
 | 7 — Pathway stack | NGFS-driven dynamics + FaIR climate | ⬜ [roadmap](../roadmap.md) |
 
 The completed work is the minimum viable version of the original ask, and then some (cost +
