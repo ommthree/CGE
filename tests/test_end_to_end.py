@@ -130,13 +130,16 @@ def io_capture(fn):
 
 
 def test_engine_rejects_unsupported_shock():
-    from cge.contracts.shocks import NatureStress
+    # DemandShift is consumed by no engine here — the genuine "unsupported shock" path.
+    # (NatureStress is now translated to productivity shocks by the runner, so it is no longer an
+    # "unsupported" example — see the nature-pipeline tests.)
+    from cge.contracts.shocks import DemandShift
 
     scenario = Scenario(
         name="bad",
         engine="dummy",
         years=[2020],
-        shocks=[NatureStress(service="pollination", severity=0.3)],
+        shocks=[DemandShift(delta=0.1)],
     )
     with pytest.raises(ValueError, match="does not support"):
         run_scenario(scenario)

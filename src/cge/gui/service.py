@@ -137,30 +137,24 @@ class GuiService:
     def run_nature(
         self, *, stresses: list[tuple[str, float]], engine: str = "partial_eq", years: list[int]
     ) -> ResultSet:
-        """Run a nature-degradation scenario end-to-end: ``stresses`` (list of
-        ``(service, severity)``) → ``NatureStress`` → per-good ``ProductivityShock`` scaled by the
-        fixture's exposure scores → the chosen economic engine → a ``ResultSet``. This is the
-        Phase-6 nature-scenario runner: a scenario reads in *nature* terms (a service degrades) and
-        the nature→economics translation is the auditable ``build_nature_shocks`` step.
+        """Run a nature-degradation scenario through the **standard runner** (review P1 2026-08-07):
+        ``stresses`` (list of ``(service, severity)``) become ``NatureStress`` shocks in a normal
+        ``Scenario``, which ``run_scenario`` translates to per-good ``ProductivityShock``s (at the
+        engine-appropriate incidence) and stamps with full nature provenance in the manifest — the
+        same auditable path a YAML/CLI nature run takes, not a GUI-only shortcut.
 
-        **Variant note (review P1 2026-08-07).** The toy IO carries only aggregate (not
-        by-consuming-region) final demand, so it cannot build a multi-region SAM. Both engines
-        therefore run **single-region**: Engine 2 (`partial_eq`) keeps the region tags and shocks
-        each good, while the CGE (`cge_static`) runs its **closed** variant, which aggregates the
-        region-tagged shocks to one θ per sector (averaging across regions — NOT compounding them).
-        So the CGE result here is a single-region aggregate; it does NOT model cross-region leakage.
-        Multi-region GE leakage needs a fixture with by-region final demand (a documented
-        follow-up)."""
+        **Variant note.** The toy IO carries only aggregate (not by-consuming-region) final demand,
+        so it cannot build a multi-region SAM. Both engines run **single-region**: the CGE
+        (`cge_static`) runs its closed variant, aggregating the region-tagged shocks to one θ per
+        sector (averaging across regions, NOT compounding), so the CGE result is a single-region
+        aggregate and does NOT model cross-region leakage. Multi-region GE leakage needs a fixture
+        with by-region final demand (a follow-up)."""
         from cge.contracts.shocks import NatureStress
-        from cge.nature.fixture import encore_fixture, toy_encore_concordance
-        from cge.nature.translate import build_nature_shocks
-        from cge.validation.toy import toy_economy
+        from cge.runner import run_scenario
 
-        io, sat = toy_economy()
-        ns = [NatureStress(service=s, severity=float(sev)) for s, sev in stresses]
-        shocks = build_nature_shocks(ns, io, encore_fixture(), toy_encore_concordance())
-        eng = registry.get(engine)
-        return eng.run(data={"IOSystem": io, "SatelliteAccount": sat}, shocks=shocks, years=years)
+        shocks = [NatureStress(service=s, severity=float(sev)) for s, sev in stresses]
+        scenario = Scenario(name="nature", engine=engine, years=list(years), shocks=shocks)
+        return run_scenario(scenario, data_source="toy", store=self.store)
 
     def start_build(self, *, test: bool = True, year: int = 2019) -> subprocess.Popen:
         """Kick off a data build as a background subprocess so a long download doesn't block

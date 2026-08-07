@@ -30,6 +30,8 @@ an engine applies each to exactly the right good. See ``docs/models/nature-encor
 
 from __future__ import annotations
 
+from typing import Literal
+
 import pandas as pd
 
 from cge.contracts.data_objects import ConcordanceMap, IOSystem
@@ -37,6 +39,19 @@ from cge.contracts.shocks import NatureStress, ProductivityShock
 from cge.nature.concord import broadcast_to_goods, sector_scores
 from cge.nature.encore import EncoreDependencies
 from cge.nature.exposure import AggregationRule, compute_exposure
+
+# Per-engine default shock incidence (review P1 2026-08-07). An engine that endogenously propagates
+# a sector shock through the supply chain (the CGE, and the IO price engine) must receive DIRECT
+# incidence — total exposure would double-count upstream. A partial-equilibrium engine with no such
+# transmission receives the reduced-form TOTAL. Callers that don't specify incidence use this.
+INCIDENCE_BY_ENGINE: dict[str, str] = {
+    "cge_static": "direct",
+    "io_price": "direct",
+    "partial_eq": "total",
+}
+DEFAULT_INCIDENCE = "total"  # for an unknown engine: the conservative reduced-form total
+
+Incidence = Literal["direct", "total"]
 
 
 def nature_to_productivity(
@@ -92,6 +107,7 @@ def build_nature_shocks(
     concordance: ConcordanceMap,
     *,
     rule: AggregationRule = "weighted_mean",
+    incidence: Incidence = "total",
 ) -> list[ProductivityShock]:
     """End-to-end Phase-6 convenience: ENCORE ratings + concordance + IO structure →
     ``NatureStress`` → per-good ``ProductivityShock``s, ready for an engine.
@@ -99,9 +115,26 @@ def build_nature_shocks(
     Runs the whole 6.2→6.3→6.4 chain: map ENCORE process scores onto the economy's sectors
     (``sector_scores``), broadcast to goods and propagate upstream (``compute_exposure`` under
     ``rule``), then translate the stresses (``nature_to_productivity``). ``io.assert_integrity`` is
-    re-run first so a mutated payload is rejected at this boundary too."""
+    re-run first so a mutated payload is rejected at this boundary too.
+
+    **Incidence (review P1 2026-08-07 — avoids double-counting upstream).** The exposure engine
+    embeds upstream dependence into each good's TOTAL exposure. Whether the shock should carry that
+    upstream part depends on the consuming engine:
+
+    - ``"direct"`` — each good is shocked only for its OWN direct dependency; upstream propagation
+      is left to the engine's own supply-chain transmission. **Correct for the CGE / IO price**,
+      which already propagates a shocked sector's price and input requirements through the network —
+      applying total exposure there would count the upstream channel twice.
+    - ``"total"`` (default, back-compat) — each good is shocked for its full direct + upstream
+      exposure. Defensible for a **partial-equilibrium** engine with NO endogenous supply
+      transmission (Engine 2 ``partial_eq``): the reduced-form total is the only way upstream
+      dependence reaches the good there.
+
+    The caller (runner/GUI) selects the mode by engine; ``nature.INCIDENCE_BY_ENGINE`` records the
+    per-engine default."""
     io.assert_integrity()
     ssc = sector_scores(encore, concordance, io.sectors.labels)
-    direct = broadcast_to_goods(ssc, list(io.A.columns))
-    exposure, _ = compute_exposure(io.A, direct, rule=rule)
+    direct_scores = broadcast_to_goods(ssc, list(io.A.columns))
+    total, direct_aligned = compute_exposure(io.A, direct_scores, rule=rule)
+    exposure = direct_aligned if incidence == "direct" else total
     return nature_to_productivity(stresses, exposure)

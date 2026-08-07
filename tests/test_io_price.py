@@ -539,13 +539,29 @@ def test_end_to_end_via_runner():
 
 
 def test_engine_rejects_unsupported_shock():
+    # DemandShift is consumed by no engine here — the generic "unsupported shock" path.
+    from cge.contracts.shocks import DemandShift
+
+    scenario = Scenario(
+        name="t",
+        engine="io_price",
+        years=[2020],
+        shocks=[DemandShift(delta=0.1)],
+    )
+    with pytest.raises(ValueError, match="does not support"):
+        run_scenario(scenario)
+
+
+def test_io_price_rejects_nature_stress_no_productivity_consumption():
+    """io_price does not consume 'productivity', so a NatureStress scenario (translated to
+    productivity shocks by the runner) is rejected with a pointer to an engine that does."""
     scenario = Scenario(
         name="t",
         engine="io_price",
         years=[2020],
         shocks=[NatureStress(service="pollination", severity=0.3)],
     )
-    with pytest.raises(ValueError, match="does not support"):
+    with pytest.raises(ValueError, match="does not consume 'productivity'"):
         run_scenario(scenario)
 
 

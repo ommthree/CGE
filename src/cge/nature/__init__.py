@@ -18,7 +18,12 @@ from cge.nature.encore import (
     materiality_to_score,
 )
 from cge.nature.exposure import compute_exposure
-from cge.nature.translate import build_nature_shocks, nature_to_productivity
+from cge.nature.translate import (
+    DEFAULT_INCIDENCE,
+    INCIDENCE_BY_ENGINE,
+    build_nature_shocks,
+    nature_to_productivity,
+)
 
 __all__ = [
     "MATERIALITY_SCALE",
@@ -30,4 +35,6 @@ __all__ = [
     "compute_exposure",
     "nature_to_productivity",
     "build_nature_shocks",
+    "INCIDENCE_BY_ENGINE",
+    "DEFAULT_INCIDENCE",
 ]

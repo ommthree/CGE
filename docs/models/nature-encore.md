@@ -149,6 +149,25 @@ affected good (carrying its region/sector), rejecting a stress that names a serv
 exposure matrix (it would silently do nothing). `build_nature_shocks` runs the whole
 ENCORE→concordance→exposure→translation chain in one call.
 
+**Shock incidence — direct vs. total (avoids double-counting upstream).** The exposure score $E_{jk}$
+already embeds the *upstream* dependence a good inherits through its supply chain (§5). Whether the
+productivity shock should carry that upstream part depends on the consuming engine, so
+`build_nature_shocks` takes an `incidence` argument:
+
+- **`direct`** — each good is shocked only for its *own direct* dependency; upstream propagation is
+  left to the engine's own supply-chain transmission. This is the default for the **CGE** (and the
+  IO price engine): they already propagate a shocked sector's price and input requirements through
+  the input–output network, so applying the *total* exposure there would count the upstream channel
+  **twice** (the score embeds it once, the GE network transmits it again).
+- **`total`** — each good is shocked for its full direct + upstream exposure. This is the default for
+  **`partial_eq`**, which has no endogenous supply transmission, so the reduced-form total is the
+  only way upstream dependence reaches the good.
+
+`nature.INCIDENCE_BY_ENGINE` records the per-engine default; the runner selects it automatically.
+This follows the central-bank practice (e.g. DNB) of separating exposure screening from the shock
+incidence actually applied, rather than compounding embedded exposure and then re-transmitting it
+through the GE network.
+
 **Engine 2 consumption (partial equilibrium).** Engine 2 (`partial_eq`) consumes a
 `ProductivityShock` as a supply-side output multiplier $\prod(1+\text{delta})$, clipped at 0,
 composed multiplicatively **on top of** the price-driven demand response:
@@ -184,6 +203,15 @@ not just asserted).
 **Scope.** Engine 2 gives the direct/first-round supply hit through a fixed-technology quantity
 system; all three CGE variants give the general-equilibrium response (single-region, open-economy
 carbon-leakage-style, and true multi-region leakage).
+
+**Standard pipeline & provenance.** A `NatureStress` scenario runs through the **standard runner**
+(`run_scenario`), not a GUI-only path: the runner translates the stresses to `ProductivityShock`s at
+the engine-appropriate incidence and stamps the manifest with the full nature provenance — the
+ENCORE snapshot + concordance content hashes, the materiality scale, the exposure rule, and the
+incidence mode. So a nature run is **reconstructible from its manifest**, and a YAML/CLI nature
+scenario is a first-class citizen alongside a carbon-price scenario. (`EncoreDependencies` and
+`ConcordanceMap` travel in the data source; the `toy` source ships the illustrative fixture, a real
+build supplies them, and a source lacking them rejects a nature run with guidance.)
 
 ## 8. Validation
 

@@ -430,14 +430,21 @@ wedge is unscaled, so the emissions/revenue contract holds). 6.5 adds the **natu
 dependency heatmap, supply-chain drill-down, and a nature-scenario runner). Impact/pressure ingestion
 and heatmaps are NOT implemented (dependencies only).
 
-**STILL OPEN (judgement calls, deferred pending direction):** (1) whether the CGE should default to
-**direct-incidence** rather than the current total-exposure shock — the total already embeds upstream
-dependence, which the GE network then transmits again, so upstream is arguably **double-counted** in
-the CGE; and (2) `NatureStress` does not run through the **standard scenario/manifest pipeline**
-(only the GUI converts it), so a nature run's manifest hashes the derived `ProductivityShock`s, not
-the ENCORE snapshot / concordance / materiality scale / exposure rule — it is not reconstructible
-from its manifest. Plus a full real-ENCORE-export adapter with golden-file ingestion tests. Until
-these land, Phase 6 is **not** signed off.
+**Both methodology/architecture items are now RESOLVED** (2026-08-07 remediation, plan B round 2):
+- **Shock incidence** — `build_nature_shocks` takes an `incidence` param; `INCIDENCE_BY_ENGINE` sets
+  the CGE (and IO price) to **direct incidence** (the GE network transmits upstream itself, so total
+  exposure would double-count) and partial_eq to the reduced-form **total**. So upstream is no longer
+  counted twice in the CGE.
+- **Standard pipeline + provenance** — `NatureStress` now runs through the standard `run_scenario`
+  (translated to `ProductivityShock`s at the engine-appropriate incidence), and the manifest records
+  the full nature provenance (ENCORE + concordance content hashes, materiality scale, exposure rule,
+  incidence) so a nature run is reconstructible from its manifest.
+
+**STILL OPEN before Phase-6 sign-off:** a real-ENCORE-export adapter (current-version format,
+preserved N/A-vs-ND semantics, separately-typed pressure/impact ratings) with golden-file ingestion
+tests. Until that lands the shipped fixture is **synthetic/illustrative**, so nature results remain
+illustrative-of-method, not calibrated risk — but the *engineering* pathway (exposure → incidence →
+shock → engine → provenance) is now complete and auditable.
 
 | # | Task | Effort |
 |---|---|---|

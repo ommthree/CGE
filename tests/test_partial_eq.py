@@ -17,7 +17,7 @@ from cge.contracts.data_objects import (
     SatelliteAccount,
 )
 from cge.contracts.engine import registry
-from cge.contracts.shocks import CarbonPrice, NatureStress
+from cge.contracts.shocks import CarbonPrice
 from cge.engines.partial_eq.engine import PartialEqEngine, _finite_demand_response
 from cge.runner import run_scenario
 from cge.scenarios.loader import Scenario
@@ -370,11 +370,15 @@ def test_carbon_plus_energy_supported_by_partial_eq():
 
 
 def test_rejects_unsupported_shock():
+    # DemandShift is consumed by no engine here (NatureStress is now translated to productivity
+    # shocks by the runner, so it is no longer an "unsupported" example — see test_nature.py).
+    from cge.contracts.shocks import DemandShift
+
     sc = Scenario(
         name="v",
         engine="partial_eq",
         years=[2020],
-        shocks=[NatureStress(service="pollination", severity=0.3)],
+        shocks=[DemandShift(delta=0.1)],
     )
     with pytest.raises(ValueError, match="does not support"):
         run_scenario(sc, data_source="toy")

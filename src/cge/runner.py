@@ -98,7 +98,17 @@ def load_data(source: str, *, store: DataStore | None = None) -> dict:
     """
     if source == "toy":
         io, sat = toy_economy()
-        return {"IOSystem": io, "SatelliteAccount": sat}
+        # Attach the illustrative ENCORE fixture + concordance so a NatureStress scenario runs
+        # through the standard pipeline on the toy source (review P1 2026-08-07). A real build
+        # supplies these from the store; without them, a NatureStress run raises a clear error.
+        from cge.nature.fixture import encore_fixture, toy_encore_concordance
+
+        return {
+            "IOSystem": io,
+            "SatelliteAccount": sat,
+            "EncoreDependencies": encore_fixture(),
+            "ConcordanceMap": toy_encore_concordance(),
+        }
 
     # Built-in CGE toy SAMs — the hand-checkable calibration targets, so the CGE (and the GUI) can
     # run the closed / open / multi-region variants without a data build. Each ships a default
@@ -120,6 +130,74 @@ def load_data(source: str, *, store: DataStore | None = None) -> dict:
     return store.load(source)
 
 
+def _preprocess_nature(scenario: Scenario, data: dict, engine) -> tuple[list, dict | None]:
+    """Translate any ``NatureStress`` in the scenario into ``ProductivityShock``s BEFORE the engine
+    runs (review P1 2026-08-07 — nature runs through the standard pipeline, not a GUI-only path).
+
+    Returns ``(shocks, nature_stamp)``: ``shocks`` is the scenario's shocks with every
+    ``NatureStress`` replaced by its derived per-good ``ProductivityShock``s (other shocks kept),
+    and ``nature_stamp`` is the provenance dict to append to the run manifest (ENCORE + concordance
+    identity, materiality scale, exposure rule, incidence mode) so a nature run is reconstructible
+    from its manifest — or ``None`` when the scenario has no NatureStress.
+
+    ``EncoreDependencies``/``ConcordanceMap`` are read from ``data`` and **popped** so the engine
+    (which may strictly reject unknown keys) never sees them. A NatureStress scenario on a data
+    source lacking them is rejected with guidance rather than silently doing nothing."""
+    from cge.contracts.shocks import NatureStress
+
+    nature = [s for s in scenario.shocks if isinstance(s, NatureStress)]
+    if not nature:
+        data.pop("EncoreDependencies", None)  # not needed; keep the engine's data clean
+        data.pop("ConcordanceMap", None)
+        return list(scenario.shocks), None
+
+    from cge.nature import DEFAULT_INCIDENCE, INCIDENCE_BY_ENGINE
+    from cge.nature.encore import MATERIALITY_SCALE
+    from cge.nature.translate import build_nature_shocks
+
+    encore = data.pop("EncoreDependencies", None)
+    concordance = data.pop("ConcordanceMap", None)
+    io = data.get("IOSystem")
+    missing = [
+        name
+        for name, obj in (
+            ("IOSystem", io),
+            ("EncoreDependencies", encore),
+            ("ConcordanceMap", concordance),
+        )
+        if obj is None
+    ]
+    if missing:
+        raise ValueError(
+            f"a NatureStress scenario needs an IOSystem, an EncoreDependencies object and a "
+            f"ConcordanceMap; the data source is missing {missing}. Use the 'toy' source (which "
+            "ships the illustrative fixture) or a build carrying ENCORE data."
+        )
+
+    rule = "weighted_mean"
+    incidence = INCIDENCE_BY_ENGINE.get(scenario.engine, DEFAULT_INCIDENCE)
+    derived = build_nature_shocks(nature, io, encore, concordance, rule=rule, incidence=incidence)
+    # Keep any non-nature shocks (e.g. a carbon price alongside the degradation), then append the
+    # derived productivity shocks.
+    shocks = [s for s in scenario.shocks if not isinstance(s, NatureStress)] + derived
+
+    from cge.contracts.provenance import content_hash
+
+    stamp = {
+        "stresses": [{"service": s.service, "severity": s.severity} for s in nature],
+        "encore_source": encore.provenance.source,
+        "encore_version": encore.provenance.source_version,
+        "encore_content_hash": content_hash(encore.ratings.to_dict(orient="records")),
+        "concordance_source": concordance.provenance.source,
+        "concordance_content_hash": content_hash(concordance.weights),
+        "materiality_scale": dict(MATERIALITY_SCALE),
+        "exposure_rule": rule,
+        "incidence": incidence,
+        "derived_productivity_shocks": len(derived),
+    }
+    return shocks, stamp
+
+
 def run_scenario(
     scenario: Scenario,
     *,
@@ -129,13 +207,28 @@ def run_scenario(
 ) -> ResultSet:
     engine = registry.get(scenario.engine)
 
-    unsupported = [s.type for s in scenario.shocks if not engine.meta.supports(s)]
+    # NatureStress is not consumed by engines directly — it is translated to ProductivityShocks here
+    # (the auditable step), so support is checked on the TRANSLATED shocks below, not the raw ones.
+    from cge.contracts.shocks import NatureStress
+
+    unsupported = [
+        s.type
+        for s in scenario.shocks
+        if not isinstance(s, NatureStress) and not engine.meta.supports(s)
+    ]
     if unsupported:
         raise ValueError(
             f"Engine {engine.meta.name!r} does not support shock types: {sorted(set(unsupported))}"
         )
 
     data = load_data(data_source, store=store)
+    shocks, nature_stamp = _preprocess_nature(scenario, data, engine)
+    # A NatureStress that produced productivity shocks needs an engine that consumes them.
+    if nature_stamp is not None and not engine.meta.supports_type("productivity"):
+        raise ValueError(
+            f"Engine {engine.meta.name!r} does not consume 'productivity' shocks, so a "
+            "NatureStress scenario cannot run against it. Use 'partial_eq' or 'cge_static'."
+        )
     # Optional engine parameters supplied by the caller (e.g. the GUI's CGE elasticity controls:
     # armington_elast / cet_elast / va_elast / open_home_region). Merged into the data dict the
     # engine consumes. Engines that don't read a key ignore it; the CGE engine is deliberately
@@ -147,8 +240,17 @@ def run_scenario(
     if missing:
         raise ValueError(f"Data source {data_source!r} is missing required objects: {missing}")
 
-    result = engine.run(data=data, shocks=list(scenario.shocks), years=scenario.years)
+    result = engine.run(data=data, shocks=shocks, years=scenario.years)
     result = result.validate_schema()
+
+    # Stamp the nature translation's provenance into the manifest (review P1 2026-08-07): the engine
+    # only saw the derived ProductivityShocks, so record the ENCORE snapshot, concordance,
+    # materiality scale, rule and incidence here — a nature run is then reconstructible from it.
+    if nature_stamp is not None:
+        manifest = result.manifest.model_copy(
+            update={"assumptions": {**result.manifest.assumptions, "nature": nature_stamp}}
+        )
+        result = ResultSet(data=result.data, manifest=manifest).validate_schema()
 
     # Macro-aggregate accounting (roadmap Phase 4b, PE tier): roll the per-good price/volume
     # responses up into GVA/GDP/deflator (nominal + real). Engine-agnostic post-step so every

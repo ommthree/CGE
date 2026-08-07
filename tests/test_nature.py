@@ -275,6 +275,90 @@ def test_build_nature_shocks_runs_the_full_chain():
     assert shocks and all(s.delta <= 0 for s in shocks)
 
 
+def test_build_nature_shocks_incidence_direct_vs_total():
+    """Review P1 (2026-08-07): incidence='direct' shocks each good only for its OWN dependency (the
+    engine transmits upstream), while 'total' carries the full direct+upstream exposure. A good with
+    upstream-inherited exposure (manufacturing) is shocked LESS under direct; a fully directly-
+    dependent good (agriculture, E=1) is identical under both."""
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.translate import build_nature_shocks
+
+    io, _ = toy_economy()
+    ns = [NatureStress(service="surface_water", severity=0.5)]
+    total = build_nature_shocks(
+        ns, io, encore_fixture(), toy_encore_concordance(), incidence="total"
+    )
+    direct = build_nature_shocks(
+        ns, io, encore_fixture(), toy_encore_concordance(), incidence="direct"
+    )
+
+    def _by_good(shocks):
+        return {(s.coverage_regions[0], s.coverage_sectors[0]): s.delta for s in shocks}
+
+    t, d = _by_good(total), _by_good(direct)
+    # Agriculture is fully water-dependent directly (E=1) → identical under both.
+    assert t[("A", "agriculture")] == pytest.approx(d[("A", "agriculture")])
+    # Manufacturing's water exposure is largely upstream-inherited → smaller (less negative) shock
+    # under direct incidence than total.
+    assert d[("A", "manufacturing")] > t[("A", "manufacturing")]
+
+
+def test_incidence_by_engine_defaults():
+    """The CGE (endogenous supply transmission) defaults to direct incidence; partial_eq (no
+    transmission) to total — the map the runner/GUI use to avoid double-counting upstream."""
+    from cge.nature import INCIDENCE_BY_ENGINE
+
+    assert INCIDENCE_BY_ENGINE["cge_static"] == "direct"
+    assert INCIDENCE_BY_ENGINE["io_price"] == "direct"
+    assert INCIDENCE_BY_ENGINE["partial_eq"] == "total"
+
+
+def test_nature_stress_runs_through_standard_runner_with_manifest_provenance():
+    """Review P1 (2026-08-07): a NatureStress scenario runs through the STANDARD runner (not a
+    GUI-only path), and the manifest records the nature inputs — ENCORE + concordance hashes,
+    materiality scale, exposure rule and incidence — so a nature run is reconstructible from its
+    manifest (the 'explicit and auditable' promise)."""
+    from cge.contracts.shocks import NatureStress
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    sc = Scenario(
+        name="nat",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4)],
+    )
+    res = run_scenario(sc, data_source="toy")
+    assert (res.data["variable"] == "volume_change").any()
+    nat = res.manifest.assumptions.get("nature")
+    assert nat is not None
+    for key in (
+        "encore_content_hash",
+        "concordance_content_hash",
+        "materiality_scale",
+        "exposure_rule",
+        "incidence",
+        "stresses",
+    ):
+        assert key in nat, f"manifest nature provenance missing {key!r}"
+    assert nat["incidence"] == "total"  # partial_eq default
+
+
+def test_nature_stress_cge_uses_direct_incidence_in_manifest():
+    from cge.contracts.shocks import NatureStress
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    sc = Scenario(
+        name="nat",
+        engine="cge_static",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4)],
+    )
+    res = run_scenario(sc, data_source="toy")
+    assert res.manifest.assumptions["nature"]["incidence"] == "direct"
+
+
 def test_partial_eq_consumes_productivity_shock_as_supply_hit():
     """Engine 2 now consumes a ProductivityShock: a −20% productivity hit on one good cuts that
     good's output ~20% and emits a productivity_change row, while an unshocked good is unchanged
