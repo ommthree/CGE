@@ -1366,3 +1366,33 @@ def test_open_emits_standard_output_schema():
         "export_change",
     }
     assert standard <= emitted
+
+
+# -- Productivity shock (Phase 6.4 GE tier) -----------------------------------------------------
+def test_open_productivity_theta_one_byte_identical_residual():
+    """θ=1 leaves the open residual bit-for-bit unchanged (over random prices, with a carbon cost),
+    so the open benchmark replication / homogeneity / Walras battery is untouched by Phase 6.4."""
+    cal = _cal()
+    n = MO.n_unknowns(cal)
+    ns = len(cal.sectors)
+    cc = np.zeros(ns)
+    cc[0] = 0.02
+    rng = np.random.default_rng(7)
+    for _ in range(200):
+        z = 0.6 + rng.random(n)
+        r0 = MO.residuals(cal, z, carbon_cost=cc)
+        r1 = MO.residuals(cal, z, carbon_cost=cc, productivity=np.ones(ns))
+        assert np.array_equal(r0, r1)
+
+
+def test_open_productivity_theta_below_one_moves_residual():
+    cal = _cal()
+    ns = len(cal.sectors)
+    cc = np.zeros(ns)
+    cc[0] = 0.02
+    z = MO.initial_guess(cal)
+    theta = np.ones(ns)
+    theta[0] = 0.8
+    r0 = MO.residuals(cal, z, carbon_cost=cc)
+    r1 = MO.residuals(cal, z, carbon_cost=cc, productivity=theta)
+    assert float(np.abs(r0 - r1).max()) > 1e-6

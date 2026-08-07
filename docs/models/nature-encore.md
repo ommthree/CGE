@@ -1,19 +1,18 @@
 # Model description: Nature exposure via ENCORE (Phase 6.1–6.4)
 
 - **Implements:** `cge.nature` (`encore.py`, `concord.py`, `exposure.py`, `translate.py`,
-  `fixture.py`); `ProductivityShock` consumption in `cge.engines.partial_eq` (Engine 2) and the
-  closed variant of `cge.engines.cge_static` (Engine 3, the GE tier)
+  `fixture.py`); `ProductivityShock` consumption in `cge.engines.partial_eq` (Engine 2) and in all
+  three variants of `cge.engines.cge_static` (Engine 3, the GE tier — closed, open, multi-region)
 - **Roadmap phase:** 6 (tasks 6.1–6.4)
 - **Capabilities:** ecosystem-service dependency exposure (direct + upstream) per good; a
   `NatureStress` degradation scenario run end-to-end through an economic engine, in both the
-  partial-equilibrium (Engine 2) and general-equilibrium (Engine 3, closed variant) tiers
+  partial-equilibrium (Engine 2) and general-equilibrium (Engine 3, all variants) tiers
 - **Status:** implemented and tested on the toy economy with an **illustrative, published-sourced
   ENCORE fixture**. The real ENCORE knowledge base (registration-gated) drops into the same
   `EncoreDependencies` contract via `load_encore_csv` with **no code change**. 6.1–6.4 are done
   (ingestion, concordance, exposure, and the nature→productivity translation consumed by Engine 2
-  and by the closed CGE); the GUI heatmaps / nature-scenario runner (6.5), GE-mode consumption in
-  the CGE's **open/multi** variants, and a curated full ENCORE↔EXIOBASE concordance are the
-  remaining Phase-6 sub-tasks.
+  and by all three CGE variants); the GUI heatmaps / nature-scenario runner (6.5) and a curated full
+  ENCORE↔EXIOBASE concordance are the remaining Phase-6 sub-tasks.
 
 > **Honest scope.** Every dependency rating shipped here is a small hand-entered subset seeded from
 > the central-bank literature ([vanToor2020], [ENCORE]) and **labelled illustrative** in its
@@ -157,26 +156,33 @@ row is emitted only where the supply channel bites. On the toy economy a 40% sur
 degradation cuts agriculture's output ~40% (fully water-dependent), manufacturing less (its exposure
 is largely inherited upstream) — the nature-risk propagation the exposure engine exists to produce.
 
-**Engine 3 consumption (general equilibrium — the GE tier).** The **closed** static CGE
-(`cge_static`) consumes the same `ProductivityShock`s as a per-sector **Hicks-neutral productivity
-multiplier** $\theta_i$ ($\theta = 1 + \text{delta}$, so a nature degradation gives $\theta < 1$). A
-sector with productivity $\theta_i$ needs $1/\theta_i$ of its whole input bundle — intermediates,
-value added, and the per-output carbon wedge — per unit output, so its zero-profit unit cost divides
-by $\theta_i$: $p_i = \text{unit cost}_i / \theta_i$. Because that single scaling flows into the
-Leontief inverse, factor demand, and goods-market clearing, the equilibrium **reallocates**: the
-degraded sector's price rises, its output falls, and — unlike Engine 2's first-round quantity hit —
-relative prices and factor demands adjust across the whole economy. $\theta = 1$ leaves the residual
-**bit-for-bit unchanged**, so benchmark replication / homogeneity / Walras are untouched (proven
-over random price/wage points, not just asserted). On the toy SAM a −20% productivity hit on bread
-raises its price ~+11% and cuts its output ~−17%, and drags its upstream input supplier down too.
-The open/multi variants **reject** a `ProductivityShock` (rather than silently ignore it) with a
-pointer to the closed variant or Engine 2 — GE-mode open/multi consumption is a documented
-follow-up.
+**Engine 3 consumption (general equilibrium — the GE tier).** All three static-CGE variants
+(`cge_static`: **closed**, **open**, **multi-region**) consume the same `ProductivityShock`s as a
+per-sector **Hicks-neutral productivity multiplier** $\theta_i$ ($\theta = 1 + \text{delta}$, so a
+nature degradation gives $\theta < 1$). A sector with productivity $\theta_i$ needs $1/\theta_i$ of
+its whole input bundle — intermediates, value added, and the per-output carbon wedge — per unit
+output, so its zero-profit unit cost divides by $\theta_i$: $p_i = \text{unit cost}_i / \theta_i$.
+Because that single scaling flows into the Leontief inverse, factor demand, and goods-market
+clearing, the equilibrium **reallocates**: the degraded sector's price rises, its output falls, and
+— unlike Engine 2's first-round quantity hit — relative prices and factor demands adjust across the
+whole economy. $\theta = 1$ leaves the residual **bit-for-bit unchanged** in every variant, so
+benchmark replication / homogeneity / Walras are untouched (proven over random price/wage points,
+not just asserted).
+
+- **Closed** (single region): a −20% hit on bread raises its price ~+11%, cuts its output ~−17%, and
+  drags its upstream input supplier down too. Matched by sector (single-region, so a shock's region
+  tag is ignored).
+- **Open** (Armington/CET, home + ROW): the same hit raises the home price and cuts home output, but
+  now demand shifts toward **imports** and the un-degraded domestic sector expands (Armington
+  substitution) — a richer response than the closed variant. Matched by sector.
+- **Multi-region** (bilateral trade): the shock's **region coverage is honoured** — a degradation on
+  region N's bread cuts N's output while production **leaks** to the un-degraded region (S's bread
+  output *rises*), the nature analogue of carbon leakage.
 
 **Scope.** Engine 2 gives the direct/first-round supply hit through a fixed-technology quantity
-system; the closed CGE gives the single-region general-equilibrium response. The **open/multi** CGE
-variants (carbon-leakage-capable, multi-region) do not yet consume `productivity` — that, GUI
-heatmaps, and a nature-scenario runner are the remaining Phase-6 work (6.5 and the GE follow-up).
+system; all three CGE variants give the general-equilibrium response (single-region, open-economy
+carbon-leakage-style, and true multi-region leakage). GUI heatmaps and a nature-scenario runner
+(Phase 6.5) are the remaining Phase-6 work.
 
 ## 8. Validation
 
@@ -188,12 +194,13 @@ screen, the non-productive-economy rejection, and the unknown-rule rejection; an
 translation — severity scaled by exposure, unknown-service rejection, the end-to-end
 `build_nature_shocks` chain, Engine 2's productivity-shock consumption (supply hit, region scoping,
 byte-identical no-op without a shock), and a full `NatureStress` scenario producing a schema-valid
-`ResultSet`. `tests/test_cge_static.py` covers the **GE tier**: the closed CGE's productivity-shock
-consumption (a −20% hit raises the degraded sector's price and lowers its output, with a
-schema-valid `ResultSet`), the **exact byte-identical residual at $\theta = 1$** over random
-price/wage points (the guarantee that replication/homogeneity/Walras are untouched), sector-only
-matching that ignores the shock's region tag on the single-region SAM, and the open/multi variants'
-rejection of a `ProductivityShock` rather than silently ignoring it.
+`ResultSet`. The **GE tier** is covered across the three variant test files: the closed CGE's
+consumption (a −20% hit raises the degraded sector's price / lowers its output, schema-valid
+`ResultSet`) and sector-only matching (`tests/test_cge_static.py`); the open economy's consumption
+(`tests/test_cge_open.py`); and the multi-region **region-scoped leakage** — a hit on region N's
+bread cuts N's output while S's rises (`tests/test_cge_multi.py`). Each variant's test file also
+asserts the **exact byte-identical residual at $\theta = 1$** over random price/wage points — the
+guarantee that replication/homogeneity/Walras are untouched.
 
 ## References
 

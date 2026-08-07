@@ -1635,3 +1635,33 @@ def test_config_accepts_supported_keys():
         shocks=[CarbonPrice(price=0.3)],
         years=[2020],
     )
+
+
+# -- Productivity shock (Phase 6.4 GE tier) -----------------------------------------------------
+def test_multi_productivity_theta_one_byte_identical_residual():
+    """θ=1 leaves the multi-region residual bit-for-bit unchanged (random prices, with a carbon
+    cost), so the multi replication / homogeneity / Walras battery is untouched by Phase 6.4."""
+    cal = _cal()
+    nr, ns = cal.nr, cal.ns
+    n = MM.n_unknowns(cal)
+    cc = np.zeros((nr, ns))
+    cc[0, 0] = 0.02
+    rng = np.random.default_rng(8)
+    for _ in range(200):
+        z = 0.7 + 0.5 * rng.random(n)
+        r0 = MM.residuals(cal, z, carbon_cost=cc)
+        r1 = MM.residuals(cal, z, carbon_cost=cc, productivity=np.ones((nr, ns)))
+        assert np.array_equal(r0, r1)
+
+
+def test_multi_productivity_theta_below_one_moves_residual():
+    cal = _cal()
+    nr, ns = cal.nr, cal.ns
+    cc = np.zeros((nr, ns))
+    cc[0, 0] = 0.02
+    z = MM.initial_guess(cal)
+    theta = np.ones((nr, ns))
+    theta[0, 0] = 0.8
+    r0 = MM.residuals(cal, z, carbon_cost=cc)
+    r1 = MM.residuals(cal, z, carbon_cost=cc, productivity=theta)
+    assert float(np.abs(r0 - r1).max()) > 1e-6

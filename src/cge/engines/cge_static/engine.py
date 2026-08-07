@@ -64,7 +64,7 @@ from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -661,19 +661,6 @@ class CGEStaticEngine:
             io = data.get("IOSystem")
             if io is not None:
                 io.assert_integrity()
-
-        # ProductivityShock (Phase 6.4 GE tier) is consumed by the CLOSED variant only. Rather than
-        # let the open/multi variants silently ignore it — a nature scenario would then report a
-        # zero-impact run with no warning, the exact "silently does nothing" failure this engine
-        # rejects elsewhere — reject it up front on those variants with a pointer to the closed one.
-        if variant != "closed" and any(isinstance(s, ProductivityShock) for s in shocks):
-            raise ValueError(
-                f"the {variant!r} CGE variant does not yet consume ProductivityShock (Phase 6.4 "
-                "wired the closed single-region variant only); running it here would silently "
-                "ignore the nature shock. Use the closed variant, or apply the shock via Engine 2 "
-                "(partial_eq), which consumes ProductivityShock in every configuration. GE-mode "
-                "open/multi consumption is a documented follow-up."
-            )
 
         if variant == "multi":
             if supplied_sam is not None and _is_multi_region_sam(supplied_sam):
@@ -1277,6 +1264,23 @@ def _productivity_by_sector(
     return np.clip(theta, 1e-6, None)
 
 
+def _productivity_by_region_sector(
+    prod_shocks: list[ProductivityShock], regions: list[str], sectors: list[str], year: int
+) -> np.ndarray:
+    """Per-(region,sector) productivity multiplier θ[r,i] for ``year`` (Phase 6.4 GE tier, multi
+    variant). Unlike the single-region closed/open variants, the multi CGE HAS a region dimension,
+    so a shock's region coverage IS honoured via ``applies_to(sector, region)`` — a nature
+    degradation built for one region hits only that region's sectors. Composes multiplicatively;
+    θ=1 where no shock covers (r, i); floored positive."""
+    theta = np.ones((len(regions), len(sectors)))
+    for ri, reg in enumerate(regions):
+        for si, sec in enumerate(sectors):
+            for s in prod_shocks:
+                if s.applies_to(sec, reg):
+                    theta[ri, si] *= 1.0 + s._path_level_at(year, s.delta)
+    return np.clip(theta, 1e-6, None)
+
+
 def _infer_sectors(sam: SAM, factors: list[str]) -> list[str]:
     """Sectors = SAM accounts that are neither factors nor institutions (household/government)."""
     non_factor = [a for a in sam.accounts if a not in factors]
@@ -1834,6 +1838,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     _validate_open_sam(sam, sectors, factors)
 
     carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+    prod_shocks = [s for s in shocks if isinstance(s, ProductivityShock)]
     # Two cost sources: an EFFECTIVE per-year cost from the IO path (already price-included — used
     # verbatim, review P0), or a supplied dimensionless share re-scaled by the price per year.
     io_backed = bool(data.get("_io_backed"))
@@ -1987,7 +1992,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         lo[-1] = -1.0  # Sf signed, well-scaled floor (a surplus is Sf<0)
         return lo
 
-    def _solve_year(cc):
+    def _solve_year(cc, theta=None):
         sol = solve(
             lambda z: MO.residuals(
                 cal,
@@ -1997,6 +2002,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
                 inv_closure=inv_closure,
                 gov_closure=gov_closure,
                 trade_closure=trade_closure,
+                productivity=theta,
             ),
             _guess(),
             lower=_lower(),
@@ -2019,10 +2025,20 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             inv_closure=inv_closure,
             gov_closure=gov_closure,
             foreign_savings=fs,
+            productivity=theta,
         )
         return sol, st
 
-    _bsol, base = _solve_year(np.zeros(ns))
+    # Per-year per-sector productivity multiplier θ (Phase 6.4 GE tier). The open economy is
+    # single-region (home + ROW), so a ProductivityShock is matched by SECTOR — same as the closed
+    # variant. None when no productivity shock, so the run is byte-identical to a pure carbon run.
+    theta_by_year = (
+        {y: _productivity_by_sector(prod_shocks, sectors, y) for y in years}
+        if prod_shocks
+        else None
+    )
+
+    _bsol, base = _solve_year(np.zeros(ns))  # benchmark: θ=None by construction
     # Universal post-calibration replication gate (review P1): refuse a balanced-but-unsupported SAM
     # whose benchmark does not reproduce the calibrated quantities (see _assert_open_replicates).
     _assert_open_replicates(cal, base, _bsol.x, trade_closure=trade_closure)
@@ -2038,7 +2054,8 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             tau = sum(s.price_at(year) for s in carbon_shocks)
             cc = tau * share
         cc_by_year[year] = cc
-        sol, st = _solve_year(cc)
+        theta = theta_by_year[year] if theta_by_year is not None else None
+        sol, st = _solve_year(cc, theta)
         resid_max = max(resid_max, sol.residual_norm)
         backends.add(sol.backend)
         statuses.add(sol.status)
@@ -2467,6 +2484,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     eff_by_year = data.get("_effective_cc_by_year")
 
     carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+    prod_shocks = [s for s in shocks if isinstance(s, ProductivityShock)]
     for s in carbon_shocks:
         # On the supplied-SAM path the multi CGE cannot select gases/coverage (the share is a bare
         # per-(region,sector) number); the IO path HAS honoured them while building eff_by_year.
@@ -2537,21 +2555,41 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         energy_elasticities=data.get("energy_elasticities"),
     )
 
-    def _solve_year(cc):
+    def _solve_year(cc, theta=None):
         sol = solve(
             lambda z: MM.residuals(
-                cal, z, carbon_cost=cc, recycling=recycling, inv_closure=inv_closure
+                cal,
+                z,
+                carbon_cost=cc,
+                recycling=recycling,
+                inv_closure=inv_closure,
+                productivity=theta,
             ),
             MM.initial_guess(cal),
             prefer="scipy",
         )
         # strict=True enforces the recycling k<1 feasibility guard on the ACCEPTED equilibrium.
         st = MM.unpack_state(
-            cal, sol.x, carbon_cost=cc, recycling=recycling, strict=True, inv_closure=inv_closure
+            cal,
+            sol.x,
+            carbon_cost=cc,
+            recycling=recycling,
+            strict=True,
+            inv_closure=inv_closure,
+            productivity=theta,
         )
         return sol, st
 
-    _bsol, base = _solve_year(np.zeros((nr, ns)))
+    # Per-year per-(region,sector) productivity multiplier θ (Phase 6.4 GE tier). The multi CGE has
+    # a region dimension, so a ProductivityShock's region coverage IS honoured (a nature
+    # degradation built for one region hits only its sectors). None ⇒ byte-identical to a pure run.
+    theta_by_year = (
+        {y: _productivity_by_region_sector(prod_shocks, regions, sectors, y) for y in years}
+        if prod_shocks
+        else None
+    )
+
+    _bsol, base = _solve_year(np.zeros((nr, ns)))  # benchmark: θ=None
     # Universal post-calibration replication gate (review P1): refuse a balanced-but-unsupported SAM
     # whose benchmark does not reproduce the calibrated quantities.
     _assert_multi_replicates(cal, base, _bsol.x)
@@ -2568,7 +2606,8 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             tau = sum(s.price_at(year) for s in carbon_shocks)
             cc = tau * share
         cc_by_year[year] = cc
-        sol, st = _solve_year(cc)
+        theta = theta_by_year[year] if theta_by_year is not None else None
+        sol, st = _solve_year(cc, theta)
         resid_max = max(resid_max, sol.residual_norm)
         backends.add(sol.backend)
         statuses.add(sol.status)

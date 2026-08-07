@@ -1,9 +1,9 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.10.0)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.11.0)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
   open economy Armington/CET + CES value added + elasticity sweeps) + 6.4 (productivity/nature GE
-  tier, closed variant — §4i)
+  tier, all three variants — §4i)
 - **Capabilities:** general_equilibrium, prices, volumes
 - **Status:** implemented as the **correctness-first pilot** with **revenue recycling**, in three
   variants sharing one engine: a **closed** single-region economy, an **open** economy (Armington
@@ -528,7 +528,7 @@ savings pool to crowd out); rejected loudly otherwise. Endogenous adaptation (ch
 on cost-benefit grounds) is out of scope — this is an exogenous scenario input. The open/multi
 generalisation is a documented follow-up.
 
-### 4i. Productivity shocks: the nature/GE tier (Phase 6.4 — closed variant)
+### 4i. Productivity shocks: the nature/GE tier (Phase 6.4 — all variants)
 
 The engine consumes a **`ProductivityShock`** as a per-sector **Hicks-neutral productivity
 multiplier** $\theta_i$ (the shock's $1 + \text{delta}$; a nature degradation translated by the
@@ -550,14 +550,23 @@ not just the first-round quantity hit Engine 2 reports.
 
 **Correctness.** $\theta_i = 1$ (no shock, the default) makes every $1/\theta_i$ factor exactly $1$,
 so the residual vector is **bit-for-bit identical** to the pre-6.4 model — verified over random
-$(p, w)$ points, not merely asserted — and the replication / homogeneity / Walras battery is
-untouched. $\theta$ is floored at a small positive value so a fully-degraded sector cannot drive the
-unit cost to a non-finite price. The shock is matched by **sector only** (the closed model is
-single-region, so the shock's region coverage — which `build_nature_shocks` sets to the build
-region — is not meaningful here); where it bites, a `productivity_change` output row is emitted.
-**Closed variant only:** the open/multi variants **reject** a `ProductivityShock` with a pointer to
-the closed variant / Engine 2 rather than silently ignoring it — GE-mode open/multi consumption is a
-documented follow-up.
+$(p, w)$ points in each variant's test file, not merely asserted — and the replication / homogeneity
+/ Walras battery is untouched. $\theta$ is floored at a small positive value so a fully-degraded
+sector cannot drive the unit cost to a non-finite price.
+
+**All three variants** consume the shock, threading $\theta$ through the same choke point (each
+variant's `_intermediate_coeffs`/`_leontief_and_va` and zero-profit residual):
+
+- **Closed** and **open** (single home region): matched by **sector** — a shock's region coverage
+  (which `build_nature_shocks` sets to the build region) is not meaningful against a single-region
+  SAM. The open variant additionally lets demand substitute toward **imports** (Armington) and
+  reallocate CET output, so a degraded sector loses more share than under the closed variant.
+- **Multi-region**: the region dimension IS present, so the shock's **region coverage is honoured**
+  (`applies_to(sector, region)`) — a degradation built for one region hits only that region's
+  sectors, and production **leaks** to the un-degraded regions (the nature analogue of carbon
+  leakage).
+
+Where it bites, a `productivity_change` output row is emitted.
 
 ### 4h. Standard scenario output schema (review round 12, 2026-07-27 — all variants)
 
