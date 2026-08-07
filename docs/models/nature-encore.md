@@ -1,4 +1,4 @@
-# Model description: Nature exposure via ENCORE (Phase 6.1–6.4)
+# Model description: Nature exposure via ENCORE (Phase 6.1–6.5)
 
 - **Implements:** `cge.nature` (`encore.py`, `concord.py`, `exposure.py`, `translate.py`,
   `fixture.py`); `ProductivityShock` consumption in `cge.engines.partial_eq` (Engine 2) and in all
@@ -9,10 +9,12 @@
   partial-equilibrium (Engine 2) and general-equilibrium (Engine 3, all variants) tiers
 - **Status:** implemented and tested on the toy economy with an **illustrative, published-sourced
   ENCORE fixture**. The real ENCORE knowledge base (registration-gated) drops into the same
-  `EncoreDependencies` contract via `load_encore_csv` with **no code change**. 6.1–6.4 are done
-  (ingestion, concordance, exposure, and the nature→productivity translation consumed by Engine 2
-  and by all three CGE variants); the GUI heatmaps / nature-scenario runner (6.5) and a curated full
-  ENCORE↔EXIOBASE concordance are the remaining Phase-6 sub-tasks.
+  `EncoreDependencies` contract via `load_encore_csv` with **no code change**. **Phase 6 is
+  complete** (6.1–6.5): ingestion, concordance, exposure, the nature→productivity translation
+  consumed by Engine 2 and all three CGE variants, and the nature GUI page (`gui/pages/nature.py`:
+  dependency heatmap, supply-chain drill-down, nature-scenario runner). A curated full
+  ENCORE↔EXIOBASE concordance (replacing the illustrative fixture) is the only remaining nature
+  enhancement, tracked under Phase 6b.
 
 > **Honest scope.** Every dependency rating shipped here is a small hand-entered subset seeded from
 > the central-bank literature ([vanToor2020], [ENCORE]) and **labelled illustrative** in its
@@ -181,8 +183,7 @@ not just asserted).
 
 **Scope.** Engine 2 gives the direct/first-round supply hit through a fixed-technology quantity
 system; all three CGE variants give the general-equilibrium response (single-region, open-economy
-carbon-leakage-style, and true multi-region leakage). GUI heatmaps and a nature-scenario runner
-(Phase 6.5) are the remaining Phase-6 work.
+carbon-leakage-style, and true multi-region leakage).
 
 ## 8. Validation
 
@@ -200,7 +201,25 @@ consumption (a −20% hit raises the degraded sector's price / lowers its output
 (`tests/test_cge_open.py`); and the multi-region **region-scoped leakage** — a hit on region N's
 bread cuts N's output while S's rises (`tests/test_cge_multi.py`). Each variant's test file also
 asserts the **exact byte-identical residual at $\theta = 1$** over random price/wage points — the
-guarantee that replication/homogeneity/Walras are untouched.
+guarantee that replication/homogeneity/Walras are untouched. The **GUI** (§9) is covered by
+`tests/test_gui_service.py` (the Streamlit-free `nature_exposure`/`run_nature` façade) and a headless
+render smoke test in `tests/test_gui_pages.py`.
+
+## 9. GUI (Phase 6.5)
+
+The **Nature** page (`cge/gui/pages/nature.py`, within the P3 Streamlit framework) exposes all of the
+above interactively, driven by `GuiService.nature_exposure`/`run_nature` (a Streamlit-free façade so
+the logic is unit-tested independent of the UI):
+
+- **Dependency heatmap** — the good × ecosystem-service exposure matrix (§5), toggling direct-only
+  vs. direct+upstream and the `weighted_mean`/`max` aggregation rule, on a green→red gradient.
+- **Supply-chain drill-down** — for one good, its direct dependency on each service vs. the total
+  once inherited-from-inputs exposure is added, so the upstream channel is visible per good.
+- **Nature-scenario runner** — pick services to degrade and by how much, choose the economic engine
+  (partial-equilibrium or GE), and run the whole exposure→`NatureStress`→`ProductivityShock`→engine
+  chain end-to-end, charting the per-good output response.
+
+The page operates on the illustrative ENCORE fixture and labels it as such at the top.
 
 ## References
 

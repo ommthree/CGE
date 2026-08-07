@@ -108,6 +108,51 @@ class GuiService:
             scenario, data_source=data_source, store=self.store, data_overrides=data_overrides
         )
 
+    # -- nature (Phase 6.5) ----------------------------------------------------
+    def nature_exposure(self, *, rule: str = "weighted_mean"):
+        """Ecosystem-service dependency exposure for the illustrative ENCORE fixture (Phase 6).
+
+        Returns ``(direct, total, io)``: ``direct`` is each good's own dependency on each service
+        (goods × service), ``total`` adds the upstream supply-chain propagation under ``rule``
+        (``weighted_mean`` noisy-OR or ``max`` worst-in-chain), and ``io`` is the toy IOSystem the
+        propagation ran through (so a drill-down page can show the upstream chain). The ENCORE data
+        is a small hand-entered, published-sourced **illustrative fixture** — the real gated export
+        drops into the same contract with no code change (see docs/models/nature-encore.md)."""
+        from cge.nature.concord import broadcast_to_goods, sector_scores
+        from cge.nature.exposure import compute_exposure
+        from cge.nature.fixture import encore_fixture, toy_encore_concordance
+        from cge.validation.toy import toy_economy
+
+        io, _sat = toy_economy()
+        ssc = sector_scores(encore_fixture(), toy_encore_concordance(), io.sectors.labels)
+        direct = broadcast_to_goods(ssc, list(io.A.columns))
+        total, _ = compute_exposure(io.A, direct, rule=rule)  # type: ignore[arg-type]
+        return direct, total, io
+
+    def nature_services(self) -> list[str]:
+        """The ecosystem services carried by the illustrative ENCORE fixture."""
+        _direct, total, _io = self.nature_exposure()
+        return list(total.columns)
+
+    def run_nature(
+        self, *, stresses: list[tuple[str, float]], engine: str = "partial_eq", years: list[int]
+    ) -> ResultSet:
+        """Run a nature-degradation scenario end-to-end: ``stresses`` (list of
+        ``(service, severity)``) → ``NatureStress`` → per-good ``ProductivityShock`` scaled by the
+        fixture's exposure scores → the chosen economic engine → a ``ResultSet``. This is the
+        Phase-6 nature-scenario runner: a scenario reads in *nature* terms (a service degrades) and
+        the nature→economics translation is the auditable ``build_nature_shocks`` step."""
+        from cge.contracts.shocks import NatureStress
+        from cge.nature.fixture import encore_fixture, toy_encore_concordance
+        from cge.nature.translate import build_nature_shocks
+        from cge.validation.toy import toy_economy
+
+        io, sat = toy_economy()
+        ns = [NatureStress(service=s, severity=float(sev)) for s, sev in stresses]
+        shocks = build_nature_shocks(ns, io, encore_fixture(), toy_encore_concordance())
+        eng = registry.get(engine)
+        return eng.run(data={"IOSystem": io, "SatelliteAccount": sat}, shocks=shocks, years=years)
+
     def start_build(self, *, test: bool = True, year: int = 2019) -> subprocess.Popen:
         """Kick off a data build as a background subprocess so a long download doesn't block
         the UI. Returns the Popen; the caller streams ``stdout``. (Job wrapper, task 3.4.)"""

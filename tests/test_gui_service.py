@@ -213,3 +213,51 @@ def test_multi_region_carbon_revenue_is_share_of_own_regional_gdp():
     d = result.data
     emitted = d[(d["variable"] == "carbon_revenue") & (d["region"] == "N")]["value"].iloc[0]
     assert abs(emitted - expected_share_of_own_gdp) < 1e-6
+
+
+# -- Nature service methods (Phase 6.5) ---------------------------------------------------------
+def test_service_nature_exposure_is_goods_by_service_and_total_ge_direct(tmp_path):
+    """nature_exposure returns direct and total (goods × service) exposure in [0,1], with the
+    upstream-inclusive total never below the direct (the E ≥ D invariant the GUI heatmap shows)."""
+    svc = _service(tmp_path)
+    direct, total, io = svc.nature_exposure()
+    assert list(direct.index) == list(total.index) == list(io.A.columns)
+    assert (total.to_numpy() >= direct.to_numpy() - 1e-12).all()  # total ≥ direct everywhere
+    assert total.to_numpy().min() >= 0.0 and total.to_numpy().max() <= 1.0
+    # agriculture is fully water-dependent in the fixture → surface_water exposure at the ceiling.
+    assert total.loc["A:agriculture", "surface_water"] == 1.0
+
+
+def test_service_nature_both_rules_selectable_and_respect_total_ge_direct(tmp_path):
+    """Both aggregation rules the heatmap toggle exposes ('weighted_mean' noisy-OR and 'max'
+    worst-in-chain) are selectable and each satisfies the total ≥ direct invariant. The two rules
+    genuinely differ (the toggle is not cosmetic) — noisy-OR accumulates several upstream
+    dependencies, so it can exceed the single worst-in-chain 'max' link."""
+    svc = _service(tmp_path)
+    direct, mean_total, _io = svc.nature_exposure(rule="weighted_mean")
+    _d2, max_total, _io2 = svc.nature_exposure(rule="max")
+    assert (mean_total.to_numpy() >= direct.to_numpy() - 1e-9).all()
+    assert (max_total.to_numpy() >= direct.to_numpy() - 1e-9).all()
+    assert not mean_total.equals(max_total)  # the rule choice actually changes the result
+
+
+def test_service_run_nature_end_to_end_partial_eq(tmp_path):
+    """run_nature threads the whole chain (exposure → NatureStress → ProductivityShock → engine) and
+    every good loses output under a degradation; agriculture (fully exposed) loses more than
+    manufacturing."""
+    svc = _service(tmp_path)
+    result = svc.run_nature(stresses=[("surface_water", 0.4)], engine="partial_eq", years=[2020])
+    d = result.data
+    vol = d[(d["variable"] == "volume_change") & (d["scenario"] == "central")]
+    v = {(r.region, r.sector): r.value for r in vol.itertuples()}
+    assert v[("A", "agriculture")] < v[("A", "manufacturing")] < 0.0
+    result.validate_schema()
+
+
+def test_service_run_nature_end_to_end_cge(tmp_path):
+    """The nature scenario also runs through the general-equilibrium engine (the toy economy is
+    2-region, so cge_static dispatches to the multi variant and consumes the ProductivityShocks)."""
+    svc = _service(tmp_path)
+    result = svc.run_nature(stresses=[("surface_water", 0.4)], engine="cge_static", years=[2020])
+    assert (result.data["variable"] == "volume_change").any()
+    result.validate_schema()
