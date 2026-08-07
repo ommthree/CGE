@@ -1,8 +1,9 @@
 # Model description: Engine 3 — static CGE (pilot)
 
-- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.9.15)
+- **Implements:** `cge.engines.cge_static` (`CGEStaticEngine`, v0.10.0)
 - **Roadmap phase:** 5 (pilot: 5.0 solver + 5.1 SAM build + 5.2a model + 5.3 revenue recycling;
-  open economy Armington/CET + CES value added + elasticity sweeps)
+  open economy Armington/CET + CES value added + elasticity sweeps) + 6.4 (productivity/nature GE
+  tier, closed variant — §4i)
 - **Capabilities:** general_equilibrium, prices, volumes
 - **Status:** implemented as the **correctness-first pilot** with **revenue recycling**, in three
   variants sharing one engine: a **closed** single-region economy, an **open** economy (Armington
@@ -526,6 +527,37 @@ manifest records the earmark. **Closed variant, `savings_driven` only** (adaptat
 savings pool to crowd out); rejected loudly otherwise. Endogenous adaptation (chosen by the model
 on cost-benefit grounds) is out of scope — this is an exogenous scenario input. The open/multi
 generalisation is a documented follow-up.
+
+### 4i. Productivity shocks: the nature/GE tier (Phase 6.4 — closed variant)
+
+The engine consumes a **`ProductivityShock`** as a per-sector **Hicks-neutral productivity
+multiplier** $\theta_i$ (the shock's $1 + \text{delta}$; a nature degradation translated by the
+ENCORE exposure engine, see `docs/models/nature-encore.md` §7, gives $\theta_i < 1$). A sector with
+productivity $\theta_i$ needs $1/\theta_i$ of its **entire** input bundle — intermediates, value
+added, and the per-output carbon wedge — to make one unit of output, so its zero-profit condition
+becomes
+
+$$ p_i \;=\; \frac{\text{unit cost}_i}{\theta_i} \;=\; \frac{\sum_j a_{ji}\,p_j + \text{va}_i\,pv_i + cc_i}{\theta_i}. $$
+
+Scaling the input column by $1/\theta_i$ at that single point is what keeps the whole system
+consistent: the $(I - A)^{-1}$ inverse, factor demand $F$, and goods-market clearing all read the
+scaled requirements, so a less-productive sector draws proportionally more inputs and factors per
+unit output with no separate bookkeeping. The general-equilibrium consequence is the point of doing
+this in the CGE rather than only in Engine 2: the degraded sector's **price rises**, its **output
+falls**, and — because factor and product markets re-clear — **relative prices and factor demands
+adjust economy-wide** (the degraded sector's suppliers and its competitors-for-factors all move),
+not just the first-round quantity hit Engine 2 reports.
+
+**Correctness.** $\theta_i = 1$ (no shock, the default) makes every $1/\theta_i$ factor exactly $1$,
+so the residual vector is **bit-for-bit identical** to the pre-6.4 model — verified over random
+$(p, w)$ points, not merely asserted — and the replication / homogeneity / Walras battery is
+untouched. $\theta$ is floored at a small positive value so a fully-degraded sector cannot drive the
+unit cost to a non-finite price. The shock is matched by **sector only** (the closed model is
+single-region, so the shock's region coverage — which `build_nature_shocks` sets to the build
+region — is not meaningful here); where it bites, a `productivity_change` output row is emitted.
+**Closed variant only:** the open/multi variants **reject** a `ProductivityShock` with a pointer to
+the closed variant / Engine 2 rather than silently ignoring it — GE-mode open/multi consumption is a
+documented follow-up.
 
 ### 4h. Standard scenario output schema (review round 12, 2026-07-27 — all variants)
 

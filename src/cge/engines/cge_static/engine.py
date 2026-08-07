@@ -59,12 +59,12 @@ from cge.contracts.data_objects import SAM, IOSystem, SatelliteAccount
 from cge.contracts.engine import Capability, EngineMeta, registry
 from cge.contracts.provenance import RunManifest, content_hash, data_source_id, input_identity
 from cge.contracts.results import ResultSet
-from cge.contracts.shocks import CarbonPrice, Shock
+from cge.contracts.shocks import CarbonPrice, ProductivityShock, Shock
 from cge.engines.cge_static import model as M
 from cge.engines.cge_static.calibrate import calibrate
 from cge.engines.cge_static.solver import solve
 
-VERSION = "0.9.15"
+VERSION = "0.10.0"
 
 # Default factor accounts for the pilot SAM (capital, labour). The engine treats every SAM
 # account that is neither a factor nor an institution as a sector.
@@ -367,6 +367,14 @@ ASSUMPTIONS = {
         "those variants' own scope text."
     ),
     "carbon_price": "per-unit emissions cost wedge τ·e[i] in the zero-profit condition",
+    "productivity": (
+        "per-sector Hicks-neutral productivity multiplier θ[i] (Phase 6.4 GE tier): a nature "
+        "degradation, translated by the exposure engine into ProductivityShocks, divides sector "
+        "i's "
+        "zero-profit unit cost by θ[i] (θ<1 raises its price and reallocates production in the GE "
+        "solve). θ=1 (no shock) is byte-identical to a pure carbon run. Closed variant; the open/"
+        "multi variants are a follow-up."
+    ),
     "revenue_recycling": (
         "carbon revenue R = Σ τ·e[i]·X[i] is returned to the household (lump_sum/labour_tax_cut). "
         "Established: CD welfare falls only slightly under a recycled carbon price, and at those "
@@ -596,7 +604,7 @@ class CGEStaticEngine:
         version=VERSION,
         description="Static CGE pilot: GE price + volume response with factor-market feedback.",
         capabilities=[Capability.GENERAL_EQUILIBRIUM, Capability.PRICES, Capability.VOLUMES],
-        supported_shocks=["carbon_price"],
+        supported_shocks=["carbon_price", "productivity"],
         # Accepts either a supplied SAM (toy pilot) or an IOSystem (a real build, from which the
         # SAM is built + quality-gated). Validated in _resolve_sam, so no hard required_data here.
         required_data=[],
@@ -653,6 +661,19 @@ class CGEStaticEngine:
             io = data.get("IOSystem")
             if io is not None:
                 io.assert_integrity()
+
+        # ProductivityShock (Phase 6.4 GE tier) is consumed by the CLOSED variant only. Rather than
+        # let the open/multi variants silently ignore it — a nature scenario would then report a
+        # zero-impact run with no warning, the exact "silently does nothing" failure this engine
+        # rejects elsewhere — reject it up front on those variants with a pointer to the closed one.
+        if variant != "closed" and any(isinstance(s, ProductivityShock) for s in shocks):
+            raise ValueError(
+                f"the {variant!r} CGE variant does not yet consume ProductivityShock (Phase 6.4 "
+                "wired the closed single-region variant only); running it here would silently "
+                "ignore the nature shock. Use the closed variant, or apply the shock via Engine 2 "
+                "(partial_eq), which consumes ProductivityShock in every configuration. GE-mode "
+                "open/multi consumption is a documented follow-up."
+            )
 
         if variant == "multi":
             if supplied_sam is not None and _is_multi_region_sam(supplied_sam):
@@ -771,6 +792,7 @@ class CGEStaticEngine:
         ns = len(sectors)
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
+        prod_shocks = [s for s in shocks if isinstance(s, ProductivityShock)]
         _validate_cge_shock_controls(inp, carbon_shocks)
         # One government ⇒ one recycling rule; a scenario cannot mix modes.
         modes = {s.revenue_recycling for s in carbon_shocks} or {"none"}
@@ -799,6 +821,16 @@ class CGEStaticEngine:
 
         # Per-year carbon cost share (dimensionless, gas/coverage/units handled like Engine 1).
         cc_by_year = {y: _carbon_cost_by_sector(inp, carbon_shocks, y) for y in years}
+        # Per-year per-sector productivity multiplier θ (Phase 6.4 GE tier). A nature degradation,
+        # translated by the exposure engine into ProductivityShocks, enters the CGE here as a
+        # supply-side technology hit that the general-equilibrium solve responds to (relative-price
+        # and factor reallocation) — not just a first-round quantity change like Engine 2. None when
+        # no productivity shock is present, so the run is byte-identical to a pure carbon run.
+        theta_by_year = (
+            {y: _productivity_by_sector(prod_shocks, inp.sectors, y) for y in years}
+            if prod_shocks
+            else None
+        )
         emissions_priced = any(np.any(cc != 0.0) for cc, _ in cc_by_year.values())
         # Price-FREE emission intensity (review P1 round 14) — computed once, year-independent, so
         # covered emissions are emitted for EVERY year including a zero-price year.
@@ -856,6 +888,7 @@ class CGEStaticEngine:
         floor_ever_bound = False
         for year in years:
             cc, _prov = cc_by_year[year]
+            theta = theta_by_year[year] if theta_by_year is not None else None
             sol, floor_applied = _solve(
                 cal,
                 carbon_cost=cc,
@@ -866,6 +899,7 @@ class CGEStaticEngine:
                 labour_floor=labour_floor,
                 adapt_amount=adapt_amount,
                 adapt_gamma=adapt_gamma,
+                productivity=theta,
             )
             floor_ever_bound = floor_ever_bound or floor_applied is not None
             backends.add(sol.backend)
@@ -886,6 +920,7 @@ class CGEStaticEngine:
                 labour_floor=floor_applied,
                 adapt_amount=adapt_amount,
                 adapt_gamma=adapt_gamma,
+                productivity=theta,
             )
             _emit(records, cal, base, st, year, cc=cc, intensity=emission_intensity)
 
@@ -1221,6 +1256,27 @@ def _carbon_cost_by_sector(
     return cc, prov
 
 
+def _productivity_by_sector(
+    prod_shocks: list[ProductivityShock], sectors: list[str], year: int
+) -> np.ndarray:
+    """Per-sector Hicks-neutral productivity multiplier θ[i] for ``year`` (Phase 6.4 GE tier).
+
+    A ``ProductivityShock(delta)`` covering sector *i* multiplies θ[i] by ``1 + delta`` (delta < 0
+    for a nature degradation; multiple shocks on one sector compose multiplicatively, so two −10%
+    hits give 0.81). θ is clipped at a small positive floor so a fully-degraded sector cannot make
+    the zero-profit unit cost blow up to a non-finite price. A sector with no shock has θ = 1
+    (byte-identical to a pure carbon run — no productivity channel). The closed CGE is
+    single-region, so a shock is matched by SECTOR only: its region coverage (set by
+    ``build_nature_shocks`` to
+    the single build region) is not meaningful against the region-less closed SAM."""
+    theta = np.ones(len(sectors))
+    for i, sec in enumerate(sectors):
+        for s in prod_shocks:
+            if not s.coverage_sectors or sec in s.coverage_sectors:
+                theta[i] *= 1.0 + s._path_level_at(year, s.delta)
+    return np.clip(theta, 1e-6, None)
+
+
 def _infer_sectors(sam: SAM, factors: list[str]) -> list[str]:
     """Sectors = SAM accounts that are neither factors nor institutions (household/government)."""
     non_factor = [a for a in sam.accounts if a not in factors]
@@ -1245,6 +1301,7 @@ def _solve(
     labour_floor=None,
     adapt_amount=0.0,
     adapt_gamma=None,
+    productivity=None,
 ):
     # prefer='scipy' explicitly: the CGE model residual is numeric-only (it evaluates the Leontief
     # inverse and Cobb-Douglas cost functions with numpy), so it cannot build a symbolic Pyomo
@@ -1271,6 +1328,7 @@ def _solve(
             labour_floor=floor,
             adapt_amount=adapt_amount,
             adapt_gamma=adapt_gamma,
+            productivity=productivity,
         )
 
     sol = solve(lambda z: _resid(z, None), M.initial_guess(cal), prefer="scipy")

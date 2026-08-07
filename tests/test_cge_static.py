@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from cge.contracts.engine import registry
-from cge.contracts.shocks import CarbonPrice
+from cge.contracts.shocks import CarbonPrice, ProductivityShock
 from cge.data.sam import toy_sam
 from cge.data.sam.balance import imbalance, is_balanced, ras_balance
 from cge.engines.cge_static import model as M
@@ -2206,5 +2206,82 @@ def test_engine_deficit_financed_rejected_without_government():
                 "gov_closure": "deficit_financed",
             },
             shocks=[CarbonPrice(price=0.3)],
+            years=[2020],
+        )
+
+
+# -- Productivity shock: the GE nature tier (Phase 6.4) -----------------------------------------
+def test_productivity_theta_one_is_byte_identical_residual():
+    """The load-bearing correctness guarantee: a θ=1 productivity vector leaves the residual
+    bit-for-bit unchanged, so benchmark replication / homogeneity / Walras are untouched. Verified
+    at many random (p, w) points, with a carbon cost present, so the whole zero-profit / clearing /
+    numéraire vector is exercised."""
+    cal = _cal()
+    ns, nf = len(cal.sectors), len(cal.factors)
+    cc = np.array([0.03, 0.01])
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        z = np.concatenate([0.5 + rng.random(ns), 0.5 + rng.random(nf)])
+        r_none = M.residuals(cal, z, carbon_cost=cc, recycling="lump_sum")
+        r_ones = M.residuals(
+            cal, z, carbon_cost=cc, recycling="lump_sum", productivity=np.ones(ns)
+        )
+        assert np.array_equal(r_none, r_ones)
+
+
+def test_productivity_shock_raises_degraded_price_lowers_its_output():
+    """A −20% productivity hit on BRD (a Hicks-neutral supply shock) makes BRD dearer to produce,
+    so in the GE solve BRD's price rises and its output falls; the shock genuinely moves the
+    residual (the channel is live), unlike a θ=1 no-op."""
+    eng = registry.get("cge_static")
+    base = eng.run(data={"SAM": toy_sam()}, shocks=[], years=[2020])
+    shocked = eng.run(
+        data={"SAM": toy_sam()},
+        shocks=[ProductivityShock(delta=-0.2, coverage_sectors=["BRD"])],
+        years=[2020],
+    )
+
+    def _by_sector(res, var):
+        d = res.data
+        rows = d[(d["variable"] == var) & (d["scenario"] == "central")]
+        return {r.sector: r.value for r in rows.itertuples()}
+
+    assert _by_sector(base, "price_change") == pytest.approx({"BRD": 0.0, "MIL": 0.0})
+    assert _by_sector(base, "volume_change") == pytest.approx({"BRD": 0.0, "MIL": 0.0})
+    p = _by_sector(shocked, "price_change")
+    v = _by_sector(shocked, "volume_change")
+    assert p["BRD"] > 0.0  # the degraded sector's output price rises
+    assert v["BRD"] < 0.0  # and its output falls
+    shocked.validate_schema()  # schema-valid ResultSet end-to-end
+
+
+def test_productivity_shock_matches_by_sector_ignoring_region():
+    """build_nature_shocks tags each ProductivityShock with the (single) build region; the closed
+    single-region CGE must still apply it, matching by sector and ignoring the region coverage —
+    otherwise a nature scenario built off an IOSystem would silently do nothing here."""
+    eng = registry.get("cge_static")
+    ps = ProductivityShock(delta=-0.2, coverage_sectors=["BRD"], coverage_regions=["EU"])
+    res = eng.run(data={"SAM": toy_sam()}, shocks=[ps], years=[2020])
+    d = res.data
+    is_brd_vol = (d["variable"] == "volume_change") & (d["sector"] == "BRD")
+    brd = d[is_brd_vol & (d["scenario"] == "central")]
+    assert float(brd.iloc[0]["value"]) < 0.0  # applied despite the region tag not matching
+
+
+def test_productivity_shock_registered_as_supported():
+    assert "productivity" in registry.get("cge_static").meta.supported_shocks
+
+
+def test_productivity_shock_rejected_on_open_variant():
+    """The open/multi variants don't consume ProductivityShock yet — they must REJECT it (with a
+    pointer to the closed variant / Engine 2), not silently ignore it and report a zero-impact run.
+    """
+    from cge.data.sam import toy_open_sam
+
+    eng = registry.get("cge_static")
+    with pytest.raises(ValueError, match="does not yet consume ProductivityShock"):
+        eng.run(
+            data={"SAM": toy_open_sam()},
+            shocks=[ProductivityShock(delta=-0.2, coverage_sectors=["BRD"])],
             years=[2020],
         )

@@ -163,3 +163,104 @@ def test_exposure_unknown_rule_rejected():
     io, direct = _fixture_direct()
     with pytest.raises(ValueError, match="unknown aggregation rule"):
         compute_exposure(io.A, direct, rule="median")  # type: ignore[arg-type]
+
+
+# -- 6.4 NatureStress → ProductivityShock translation + engine consumption --------------------
+def test_nature_stress_translates_to_productivity_scaled_by_exposure():
+    """A NatureStress on a service degrades each good's productivity in proportion to its exposure:
+    a fully-exposed good (E=1) loses the full severity; a less-exposed good loses proportionally
+    less. Delta = Π(1 − σ·E) − 1 ≤ 0, targeting the right good."""
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.translate import nature_to_productivity
+
+    io, direct = _fixture_direct()
+    exposure, _ = compute_exposure(io.A, direct, rule="weighted_mean")
+    ns = NatureStress(service="surface_water", severity=0.5)
+    shocks = nature_to_productivity([ns], exposure)
+    by_good = {(s.coverage_regions[0], s.coverage_sectors[0]): s.delta for s in shocks}
+    # Agriculture is fully water-dependent (E=1) → loses exactly 50%.
+    assert by_good[("A", "agriculture")] == pytest.approx(-0.5)
+    # Manufacturing's water exposure < 1 → loses less than 50% (but still bites via upstream).
+    assert -0.5 < by_good[("A", "manufacturing")] < 0.0
+
+
+def test_nature_translation_rejects_unknown_service():
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.translate import nature_to_productivity
+
+    io, direct = _fixture_direct()
+    exposure, _ = compute_exposure(io.A, direct)
+    with pytest.raises(ValueError, match="not in the exposure matrix"):
+        nature_to_productivity([NatureStress(service="unicorns", severity=0.3)], exposure)
+
+
+def test_build_nature_shocks_runs_the_full_chain():
+    """The end-to-end convenience: ENCORE + concordance + IO → NatureStress → ProductivityShocks."""
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.translate import build_nature_shocks
+
+    io, _ = toy_economy()
+    shocks = build_nature_shocks(
+        [NatureStress(service="surface_water", severity=0.5)],
+        io,
+        encore_fixture(),
+        toy_encore_concordance(),
+    )
+    assert shocks and all(s.delta <= 0 for s in shocks)
+
+
+def test_partial_eq_consumes_productivity_shock_as_supply_hit():
+    """Engine 2 now consumes a ProductivityShock: a −20% productivity hit on one good cuts that
+    good's output ~20% and emits a productivity_change row, while an unshocked good is unchanged
+    (and a run with no productivity shock is byte-identical to before — no productivity_change)."""
+    import cge.engines  # noqa: F401  (register engines)
+    from cge.contracts.engine import registry
+    from cge.contracts.shocks import ProductivityShock
+
+    io, sat = toy_economy()
+    eng = registry.get("partial_eq")
+    ps = ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["A"])
+    res = eng.run(data={"IOSystem": io, "SatelliteAccount": sat}, shocks=[ps], years=[2020])
+    d = res.data
+    vol = d[(d["variable"] == "volume_change") & (d["scenario"] == "central")]
+    v = {(r.region, r.sector): r.value for r in vol.itertuples()}
+    assert v[("A", "agriculture")] == pytest.approx(-0.2, abs=1e-9)  # direct supply hit
+    assert v[("B", "agriculture")] == pytest.approx(0.0, abs=1e-9)  # region-scoped: B unaffected
+    prod = d[d["variable"] == "productivity_change"]
+    assert len(prod) == 1 and prod.iloc[0]["value"] == pytest.approx(-0.2)
+
+    # No productivity shock → no productivity_change rows (byte-identical channel).
+    from cge.contracts.shocks import CarbonPrice
+
+    res2 = eng.run(
+        data={"IOSystem": io, "SatelliteAccount": sat},
+        shocks=[CarbonPrice(price=0.0)],
+        years=[2020],
+    )
+    assert (res2.data["variable"] == "productivity_change").sum() == 0
+
+
+def test_nature_scenario_end_to_end_through_engine():
+    """The Phase-6 DoD path: a NatureStress scenario runs end-to-end through an economic engine and
+    produces a schema-valid ResultSet whose volume response reflects exposure (agriculture hit
+    hardest, manufacturing least)."""
+    import cge.engines  # noqa: F401
+    from cge.contracts.engine import registry
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.translate import build_nature_shocks
+
+    io, sat = toy_economy()
+    shocks = build_nature_shocks(
+        [NatureStress(service="surface_water", severity=0.4)],
+        io,
+        encore_fixture(),
+        toy_encore_concordance(),
+    )
+    res = registry.get("partial_eq").run(
+        data={"IOSystem": io, "SatelliteAccount": sat}, shocks=shocks, years=[2020]
+    )
+    res.validate_schema()  # schema-valid ResultSet (DoD)
+    vol = res.data[(res.data["variable"] == "volume_change") & (res.data["scenario"] == "central")]
+    v = {(r.region, r.sector): r.value for r in vol.itertuples()}
+    # Every good loses output; agriculture (fully exposed) most, manufacturing least.
+    assert v[("A", "agriculture")] < v[("A", "manufacturing")] < 0.0
