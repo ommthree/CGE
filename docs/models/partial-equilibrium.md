@@ -1,9 +1,9 @@
 # Model description: Engine 2 — partial-equilibrium volume response
 
-- **Implements:** `cge.engines.partial_eq` (`PartialEqEngine`, v0.3.1)
+- **Implements:** `cge.engines.partial_eq` (`PartialEqEngine`, v0.4.0)
 - **Roadmap phase:** 4
 - **Capabilities:** prices, volumes
-- **Status:** implemented (`PartialEqEngine` v0.3.1); validated on the toy economy and internal
+- **Status:** implemented (`PartialEqEngine` v0.4.0); validated on the toy economy and internal
   identities (`partial_eq` validation suite: volume sign, bounded > −100%, Leontief propagation,
   band ordering, price pass-through, elasticity provenance). Volume magnitudes depend on
   assembled elasticities and are **indicative, not precise** (see §6). The Armington nest
@@ -19,7 +19,11 @@ carbon price raises the price of good X by Δp, roughly how much does its produc
 fall?"* — with an explicit uncertainty range.
 
 **In scope:** own-price demand response per good, propagated to production volume through the
-Leontief quantity system; low/central/high elasticity envelopes.
+Leontief quantity system; low/central/high elasticity envelopes; and a **supply-side
+`ProductivityShock`** channel (Phase 6.4) — a proportional output-capacity hit (e.g. a nature
+degradation translated by the exposure engine) composed multiplicatively on top of the demand
+response, emitted as `productivity_change` where it bites. A pure carbon/energy run is byte-identical
+to before (multiplier 1). See `docs/models/nature-encore.md` §7.
 
 **Not modelled:** Armington domestic/import substitution (specified in §4, **not implemented**
 in v1); income effects, cross-price substitution, factor-market clearing, or general-equilibrium

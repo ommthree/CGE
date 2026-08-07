@@ -42,7 +42,7 @@ from cge.contracts.provenance import (
     input_identity,
 )
 from cge.contracts.results import ResultSet
-from cge.contracts.shocks import Shock
+from cge.contracts.shocks import ProductivityShock, Shock
 from cge.data.elasticities import DEFAULT_DEMAND_ELASTICITY, default_demand_set
 from cge.engines.io_price.engine import ASSUMPTIONS as IO_ASSUMPTIONS
 from cge.engines.io_price.engine import (
@@ -53,7 +53,7 @@ from cge.engines.io_price.engine import (
     assert_io_aligned,
 )
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 # Classifications this engine can apply a demand set against by NAME (no formal concordance yet).
 # The default set is on 'coarse-sectors'; a built system's aggregated sectors are named
@@ -127,6 +127,26 @@ def _finite_demand_response(dp: np.ndarray, eps: np.ndarray) -> np.ndarray:
     return np.power(ratio, eps) - 1.0
 
 
+def _productivity_multiplier(
+    shocks: list[ProductivityShock], labels: list[str], year: int
+) -> np.ndarray:
+    """A per-good supply-side output multiplier from ``ProductivityShock``s (Phase 6.4 target).
+
+    A ``ProductivityShock(delta)`` on a good is a proportional change in its output-producing
+    capacity: a nature degradation translated by the exposure engine lands here as ``delta < 0``
+    (a −10% productivity hit → the good can supply 10% less for the same demand). The multiplier is
+    ``Π (1 + delta)`` over the shocks that cover the good (composed multiplicatively, so two −10%
+    hits give 0.81, not 0.80), clipped at 0 (a good cannot have negative output). Goods with no
+    productivity shock get 1.0 (unaffected). ``delta`` reads the shock's time ``path`` when set."""
+    mult = np.ones(len(labels))
+    for i, lab in enumerate(labels):
+        region, sector = lab.split(":", 1)
+        for s in shocks:
+            if s.applies_to(sector, region):
+                mult[i] *= 1.0 + s._path_level_at(year, s.delta)
+    return np.clip(mult, 0.0, None)
+
+
 class PartialEqEngine:
     """Partial-equilibrium production-volume response. Satisfies the ``Engine`` protocol."""
 
@@ -135,7 +155,7 @@ class PartialEqEngine:
         version=VERSION,
         description="Partial-equilibrium production volume: demand response via Leontief.",
         capabilities=[Capability.PRICES, Capability.VOLUMES],
-        supported_shocks=["carbon_price", "energy_price"],
+        supported_shocks=["carbon_price", "energy_price", "productivity"],
         required_data=["IOSystem", "SatelliteAccount"],
     )
 
@@ -194,18 +214,30 @@ class PartialEqEngine:
             for lab, r in rows.items()  # rows keyed by full label; collapse to distinct sector
         }
 
+        # Supply-side productivity shocks (Phase 6.4): a nature degradation, translated by the
+        # exposure engine, arrives as ProductivityShocks with delta < 0. They are NOT prices, so
+        # Engine 1 (which filters to carbon/energy) ignores them; here they scale a good's output
+        # capacity DOWN, composed multiplicatively with the price-driven demand response.
+        prod_shocks = [s for s in shocks if isinstance(s, ProductivityShock)]
+
         records: list[dict] = []
         for year in sorted(prices["year"].unique()):
             pyr = prices[prices["year"] == year]
             dp = {f"{r.region}:{r.sector}": float(r.value) for r in pyr.itertuples()}
             dp_vec = np.array([dp.get(lab, 0.0) for lab in labels])
+            prod_mult = _productivity_multiplier(
+                prod_shocks, labels, year
+            )  # per-good output factor
 
             for band, idx in (("low", 0), ("central", 1), ("high", 2)):
                 eps_vec = np.array([rows[lab][idx] for lab in labels])
-                dy_frac = _finite_demand_response(dp_vec, eps_vec)  # Δy/y per good
+                dy_frac = _finite_demand_response(dp_vec, eps_vec)  # Δy/y per good (price channel)
                 y_new = y0 * (1.0 + dy_frac)
                 x_new = np.linalg.solve(m, y_new)  # production follows the new demand (solve)
-                dx_frac = (x_new - x0) / x0  # Δx/x (production); x0 > 0 verified above
+                dx_demand = (x_new - x0) / x0  # Δx/x from the demand channel; x0 > 0 verified above
+                # Compose the supply-side productivity hit multiplicatively on top of the demand
+                # response: total output ratio = (1 + demand response) · productivity multiplier.
+                dx_frac = (1.0 + dx_demand) * prod_mult - 1.0
 
                 for i, lab in enumerate(labels):
                     region, sector = lab.split(":", 1)
@@ -220,6 +252,20 @@ class PartialEqEngine:
                         records.append(
                             _rec("elasticity_used", sector, region, year, "central", rows[lab][1])
                         )
+                        # The supply-side productivity channel, emitted only when it bites (a good
+                        # with no productivity shock has multiplier 1 → 0 change, byte-identical to
+                        # a pure price run).
+                        if prod_mult[i] != 1.0:
+                            records.append(
+                                _rec(
+                                    "productivity_change",
+                                    sector,
+                                    region,
+                                    year,
+                                    "central",
+                                    prod_mult[i] - 1.0,
+                                )
+                            )
 
         manifest = RunManifest.build(
             engine_name=self.meta.name,
