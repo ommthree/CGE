@@ -54,9 +54,7 @@ def _heatmap_section(svc) -> None:
         ),
     )
     direct, total, _io = svc.nature_exposure(rule=rule)
-    view = st.radio(
-        "Exposure", ["Direct + upstream (total)", "Direct only"], horizontal=True
-    )
+    view = st.radio("Exposure", ["Direct + upstream (total)", "Direct only"], horizontal=True)
     frame = direct if view == "Direct only" else total
     st.dataframe(_gradient(frame), width="stretch")
     st.download_button(
@@ -76,9 +74,7 @@ def _drilldown_section(svc) -> None:
     )
     direct, total, _io = svc.nature_exposure()
     good = st.selectbox("Good", list(total.index))
-    table = pd.DataFrame(
-        {"direct": direct.loc[good], "total (incl. upstream)": total.loc[good]}
-    )
+    table = pd.DataFrame({"direct": direct.loc[good], "total (incl. upstream)": total.loc[good]})
     table["upstream contribution"] = table["total (incl. upstream)"] - table["direct"]
     st.dataframe(_gradient(table.drop(columns="upstream contribution")), width="stretch")
     st.bar_chart(table[["direct", "upstream contribution"]])
@@ -91,9 +87,7 @@ def _scenario_section(svc) -> None:
         "→ per-good ProductivityShock → economic engine — end-to-end."
     )
     services = svc.nature_services()
-    chosen = st.multiselect(
-        "Services to degrade", services, default=services[:1]
-    )
+    chosen = st.multiselect("Services to degrade", services, default=services[:1])
     stresses: list[tuple[str, float]] = []
     for s in chosen:
         sev = st.slider(
@@ -112,8 +106,10 @@ def _scenario_section(svc) -> None:
         horizontal=True,
         help=(
             "partial_eq is the partial-equilibrium supply hit; cge_static is the "
-            "general-equilibrium response (factor reallocation, relative prices, cross-region "
-            "leakage on the 2-region toy economy)."
+            "general-equilibrium response (factor reallocation, relative prices). NB the toy IO "
+            "has no by-region final demand, so the CGE runs SINGLE-REGION (its closed variant, "
+            "aggregating the region-tagged shocks to one θ per sector) — it does not model "
+            "cross-region leakage here."
         ),
     )
 
@@ -138,8 +134,7 @@ def _scenario_section(svc) -> None:
     st.bar_chart(out)
     st.caption(
         "Every good loses output under a degradation; the most-exposed goods (agriculture) lose "
-        "most. In the CGE, an un-degraded region's goods can *gain* output as production relocates "
-        "(the nature analogue of carbon leakage)."
+        "most. The CGE result here is a single-region aggregate (see the engine note above)."
     )
     st.dataframe(out.rename("volume_change").to_frame(), width="stretch")
 

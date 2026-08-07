@@ -13,8 +13,14 @@ the roadmap flags:
   buried — it drives every downstream number, so it is a named, cited choice a reviewer can change.
 - **Ratings are DATA, not code.** An ``EncoreDependencies`` object carries its own provenance
   (source, version, retrieved date) so a run records exactly which ENCORE snapshot produced it. The
-  shipped fixture is a small, explicitly-labelled illustrative subset seeded from published
-  central-bank mappings — the full ENCORE export drops in via the same contract, no code change.
+  shipped fixture is a small, hand-entered **synthetic / expert-designed** set, informed by the
+  qualitative pattern of the central-bank literature but NOT substantiated cell-by-cell against a
+  published table (review P1 2026-08-07 — it is illustrative, not "published-sourced"). The full
+  ENCORE export drops in via the same ``EncoreDependencies`` contract, but the *current* ENCORE
+  release distinguishes ``N/A`` from ``ND`` ("No Data") and carries separate dependency and
+  pressure/impact pathways; this contract models only the five dependency materiality classes, so a
+  real-export adapter (preserving N/A-vs-ND and typing pressures separately) is still required — the
+  "drops in with no code change" claim holds only after that documented preprocessing step.
 
 See ``docs/models/nature-encore.md`` for the equations and sourcing.
 """
@@ -31,11 +37,16 @@ from cge.contracts.data_objects import Provenance, _DataObject
 # The five ENCORE materiality classes, most-to-least material.
 MaterialityClass = Literal["VH", "H", "M", "L", "VL"]
 
-# Materiality → numeric scale (review-visible, cited). A linear 0.2-step ramp VL..VH, the mapping
-# used by DNB "Indebted to nature" (van Toor et al. 2020) and subsequent central-bank studies to
-# turn ENCORE's ordinal classes into a [0, 1] dependency weight. Documented here because it drives
-# every propagated exposure score; swap it for a convex ramp (e.g. VH=1.0, H=0.5, M=0.25, …) to make
-# only the highest classes bite — that is a modelling choice, not a code detail.
+# Materiality → numeric scale (review-visible, load-bearing). A linear 0.2-step ramp VL..VH.
+#
+# HONEST SOURCING (review P1 2026-08-07): this specific numeric ramp is a **synthetic / expert-
+# designed default**, NOT a value published by DNB. DNB "Indebted to nature" (van Toor et al. 2020)
+# worked with the ordinal classes and in practice retained only the High/Very-High dependencies; it
+# does not document this 1.0/0.8/0.6/0.4/0.2 mapping. The linear ramp is our transparent, easily-
+# swapped choice for turning ENCORE's ordinal classes into a [0, 1] weight — it drives every
+# propagated exposure score, so it is named here for a reviewer to change (e.g. a convex ramp
+# VH=1.0, H=0.5, M=0.25, … to make only the highest classes bite, or a High/Very-High-only screen
+# matching DNB's practice). Treat it as an assumption to calibrate, not a published elasticity.
 MATERIALITY_SCALE: dict[str, float] = {"VH": 1.0, "H": 0.8, "M": 0.6, "L": 0.4, "VL": 0.2}
 
 

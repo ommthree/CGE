@@ -172,16 +172,17 @@ def _intermediate_coeffs(cal, pq, pv, cc, productivity=None):
 
     **Productivity shock (Phase 6.4 GE tier).** ``productivity`` is a per-(region,sector)
     Hicks-neutral multiplier θ[r,i] (θ=1 ⇒ no shock; a nature degradation gives θ<1). A sector needs
-    1/θ of its whole per-output bundle, so ``a[r,:,i]``, ``va_qty[r,i]`` and ``cc_eff[r,i]`` each
-    scale by 1/θ[r,i] — the single choke point all quantities flow through, matched by /θ in the
-    zero-profit residual. θ=1 is byte-identical to the pre-6.4 code."""
+    1/θ of its TECHNOLOGY bundle per unit output, so ``a[r,:,i]`` and ``va_qty[r,i]`` scale by
+    1/θ[r,i] — but ``cc_eff[r,i]`` is a physical per-output quantity θ does NOT change, left
+    unscaled (review P1 2026-08-07: scaling cc broke the emissions/revenue contract). The
+    zero-profit residual scales only the technology part and adds cc unscaled. θ=1 unchanged."""
     nr, ns = cal.nr, cal.ns
     inv_theta = (
         np.ones((nr, ns)) if productivity is None else 1.0 / np.asarray(productivity, dtype=float)
     )
     if not cal.has_energy_nest:
-        # Scale column i of each region's a by 1/θ[r,i]: a[r,:,i] *= inv_theta[r,i].
-        return cal.ax * inv_theta[:, None, :], cal.va_share * inv_theta, cc * inv_theta
+        # Scale column i of each region's a by 1/θ[r,i]: a[r,:,i] *= inv_theta[r,i]. cc unscaled.
+        return cal.ax * inv_theta[:, None, :], cal.va_share * inv_theta, cc
     from cge.engines.cge_static.energy_nest import nest_demands
 
     a = np.zeros((nr, ns, ns))  # a[r, s, i] = composite s per unit output i in region r
@@ -194,10 +195,9 @@ def _intermediate_coeffs(cal, pq, pv, cc, productivity=None):
         for k, j in enumerate(nest.mat_idx):
             a[ri, j, :] += materials_use[k, :]
         va_qty[ri] = kl_qty
-    # cc_eff = cc: per-OUTPUT carbon wedge per (region,sector), identical contract to the flat model
-    # (review remediation 2026-07-26) — total revenue = Σ cc[r,i]·Z[r,i] with or without the nest.
-    # All three scale by 1/θ[r,i] for the productivity shock.
-    return a * inv_theta[:, None, :], va_qty * inv_theta, cc * inv_theta
+    # cc_eff = cc (UNSCALED): per-OUTPUT carbon wedge per (region,sector), a physical quantity θ
+    # does not change — total revenue = Σ cc[r,i]·Z[r,i]. Only a and va_qty scale by 1/θ[r,i].
+    return a * inv_theta[:, None, :], va_qty * inv_theta, cc
 
 
 def _quantities(cal, pd, pq, pe, pz, FD, *, pv=None, carbon_cost=None, productivity=None):
@@ -535,9 +535,11 @@ def residuals(
     )
     pv = _va_unit_cost(cal, w)
     pz = _cet_price(cal, pd, pe)
-    # Per-(region,sector) productivity multiplier θ[r,i] (Phase 6.4 GE tier): the zero-profit unit
-    # cost divides by θ, matching the 1/θ scaling _intermediate_coeffs applies to the physical
-    # coefficients. θ=1 (default) is byte-identical to the pre-6.4 residual.
+    # Per-(region,sector) productivity multiplier θ[r,i] (Phase 6.4 GE tier): only the TECHNOLOGY
+    # part of the zero-profit unit cost divides by θ (matching the 1/θ scaling _intermediate_coeffs
+    # applies to a and va_qty); the carbon wedge cc[r,i] is a physical per-output quantity added
+    # UNSCALED — pz = tech_cost/θ + cc — so the emissions/revenue contract holds (review P1
+    # 2026-08-07). θ=1 (default) is byte-identical to the pre-6.4 residual.
     inv_theta = (
         np.ones((nr, ns)) if productivity is None else 1.0 / np.asarray(productivity, dtype=float)
     )
@@ -553,15 +555,15 @@ def residuals(
         from cge.engines.cge_static.energy_nest import nest_unit_cost
 
         for ri in range(nr):
-            px_r = nest_unit_cost(cal.energy_nests[ri], pq[ri], pv[ri], cc[ri])
+            px_r = nest_unit_cost(cal.energy_nests[ri], pq[ri], pv[ri], cc[ri])  # tech cost + cc
             for ii in range(ns):
-                res.append(pz[ri, ii] - px_r[ii] * inv_theta[ri, ii])
+                res.append(pz[ri, ii] - ((px_r[ii] - cc[ri, ii]) * inv_theta[ri, ii] + cc[ri, ii]))
     else:
         for ri in range(nr):
             for ii in range(ns):
                 intermediate = float(np.dot(cal.ax[ri, :, ii], pq[ri]))
-                unit_cost = intermediate + cal.va_share[ri, ii] * pv[ri, ii] + cc[ri, ii]
-                res.append(pz[ri, ii] - unit_cost * inv_theta[ri, ii])
+                tech_cost = intermediate + cal.va_share[ri, ii] * pv[ri, ii]
+                res.append(pz[ri, ii] - (tech_cost * inv_theta[ri, ii] + cc[ri, ii]))
     # 3. Bilateral goods-market clearing: import demand = export supply on each ACTIVE route only
     # (review P1: a route with zero benchmark trade got a free price unknown and no way to pin it —
     # Jacobian rank-deficient by exactly the number of zero routes; see cal.active_routes).

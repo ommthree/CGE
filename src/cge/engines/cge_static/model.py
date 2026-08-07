@@ -124,22 +124,26 @@ def _leontief_and_va(
 
     **Productivity shock (Phase 6.4 GE tier).** ``productivity`` is a per-sector Hicks-neutral
     output multiplier θ[i] (θ=1 ⇒ no shock; a nature degradation lands here as θ<1). A sector with
-    productivity θ needs ``1/θ`` times its whole input bundle — intermediates, value added, AND the
-    per-output carbon cost — to make one unit of output. Scaling the effective coefficients by 1/θ
-    at this single choke point is what makes it consistent everywhere downstream: zero-profit gives
-    ``p[i] = unit_cost[i]/θ[i]`` (a degraded sector's price rises), and goods-market and factor
-    clearing read the same scaled requirements, so a less-productive sector draws proportionally
-    more inputs/factors per unit output with no separate bookkeeping. θ=1 is byte-identical to the
-    pre-6.4 code (the ``inv_theta`` factors are exactly 1), so benchmark replication / homogeneity /
-    Walras are untouched. NB θ scales *technology*, not the carbon *wedge's* physical meaning:
-    covered emissions per unit output are unchanged, only more output-inputs are needed per unit."""
+    productivity θ needs ``1/θ`` times its **technology** bundle — intermediates and value added —
+    per unit output, so ``ax`` and ``va_share`` scale by 1/θ. The carbon wedge ``cc`` is NOT scaled:
+    it is emissions per unit output × price, a physical per-output quantity θ does not change
+    (review P1 2026-08-07 — scaling cc by 1/θ made revenue Σ(cc/θ)·X diverge from physical emissions
+    intensity·X). So ``cc_eff = cc`` and the zero-profit residual is ``p[i] = tech_cost[i]/θ[i] +
+    cc[i]``. θ=1 leaves everything unscaled, byte-identical to the pre-6.4 code, so benchmark
+    replication / homogeneity / Walras are untouched."""
     ns = len(cal.sectors)
     inv_theta = np.ones(ns) if productivity is None else 1.0 / np.asarray(productivity, dtype=float)
+    # Productivity scales the TECHNOLOGY (intermediate + value-added requirements per unit output)
+    # by 1/θ, NOT the carbon wedge. The carbon wedge cc[i] = τ·(emissions per unit output i) is a
+    # PHYSICAL per-output quantity, and a nature productivity shock does not change a sector's
+    # emissions per unit of its OWN output (docs §7 / review P1 2026-08-07: scaling cc by 1/θ made
+    # reported carbon revenue = Σ(cc/θ)·X while physical emissions stayed intensity·X, breaking the
+    # emissions/revenue contract by a factor 1/θ). So cc_eff = cc (unscaled): the zero-profit unit
+    # cost is (input_cost)/θ + cc, and revenue Σ cc[i]·X[i] matches reported physical emissions.
     if not cal.has_energy_nest:
-        # Scale each sector i's input column by 1/θ[i]: ax[:, i]/θ[i], va_share[i]/θ[i], cc[i]/θ[i].
         ax_eff = cal.ax * inv_theta[np.newaxis, :]
         leontief = np.linalg.inv(np.eye(ns) - ax_eff)
-        return leontief, cal.va_share * inv_theta, cc * inv_theta
+        return leontief, cal.va_share * inv_theta, cc
     from cge.engines.cge_static.energy_nest import nest_demands
 
     nest = cal.energy_nest
@@ -151,14 +155,10 @@ def _leontief_and_va(
     for k, j in enumerate(nest.mat_idx):
         a[j, :] += materials_use[k, :]
     # Productivity scales the whole nested input bundle per unit output by 1/θ[i] (column i), the
-    # same Hicks-neutral treatment as the flat model.
+    # same Hicks-neutral treatment as the flat model — but NOT the carbon wedge (see above).
     a = a * inv_theta[np.newaxis, :]
     leontief = np.linalg.inv(np.eye(ns) - a)
-    # cc_eff = cc/θ: the carbon cost is a per-OUTPUT wedge (review remediation 2026-07-26), same as
-    # the flat model, so total revenue = Σ_i cc[i]·X[i] with or without the nest. The nest still
-    # substitutes away from taxed energy because a taxed fossil sector's output price rises via
-    # zero-profit and flows into the energy-input price through pq.
-    return leontief, kl_qty * inv_theta, cc * inv_theta
+    return leontief, kl_qty * inv_theta, cc
 
 
 # Smooth positive floor on the recycling denominator (1−k). Identity for x ≫ δ, asymptotes to δ as
@@ -736,31 +736,32 @@ def residuals(
     )
 
     # Per-sector productivity multiplier θ[i] (Phase 6.4 GE tier): a sector with productivity θ
-    # needs 1/θ times its whole input bundle per unit output, so its zero-profit unit cost divides
-    # by θ. θ=1 (the default) is byte-identical to the pre-6.4 residual — the ``inv_theta`` factors
-    # are exactly 1 — so replication / homogeneity / Walras are untouched.
-    inv_theta = (
-        np.ones(ns) if productivity is None else 1.0 / np.asarray(productivity, dtype=float)
-    )
+    # needs 1/θ times its TECHNOLOGY bundle (intermediates + value added) per unit output, so the
+    # TECHNOLOGY part of its zero-profit unit cost divides by θ — but the carbon wedge cc[i] is a
+    # PHYSICAL per-output quantity (emissions per unit output × price) that θ does NOT change, so it
+    # is added UNSCALED: p[i] = tech_cost[i]/θ[i] + cc[i]. Scaling cc by 1/θ (the original 6.4 code)
+    # broke the emissions/revenue contract — reported revenue Σ(cc/θ)·X vs physical emissions
+    # intensity·X differed by 1/θ (review P1 2026-08-07). θ=1 (default) leaves everything unscaled,
+    # byte-identical to the pre-6.4 residual.
+    inv_theta = np.ones(ns) if productivity is None else 1.0 / np.asarray(productivity, dtype=float)
 
     res = []
     if cal.has_energy_nest:
-        # Zero-profit with the KL-E-M nest (Phase 5d.5): p[i] = px[i]/θ[i], the nest's output unit
-        # cost scaled by the productivity requirement. Carbon is a per-OUTPUT wedge added to px
-        # (review remediation 2026-07-26) — NOT an add-on inside the nest — so the emissions/revenue
-        # contract is identical to the flat model.
+        # Zero-profit with the KL-E-M nest (Phase 5d.5): px = nest technology cost + cc wedge. Scale
+        # only the technology part by 1/θ, then add the unscaled wedge back:
+        # p[i] = (px[i] − cc[i])/θ[i] + cc[i].
         from cge.engines.cge_static.energy_nest import nest_unit_cost
 
         px = nest_unit_cost(cal.energy_nest, np.asarray(p, dtype=float), state.pv, cc)
         for i in range(ns):
-            res.append(p[i] - px[i] * inv_theta[i])
+            res.append(p[i] - ((px[i] - cc[i]) * inv_theta[i] + cc[i]))
     else:
-        # Flat model: p[i] = (Σ_j ax[j,i]·p[j] + va_share[i]·pv[i] + cc[i])/θ[i]. (Object-dtype
-        # safe for the dormant pyomo hook.)
+        # Flat model: p[i] = (Σ_j ax[j,i]·p[j] + va_share[i]·pv[i])/θ[i] + cc[i]. (Object-dtype safe
+        # for the dormant pyomo hook.)
         for i in range(ns):
             intermediate = sum(cal.ax[j, i] * p[j] for j in range(ns))
-            unit_cost = intermediate + cal.va_share[i] * state.pv[i] + cc[i]
-            res.append(p[i] - unit_cost * inv_theta[i])
+            tech_cost = intermediate + cal.va_share[i] * state.pv[i]
+            res.append(p[i] - (tech_cost * inv_theta[i] + cc[i]))
     # Factor clearing (drop one by Walras). Under a binding wage floor (Phase 5d.4), the LAB row
     # becomes the wage pin w[LAB] = floor instead of quantity-clearing — labour demand ≤ supply is
     # then slack, the gap reported as unemployment.

@@ -9,8 +9,10 @@ pass-through; **Engine 2 (`partial_eq`)**, production-**volume** response; and *
 (Armington/CET, carbon leakage), **CES value added**, elasticity sweeps and **multiple regions**
 (bilateral trade), plus the **macro closure** (a government/fiscal account, savings-investment, and a
 KL-E-M energy nest) — plus **macro aggregates** (GVA/GDP/deflators, real vs nominal) on every run, a
-data layer (build, store, quality), and a web GUI. Nature (ENCORE) and the pathway stack are planned
-(see [`roadmap.md`](../roadmap.md)); this guide covers what runs now.
+data layer (build, store, quality), and a web GUI. The **nature (ENCORE) extension** is built and
+demonstrable in the GUI but **explicitly experimental** (illustrative synthetic ratings, with a
+methodological/provenance follow-up outstanding — see [`roadmap.md`](../roadmap.md) Phase 6); the
+pathway stack is planned. This guide covers the economic engines that run now.
 
 This guide **teaches the economics as it goes** — each idea (a Leontief inverse, a numéraire,
 revenue recycling, carbon leakage, factor substitution) is explained from first principles the first

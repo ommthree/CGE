@@ -141,7 +141,16 @@ class GuiService:
         ``(service, severity)``) → ``NatureStress`` → per-good ``ProductivityShock`` scaled by the
         fixture's exposure scores → the chosen economic engine → a ``ResultSet``. This is the
         Phase-6 nature-scenario runner: a scenario reads in *nature* terms (a service degrades) and
-        the nature→economics translation is the auditable ``build_nature_shocks`` step."""
+        the nature→economics translation is the auditable ``build_nature_shocks`` step.
+
+        **Variant note (review P1 2026-08-07).** The toy IO carries only aggregate (not
+        by-consuming-region) final demand, so it cannot build a multi-region SAM. Both engines
+        therefore run **single-region**: Engine 2 (`partial_eq`) keeps the region tags and shocks
+        each good, while the CGE (`cge_static`) runs its **closed** variant, which aggregates the
+        region-tagged shocks to one θ per sector (averaging across regions — NOT compounding them).
+        So the CGE result here is a single-region aggregate; it does NOT model cross-region leakage.
+        Multi-region GE leakage needs a fixture with by-region final demand (a documented
+        follow-up)."""
         from cge.contracts.shocks import NatureStress
         from cge.nature.fixture import encore_fixture, toy_encore_concordance
         from cge.nature.translate import build_nature_shocks

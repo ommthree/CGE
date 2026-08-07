@@ -165,6 +165,72 @@ def test_exposure_unknown_rule_rejected():
         compute_exposure(io.A, direct, rule="median")  # type: ignore[arg-type]
 
 
+# -- Exposure precondition guards (review P1 2026-08-07) --------------------------------------
+def test_exposure_rejects_nan_in_A():
+    io, direct = _fixture_direct()
+    A = io.A.copy()
+    A.iloc[0, 1] = np.nan
+    with pytest.raises(ValueError, match="non-finite"):
+        compute_exposure(A, direct)
+
+
+def test_exposure_rejects_negative_coefficient():
+    """A negative coefficient would let upstream SUBTRACT exposure, violating total ≥ direct — it is
+    rejected so the caller must apply an explicit negative-coefficient policy (EXIOBASE has small
+    negatives) rather than silently breaking the risk invariant."""
+    io, direct = _fixture_direct()
+    A = io.A.copy()
+    A.iloc[0, 1] = -0.1
+    with pytest.raises(ValueError, match="negative coefficient"):
+        compute_exposure(A, direct)
+
+
+def test_exposure_rejects_out_of_range_direct_scores():
+    io, direct = _fixture_direct()
+    bad = direct.copy()
+    bad.iloc[0, 0] = 1.5
+    with pytest.raises(ValueError, match=r"in \[0, 1\]"):
+        compute_exposure(io.A, bad)
+
+
+def test_exposure_raises_on_non_convergence():
+    """A run that fails to converge within max_iter is raised, never silently returned as an
+    unconverged iterate. A 3-good chain needs several passes; max_iter=1 cannot converge."""
+    idx = ["x", "y", "z"]
+    A = pd.DataFrame([[0.0, 0.9, 0.0], [0.0, 0.0, 0.9], [0.0, 0.0, 0.0]], index=idx, columns=idx)
+    d = pd.DataFrame([[0.8], [0.0], [0.0]], index=idx, columns=["w"])
+    with pytest.raises(ValueError, match="did not converge"):
+        compute_exposure(A, d, max_iter=1)
+    # enough iterations converges cleanly
+    total, _ = compute_exposure(A, d, max_iter=1000)
+    assert total.loc["z", "w"] > 0.0  # exposure propagated through the full chain
+
+
+def test_exposure_max_rule_materiality_threshold_screens_negligible_links():
+    """The `max` rule's materiality threshold stops a negligible input coefficient from propagating
+    the global maximum across the economy (review P1: an unthresholded dense MRIO collapses to the
+    global max)."""
+    idx = ["dirty", "clean"]
+    # clean uses only a tiny 1e-6 amount of dirty as input.
+    A = pd.DataFrame([[0.0, 1e-6], [0.0, 0.0]], index=idx, columns=idx)
+    d = pd.DataFrame([[1.0], [0.0]], index=idx, columns=["w"])
+    no_thresh, _ = compute_exposure(A, d, rule="max", max_link_threshold=0.0)
+    thresh, _ = compute_exposure(A, d, rule="max", max_link_threshold=1e-3)
+    assert no_thresh.loc["clean", "w"] == 1.0  # negligible link still propagates the max
+    assert thresh.loc["clean", "w"] == 0.0  # screened out above the threshold
+
+
+def test_sector_scores_rejects_impact_kind_object():
+    """Review P1 (2026-08-07): ENCORE impacts (the economy's pressure ON nature) must NOT feed into
+    the dependency→productivity channel — that inverts the causality. sector_scores rejects a
+    kind='impact' object rather than silently converting impacts into productivity losses."""
+    from cge.nature.concord import sector_scores
+
+    impact = encore_fixture().model_copy(update={"kind": "impact"})
+    with pytest.raises(ValueError, match="dependency-kind"):
+        sector_scores(impact, toy_encore_concordance(), ["agriculture", "energy", "manufacturing"])
+
+
 # -- 6.4 NatureStress → ProductivityShock translation + engine consumption --------------------
 def test_nature_stress_translates_to_productivity_scaled_by_exposure():
     """A NatureStress on a service degrades each good's productivity in proportion to its exposure:

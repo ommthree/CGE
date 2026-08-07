@@ -1248,19 +1248,31 @@ def _productivity_by_sector(
 ) -> np.ndarray:
     """Per-sector Hicks-neutral productivity multiplier θ[i] for ``year`` (Phase 6.4 GE tier).
 
-    A ``ProductivityShock(delta)`` covering sector *i* multiplies θ[i] by ``1 + delta`` (delta < 0
-    for a nature degradation; multiple shocks on one sector compose multiplicatively, so two −10%
-    hits give 0.81). θ is clipped at a small positive floor so a fully-degraded sector cannot make
-    the zero-profit unit cost blow up to a non-finite price. A sector with no shock has θ = 1
-    (byte-identical to a pure carbon run — no productivity channel). The closed CGE is
-    single-region, so a shock is matched by SECTOR only: its region coverage (set by
-    ``build_nature_shocks`` to
-    the single build region) is not meaningful against the region-less closed SAM."""
+    The closed/open CGE is **single-region**, but ``build_nature_shocks`` on a multi-region economy
+    emits ONE shock per good — i.e. the same sector's degradation tagged with each region. Naively
+    multiplying every shock that matches a sector then DOUBLE-COUNTS: two regions each losing 20%
+    would give 0.8·0.8 = 0.64, a spurious 36% aggregate loss (review P1 2026-08-07).
+
+    Correct single-region aggregation: **group the matching shocks by region, compose
+    multiplicatively WITHIN a region** (independent services on the same good are genuine
+    compounding hits), **then average the per-region surviving fractions ACROSS regions** —
+    collapsing the region dimension the closed model does not have (equal weights: the collapsed
+    model has already summed
+    the regions' output into one sector, so it carries no per-region output split to weight by). A
+    sector with no shock has θ = 1 (byte-identical to a pure carbon run). θ is floored at a small
+    positive value so a fully-degraded sector cannot drive the zero-profit unit cost non-finite."""
     theta = np.ones(len(sectors))
     for i, sec in enumerate(sectors):
+        # Per-region surviving productivity: Π over that region's shocks of (1 + δ).
+        by_region: dict[str, float] = {}
         for s in prod_shocks:
-            if not s.coverage_sectors or sec in s.coverage_sectors:
-                theta[i] *= 1.0 + s._path_level_at(year, s.delta)
+            if s.coverage_sectors and sec not in s.coverage_sectors:
+                continue
+            # Explicit region coverage groups by region; an empty coverage is economy-wide.
+            key = s.coverage_regions[0] if s.coverage_regions else "__all__"
+            by_region[key] = by_region.get(key, 1.0) * (1.0 + s._path_level_at(year, s.delta))
+        if by_region:
+            theta[i] = float(np.mean(list(by_region.values())))  # average across matched regions
     return np.clip(theta, 1e-6, None)
 
 

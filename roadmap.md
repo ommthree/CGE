@@ -410,34 +410,42 @@ account and 5d.5's energy nest to harmonize NGFS pathways against).
 
 ### Phase 6 — Nature extension via ENCORE (3–6 wk) — parallel with P4/P5
 
-**Status: 6.1–6.4 DONE** (`src/cge/nature/`, model doc `docs/models/nature-encore.md`, 17 tests).
-ENCORE ingestion + the documented materiality→numeric scale, the ENCORE↔economy concordance via the
-P1 framework, and the exposure engine (direct + upstream propagation, `weighted_mean`/`max` rules
-exposed as a parameter) all landed against a small **published-sourced illustrative fixture** (the
-licensed ENCORE export drops into the same `EncoreDependencies` contract via `load_encore_csv`, no
-code change). 6.4 adds `nature.translate` (`NatureStress`→`ProductivityShock` scaled by exposure,
-`build_nature_shocks` end-to-end) and `ProductivityShock` consumption in **both economic tiers**:
-Engine 2 (`partial_eq` v0.4.0) as a supply-side output hit, and Engine 3 (`cge_static` v0.11.0,
-**all three variants** — closed, open, multi-region) as a Hicks-neutral productivity multiplier θ
-that the general-equilibrium solve responds to (degraded sector's price rises / output falls, factor
-+ relative-price reallocation economy-wide; the open variant substitutes toward imports, the
-multi-region variant shows cross-region **leakage**; θ=1 byte-identical in every variant, so
-replication/homogeneity/Walras hold). A `NatureStress` scenario now runs end-to-end to a
-schema-valid `ResultSet` in PE and in all GE variants. 6.5 adds the **nature GUI page**
-(`gui/pages/nature.py`): the good×service dependency heatmap (direct or direct+upstream,
-weighted_mean/max toggle), a per-good supply-chain drill-down (direct vs. inherited exposure), and a
-nature-scenario runner (pick services + severities → the full exposure→NatureStress→ProductivityShock
-→engine chain → per-good output response). **Phase 6 is complete** — a curated full ENCORE↔EXIOBASE
-concordance (replacing the illustrative fixture) is the only remaining nature enhancement, tracked
-under Phase 6b.
+**Status: 6.1–6.5 BUILT, but the nature→macroeconomy pathway is EXPERIMENTAL, not sign-off complete**
+(`src/cge/nature/`, model doc `docs/models/nature-encore.md`). An independent review (2026-08-07)
+found six real P1s; the correctness bugs among them are FIXED (carbon+productivity emissions/revenue
+identity, exposure precondition guards, the GUI variant + regional-shock compounding, impact-kind
+rejection, honest synthetic-fixture labelling, ruff-format gate), but two methodological/architecture
+items are still open (see below), so nature results should stay **explicitly illustrative** and are
+NOT for consulting use yet.
+
+ENCORE ingestion + the documented materiality→numeric scale (a **synthetic/expert-designed** ramp,
+NOT a published DNB value), the ENCORE↔economy concordance via the P1 framework, and the exposure
+engine (direct + upstream propagation, `weighted_mean`/`max`, now with validated preconditions and
+convergence) all landed against a small **synthetic illustrative fixture** (the licensed ENCORE
+export needs a real-format adapter — N/A-vs-ND semantics, separately-typed pressure/impact — before
+"drops in with no code change" holds). 6.4 adds `nature.translate` and `ProductivityShock` consumption
+in **both tiers**: Engine 2 (`partial_eq` v0.4.0) as a supply-side output hit, and Engine 3
+(`cge_static` v0.11.0, all three variants) as a Hicks-neutral θ on **technology only** (the carbon
+wedge is unscaled, so the emissions/revenue contract holds). 6.5 adds the **nature GUI page** (a
+dependency heatmap, supply-chain drill-down, and a nature-scenario runner). Impact/pressure ingestion
+and heatmaps are NOT implemented (dependencies only).
+
+**STILL OPEN (judgement calls, deferred pending direction):** (1) whether the CGE should default to
+**direct-incidence** rather than the current total-exposure shock — the total already embeds upstream
+dependence, which the GE network then transmits again, so upstream is arguably **double-counted** in
+the CGE; and (2) `NatureStress` does not run through the **standard scenario/manifest pipeline**
+(only the GUI converts it), so a nature run's manifest hashes the derived `ProductivityShock`s, not
+the ENCORE snapshot / concordance / materiality scale / exposure rule — it is not reconstructible
+from its manifest. Plus a full real-ENCORE-export adapter with golden-file ingestion tests. Until
+these land, Phase 6 is **not** signed off.
 
 | # | Task | Effort |
 |---|---|---|
-| 6.1 ✅ | ENCORE ingestion: parse dependency ratings (production process × ecosystem service) and impact-driver ratings; map materiality classes to a documented numeric scale; version the snapshot | 2–3 d |
+| 6.1 ✅ (dependency only) | ENCORE ingestion: parse **dependency** ratings (production process × ecosystem service); map materiality classes to a documented numeric scale; version the snapshot. NB **impact/pressure-driver ratings are NOT yet implemented** (the contract carries a `kind` field and rejects `impact` objects in the dependency pipeline, but a separately-typed pressure/impact channel is a follow-up — review P1 2026-08-07). The materiality ramp is a **synthetic/expert-designed** default, not a published DNB value. | 2–3 d |
 | 6.2 ✅ | ENCORE↔EXIOBASE concordance via the P1 framework, **seeded from published central-bank mappings** (DNB "Indebted to nature", ECB/EIOPA, World Bank) rather than built from scratch; document every weighting judgement | 1–2 wk |
 | 6.3 ✅ | Exposure engine: direct dependency/impact scores per sector → upstream propagation through the input–output structure (reusing P2 machinery) → "good X depends on pollination/water/… directly and via inputs"; aggregation choice (max vs weighted mean) exposed as a parameter, not buried | 1–2 wk |
 | 6.4 ✅ | `NatureStress` shocks: degradation scenario → productivity shocks per sector/region scaled by dependency scores → fed to the engines through the standard shock vocabulary (consumed by Engine 2 and by **all three** Engine-3 CGE variants as a Hicks-neutral θ — closed, open, multi-region with cross-region leakage); start from published scenario sets (NGFS nature scenarios, World Bank/PIK) | 1–2 wk |
-| 6.5 ✅ | GUI: dependency/impact heatmaps (good × ecosystem service), supply-chain dependency drill-down, nature-scenario runner — within the P3 framework (`gui/pages/nature.py`, driven by `GuiService.nature_exposure`/`run_nature`; headless-render + service tests green) | 2–3 d |
+| 6.5 ✅ (dependency only) | GUI: **dependency** heatmap (good × ecosystem service), supply-chain dependency drill-down, nature-scenario runner — within the P3 framework (`gui/pages/nature.py`, driven by `GuiService.nature_exposure`/`run_nature`; headless-render + service tests green). Impact/pressure heatmaps await 6.1's impact channel. The CGE runner is single-region on the toy fixture (no by-region final demand); multi-region GE leakage needs a fixture with by-consuming-region FD (follow-up). | 2–3 d |
 
 **DoD:** for any good: ranked ecosystem-service dependencies (direct + upstream) and impact drivers, in the GUI; at least one `NatureStress` scenario runs end-to-end through an economic engine and produces a schema-valid `ResultSet`; **model doc exists** covering the propagation equations, the materiality→numeric scale, and the ENCORE↔EXIOBASE concordance with its published sources.
 **Decisions forced:** the materiality→numeric scale (document it; it drives everything downstream); aggregation rule for propagated scores (max is conservative and defensible; weighted-mean is smoother — expose both); which published concordance to anchor on.
