@@ -1,9 +1,10 @@
 """A small, explicitly-illustrative ENCORE dependency fixture (Phase 6.1).
 
-This is **not** the full ENCORE knowledge base — it is a hand-entered, published-sourced subset so
-the exposure engine and nature scenarios run offline and are testable without the (registration-
-gated) ENCORE download. Every rating below reflects the direction and rough magnitude reported in
-the central-bank literature the roadmap anchors on:
+This is **not** the full ENCORE knowledge base — it is a hand-entered **synthetic/expert-designed**
+subset so the exposure engine and nature scenarios run offline and are testable without the
+(registration-gated) ENCORE download. The ratings are informed by the *qualitative direction* of the
+central-bank literature but are NOT substantiated cell-by-cell against a published table (review P1
+2026-08-07): treat them as illustrative of the method, not as calibrated dependency values:
 
 - van Toor et al. (2020), *Indebted to nature* (DNB/PBL) — agriculture and food production depend
   very highly on pollination, water and soil/nutrient services; water supply depends very highly on
@@ -19,8 +20,6 @@ Sources: [vanToor2020], [ENCORE] — see docs/references.md and docs/models/natu
 """
 
 from __future__ import annotations
-
-from datetime import date
 
 import pandas as pd
 
@@ -67,15 +66,18 @@ def encore_fixture() -> EncoreDependencies:
     """The illustrative ENCORE dependency object (see module docstring for sourcing)."""
     df = pd.DataFrame(_RATINGS, columns=["process", "service", "materiality"])
     prov = Provenance(
-        source="ENCORE (illustrative subset, seeded from van Toor 2020 / DNB)",
+        source="ENCORE (SYNTHETIC illustrative fixture, expert-designed; not the ENCORE export)",
         source_version="fixture-v1",
-        licence="illustrative — not the licensed ENCORE export",
+        licence="synthetic/illustrative — not the licensed ENCORE export",
         reference_year=2020,
-        retrieved=date.today().isoformat(),
+        # A FIXED authored date, not date.today(): this is static synthetic data, so its provenance
+        # must not look freshly retrieved every day (review P2 2026-08-07).
+        retrieved="2026-08-01",
         notes=(
-            "Hand-entered, published-sourced subset for offline testing; NOT the full ENCORE "
-            "knowledge base. Replace via load_encore_csv for real analysis. See "
-            "docs/models/nature-encore.md."
+            "Hand-entered SYNTHETIC/expert-designed subset for offline testing, informed by the "
+            "qualitative pattern of the central-bank literature but NOT substantiated cell-by-cell "
+            "against a published table; NOT the full ENCORE knowledge base. Replace via "
+            "load_encore_csv for real analysis. See docs/models/nature-encore.md."
         ),
     )
     return EncoreDependencies(provenance=prov, ratings=df, kind="dependency")
@@ -92,7 +94,7 @@ def toy_encore_concordance() -> ConcordanceMap:
         source_version="fixture-v1",
         licence="illustrative",
         reference_year=2020,
-        retrieved=date.today().isoformat(),
+        retrieved="2026-08-01",  # fixed authored date, not date.today() (review P2 2026-08-07)
         notes="Toy sector → ENCORE process, one-to-one by name. See docs/models/nature-encore.md.",
     )
     return ConcordanceMap(

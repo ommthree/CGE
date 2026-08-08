@@ -12,6 +12,7 @@ engines (the recursive wrapper, P7) consume the whole path. The discriminated un
 
 from __future__ import annotations
 
+import math
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -170,6 +171,23 @@ class ProductivityShock(Shock):
     type: Literal["productivity"] = "productivity"
     delta: float = Field(description="fractional change, e.g. -0.1 for -10%")
 
+    @model_validator(mode="after")
+    def _validate_delta(self) -> ProductivityShock:
+        # A productivity multiplier is 1 + delta, which cannot go negative — output capacity below
+        # zero is meaningless. Reject delta < −1 and non-finite values up front (review P2;
+        # engines otherwise silently clip/floor an invalid value into an extreme scenario). Any path
+        # levels must satisfy the same bound.
+        vals = [self.delta, *(self.path.values() if self.path else [])]
+        for v in vals:
+            if not math.isfinite(v):
+                raise ValueError(f"ProductivityShock.delta/path must be finite; got {v!r}")
+            if v < -1.0:
+                raise ValueError(
+                    f"ProductivityShock.delta/path must be ≥ −1 (a productivity multiplier 1+delta "
+                    f"cannot be negative); got {v!r}"
+                )
+        return self
+
 
 class DemandShift(Shock):
     """A proportional shift in final demand for a commodity."""
@@ -199,6 +217,21 @@ class NatureStress(Shock):
     severity: float = Field(
         description="fractional degradation of the service, 0..1", ge=0.0, le=1.0
     )
+
+    @model_validator(mode="after")
+    def _validate_nature(self) -> NatureStress:
+        # A blank service name would silently match nothing (or be un-mappable) downstream — reject.
+        if not self.service or not self.service.strip():
+            raise ValueError("NatureStress.service must be a non-empty ecosystem-service name")
+        # A severity time path is a fraction of the service lost per year, so every path level must
+        # also lie in [0, 1] (the scalar `severity` already does via Field bounds) — review P2.
+        if self.path:
+            for year, lvl in self.path.items():
+                if not math.isfinite(lvl) or lvl < 0.0 or lvl > 1.0:
+                    raise ValueError(
+                        f"NatureStress.path at {year} must be a fraction in [0, 1]; got {lvl!r}"
+                    )
+        return self
 
 
 AnyShock = Annotated[

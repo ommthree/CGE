@@ -209,7 +209,15 @@ def derive_open_state(
             base_income = factor_income + sf
             if recycles:
                 _, z_unit, *_ = _quantities(
-                    cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq, pv=pv, carbon_cost=cc,
+                    cal,
+                    pd,
+                    pq,
+                    pm,
+                    pe,
+                    pz,
+                    cal.gamma * 1.0 / pq,
+                    pv=pv,
+                    carbon_cost=cc,
                     productivity=productivity,
                 )
                 k = float(cc_eff @ z_unit)
@@ -240,7 +248,15 @@ def derive_open_state(
                 )
                 k = float(cc_eff @ z_u)
                 _, z_sf, *_ = _quantities(
-                    cal, pd, pq, pm, pe, pz, id_sf, pv=pv, carbon_cost=cc,
+                    cal,
+                    pd,
+                    pq,
+                    pm,
+                    pe,
+                    pz,
+                    id_sf,
+                    pv=pv,
+                    carbon_cost=cc,
                     productivity=productivity,
                 )
                 c0 = float(cc_eff @ z_sf)
@@ -257,7 +273,15 @@ def derive_open_state(
             p_inv = float(np.dot(pq, ID))
             if recycles:
                 _, z_unit, *_ = _quantities(
-                    cal, pd, pq, pm, pe, pz, cal.gamma * 1.0 / pq, pv=pv, carbon_cost=cc,
+                    cal,
+                    pd,
+                    pq,
+                    pm,
+                    pe,
+                    pz,
+                    cal.gamma * 1.0 / pq,
+                    pv=pv,
+                    carbon_cost=cc,
                     productivity=productivity,
                 )
                 k = float(cc_eff @ z_unit)
@@ -316,7 +340,15 @@ def derive_open_state(
             )
             r0 = float(cc_eff @ z_fd)  # revenue from the (price-fixed) household+investment demand
             _, z_unit_g, *_ = _quantities(
-                cal, pd, pq, pm, pe, pz, cal.gov_gamma * 1.0 / pq, pv=pv, carbon_cost=cc,
+                cal,
+                pd,
+                pq,
+                pm,
+                pe,
+                pz,
+                cal.gov_gamma * 1.0 / pq,
+                pv=pv,
+                carbon_cost=cc,
                 productivity=productivity,
             )
             kg = float(cc_eff @ z_unit_g)  # marginal revenue per unit of government spending
@@ -399,17 +431,18 @@ def _intermediate_coeffs(cal, pq, pv, carbon_cost, productivity=None):
 
     **Productivity shock (Phase 6.4 GE tier).** ``productivity`` is a per-sector Hicks-neutral
     output multiplier θ[i] (θ=1 ⇒ no shock; a nature degradation gives θ<1). A sector with
-    productivity θ needs ``1/θ`` of its whole per-output bundle — intermediates, value added, AND
-    the per-output carbon wedge — so the returned ``a``, va-quantity and cc_eff are each scaled by
-    1/θ[i] on column i. This is the single choke point every quantity flows through (``_quantities``
-    reads this ``a``; the zero-profit residual reads the same scaling via /θ), so goods-market and
-    factor clearing stay consistent with a degraded sector drawing proportionally more inputs.
-    θ=1 is byte-identical to the pre-6.4 code (the inv_theta factors are exactly 1)."""
+    productivity θ needs ``1/θ`` of its TECHNOLOGY bundle per unit output (intermediates + value
+    added), so the returned ``a`` and va-quantity scale by 1/θ[i] on column i — but the carbon wedge
+    ``cc_eff`` is a PHYSICAL per-output quantity that θ does NOT change, so it stays unscaled
+    (review P1 2026-08-07: scaling cc by 1/θ broke the emissions/revenue contract). The zero-profit
+    residual
+    correspondingly scales only the technology part by 1/θ and adds cc unscaled. θ=1 is
+    byte-identical to the pre-6.4 code (the inv_theta factors are exactly 1)."""
     ns = len(cal.sectors)
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     inv_theta = np.ones(ns) if productivity is None else 1.0 / np.asarray(productivity, dtype=float)
     if not cal.has_energy_nest:
-        return cal.ax * inv_theta[None, :], cal.va_share * inv_theta, cc * inv_theta
+        return cal.ax * inv_theta[None, :], cal.va_share * inv_theta, cc
     from cge.engines.cge_static.energy_nest import nest_demands
 
     nest = cal.energy_nest
@@ -419,9 +452,9 @@ def _intermediate_coeffs(cal, pq, pv, carbon_cost, productivity=None):
         a[j, :] += energy_use[k, :]
     for k, j in enumerate(nest.mat_idx):
         a[j, :] += materials_use[k, :]
-    # cc_eff = cc: per-OUTPUT carbon wedge, identical contract to the flat model (review remediation
-    # 2026-07-26) — total revenue = Σ_i cc[i]·Z[i] with or without the nest. All three scale by 1/θ.
-    return a * inv_theta[None, :], kl_qty * inv_theta, cc * inv_theta
+    # cc_eff = cc (UNSCALED): per-OUTPUT carbon wedge, a physical quantity θ does not change — total
+    # revenue = Σ_i cc[i]·Z[i]. Only the technology part (a, va-quantity) scales by 1/θ.
+    return a * inv_theta[None, :], kl_qty * inv_theta, cc
 
 
 def _quantities(cal, pd, pq, pm, pe, pz, FD, *, pv=None, carbon_cost=None, productivity=None):
@@ -542,21 +575,23 @@ def residuals(
     # prices, with carbon as a per-OUTPUT wedge on px (review remediation 2026-07-26), not an
     # energy-composite add-on. [ns rows]
     pz = _cet_price(cal, pd, pe)
-    # Per-sector productivity multiplier θ[i] (Phase 6.4 GE tier): the zero-profit unit cost divides
-    # by θ[i], the same 1/θ requirement _intermediate_coeffs applies to the physical coefficients,
-    # price and quantity stay consistent. θ=1 (default) is byte-identical to the pre-6.4 residual.
+    # Per-sector productivity multiplier θ[i] (Phase 6.4 GE tier): only the TECHNOLOGY part of the
+    # zero-profit unit cost divides by θ[i] (matching the 1/θ scaling _intermediate_coeffs uses on
+    # the physical coefficients); the carbon wedge cc[i] is a physical per-output quantity added
+    # UNSCALED — pz[i] = tech_cost[i]/θ[i] + cc[i] — so the emissions/revenue contract holds (review
+    # P1 2026-08-07). θ=1 (default) is byte-identical to the pre-6.4 residual.
     inv_theta = np.ones(ns) if productivity is None else 1.0 / np.asarray(productivity, dtype=float)
     if cal.has_energy_nest:
         from cge.engines.cge_static.energy_nest import nest_unit_cost
 
-        px = nest_unit_cost(cal.energy_nest, pq, pv, cc)
+        px = nest_unit_cost(cal.energy_nest, pq, pv, cc)  # nest technology cost + cc wedge
         for i in range(ns):
-            res.append(pz[i] - px[i] * inv_theta[i])
+            res.append(pz[i] - ((px[i] - cc[i]) * inv_theta[i] + cc[i]))
     else:
         for i in range(ns):
             intermediate = sum(cal.ax[j, i] * pq[j] for j in range(ns))
-            unit_cost = intermediate + cal.va_share[i] * pv[i] + cc[i]
-            res.append(pz[i] - unit_cost * inv_theta[i])
+            tech_cost = intermediate + cal.va_share[i] * pv[i]
+            res.append(pz[i] - (tech_cost * inv_theta[i] + cc[i]))
     # NB: composite-market clearing Q_i = Σ_j ax[i,j] Z_j + FD_i is NOT an independent residual — it
     # is solved *algebraically* inside _quantities() (Q = (I − ax·diag(ratio))⁻¹ FD, Z = ratio·Q),
     # so (Q − (ax·Z + FD)) ≡ 0 by construction and would be a tautological row (review P2). The

@@ -326,6 +326,81 @@ def test_store_recovers_build_from_backup_on_open(tmp_path):
     assert not (store.builds_dir / f".{bid}.lock").exists()  # stale lock cleaned
 
 
+def test_store_round_trips_nature_data_and_runs_on_stored_build(tmp_path):
+    """Review 2026-08-07 (round 2, #3): a build can persist an ENCORE dependency object + its
+    concordance, load them back intact, and drive a NatureStress scenario through the standard
+    runner on the STORED build — not only the in-memory toy source."""
+    from cge.contracts.shocks import NatureStress
+    from cge.data.store import DataStore
+    from cge.nature.fixture import encore_fixture, toy_encore_concordance
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+    from cge.validation.toy import toy_economy
+
+    store = DataStore(tmp_path)
+    io, sat = toy_economy()
+    meta = BuildMeta(
+        build_id="nat",
+        source="toy",
+        source_version="v",
+        reference_year=2020,
+        licence="x",
+        currency="EUR",
+        monetary_unit="MEUR",
+        retrieved="2026-08-01",
+    )
+    encore, concordance = encore_fixture(), toy_encore_concordance()
+    store.save(meta=meta, io=io, satellites=[sat], encore=encore, concordance=concordance)
+
+    loaded = store.load("nat")
+    assert loaded["EncoreDependencies"].ratings.equals(encore.ratings)
+    assert loaded["EncoreDependencies"].kind == "dependency"
+    assert loaded["ConcordanceMap"].weights == concordance.weights
+
+    sc = Scenario(
+        name="n",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4)],
+    )
+    res = run_scenario(sc, data_source="nat", store=store)
+    assert "nature" in res.manifest.assumptions
+    assert (res.data["variable"] == "volume_change").any()
+
+
+def test_store_build_without_nature_rejects_nature_scenario(tmp_path):
+    """A build that carries no ENCORE/concordance loads fine and rejects a NatureStress scenario
+    with guidance — it does not silently do nothing."""
+    from cge.contracts.shocks import NatureStress
+    from cge.data.store import DataStore
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+    from cge.validation.toy import toy_economy
+
+    store = DataStore(tmp_path)
+    io, sat = toy_economy()
+    meta = BuildMeta(
+        build_id="plain",
+        source="toy",
+        source_version="v",
+        reference_year=2020,
+        licence="x",
+        currency="EUR",
+        monetary_unit="MEUR",
+        retrieved="2026-08-01",
+    )
+    store.save(meta=meta, io=io, satellites=[sat])  # no nature data
+    assert "EncoreDependencies" not in store.load("plain")
+    sc = Scenario(
+        name="n",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4)],
+    )
+    with pytest.raises(ValueError, match="NatureStress scenario needs"):
+        run_scenario(sc, data_source="plain", store=store)
+
+
 def _concurrent_save_worker(root, bid):  # module-level so multiprocessing 'spawn' can import
     from cge.data.adapters.exiobase import adapt_pymrio, load_exiobase_test
     from cge.data.metadata import BuildMeta

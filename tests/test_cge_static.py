@@ -2211,6 +2211,32 @@ def test_engine_deficit_financed_rejected_without_government():
 
 
 # -- Productivity shock: the GE nature tier (Phase 6.4) -----------------------------------------
+def test_carbon_revenue_equals_physical_emissions_under_productivity_shock():
+    """Review P1 (2026-08-07): a combined carbon+productivity shock must keep the emissions/revenue
+    contract — reported carbon revenue = Σ cc[i]·X[i] (the carbon wedge is a physical per-output
+    quantity θ does NOT change). The earlier code scaled cc by 1/θ, so revenue = Σ(cc/θ)·X diverged
+    from physical emissions by 1/θ. This asserts the ratio is exactly 1 at θ≠1."""
+    cal = _cal()
+    ns = len(cal.sectors)
+    cc = np.array([0.10, 0.02])
+    theta = np.array([0.8, 1.0])  # a 20% productivity hit on BRD
+    sol = solve(
+        lambda z: M.residuals(cal, z, carbon_cost=cc, recycling="lump_sum", productivity=theta),
+        M.initial_guess(cal),
+        prefer="scipy",
+    )
+    st = M.derive_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns:],
+        carbon_cost=cc,
+        recycling="lump_sum",
+        strict=True,
+        productivity=theta,
+    )
+    assert float(st.carbon_revenue) == pytest.approx(float(cc @ st.X), rel=1e-9)
+
+
 def test_productivity_theta_one_is_byte_identical_residual():
     """The load-bearing correctness guarantee: a θ=1 productivity vector leaves the residual
     bit-for-bit unchanged, so benchmark replication / homogeneity / Walras are untouched. Verified
@@ -2223,9 +2249,7 @@ def test_productivity_theta_one_is_byte_identical_residual():
     for _ in range(200):
         z = np.concatenate([0.5 + rng.random(ns), 0.5 + rng.random(nf)])
         r_none = M.residuals(cal, z, carbon_cost=cc, recycling="lump_sum")
-        r_ones = M.residuals(
-            cal, z, carbon_cost=cc, recycling="lump_sum", productivity=np.ones(ns)
-        )
+        r_ones = M.residuals(cal, z, carbon_cost=cc, recycling="lump_sum", productivity=np.ones(ns))
         assert np.array_equal(r_none, r_ones)
 
 
@@ -2270,6 +2294,28 @@ def test_productivity_shock_matches_by_sector_ignoring_region():
 
 def test_productivity_shock_registered_as_supported():
     assert "productivity" in registry.get("cge_static").meta.supported_shocks
+
+
+def test_region_tagged_shocks_aggregate_not_compound_in_closed_variant():
+    """Review P1 (2026-08-07): build_nature_shocks on a multi-region economy emits one shock per
+    good (the same sector tagged per region). The single-region closed variant must AGGREGATE these
+    (average across regions), not COMPOUND them — two regions each losing 20% is a 20% aggregate
+    (θ=0.8), not 0.8·0.8=0.64. Genuinely independent hits on the SAME good still compound."""
+    from cge.engines.cge_static.engine import _productivity_by_sector
+
+    two_regions = [
+        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["A"]),
+        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["B"]),
+    ]
+    theta = _productivity_by_sector(two_regions, ["agriculture", "energy"], 2020)
+    assert theta[0] == pytest.approx(0.8)  # aggregated across regions, NOT 0.64
+
+    same_good = [
+        ProductivityShock(delta=-0.1, coverage_sectors=["agriculture"], coverage_regions=["A"]),
+        ProductivityShock(delta=-0.1, coverage_sectors=["agriculture"], coverage_regions=["A"]),
+    ]
+    theta2 = _productivity_by_sector(same_good, ["agriculture"], 2020)
+    assert theta2[0] == pytest.approx(0.81)  # two independent hits on one good DO compound
 
 
 def test_productivity_shock_consumed_by_open_variant():

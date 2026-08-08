@@ -37,6 +37,7 @@ except ImportError:  # pragma: no cover - Windows
 
 from cge.contracts.data_objects import (
     Classification,
+    ConcordanceMap,
     IOSystem,
     Provenance,
     SatelliteAccount,
@@ -355,6 +356,8 @@ class DataStore:
         io: IOSystem,
         satellites: list[SatelliteAccount],
         quality: QualityReport | None = None,
+        encore=None,
+        concordance=None,
     ) -> Path:
         """Persist a build with crash-safe replacement.
 
@@ -404,6 +407,34 @@ class DataStore:
                 )
             if quality is not None:
                 (staging / "quality.json").write_text(quality.model_dump_json(indent=2))
+
+            # Nature data (Phase 6, review 2026-08-07): persist an ENCORE dependency object and its
+            # ENCORE↔economy concordance alongside the build, so a stored build can drive a
+            # NatureStress scenario through the standard runner — not only the in-memory toy source.
+            # Both are optional; a build without them behaves exactly as before.
+            if encore is not None:
+                encore.ratings.to_parquet(staging / "nature_encore.parquet")
+                (staging / "nature_encore.json").write_text(
+                    json.dumps(
+                        {
+                            "kind": encore.kind,
+                            "provenance": encore.provenance.model_dump(mode="json"),
+                        },
+                        indent=2,
+                    )
+                )
+            if concordance is not None:
+                (staging / "nature_concordance.json").write_text(
+                    json.dumps(
+                        {
+                            "from_classification": concordance.from_classification,
+                            "to_classification": concordance.to_classification,
+                            "weights": concordance.weights,
+                            "provenance": concordance.provenance.model_dump(mode="json"),
+                        },
+                        indent=2,
+                    )
+                )
 
             had_existing = final.exists()
             if had_existing:
@@ -542,6 +573,28 @@ class DataStore:
         if "GHG" in sats:
             out["SatelliteAccount"] = sats["GHG"]
         out["satellites"] = sats
+
+        # Nature data (Phase 6), if this build carries it — keyed exactly as the runner's nature
+        # preprocessing expects, so a stored build can run a NatureStress scenario.
+        encore_json = d / "nature_encore.json"
+        if encore_json.exists():
+            from cge.nature.encore import EncoreDependencies
+
+            spec = json.loads(encore_json.read_text())
+            out["EncoreDependencies"] = EncoreDependencies(
+                provenance=Provenance.model_validate(spec["provenance"]),
+                ratings=pd.read_parquet(d / "nature_encore.parquet"),
+                kind=spec.get("kind", "dependency"),
+            )
+        concordance_json = d / "nature_concordance.json"
+        if concordance_json.exists():
+            spec = json.loads(concordance_json.read_text())
+            out["ConcordanceMap"] = ConcordanceMap(
+                provenance=Provenance.model_validate(spec["provenance"]),
+                from_classification=spec["from_classification"],
+                to_classification=spec["to_classification"],
+                weights=spec["weights"],
+            )
         return out
 
     def load_quality(self, build_id: str) -> QualityReport | None:

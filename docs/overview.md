@@ -137,12 +137,17 @@ a supplied SAM).
 → [`docs/models/cge-static.md`](models/cge-static.md) (equation-level) · **plan:**
 [`docs/phase-5-plan.md`](phase-5-plan.md).
 
-### Nature extension (ENCORE) — *the ecosystem-service answer (planned)*
+### Nature extension (ENCORE) — *the ecosystem-service answer (built, experimental)*
 Maps sectors to their **dependencies on ecosystem services** (pollination, water, …) via the
 ENCORE knowledge base, propagates those through the supply chain (reusing Engine 1's Leontief
-machinery), and translates degradation scenarios into `NatureStress` shocks fed to the engines.
-This is the nature-risk extension the platform was specifically designed to reach.
-→ Roadmap [Phase 6](../roadmap.md).
+machinery), and translates degradation scenarios into `NatureStress` shocks that become per-good
+`ProductivityShock`s consumed by Engine 2 and the CGE. This is the nature-risk extension the
+platform was specifically designed to reach. It is **built and demonstrable on an illustrative
+synthetic ENCORE fixture, but explicitly experimental** — the ratings are synthetic, and a
+methodological/provenance follow-up (direct-vs-total shock incidence; `NatureStress` in the standard
+manifest pipeline; a real-ENCORE-export adapter) is outstanding, so nature results are illustrative
+of the method, not calibrated risk.
+→ [`docs/models/nature-encore.md`](models/nature-encore.md) · Roadmap [Phase 6](../roadmap.md).
 
 ### Pathway stack — *"a CGE that speaks IAM" (planned, Phase 7)*
 Recursive-dynamic runs to 2050 driven by exogenous **NGFS** scenarios, with one-way **FaIR**
@@ -219,9 +224,11 @@ conventions, IO→SAM institution pipeline, config-boundary integrity), all reme
 and reasoning recorded → [`docs/review-2026-07-remediation.md`](review-2026-07-remediation.md). The
 honest current status: **cost answers are validated against live data; volume answers are
 indicative; the static CGE (revenue recycling, government closures, KL-E-M energy nest) runs in
-closed, open, and multi-region variants on EXIOBASE-shaped data, with wage-floor labour and
-adaptation/transition investment in the closed variant only (open/multi are follow-ups); a
-live-EXIOBASE multi-region SAM build (§5.1b) and the nature extensions are the next work.**
+closed, open, and multi-region variants on EXIOBASE-shaped data (the multi-region SAM is **built**
+from an IOSystem, §5.1b; only the *live* EXIOBASE download vs. the offline test MRIO remains), with
+wage-floor labour and adaptation/transition investment in the closed variant only (open/multi are
+follow-ups). The **nature extension is built but experimental** (Phase 6, illustrative fixture);
+resolving its methodological/provenance follow-ups and the live-EXIOBASE build are the next work.**
 
 ---
 
@@ -237,7 +244,7 @@ live-EXIOBASE multi-region SAM build (§5.1b) and the nature extensions are the 
 | 4b — Macro aggregates | GVA/GDP/deflators, real vs nominal (PE tier) | ✅ [model doc](models/macro-aggregates.md) |
 | 5 — Engine 3 (CGE) | GE price+volume, **revenue recycling**, **open economy** (Armington/CET, carbon leakage), **CES value added**, elasticity sweeps, **true multi-region** (bilateral trade, destination-specific prices) — pilot core complete; government/investment/energy nest reopened as 5d | ✅ [model doc](models/cge-static.md) |
 | 5d — Macro closure | government/fiscal account (balanced-budget + deficit-financed), savings-investment + capital identity, KL-E-M energy nest, wage-floor labour market, adaptation investment, trade closures — all three variants | ✅ [model doc](models/cge-static.md) |
-| 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | ⬜ [roadmap](../roadmap.md) |
+| 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | 🧪 built, experimental (synthetic fixture; real-ENCORE adapter + calibration outstanding) [roadmap](../roadmap.md) |
 | 7 — Pathway stack | NGFS-driven dynamics + FaIR climate | ⬜ [roadmap](../roadmap.md) |
 
 The completed work is the minimum viable version of the original ask, and then some (cost +

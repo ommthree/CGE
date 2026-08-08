@@ -1396,3 +1396,32 @@ def test_open_productivity_theta_below_one_moves_residual():
     r0 = MO.residuals(cal, z, carbon_cost=cc)
     r1 = MO.residuals(cal, z, carbon_cost=cc, productivity=theta)
     assert float(np.abs(r0 - r1).max()) > 1e-6
+
+
+def test_open_carbon_revenue_equals_physical_emissions_under_productivity():
+    """Review round 2: the emissions/revenue identity must hold in the OPEN variant too under a
+    combined carbon + productivity shock — reported carbon revenue = Σ cc·Z (the wedge is physical,
+    unscaled by θ)."""
+    cal = _cal()
+    ns, nf = len(cal.sectors), len(cal.factors)
+    cc = np.zeros(ns)
+    cc[0] = 0.08
+    theta = np.ones(ns)
+    theta[0] = 0.8
+    sol = solve(
+        lambda z: MO.residuals(cal, z, carbon_cost=cc, recycling="lump_sum", productivity=theta),
+        MO.initial_guess(cal),
+        prefer="scipy",
+    )
+    st = MO.derive_open_state(
+        cal,
+        sol.x[:ns],
+        sol.x[ns : 2 * ns],
+        sol.x[2 * ns : 2 * ns + nf],
+        float(sol.x[-1]),
+        carbon_cost=cc,
+        recycling="lump_sum",
+        strict=True,
+        productivity=theta,
+    )
+    assert float(st.carbon_revenue) == pytest.approx(float(cc @ st.Z), rel=1e-9)

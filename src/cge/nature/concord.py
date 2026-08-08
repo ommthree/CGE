@@ -33,7 +33,21 @@ def sector_scores(
     Returns a sectors × service score matrix in [0, 1]. ``concordance`` maps each economy sector
     (source) to ENCORE process(es) (target) with weights summing to 1. Every sector must be covered
     (an unmapped sector would silently get zero dependency — reject so the gap is explicit).
+
+    Only a ``kind="dependency"`` object is accepted (review P1 2026-08-07). ENCORE distinguishes
+    **dependencies** (how much a process relies on an ecosystem service — the channel that becomes a
+    productivity loss when the service degrades) from **impacts/pressures** (how much a process
+    *degrades* nature). Feeding an ``impact`` object here would invert the causality — treating the
+    economy's pressure ON nature as nature's effect on the economy — so it is rejected.
     """
+    if getattr(dep, "kind", "dependency") != "dependency":
+        raise ValueError(
+            f"sector_scores requires a dependency-kind ENCORE object, got kind={dep.kind!r}. "
+            "Impact/pressure ratings measure the economy's effect ON nature, not a dependency that "
+            "becomes a productivity loss — converting them into productivity shocks inverts the "
+            "causality. Use a dependency object (or an impact→pressure channel, a documented "
+            "follow-up)."
+        )
     scores = dep.score_matrix()  # process × service
     missing_sectors = [s for s in sectors if s not in concordance.weights]
     if missing_sectors:

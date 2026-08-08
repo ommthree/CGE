@@ -165,6 +165,72 @@ def test_exposure_unknown_rule_rejected():
         compute_exposure(io.A, direct, rule="median")  # type: ignore[arg-type]
 
 
+# -- Exposure precondition guards (review P1 2026-08-07) --------------------------------------
+def test_exposure_rejects_nan_in_A():
+    io, direct = _fixture_direct()
+    A = io.A.copy()
+    A.iloc[0, 1] = np.nan
+    with pytest.raises(ValueError, match="non-finite"):
+        compute_exposure(A, direct)
+
+
+def test_exposure_rejects_negative_coefficient():
+    """A negative coefficient would let upstream SUBTRACT exposure, violating total ≥ direct — it is
+    rejected so the caller must apply an explicit negative-coefficient policy (EXIOBASE has small
+    negatives) rather than silently breaking the risk invariant."""
+    io, direct = _fixture_direct()
+    A = io.A.copy()
+    A.iloc[0, 1] = -0.1
+    with pytest.raises(ValueError, match="negative coefficient"):
+        compute_exposure(A, direct)
+
+
+def test_exposure_rejects_out_of_range_direct_scores():
+    io, direct = _fixture_direct()
+    bad = direct.copy()
+    bad.iloc[0, 0] = 1.5
+    with pytest.raises(ValueError, match=r"in \[0, 1\]"):
+        compute_exposure(io.A, bad)
+
+
+def test_exposure_raises_on_non_convergence():
+    """A run that fails to converge within max_iter is raised, never silently returned as an
+    unconverged iterate. A 3-good chain needs several passes; max_iter=1 cannot converge."""
+    idx = ["x", "y", "z"]
+    A = pd.DataFrame([[0.0, 0.9, 0.0], [0.0, 0.0, 0.9], [0.0, 0.0, 0.0]], index=idx, columns=idx)
+    d = pd.DataFrame([[0.8], [0.0], [0.0]], index=idx, columns=["w"])
+    with pytest.raises(ValueError, match="did not converge"):
+        compute_exposure(A, d, max_iter=1)
+    # enough iterations converges cleanly
+    total, _ = compute_exposure(A, d, max_iter=1000)
+    assert total.loc["z", "w"] > 0.0  # exposure propagated through the full chain
+
+
+def test_exposure_max_rule_materiality_threshold_screens_negligible_links():
+    """The `max` rule's materiality threshold stops a negligible input coefficient from propagating
+    the global maximum across the economy (review P1: an unthresholded dense MRIO collapses to the
+    global max)."""
+    idx = ["dirty", "clean"]
+    # clean uses only a tiny 1e-6 amount of dirty as input.
+    A = pd.DataFrame([[0.0, 1e-6], [0.0, 0.0]], index=idx, columns=idx)
+    d = pd.DataFrame([[1.0], [0.0]], index=idx, columns=["w"])
+    no_thresh, _ = compute_exposure(A, d, rule="max", max_link_threshold=0.0)
+    thresh, _ = compute_exposure(A, d, rule="max", max_link_threshold=1e-3)
+    assert no_thresh.loc["clean", "w"] == 1.0  # negligible link still propagates the max
+    assert thresh.loc["clean", "w"] == 0.0  # screened out above the threshold
+
+
+def test_sector_scores_rejects_impact_kind_object():
+    """Review P1 (2026-08-07): ENCORE impacts (the economy's pressure ON nature) must NOT feed into
+    the dependency→productivity channel — that inverts the causality. sector_scores rejects a
+    kind='impact' object rather than silently converting impacts into productivity losses."""
+    from cge.nature.concord import sector_scores
+
+    impact = encore_fixture().model_copy(update={"kind": "impact"})
+    with pytest.raises(ValueError, match="dependency-kind"):
+        sector_scores(impact, toy_encore_concordance(), ["agriculture", "energy", "manufacturing"])
+
+
 # -- 6.4 NatureStress → ProductivityShock translation + engine consumption --------------------
 def test_nature_stress_translates_to_productivity_scaled_by_exposure():
     """A NatureStress on a service degrades each good's productivity in proportion to its exposure:
@@ -207,6 +273,228 @@ def test_build_nature_shocks_runs_the_full_chain():
         toy_encore_concordance(),
     )
     assert shocks and all(s.delta <= 0 for s in shocks)
+
+
+def test_build_nature_shocks_incidence_direct_vs_total():
+    """Review P1 (2026-08-07): incidence='direct' shocks each good only for its OWN dependency (the
+    engine transmits upstream), while 'total' carries the full direct+upstream exposure. A good with
+    upstream-inherited exposure (manufacturing) is shocked LESS under direct; a fully directly-
+    dependent good (agriculture, E=1) is identical under both."""
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.translate import build_nature_shocks
+
+    io, _ = toy_economy()
+    ns = [NatureStress(service="surface_water", severity=0.5)]
+    total = build_nature_shocks(
+        ns, io, encore_fixture(), toy_encore_concordance(), incidence="total"
+    )
+    direct = build_nature_shocks(
+        ns, io, encore_fixture(), toy_encore_concordance(), incidence="direct"
+    )
+
+    def _by_good(shocks):
+        return {(s.coverage_regions[0], s.coverage_sectors[0]): s.delta for s in shocks}
+
+    t, d = _by_good(total), _by_good(direct)
+    # Agriculture is fully water-dependent directly (E=1) → identical under both.
+    assert t[("A", "agriculture")] == pytest.approx(d[("A", "agriculture")])
+    # Manufacturing's water exposure is largely upstream-inherited → smaller (less negative) shock
+    # under direct incidence than total.
+    assert d[("A", "manufacturing")] > t[("A", "manufacturing")]
+
+
+def test_incidence_by_engine_defaults():
+    """The CGE (endogenous supply transmission) defaults to direct incidence; partial_eq (no
+    transmission) to total — the map the runner/GUI use to avoid double-counting upstream."""
+    from cge.nature import INCIDENCE_BY_ENGINE
+
+    assert INCIDENCE_BY_ENGINE["cge_static"] == "direct"
+    assert INCIDENCE_BY_ENGINE["io_price"] == "direct"
+    assert INCIDENCE_BY_ENGINE["partial_eq"] == "total"
+
+
+def test_nature_stress_runs_through_standard_runner_with_manifest_provenance():
+    """Review P1 (2026-08-07): a NatureStress scenario runs through the STANDARD runner (not a
+    GUI-only path), and the manifest records the nature inputs — ENCORE + concordance hashes,
+    materiality scale, exposure rule and incidence — so a nature run is reconstructible from its
+    manifest (the 'explicit and auditable' promise)."""
+    from cge.contracts.shocks import NatureStress
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    sc = Scenario(
+        name="nat",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4)],
+    )
+    res = run_scenario(sc, data_source="toy")
+    assert (res.data["variable"] == "volume_change").any()
+    nat = res.manifest.assumptions.get("nature")
+    assert nat is not None
+    for key in (
+        "encore_content_hash",
+        "concordance_content_hash",
+        "materiality_scale",
+        "exposure_rule",
+        "incidence",
+        "stresses",
+    ):
+        assert key in nat, f"manifest nature provenance missing {key!r}"
+    assert nat["incidence"] == "total"  # partial_eq default
+
+
+def test_nature_stress_cge_uses_direct_incidence_in_manifest():
+    from cge.contracts.shocks import NatureStress
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    sc = Scenario(
+        name="nat",
+        engine="cge_static",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4)],
+    )
+    res = run_scenario(sc, data_source="toy")
+    assert res.manifest.assumptions["nature"]["incidence"] == "direct"
+
+
+# -- Second review (2026-08-07 round 2): the four P1 counterexamples -----------------------------
+def test_nature_time_path_flows_through_per_year():
+    """Review P1 round 2: a NatureStress time path must produce a per-YEAR productivity shock, not
+    collapse to the scalar severity. A path of 10%→50% (2020→2030) gives −10% then −50%, and two
+    scenarios differing only in the 2030 endpoint get DIFFERENT scenario hashes (no provenance
+    collision)."""
+    from cge.contracts.shocks import NatureStress
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    ns1 = NatureStress(service="surface_water", severity=0.1, path={2020: 0.1, 2030: 0.5})
+    ns2 = NatureStress(service="surface_water", severity=0.1, path={2020: 0.1, 2030: 0.9})
+    sc1 = Scenario(name="p", engine="partial_eq", years=[2020, 2030], shocks=[ns1])
+    sc2 = Scenario(name="p", engine="partial_eq", years=[2020, 2030], shocks=[ns2])
+    r1 = run_scenario(sc1, data_source="toy")
+    r2 = run_scenario(sc2, data_source="toy")
+    vol = r1.data[
+        (r1.data["variable"] == "volume_change")
+        & (r1.data["sector"] == "agriculture")
+        & (r1.data["scenario"] == "central")
+    ]
+    by_year = {int(r.year): r.value for r in vol.itertuples()}
+    assert by_year[2020] == pytest.approx(-0.1)  # agriculture E=1 → loss = severity
+    assert by_year[2030] == pytest.approx(-0.5)  # the PATH value, not the scalar 0.1
+    assert r1.manifest.scenario_hash != r2.manifest.scenario_hash  # no collision
+
+
+def test_region_scoped_shock_is_not_economy_wide_in_collapsed_cge():
+    """Review P1 round 2: in the collapsed single-region CGE, a shock on ONE region must not behave
+    like an economy-wide shock. Unshocked regions contribute θ=1 to the average, so a −20% hit on
+    region A alone gives θ_agri = mean(0.8, 1.0) = 0.9, distinct from a both-regions shock (0.8)."""
+    from cge.contracts.shocks import ProductivityShock
+    from cge.engines.cge_static.engine import _productivity_by_sector
+
+    sectors = ["agriculture", "energy"]
+    # Both regions present (via energy shocks); agriculture degraded only in A.
+    a_only = [
+        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["A"]),
+        ProductivityShock(delta=-0.05, coverage_sectors=["energy"], coverage_regions=["A"]),
+        ProductivityShock(delta=-0.05, coverage_sectors=["energy"], coverage_regions=["B"]),
+    ]
+    both = a_only + [
+        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["B"])
+    ]
+    theta_a = _productivity_by_sector(a_only, sectors, 2020)[0]
+    theta_both = _productivity_by_sector(both, sectors, 2020)[0]
+    assert theta_a == pytest.approx(0.9)  # A shocked, B at θ=1 → mean
+    assert theta_both == pytest.approx(0.8)  # both shocked
+    assert theta_a != theta_both  # region scope actually matters
+
+
+def test_nature_pipeline_runs_with_encore_injected_via_overrides():
+    """Review P1 round 2: the standard pipeline must not require the data source to carry ENCORE —
+    a caller can inject EncoreDependencies + ConcordanceMap via data_overrides (so a real stored
+    build, which does not persist nature data, can still run a nature scenario)."""
+    from cge.contracts.shocks import NatureStress
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    sc = Scenario(
+        name="n",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4)],
+    )
+    res = run_scenario(
+        sc,
+        data_source="toy",
+        data_overrides={
+            "EncoreDependencies": encore_fixture(),
+            "ConcordanceMap": toy_encore_concordance(),
+        },
+    )
+    assert "nature" in res.manifest.assumptions
+
+
+def test_exposure_rejects_explicit_nan_direct_but_fills_absent_goods():
+    """Review P1 round 2: an EXPLICIT NaN in supplied direct data is rejected (not silently zeroed),
+    while a good simply ABSENT from the input still fills to 0 direct dependency."""
+    idx = ["x", "y"]
+    A = pd.DataFrame([[0.0, 0.3], [0.2, 0.0]], index=idx, columns=idx)
+    with pytest.raises(ValueError, match="non-finite"):
+        compute_exposure(A, pd.DataFrame([[np.nan], [0.1]], index=idx, columns=["w"]))
+    # 'y' absent from the supplied direct scores → filled to 0, not rejected.
+    total, d = compute_exposure(A, pd.DataFrame([[0.5]], index=["x"], columns=["w"]))
+    assert d.loc["y", "w"] == 0.0
+
+
+def test_incidence_invalid_value_rejected():
+    """Review P2: an invalid incidence string must not silently fall through to 'total'."""
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.translate import build_nature_shocks
+
+    io, _ = toy_economy()
+    with pytest.raises(ValueError, match="unknown incidence"):
+        build_nature_shocks(
+            [NatureStress(service="surface_water", severity=0.4)],
+            io,
+            encore_fixture(),
+            toy_encore_concordance(),
+            incidence="typo",  # type: ignore[arg-type]
+        )
+
+
+def test_duplicate_service_stresses_rejected():
+    """Review P2: two stresses on the SAME service compound as if independent — reject rather than
+    silently double-count (composition is across DISTINCT services)."""
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.translate import build_nature_shocks
+
+    io, _ = toy_economy()
+    with pytest.raises(ValueError, match="duplicate NatureStress service"):
+        build_nature_shocks(
+            [
+                NatureStress(service="surface_water", severity=0.3),
+                NatureStress(service="surface_water", severity=0.2),
+            ],
+            io,
+            encore_fixture(),
+            toy_encore_concordance(),
+        )
+
+
+def test_shock_validation_rejects_invalid_values():
+    """Review P2: ProductivityShock rejects NaN and delta < −1; NatureStress rejects a blank service
+    and out-of-range path levels."""
+    from cge.contracts.shocks import NatureStress, ProductivityShock
+
+    with pytest.raises(ValueError, match="≥ −1"):
+        ProductivityShock(delta=-2.0)
+    with pytest.raises(ValueError, match="finite"):
+        ProductivityShock(delta=float("nan"))
+    with pytest.raises(ValueError, match="non-empty"):
+        NatureStress(service="   ", severity=0.3)
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        NatureStress(service="surface_water", severity=0.3, path={2020: 1.5})
 
 
 def test_partial_eq_consumes_productivity_shock_as_supply_hit():

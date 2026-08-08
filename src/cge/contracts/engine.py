@@ -44,6 +44,10 @@ class EngineMeta(BaseModel):
     def supports(self, shock: Shock) -> bool:
         return shock.type in self.supported_shocks
 
+    def supports_type(self, shock_type: str) -> bool:
+        """Whether the engine consumes a shock ``type`` string (e.g. 'productivity')."""
+        return shock_type in self.supported_shocks
+
 
 @runtime_checkable
 class Engine(Protocol):

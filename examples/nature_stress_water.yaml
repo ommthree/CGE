@@ -1,0 +1,33 @@
+# Nature degradation scenario (Phase 6): a surface-water ecosystem-service decline.
+#
+# EXPERIMENTAL / ILLUSTRATIVE. On the built-in `toy` source this runs against a SYNTHETIC,
+# expert-designed ENCORE fixture (not the real registration-gated ENCORE knowledge base), so treat
+# every number as illustrative of the METHOD, not as calibrated nature risk. See
+# docs/models/nature-encore.md.
+#
+#   cge run --scenario examples/nature_stress_water.yaml --data toy
+#
+# What happens: the runner translates the NatureStress into per-good ProductivityShocks, scaled by
+# each good's ENCORE exposure to surface water (direct + upstream), then runs the chosen engine.
+# The manifest records the full nature provenance (ENCORE + concordance hashes, materiality scale,
+# exposure rule, incidence) so the run is reconstructible.
+name: "Surface-water degradation — 40% loss"
+description: >
+  A 40% degradation of the surface-water ecosystem service. Goods lose productivity in proportion to
+  their water dependence: agriculture (fully water-dependent) is hit hardest; manufacturing less (its
+  exposure is largely inherited through its agri-food inputs). partial_eq shocks each good by its
+  TOTAL (direct + upstream) exposure; the CGE (cge_static) uses DIRECT incidence and lets the
+  input-output network transmit the upstream effect — set automatically per engine.
+engine: partial_eq
+years: [2020]
+shocks:
+  - type: nature_stress
+    service: surface_water
+    severity: 0.4
+
+# A time path is supported — replace the scalar `severity` above with, e.g.:
+#   - type: nature_stress
+#     service: surface_water
+#     severity: 0.1            # the level when no path year applies
+#     path: {2020: 0.1, 2030: 0.5}   # 10% degradation in 2020 rising to 50% by 2030
+# and set `years: [2020, 2030]` — the shock then varies per year.
