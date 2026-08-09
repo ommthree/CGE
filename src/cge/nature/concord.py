@@ -68,6 +68,31 @@ def sector_scores(
     return out
 
 
+def sector_nd_mask(
+    dep: EncoreDependencies,
+    concordance: ConcordanceMap,
+    sectors: list[str],
+) -> pd.DataFrame:
+    """Boolean sectors × service mask, True where a sector's dependency on a service is **entirely
+    unknown** — i.e. EVERY ENCORE process the sector maps to is ``ND`` (No Data) on that service
+    (review P1 round 3 2026-08-09).
+
+    The numeric ``sector_scores`` scores an all-ND cell as 0, indistinguishable from a genuine
+    "no dependency". This mask preserves the distinction so a run can FLAG the gap (e.g. wholesale
+    trade's water-purification dependency is unknown, not zero) rather than silently reporting no
+    risk — matching ENCORE's own N/A-vs-ND semantics. A cell is *not* masked if any contributing
+    process has a real rating (a partial gap still yields a usable, if under-estimated, score)."""
+    nd = dep.nd_mask()  # ENCORE process × service (True = ND)
+    out = pd.DataFrame(False, index=sectors, columns=list(nd.columns))
+    for s in sectors:
+        procs = [p for p in concordance.weights.get(s, {}) if p in nd.index]
+        if not procs:
+            continue
+        # A sector/service is unknown iff ALL its contributing processes are ND there.
+        out.loc[s] = nd.loc[procs].all(axis=0)
+    return out
+
+
 def broadcast_to_goods(sector_score: pd.DataFrame, goods: list[str]) -> pd.DataFrame:
     """Broadcast a sectors × service score matrix onto the economy's GOODS (``region:sector``),
     giving every region the same per-sector dependency (dependency is a per-unit intensity). Goods

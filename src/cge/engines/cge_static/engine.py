@@ -780,6 +780,7 @@ class CGEStaticEngine:
 
         carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
         prod_shocks = [s for s in shocks if isinstance(s, ProductivityShock)]
+        _assert_no_region_scoped_productivity(prod_shocks, "closed")
         _validate_cge_shock_controls(inp, carbon_shocks)
         # One government ⇒ one recycling rule; a scenario cannot mix modes.
         modes = {s.revenue_recycling for s in carbon_shocks} or {"none"}
@@ -1243,53 +1244,45 @@ def _carbon_cost_by_sector(
     return cc, prov
 
 
+def _assert_no_region_scoped_productivity(
+    prod_shocks: list[ProductivityShock], variant: str
+) -> None:
+    """The closed/open CGE is **single-region** (the SAM collapses regions), so a ProductivityShock
+    that carries region coverage is ILL-POSED here — the model has no region dimension to apply it
+    to, and any aggregation of "this region only" against a region-less economy is a guess that has
+    twice produced silent wrong answers (review P1 rounds 2 and 3: a region-A-only shock came out
+    identical to an economy-wide shock). So reject it, with guidance to the multi-region variant.
+
+    A region-scoped shock is one whose ``coverage_regions`` is non-empty. An economy-wide shock
+    (empty ``coverage_regions``) is unambiguous and allowed."""
+    scoped = sorted({r for s in prod_shocks for r in s.coverage_regions})
+    if scoped:
+        raise ValueError(
+            f"the {variant!r} CGE variant is single-region (the SAM collapses regions), so a "
+            f"region-scoped ProductivityShock (coverage_regions={scoped}) cannot be applied "
+            "unambiguously — there is no region dimension to target. Use the multi-region CGE "
+            "variant for region-specific nature shocks, or drop the region coverage to apply the "
+            "shock economy-wide."
+        )
+
+
 def _productivity_by_sector(
     prod_shocks: list[ProductivityShock], sectors: list[str], year: int
 ) -> np.ndarray:
     """Per-sector Hicks-neutral productivity multiplier θ[i] for ``year`` (Phase 6.4 GE tier).
 
-    The closed/open CGE is **single-region**, but ``build_nature_shocks`` on a multi-region economy
-    emits ONE shock per good — the same sector's degradation tagged with each region. Two failure
-    modes to avoid (both found in review):
-
-    1. Naively **multiplying** every shock matching a sector DOUBLE-COUNTS: two regions each losing
-       20% would give 0.8·0.8 = 0.64, a spurious 36% aggregate loss (review P1 2026-08-07 round 1).
-    2. **Averaging only the regions that were shocked** makes a region-scoped shock ECONOMY-WIDE: a
-       shock on region A alone gives θ_A = 0.8 with no B term, identical to shocking both — B (θ=1)
-       must be included (review P1 2026-08-07 round 2).
-
-    Correct single-region aggregation: recover the **full source-region set** as the union of every
-    productivity shock's ``coverage_regions`` (on a nature run every good in each region is shocked,
-    so this is the whole economy). For each sector, compute each source region's surviving
-    productivity — Π over that region's shocks of (1 + δ), and **1.0 for a region with no shock on
-    this sector** — then average across ALL source regions. A shock with empty region coverage is
-    economy-wide (applies to every source region). Equal weights across regions: the collapsed model
-    summed the regions' output into one sector, so it carries no per-region split to weight by.
-
-    A sector with no shock anywhere has θ = 1 (byte-identical to a pure carbon run). θ is floored at
-    a small positive value so a fully-degraded sector cannot drive the unit cost non-finite."""
-    # Full set of source regions the shocks span (empty-coverage shocks contribute no explicit
-    # region). With no region-tagged shocks at all, collapse to a single implicit region.
-    source_regions = sorted({r for s in prod_shocks for r in s.coverage_regions})
-    if not source_regions:
-        source_regions = ["__single__"]
-
+    Assumes ``prod_shocks`` are **economy-wide** (region coverage already rejected by
+    ``_assert_no_region_scoped_productivity`` — the collapsed single-region model has no region
+    dimension). Multiple shocks on one sector compose multiplicatively (independent hits): two −10%
+    shocks give 0.81. A sector with no shock has θ = 1 (byte-identical to a pure carbon run). θ is
+    floored at a small positive value so a fully-degraded sector cannot drive the unit cost
+    non-finite."""
     theta = np.ones(len(sectors))
     for i, sec in enumerate(sectors):
-        # Surviving productivity per source region: start each region at 1.0 (unshocked), then apply
-        # each shock covering this sector to the region(s) it covers (empty coverage → all regions).
-        surviving = dict.fromkeys(source_regions, 1.0)
-        applied = False
         for s in prod_shocks:
             if s.coverage_sectors and sec not in s.coverage_sectors:
                 continue
-            applied = True
-            factor = 1.0 + s._path_level_at(year, s.delta)
-            covered = s.coverage_regions or source_regions  # empty coverage = economy-wide
-            for r in covered:
-                surviving[r] *= factor
-        if applied:
-            theta[i] = float(np.mean(list(surviving.values())))  # average across ALL source regions
+            theta[i] *= 1.0 + s._path_level_at(year, s.delta)
     return np.clip(theta, 1e-6, None)
 
 
@@ -1868,6 +1861,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
 
     carbon_shocks = [s for s in shocks if isinstance(s, CarbonPrice)]
     prod_shocks = [s for s in shocks if isinstance(s, ProductivityShock)]
+    _assert_no_region_scoped_productivity(prod_shocks, "open")
     # Two cost sources: an EFFECTIVE per-year cost from the IO path (already price-included — used
     # verbatim, review P0), or a supplied dimensionless share re-scaled by the price per year.
     io_backed = bool(data.get("_io_backed"))

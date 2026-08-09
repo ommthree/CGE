@@ -132,6 +132,12 @@ def build_exiobase_encore_concordance(
         pid = _resolve(code, cls, by_code, by_name)
         if pid is None:
             continue
+        # Record ISIC-code → resolved-process (the audit trail): note where rollback fired, i.e. the
+        # full crosswalk code did NOT equal its resolved ENCORE process id (ENCORE rated a coarser
+        # level or a named split).
+        code_str = str(code).strip()
+        if code_str != pid:
+            audit.rollback_used[code_str] = pid
         procs = sector_to_procs.setdefault(sector, [])
         if pid not in procs:  # distinct processes only; the crosswalk repeats codes across rows
             procs.append(pid)

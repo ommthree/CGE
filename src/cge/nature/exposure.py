@@ -77,6 +77,13 @@ def compute_exposure(
         raise ValueError(f"exposure: max_iter must be ≥ 1 (got {max_iter})")
     if not (tol > 0.0):
         raise ValueError(f"exposure: tol must be > 0 (got {tol})")
+    # The max-link threshold must be finite and non-negative (review P2 2026-08-09): a NaN threshold
+    # would make every ``> threshold`` comparison False (kill all propagation), and a negative one
+    # would turn genuine zero coefficients into "links" and spread the global maximum everywhere.
+    if not np.isfinite(max_link_threshold) or max_link_threshold < 0.0:
+        raise ValueError(
+            f"exposure: max_link_threshold must be finite and ≥ 0 (got {max_link_threshold!r})"
+        )
 
     a = A.to_numpy(dtype=float)
     if not np.isfinite(a).all():
@@ -104,7 +111,10 @@ def compute_exposure(
             "explicit missing value must not silently become zero dependency — impute or drop it "
             "first. (ENCORE distinguishes N/A from ND ('No Data'); do not conflate them.)"
         )
-    if (supplied < 0.0).any() or (supplied > 1.0).any():
+    # Tolerance absorbs floating-point artifacts from weighted concordance sums (e.g. equal weights
+    # over N processes summing to 1.0 + a few ε); a genuine out-of-range value still trips it.
+    _bound_tol = 1e-9
+    if (supplied < -_bound_tol).any() or (supplied > 1.0 + _bound_tol).any():
         raise ValueError(
             f"exposure: direct dependency scores must be in [0, 1] (got range "
             f"[{supplied.min():.4f}, {supplied.max():.4f}])"

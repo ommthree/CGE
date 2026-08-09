@@ -7,18 +7,20 @@
 - **Capabilities:** ecosystem-service dependency exposure (direct + upstream) per good; a
   `NatureStress` degradation scenario run end-to-end through an economic engine, in both the
   partial-equilibrium (Engine 2) and general-equilibrium (Engine 3, all variants) tiers
-- **Status: BUILT, EXPERIMENTAL — not signed off.** Implemented and tested on the toy economy with a
-  **synthetic, expert-designed illustrative fixture** (informed by the qualitative pattern of the
-  central-bank literature, but NOT substantiated cell-by-cell against a published table). The
-  engineering pathway (ingestion → concordance → exposure → severity→productivity translation with
-  per-engine incidence → consumption by Engine 2 and all three CGE variants → standard-runner
-  provenance → GUI) is complete and auditable. **Remaining before sign-off:** a real-ENCORE-export
-  adapter (current format, preserved N/A-vs-ND semantics, separately-typed pressure/impact), store
-  persistence + load of nature data, and — as consulting-readiness blockers, not just data plumbing
-  — empirical calibration of the severity→productivity mapping, service interactions, regional
-  weights, and cross-model sensitivity. So the "drops in with **no code change**" claim does NOT yet
-  hold (an adapter and store wiring are still required), and results are illustrative of the method,
-  not calibrated risk. See the roadmap Phase 6 status.
+- **Status: BUILT on REAL data, EXPERIMENTAL — not signed off.** The **real May-2026 ENCORE
+  knowledge base** is ingested (`load_encore_ratings_wide`, 271 processes × 25 services, CC BY-SA
+  4.0, `data/encore/`), the **real EXIOBASE↔ENCORE concordance** is built (`concordance_build`, 162
+  sectors, ISIC-level rollback), and a real nature scenario runs **end-to-end through the standard
+  runner → engine → ResultSet** on a real-EXIOBASE-labelled economy. Store persistence of nature data
+  is wired. **N/A vs ND** is honoured: ND (No Data) is a distinct state and an all-ND sector/service
+  is flagged in the manifest (`nd_unknown_sectors`), never silently zeroed. The **water-supply
+  overlap** (a combined ENCORE service) is rejected when stressed with its components.
+  **Remaining before sign-off — now all METHODOLOGY, not data plumbing:** the concordance is
+  **equal-weighted** (a documented v1 assumption, not output-weighted); severity→productivity is a
+  **scenario assumption**, not a calibrated elasticity (ENCORE ratings indicate *potential*
+  significance); and service interactions / regional weights / cross-model sensitivity are
+  uncalibrated. So results are **illustrative of the method, not calibrated nature risk** — not for
+  consulting. The toy fixture remains for offline CI. See the roadmap Phase 6 status.
 
 > **Honest scope.** Every dependency rating shipped here is a small hand-entered subset seeded from
 > the central-bank literature ([vanToor2020], [ENCORE]) and **labelled illustrative** in its

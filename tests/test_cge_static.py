@@ -2279,43 +2279,47 @@ def test_productivity_shock_raises_degraded_price_lowers_its_output():
     shocked.validate_schema()  # schema-valid ResultSet end-to-end
 
 
-def test_productivity_shock_matches_by_sector_ignoring_region():
-    """build_nature_shocks tags each ProductivityShock with the (single) build region; the closed
-    single-region CGE must still apply it, matching by sector and ignoring the region coverage —
-    otherwise a nature scenario built off an IOSystem would silently do nothing here."""
+def test_closed_variant_rejects_region_scoped_productivity_shock():
+    """Review P1 round 3 (2026-08-09): the closed CGE is single-region (the SAM collapses regions),
+    so a region-scoped ProductivityShock is ill-posed and must be REJECTED — not silently applied
+    economy-wide (the earlier "aggregate across regions" behaviour produced a region-A-only shock
+    identical to an economy-wide one). Region-specific nature belongs in the multi variant."""
     eng = registry.get("cge_static")
     ps = ProductivityShock(delta=-0.2, coverage_sectors=["BRD"], coverage_regions=["EU"])
+    with pytest.raises(ValueError, match="single-region"):
+        eng.run(data={"SAM": toy_sam()}, shocks=[ps], years=[2020])
+
+
+def test_closed_variant_applies_economy_wide_productivity_shock():
+    """An economy-wide ProductivityShock (no region coverage) is unambiguous and applied."""
+    eng = registry.get("cge_static")
+    ps = ProductivityShock(delta=-0.2, coverage_sectors=["BRD"])
     res = eng.run(data={"SAM": toy_sam()}, shocks=[ps], years=[2020])
     d = res.data
     is_brd_vol = (d["variable"] == "volume_change") & (d["sector"] == "BRD")
     brd = d[is_brd_vol & (d["scenario"] == "central")]
-    assert float(brd.iloc[0]["value"]) < 0.0  # applied despite the region tag not matching
+    assert float(brd.iloc[0]["value"]) < 0.0
 
 
 def test_productivity_shock_registered_as_supported():
     assert "productivity" in registry.get("cge_static").meta.supported_shocks
 
 
-def test_region_tagged_shocks_aggregate_not_compound_in_closed_variant():
-    """Review P1 (2026-08-07): build_nature_shocks on a multi-region economy emits one shock per
-    good (the same sector tagged per region). The single-region closed variant must AGGREGATE these
-    (average across regions), not COMPOUND them — two regions each losing 20% is a 20% aggregate
-    (θ=0.8), not 0.8·0.8=0.64. Genuinely independent hits on the SAME good still compound."""
+def test_economy_wide_productivity_shocks_compose_multiplicatively():
+    """Economy-wide productivity shocks (the only kind the collapsed model accepts, after region
+    coverage is rejected) compose multiplicatively per sector: two independent −10% hits on one
+    sector give 0.81, and a single −20% gives 0.8."""
     from cge.engines.cge_static.engine import _productivity_by_sector
 
-    two_regions = [
-        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["A"]),
-        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["B"]),
+    two_hits = [
+        ProductivityShock(delta=-0.1, coverage_sectors=["agriculture"]),
+        ProductivityShock(delta=-0.1, coverage_sectors=["agriculture"]),
     ]
-    theta = _productivity_by_sector(two_regions, ["agriculture", "energy"], 2020)
-    assert theta[0] == pytest.approx(0.8)  # aggregated across regions, NOT 0.64
-
-    same_good = [
-        ProductivityShock(delta=-0.1, coverage_sectors=["agriculture"], coverage_regions=["A"]),
-        ProductivityShock(delta=-0.1, coverage_sectors=["agriculture"], coverage_regions=["A"]),
-    ]
-    theta2 = _productivity_by_sector(same_good, ["agriculture"], 2020)
-    assert theta2[0] == pytest.approx(0.81)  # two independent hits on one good DO compound
+    assert _productivity_by_sector(two_hits, ["agriculture", "energy"], 2020)[0] == pytest.approx(
+        0.81
+    )
+    one_hit = [ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"])]
+    assert _productivity_by_sector(one_hit, ["agriculture"], 2020)[0] == pytest.approx(0.8)
 
 
 def test_productivity_shock_consumed_by_open_variant():

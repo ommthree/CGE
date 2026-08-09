@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 
 from cge.contracts.data_objects import ConcordanceMap, IOSystem
@@ -59,6 +60,16 @@ NATURE_TRANSLATION_VERSION = "0.2.0"
 
 Incidence = Literal["direct", "total"]
 
+# Known ENCORE ecosystem-service OVERLAP (Explanatory note #1, verified in the May-2026 KB): "Water
+# supply" is a COMBINED final service in the SEEA-EA categorisation that duplicates the component
+# water services below — ENCORE advises users to consider EXCLUDING it to avoid double-counting.
+# Stressing the combined service together with its components multiplies overlapping degradation as
+# if independent, overstating the hit (review P1 round 3 2026-08-09). Matched case-insensitively so
+# it works on ENCORE's real vocabulary ("Water supply") — a scenario using a different service name
+# is unaffected.
+_WATER_SUPPLY_COMBINED = "water supply"
+_WATER_SUPPLY_COMPONENTS = frozenset({"water purification", "water flow regulation"})
+
 
 def nature_to_productivity(
     stresses: list[NatureStress],
@@ -66,6 +77,8 @@ def nature_to_productivity(
     *,
     min_delta: float = 1e-9,
     years: list[int] | None = None,
+    collapse_regions: bool = False,
+    allow_water_overlap: bool = False,
 ) -> list[ProductivityShock]:
     """Translate ``NatureStress`` shocks into per-good ``ProductivityShock``s using an exposure
     matrix (goods × service, in [0, 1], from ``nature.exposure.compute_exposure``).
@@ -104,9 +117,31 @@ def nature_to_productivity(
             "services; two stresses on one service would compound as if independent. Combine them "
             "into a single stress (or a time path) instead."
         )
+    # ENCORE water-service overlap (review P1 round 3 2026-08-09): "Water supply" is a combined
+    # service duplicating its components; stressing them together double-counts. Reject by default,
+    # with an explicit opt-out for a caller who has a reason to keep both.
+    lowered = {s.lower() for s in seen}
+    if (
+        not allow_water_overlap
+        and _WATER_SUPPLY_COMBINED in lowered
+        and lowered & _WATER_SUPPLY_COMPONENTS
+    ):
+        overlap = sorted(lowered & _WATER_SUPPLY_COMPONENTS)
+        raise ValueError(
+            f"NatureStress overlap: 'Water supply' is a COMBINED ENCORE service that duplicates "
+            f"{overlap} (ENCORE Explanatory note #1 advises excluding it to avoid duplication). "
+            "Stressing them together overstates the water hit. Drop 'Water supply' (or the "
+            "service(s)), or pass allow_water_overlap=True if you intend the overlap."
+        )
 
-    # A path is time-varying only if some stress carries one AND we were told which years to build.
-    has_path = years is not None and any(st.path for st in stresses)
+    # A path is time-varying if some stress carries one. If the caller didn't pass ``years``, derive
+    # them from the union of the stresses' own path years, so a DIRECT call to this helper does not
+    # silently collapse a time path to its scalar (review P2 2026-08-09 — previously only the
+    # which passes years, was safe). An explicit ``years`` still takes precedence.
+    any_path = any(st.path for st in stresses)
+    if years is None and any_path:
+        years = sorted({y for st in stresses if st.path for y in st.path})
+    has_path = any_path and years is not None
     path_years = list(years) if years is not None else []
 
     def _delta_at(g: str, sector: str, region: str, severity_of) -> float:
@@ -148,6 +183,47 @@ def nature_to_productivity(
                 path=shock_path,
             )
         )
+    if collapse_regions:
+        out = _collapse_to_economy_wide(out, path_years if has_path else None)
+    return out
+
+
+def _collapse_to_economy_wide(
+    shocks: list[ProductivityShock], path_years: list[int] | None
+) -> list[ProductivityShock]:
+    """Aggregate per-region shocks into ONE economy-wide (region-less) shock per sector, for a
+    single-region target engine (review P1 round 3 2026-08-09). Each sector's economy-wide delta is
+    the **mean across its regions** of the per-good delta (equal region weights — the documented
+    assumption; output weights unavailable here). The result carries NO region coverage, so it is
+    accepted by the collapsed CGE rather than rejected as region-scoped. Region aggregation now
+    happens explicitly in shock construction, not silently inside the engine."""
+    by_sector: dict[str, list[ProductivityShock]] = {}
+    for s in shocks:
+        key = s.coverage_sectors[0] if s.coverage_sectors else ""
+        by_sector.setdefault(key, []).append(s)
+    out: list[ProductivityShock] = []
+    for sector, group in by_sector.items():
+        if path_years:
+            path = {
+                y: float(np.mean([s._path_level_at(y, s.delta) for s in group])) for y in path_years
+            }
+            out.append(
+                ProductivityShock(
+                    delta=path[path_years[0]],
+                    coverage_sectors=[sector] if sector else [],
+                    coverage_regions=[],
+                    path=path,
+                )
+            )
+        else:
+            mean_delta = float(np.mean([s.delta for s in group]))
+            out.append(
+                ProductivityShock(
+                    delta=mean_delta,
+                    coverage_sectors=[sector] if sector else [],
+                    coverage_regions=[],
+                )
+            )
     return out
 
 
@@ -161,6 +237,8 @@ def build_nature_shocks(
     incidence: Incidence = "total",
     max_link_threshold: float = 0.0,
     years: list[int] | None = None,
+    collapse_regions: bool = False,
+    allow_water_overlap: bool = False,
 ) -> list[ProductivityShock]:
     """End-to-end Phase-6 convenience: ENCORE ratings + concordance + IO structure →
     ``NatureStress`` → per-good ``ProductivityShock``s, ready for an engine.
@@ -185,7 +263,13 @@ def build_nature_shocks(
 
     The caller (runner/GUI) selects the mode by engine; ``nature.INCIDENCE_BY_ENGINE`` records the
     per-engine default. ``years`` is passed through to the translation so a ``NatureStress`` time
-    path becomes a per-year productivity path (review P1 2026-08-07)."""
+    path becomes a per-year productivity path (review P1 2026-08-07).
+
+    ``collapse_regions`` (review P1 round 3 2026-08-09): emit ONE economy-wide (region-less) shock
+    per sector — each sector's delta the mean across regions — not one shock per good. Set this
+    when the target engine is **single-region** (the closed/open CGE, which rejects region-scoped
+    shocks): region aggregation then happens explicitly here, not silently in the engine. A
+    multi-region engine (multi CGE) leaves it False and keeps per-region shocks."""
     if incidence not in ("direct", "total"):
         raise ValueError(
             f"unknown incidence {incidence!r}; use 'direct' (engine transmits upstream) or "
@@ -198,4 +282,10 @@ def build_nature_shocks(
         io.A, direct_scores, rule=rule, max_link_threshold=max_link_threshold
     )
     exposure = direct_aligned if incidence == "direct" else total
-    return nature_to_productivity(stresses, exposure, years=years)
+    return nature_to_productivity(
+        stresses,
+        exposure,
+        years=years,
+        collapse_regions=collapse_regions,
+        allow_water_overlap=allow_water_overlap,
+    )

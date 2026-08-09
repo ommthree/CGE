@@ -372,6 +372,16 @@ class DataStore:
         the backup is restored immediately, so an existing build is never lost. Avoids partial
         writes and stale files from in-place overwrites.
         """
+        # Nature data is both-or-neither: a build with ENCORE ratings but no concordance (or vice
+        # versa) cannot drive a nature scenario and would fail later at run time. Reject the
+        # incomplete build at persist time instead (review P2 2026-08-09).
+        if (encore is None) != (concordance is None):
+            have = "EncoreDependencies" if encore is not None else "ConcordanceMap"
+            miss = "ConcordanceMap" if encore is not None else "EncoreDependencies"
+            raise ValueError(
+                f"nature data must be saved together: got {have} but no {miss}. A build needs BOTH "
+                "the ENCORE ratings and the concordance to run a nature scenario, or neither."
+            )
         final = self.builds_dir / meta.build_id
         backup = self.builds_dir / f".{meta.build_id}.bak"
         # Unique staging dir per save (uuid), so two same-process saves never collide.

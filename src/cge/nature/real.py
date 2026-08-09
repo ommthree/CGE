@@ -5,11 +5,13 @@ tests). Here we ingest the actual ENCORE May-2026 ratings via ``load_encore_rati
 ISIC-coded production processes, real ecosystem-service vocabulary, real ND/N-A cells. The data is
 CC BY-SA 4.0; see ``data/encore/NOTICE.md`` for attribution.
 
-**Scope honesty.** This gives you the real *dependency* (and *pressure*) objects. It does NOT yet
-give you a real nature *scenario* end-to-end, because ENCORE's processes are keyed by ISIC and the
-economy's sectors are EXIOBASE/toy labels — bridging them needs a real ENCORE↔EXIOBASE concordance,
-which is the next (deferred) piece. So ``sector_scores`` on the real object requires a concordance
-that covers your economy's sectors; the synthetic toy concordance does NOT map real ISIC codes.
+**Scope.** This exposes the real *dependency* and *pressure* objects AND the real EXIOBASE↔ENCORE
+concordance (``real_encore_concordance``, built in ``concordance_build``), so a real nature scenario
+runs end-to-end against a real-EXIOBASE-labelled economy. Note that the synthetic *toy* concordance
+does NOT map real ISIC codes — use ``real_encore_concordance`` (or your own) with the real objects.
+The concordance is **equal-weighted (a documented v1 assumption)** and ENCORE ratings are indicators
+of *potential* significance, not calibrated elasticities — so results stay illustrative of the
+method, not calibrated risk.
 """
 
 from __future__ import annotations

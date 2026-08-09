@@ -386,28 +386,24 @@ def test_nature_time_path_flows_through_per_year():
     assert r1.manifest.scenario_hash != r2.manifest.scenario_hash  # no collision
 
 
-def test_region_scoped_shock_is_not_economy_wide_in_collapsed_cge():
-    """Review P1 round 2: in the collapsed single-region CGE, a shock on ONE region must not behave
-    like an economy-wide shock. Unshocked regions contribute θ=1 to the average, so a −20% hit on
-    region A alone gives θ_agri = mean(0.8, 1.0) = 0.9, distinct from a both-regions shock (0.8)."""
+def test_collapsed_cge_rejects_region_scoped_shock_isolated():
+    """Review P1 round 3 (2026-08-09): the earlier "average across regions" fix was masked by a test
+    that added unrelated shocks to populate the region universe. The real defect: with an ISOLATED
+    region-A-only shock the universe was {A}, so it came out identical to an economy-wide shock. The
+    correct contract is to REJECT a region-scoped shock on the single-region collapsed model —
+    here with an isolated shock (no other shocks to mask it)."""
     from cge.contracts.shocks import ProductivityShock
-    from cge.engines.cge_static.engine import _productivity_by_sector
+    from cge.engines.cge_static.engine import _assert_no_region_scoped_productivity
 
-    sectors = ["agriculture", "energy"]
-    # Both regions present (via energy shocks); agriculture degraded only in A.
     a_only = [
-        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["A"]),
-        ProductivityShock(delta=-0.05, coverage_sectors=["energy"], coverage_regions=["A"]),
-        ProductivityShock(delta=-0.05, coverage_sectors=["energy"], coverage_regions=["B"]),
+        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["A"])
     ]
-    both = a_only + [
-        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["B"])
-    ]
-    theta_a = _productivity_by_sector(a_only, sectors, 2020)[0]
-    theta_both = _productivity_by_sector(both, sectors, 2020)[0]
-    assert theta_a == pytest.approx(0.9)  # A shocked, B at θ=1 → mean
-    assert theta_both == pytest.approx(0.8)  # both shocked
-    assert theta_a != theta_both  # region scope actually matters
+    with pytest.raises(ValueError, match="single-region"):
+        _assert_no_region_scoped_productivity(a_only, "closed")
+    # An economy-wide shock (no region coverage) is accepted.
+    _assert_no_region_scoped_productivity(
+        [ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"])], "closed"
+    )
 
 
 def test_nature_pipeline_runs_with_encore_injected_via_overrides():
@@ -480,6 +476,29 @@ def test_duplicate_service_stresses_rejected():
             encore_fixture(),
             toy_encore_concordance(),
         )
+
+
+def test_water_supply_overlap_rejected_by_default_and_opt_out():
+    """Review P1 round 3 (2026-08-09): 'Water supply' is a COMBINED ENCORE service that duplicates
+    Water purification / Water flow regulation (ENCORE Explanatory note #1). Stressing it together
+    with a component double-counts, so it is rejected by default — with an explicit opt-out."""
+    import pandas as pd
+
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.translate import nature_to_productivity
+
+    exp = pd.DataFrame(
+        0.5, index=["R:s"], columns=["Water supply", "Water purification", "Water flow regulation"]
+    )
+    combo = [
+        NatureStress(service="Water supply", severity=0.3),
+        NatureStress(service="Water purification", severity=0.3),
+    ]
+    with pytest.raises(ValueError, match="Water supply.*COMBINED|overlap"):
+        nature_to_productivity(combo, exp)
+    # Opt-out allows it; the combined service alone is always fine.
+    assert nature_to_productivity(combo, exp, allow_water_overlap=True)
+    assert nature_to_productivity([NatureStress(service="Water supply", severity=0.3)], exp)
 
 
 def test_shock_validation_rejects_invalid_values():
@@ -700,3 +719,136 @@ def test_real_encore_dependency_scores_for_real_exiobase_sector():
     fin = next((s for s in cmap.weights if "financial intermediation" in s.lower()), None)
     if fin:
         assert sector_scores(dep, cmap, [fin]).loc[fin].max() < row.max()
+
+
+@_needs_encore
+def test_sector_nd_mask_flags_all_nd_cells_not_as_zero():
+    """Review P1 round 3 (2026-08-09): an EXIOBASE sector whose dependency on a service is entirely
+    ND (all contributing ENCORE processes are No-Data) scores 0 numerically but must be FLAGGED as
+    unknown, not read as 'no dependency'. Wholesale trade × Water purification is such a cell."""
+    from cge.nature.concord import sector_nd_mask, sector_scores
+    from cge.nature.real import real_encore_concordance, real_encore_dependencies
+
+    dep = real_encore_dependencies()
+    cmap, _ = real_encore_concordance()
+    whole = "Wholesale trade and commission trade, except of motor vehicles and motorcycles (51)"
+    svc = "Water purification"
+    assert sector_scores(dep, cmap, [whole]).loc[whole, svc] == 0.0  # numerically zero
+    assert bool(sector_nd_mask(dep, cmap, [whole]).loc[whole, svc])  # but flagged unknown
+    # A sector with real ratings on the service is NOT flagged.
+    agri = "Cultivation of cereal grains nec"
+    assert not bool(sector_nd_mask(dep, cmap, [agri]).loc[agri, svc])
+
+
+@_needs_encore
+def test_nature_run_records_nd_unknown_sectors_in_manifest():
+    """A real nature run whose stressed service is entirely unknown for some sectors records those
+    sectors in the manifest's nd_unknown_sectors — so the zero shock reads as 'no data', not 'no
+    dependency'."""
+    import numpy as np
+
+    from cge.contracts.data_objects import Classification, IOSystem
+    from cge.contracts.engine import registry
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.real import real_encore_concordance, real_encore_dependencies
+    from cge.runner import _preprocess_nature
+    from cge.scenarios.loader import Scenario
+
+    dep = real_encore_dependencies()
+    cmap, _ = real_encore_concordance()
+    secs = [
+        "Cultivation of cereal grains nec",
+        "Wholesale trade and commission trade, except of motor vehicles and motorcycles (51)",
+    ]
+    labels = [f"R:{s}" for s in secs]
+    A = pd.DataFrame(np.full((2, 2), 0.05), index=labels, columns=labels)
+    io = IOSystem(
+        provenance=_prov(),
+        sectors=Classification(name="e", kind="sector", labels=secs),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=A,
+        final_demand=pd.DataFrame({"final_demand": [100.0, 100.0]}, index=labels),
+        unit="MEUR",
+        currency="EUR",
+    )
+    sc = Scenario(
+        name="n",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="Water purification", severity=0.4)],
+    )
+    _shocks, stamp = _preprocess_nature(
+        sc,
+        {"IOSystem": io},
+        registry.get("partial_eq"),
+        {"IOSystem": io, "EncoreDependencies": dep, "ConcordanceMap": cmap},
+    )
+    assert "Water purification" in stamp["nd_unknown_sectors"]
+    assert any("Wholesale" in s for s in stamp["nd_unknown_sectors"]["Water purification"])
+
+
+@_needs_encore
+def test_real_nature_scenario_runs_end_to_end_through_runner_and_engine():
+    """Review P1 round 3 (2026-08-09): a genuine end-to-end run on REAL data — real ENCORE ratings +
+    real EXIOBASE↔ENCORE concordance + a real-EXIOBASE-labelled economy → the standard runner →
+    Engine 2 → a schema-valid ResultSet with a real volume response. (Earlier the "end-to-end" test
+    stopped at sector_scores; this drives the whole pipeline.)"""
+    import numpy as np
+
+    from cge.contracts.data_objects import (
+        Classification,
+        IOSystem,
+        SatelliteAccount,
+    )
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.real import real_encore_concordance, real_encore_dependencies
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    dep = real_encore_dependencies()
+    cmap, _ = real_encore_concordance()
+    # Real EXIOBASE sector labels the concordance covers.
+    secs = ["Cultivation of cereal grains nec", "Cultivation of crops nec"]
+    labels = [f"R:{s}" for s in secs]
+    A = pd.DataFrame(np.full((2, 2), 0.05), index=labels, columns=labels)
+    io = IOSystem(
+        provenance=_prov(),
+        sectors=Classification(name="e", kind="sector", labels=secs),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=A,
+        final_demand=pd.DataFrame({"final_demand": [100.0, 100.0]}, index=labels),
+        unit="MEUR",
+        currency="EUR",
+    )
+    sat = SatelliteAccount(
+        provenance=_prov(),
+        name="GHG",
+        units={"CO2": "t/MEUR", "CO2e": "tCO2e/MEUR"},
+        data=pd.DataFrame(
+            {labels[0]: [1000.0, 1000.0], labels[1]: [1000.0, 1000.0]}, index=["CO2", "CO2e"]
+        ),
+    )
+    sc = Scenario(
+        name="real",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="Water purification", severity=0.4)],
+    )
+    res = run_scenario(
+        sc,
+        data_source="toy",
+        data_overrides={
+            "IOSystem": io,
+            "SatelliteAccount": sat,
+            "EncoreDependencies": dep,
+            "ConcordanceMap": cmap,
+        },
+    )
+    res.validate_schema()
+    # A real volume response: cereal cultivation is highly water-dependent in the real ratings.
+    vol = res.data[(res.data["variable"] == "volume_change") & (res.data["scenario"] == "central")]
+    v = {r.sector: r.value for r in vol.itertuples()}
+    assert v["Cultivation of cereal grains nec"] < 0.0  # real degradation cuts output
+    # Full nature provenance in the manifest (reconstructible).
+    nat = res.manifest.assumptions["nature"]
+    assert nat["encore_source"] and nat["shock_coverage"]

@@ -105,27 +105,28 @@ def _time_path():
     return gap < 1e-6, f"agri Δ: 2020={by_year[2020]:.3f} 2030={by_year[2030]:.3f}", gap, 0.0
 
 
-@check(SUITE, "region_scoped_shock_not_economy_wide")
+@check(SUITE, "region_scoped_shock_rejected_on_collapsed_cge")
 def _region_scope():
-    """In the collapsed single-region CGE, a shock on one region (A) is NOT economy-wide: unshocked
-    regions contribute θ=1, so A-only gives θ_agri=0.9 (mean 0.8,1.0), distinct from both=0.8
-    (review P1 round 2)."""
+    """The collapsed single-region CGE has no region dimension, so a region-scoped productivity
+    shock is ill-posed and must be REJECTED — NOT silently applied economy-wide (review P1 round 3
+    2026-08-09). Tested with an ISOLATED region-A shock (no unrelated shocks to mask the region
+    universe — the exact masking flaw the previous version of this check had)."""
     from cge.contracts.shocks import ProductivityShock
-    from cge.engines.cge_static.engine import _productivity_by_sector
+    from cge.engines.cge_static.engine import _assert_no_region_scoped_productivity
 
-    sectors = ["agriculture", "energy"]
-    a_only = [
-        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["A"]),
-        ProductivityShock(delta=-0.05, coverage_sectors=["energy"], coverage_regions=["A"]),
-        ProductivityShock(delta=-0.05, coverage_sectors=["energy"], coverage_regions=["B"]),
+    isolated = [
+        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["A"])
     ]
-    both = a_only + [
-        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["B"])
-    ]
-    ta = _productivity_by_sector(a_only, sectors, 2020)[0]
-    tb = _productivity_by_sector(both, sectors, 2020)[0]
-    ok = abs(ta - 0.9) < 1e-9 and abs(tb - 0.8) < 1e-9
-    return ok, f"θ_agri: A-only={ta:.3f} (want 0.9), both={tb:.3f} (want 0.8)", ta, 0.9
+    try:
+        _assert_no_region_scoped_productivity(isolated, "closed")
+        rejected = False
+    except ValueError:
+        rejected = True
+    # An economy-wide shock (no region coverage) must still be accepted.
+    _assert_no_region_scoped_productivity(
+        [ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"])], "closed"
+    )
+    return rejected, f"isolated region-scoped shock rejected on collapsed CGE = {rejected}", None
 
 
 @check(SUITE, "incidence_direct_vs_total_differ")
