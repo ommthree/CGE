@@ -21,6 +21,7 @@ from cge.nature.encore import (
 from cge.nature.exposure import compute_exposure
 from cge.nature.real import (
     encore_data_available,
+    real_encore_concordance,
     real_encore_dependencies,
     real_encore_pressures,
 )
@@ -46,5 +47,6 @@ __all__ = [
     "DEFAULT_INCIDENCE",
     "real_encore_dependencies",
     "real_encore_pressures",
+    "real_encore_concordance",
     "encore_data_available",
 ]

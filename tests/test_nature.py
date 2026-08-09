@@ -659,3 +659,44 @@ def test_encore_ratings_wide_drops_na_keeps_nd(tmp_path):
     assert rows[("X_2", "Pollination")] == "ND"  # ND kept distinct
     assert ("X_1", "Water supply") not in rows  # N/A dropped
     assert ("X_2", "Water supply") not in rows  # blank dropped
+
+
+@_needs_encore
+def test_real_exiobase_encore_concordance_builds_and_covers_all_sectors():
+    """The real EXIOBASE→ENCORE concordance builds from the vendored crosswalk: all 162 EXIOBASE
+    sectors resolve to ≥1 ENCORE process (ISIC-level rollback), weights sum to 1, and every mapped
+    process is a real ENCORE process id."""
+    from cge.nature.real import real_encore_concordance, real_encore_dependencies
+
+    dep = real_encore_dependencies()
+    cmap, audit = real_encore_concordance()
+    assert audit.unresolved_sectors == []  # every EXIOBASE sector resolved
+    assert audit.n_exiobase_sectors == len(cmap.weights) == 162
+    valid = set(dep.processes)
+    for sector, w in cmap.weights.items():
+        assert abs(sum(w.values()) - 1.0) < 1e-9, sector  # normalised
+        assert set(w) <= valid  # maps only to real ENCORE process ids
+    assert audit.multi_process_sectors  # some sectors genuinely map to several processes
+
+
+@_needs_encore
+def test_real_encore_dependency_scores_for_real_exiobase_sector():
+    """End-to-end on REAL data: a real EXIOBASE agricultural sector, mapped through the real
+    concordance to real ENCORE processes, comes out highly water/biomass-dependent (a sanity check
+    that the whole ISIC→ENCORE→score chain carries meaning, not just runs)."""
+    from cge.nature.concord import sector_scores
+    from cge.nature.real import real_encore_concordance, real_encore_dependencies
+
+    dep = real_encore_dependencies()
+    cmap, _ = real_encore_concordance()
+    sector = "Cultivation of cereal grains nec"
+    assert sector in cmap.weights
+    scores = sector_scores(dep, cmap, [sector])
+    row = scores.loc[sector]
+    # Agriculture depends highly on water-related services (real ENCORE ratings, not toy).
+    assert row["Water purification"] > 0.8
+    assert row["Biomass provisioning"] > 0.5
+    # A financial sector, by contrast, is only weakly dependent.
+    fin = next((s for s in cmap.weights if "financial intermediation" in s.lower()), None)
+    if fin:
+        assert sector_scores(dep, cmap, [fin]).loc[fin].max() < row.max()

@@ -456,22 +456,33 @@ composite ISIC process ids (disambiguating ENCORE's finer splits, e.g. the 9-way
 ≈0.90), never silently zeroed. `real_encore_dependencies()` / `real_encore_pressures()` load them
 with attribution provenance; golden-file tests guard the shape/vocab/values.
 
+**DONE (2026-08-09): the real EXIOBASE↔ENCORE concordance is built.**
+`cge.nature.concordance_build.build_exiobase_encore_concordance` derives the `ConcordanceMap` from
+the vendored EXIOBASE↔ISIC crosswalk via ISIC-level rollback (100% resolution: all **162 EXIOBASE
+sectors → 271 ENCORE processes**, 0 unresolved), with the 9 electricity-generation splits matched by
+name. Multi-process sectors (95 of 162) are **equal-weighted — a documented v1 assumption** with a
+full `ConcordanceAudit`. `real_encore_concordance()` returns it. A **real nature computation now runs
+end-to-end on real data**: real ENCORE ratings → real EXIOBASE-sector dependencies → exposure (e.g.
+cereal cultivation comes out highly water/biomass-dependent from the real ratings), covered by
+golden-file tests.
+
 **STILL OPEN before Phase-6 sign-off:**
-1. **A real published ENCORE↔EXIOBASE concordance** — the real ENCORE processes are ISIC-coded, so a
-   real nature *scenario* end-to-end needs an ISIC→EXIOBASE bridge with cited weights. Only the
-   synthetic one-to-one toy concordance exists today; the raw crosswalk (`data/encore/Crosswalk
-   tables/EXIOBASE - NACE - ISIC…`) is vendored to build it. **← NEXT.**
-2. **Consulting-readiness methodology blockers (not just data plumbing):** empirical calibration of
+1. **Consulting-readiness methodology blockers (not just data plumbing):** empirical calibration of
    the severity→productivity mapping, ecosystem-service interactions, regional output weights, and
    cross-model sensitivity. ENCORE ratings are indicators of *potential* significance, not calibrated
    output/TFP elasticities; the linear materiality ramp and the noisy-OR + engine-incidence choices
    are transparent *assumptions*, not published methods.
+2. **Concordance weighting** — the EXIOBASE↔ENCORE map is built but **equal-weighted** across
+   multi-process sectors; output-weighting (or expert per-mapping weights) and validation against a
+   real full-EXIOBASE build (the concordance covers the 162 crosswalk sectors, which a live EXIOBASE
+   build's labels must match) are follow-ups.
+3. **Pressure/impact channel** — pressures are ingested and typed, but no engine consumes them yet.
 
-The *engineering* pathway (real ENCORE ingestion → exposure → per-engine incidence → time-path-aware
-shock → engine → standard-runner provenance → store persistence → GUI) is complete, auditable, and
-battery-gated, and the round-1 + round-2 review P1s are fixed. But until 1–2 land, Phase 6 is
-**experimental**: results are illustrative of the method, not calibrated nature risk, and must not be
-used in consulting work.
+The *engineering* pathway (real ENCORE ingestion → real EXIOBASE↔ENCORE concordance → exposure →
+per-engine incidence → time-path-aware shock → engine → standard-runner provenance → store
+persistence → GUI) is complete, auditable, and battery-gated, and the round-1 + round-2 review P1s
+are fixed. But until 1–3 land, Phase 6 is **experimental**: results are illustrative of the method,
+not calibrated nature risk, and must not be used in consulting work.
 
 | # | Task | Effort |
 |---|---|---|

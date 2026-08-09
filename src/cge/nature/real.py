@@ -77,3 +77,19 @@ def real_encore_pressures(root: str | Path | None = None) -> EncoreDependencies:
     if not path.exists():
         raise FileNotFoundError(f"ENCORE pressure file not found at {path}.")
     return load_encore_ratings_wide(str(path), provenance=_provenance(), kind="impact")
+
+
+def real_encore_concordance(root: str | Path | None = None):
+    """The real **EXIOBASE → ENCORE** concordance, derived from the vendored crosswalk against the
+    real dependency processes. Returns ``(ConcordanceMap, ConcordanceAudit)``. Equal-weighted v1
+    (a documented assumption — see ``concordance_build`` and the audit). This is what lets a real
+    nature scenario run against a real EXIOBASE-shaped economy."""
+    from cge.nature.concordance_build import build_exiobase_encore_concordance
+
+    dep = real_encore_dependencies(root)
+    crosswalk = (
+        Path(root) / "Crosswalk tables" / "EXIOBASE - NACE Rev. 2 - ISIC Rev. 4 - ISIC Rev. 5.csv"
+        if root
+        else None
+    )
+    return build_exiobase_encore_concordance(dep, crosswalk_path=crosswalk)
