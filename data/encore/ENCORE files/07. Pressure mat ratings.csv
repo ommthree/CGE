@@ -1,0 +1,272 @@
+﻿ISIC Unique code,ISIC Section,ISIC Division,ISIC Group,ISIC Class,ISIC level used for analysis,"Disturbances (e.g noise, light)",Area of freshwater use,Emissions of GHG,Area of seabed use,Emissions of non-GHG air pollutants,"Other biotic resource extraction (e.g. fish, timber)",Other abiotic resource extraction,Emissions of toxic soil and water pollutants,Emissions of nutrient soil and water pollutants,Generation and release of solid waste,Area of land use,Volume of water use,Introduction of invasive species
+A_3_32,"Agriculture, forestry and fishing",Fishing and aquaculture,Aquaculture,,Group,M,H,M,H,N/A,VH,N/A,H,H,H,M,M,H
+A_3_31,"Agriculture, forestry and fishing",Fishing and aquaculture,Fishing,,Group,H,H,M,H,M,H,N/A,M,ND,H,N/A,M,M
+A_2_22,"Agriculture, forestry and fishing",Forestry and logging,Logging,,Group,H,M,M,ND,VH,VH,N/A,M,N/A,L,VH,M,M
+A_2_21,"Agriculture, forestry and fishing",Forestry and logging,Silviculture and other forestry activities,,Group,H,N/A,ND,N/A,VH,ND,N/A,H,H,L,VH,M,H
+A_2_24,"Agriculture, forestry and fishing",Forestry and logging,Support services to forestry,,Group,M,N/A,M,N/A,L,ND,N/A,M,N/A,L,N/A,M,M
+A_2_23,"Agriculture, forestry and fishing",Forestry and logging,Gathering of non-wood forest products,,Group,VL,N/A,N/A,N/A,N/A,VH,N/A,N/A,ND,H,N/A,M,VL
+A_1_12,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Growing of perennial crops,,Group,M,H,M,N/A,M,ND,N/A,H,H,H,H,H,H
+A_1_11_111,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Growing of non-perennial crops,"Growing of cereals (except rice), leguminous crops and oil seeds",Class,M,M,M,N/A,H,ND,N/A,H,VH,H,H,VH,VH
+A_1_13,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Plant propagation,,Group,M,H,M,N/A,M,ND,N/A,H,H,H,H,VH,H
+A_1_16_163,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Support activities to agriculture and post-harvest crop activities,Post-harvest crop activities,Class,M,N/A,H,N/A,H,ND,N/A,N/A,ND,H,H,VH,L
+A_1_16_164,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Support activities to agriculture and post-harvest crop activities,Seed processing for propagation,Class,M,N/A,H,N/A,H,ND,N/A,ND,ND,L,H,VH,M
+A_1_16_161,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Support activities to agriculture and post-harvest crop activities,Support activities for crop production,Class,M,N/A,H,N/A,H,ND,N/A,M,VH,H,H,VH,M
+A_1_16_162,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Support activities to agriculture and post-harvest crop activities,Support activities for animal production,Class,M,N/A,H,N/A,H,ND,N/A,M,VH,H,H,H,L
+A_1_11_112,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Growing of non-perennial crops,Growing of rice ,Class,M,H,H,N/A,H,ND,N/A,H,H,H,H,VH,M
+A_1_11_113,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Growing of non-perennial crops,"Growing of vegetables and melons, roots and tubers",Class,M,H,M,N/A,M,ND,N/A,H,H,H,H,H,M
+A_1_11_114,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Growing of non-perennial crops,Growing of sugar cane,Class,M,H,H,N/A,H,ND,N/A,H,H,H,H,VH,M
+A_1_11_115,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Growing of non-perennial crops,Growing of tobacco,Class,M,H,M,N/A,M,ND,N/A,H,H,H,H,VH,M
+A_1_11_116,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Growing of non-perennial crops,Growing of fibre crops,Class,M,H,M,N/A,H,ND,N/A,H,H,H,H,H,M
+A_1_11_119,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Growing of non-perennial crops,Growing of other non-perennial crops ,Class,M,H,M,N/A,M,ND,N/A,H,H,H,H,VH,M
+A_1_15,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Mixed farming,,Group,M,M,H,N/A,H,ND,N/A,H,VH,H,H,H,M
+A_1_14_141,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Animal production,Raising of cattle and buffaloes,Class,M,H,H,N/A,H,ND,N/A,H,H,VH,VH,H,H
+A_1_14_142,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Animal production,Raising of horses and other equines,Class,M,H,H,N/A,H,ND,N/A,H,H,H,H,H,M
+A_1_14_143,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Animal production,Raising of camels and camelids,Class,M,N/A,H,N/A,H,ND,N/A,H,H,H,H,H,M
+A_1_14_144,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Animal production,Raising of sheep and goats,Class,M,H,H,N/A,H,ND,N/A,H,H,H,H,H,M
+A_1_14_149,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Animal production,Raising of other animals,Class,M,H,H,N/A,H,ND,N/A,H,H,H,H,H,M
+A_1_14_145,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Animal production,Raising of swine/pigs,Class,M,N/A,M,N/A,H,ND,N/A,H,H,H,H,H,M
+A_1_14_146,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities",Animal production,Raising of poultry,Class,M,N/A,M,N/A,H,ND,N/A,H,H,H,H,H,M
+A_1_17,"Agriculture, forestry and fishing","Crop and animal production, hunting and related service activities","Hunting, trapping and related service activities",,Group,M,VL,L,N/A,N/A,H,N/A,N/A,ND,L,N/A,L,M
+B_8_81,Mining and quarrying,Other mining and quarrying,"Quarrying of stone, sand and clay",,Group,H,H,H,H,H,ND,VH,H,ND,L,M,M,VL
+B_6_61,Mining and quarrying,Extraction of crude petroleum and natural gas,Extraction of crude petroleum,,Group,VH,VH,H,VH,M,N/A,N/A,VH,N/A,L,L,L,L
+B_6_62,Mining and quarrying,Extraction of crude petroleum and natural gas,Extraction of natural gas,,Group,H,H,H,H,H,N/A,N/A,H,N/A,M,L,M,VL
+B_7_71,Mining and quarrying,Mining of metal ores,Mining of iron ores,,Group,H,H,M,H,M,N/A,H,H,ND,VH,M,L,VL
+B_8_89,Mining and quarrying,Other mining and quarrying,Mining and quarrying n.e.c.,,Group,H,H,H,H,H,N/A,M,H,ND,M,M,M,VL
+B_5_51,Mining and quarrying,Mining of coal and lignite,Mining of hard coal,,Group,H,H,VH,ND,H,N/A,N/A,H,ND,M,M,M,VL
+B_5_52,Mining and quarrying,Mining of coal and lignite,Mining of lignite,,Group,H,H,VH,ND,H,N/A,N/A,H,ND,M,M,M,VL
+B_7_72,Mining and quarrying,Mining of metal ores,Mining of non-ferrous metal ores,,Group,VH,VH,M,VH,H,N/A,H,VH,ND,H,M,M,L
+B_9_99,Mining and quarrying,Mining support service activities,Support activities for other mining and quarrying,,Group,VH,M,H,ND,H,N/A,M,VH,ND,M,M,M,L
+B_9_91,Mining and quarrying,Mining support service activities,Support activities for petroleum and natural gas extraction,,Group,VH,M,M,M,M,N/A,N/A,VH,N/A,L,L,L,VL
+C_11_110_1101,Manufacturing,Manufacture of beverages,Manufacture of beverages,"Distilling, rectifying and blending of spirits",Class,ND,N/A,L,N/A,L,N/A,N/A,VL,M,M,L,M,ND
+C_11_110_1103,Manufacturing,Manufacture of beverages,Manufacture of beverages,Manufacture of malt liquors and malt,Class,M,N/A,L,N/A,L,N/A,N/A,VL,M,M,L,M,ND
+C_11_110_1102,Manufacturing,Manufacture of beverages,Manufacture of beverages,Manufacture of wines,Class,M,N/A,L,N/A,L,N/A,N/A,VL,M,M,L,M,ND
+C_24_243,Manufacturing,Manufacture of basic metals,Casting of metals,,Group,H,N/A,M,N/A,M,N/A,N/A,H,M,L,L,L,N/A
+C_24_242,Manufacturing,Manufacture of basic metals,Manufacture of basic precious and other non-ferrous metals,,Group,VH,N/A,M,N/A,H,N/A,N/A,VH,M,M,L,L,N/A
+C_20_203,Manufacturing,Manufacture of chemicals and chemical products,Manufacture of man-made fibres,,Group,M,N/A,M,N/A,M,N/A,N/A,M,N/A,M,L,M,N/A
+C_20_202,Manufacturing,Manufacture of chemicals and chemical products,Manufacture of other chemical products,,Group,VH,N/A,M,N/A,M,N/A,N/A,VH,N/A,M,L,M,N/A
+C_22_221,Manufacturing,Manufacture of rubber and plastics products,Manufacture of rubber products,,Group,M,N/A,M,N/A,M,N/A,N/A,M,N/A,M,L,L,ND
+C_20_201_2011,Manufacturing,Manufacture of chemicals and chemical products,"Manufacture of basic chemicals, fertilizers and nitrogen compounds, plastics and synthetic rubber in primary forms",Manufacture of basic chemicals,Class,VH,N/A,M,N/A,M,N/A,N/A,VH,N/A,M,L,M,N/A
+C_20_201_2013,Manufacturing,Manufacture of chemicals and chemical products,"Manufacture of basic chemicals, fertilizers and nitrogen compounds, plastics and synthetic rubber in primary forms",Manufacture of plastics and synthetic rubber in primary forms,Class,VH,N/A,M,N/A,M,N/A,N/A,VH,N/A,M,L,H,N/A
+C_20_201_2012,Manufacturing,Manufacture of chemicals and chemical products,"Manufacture of basic chemicals, fertilizers and nitrogen compounds, plastics and synthetic rubber in primary forms",Manufacture of fertilizers and nitrogen compounds,Class,VH,N/A,M,N/A,M,N/A,N/A,VH,VH,M,L,M,N/A
+C_22_222,Manufacturing,Manufacture of rubber and plastics products,Manufacture of plastics products,,Group,M,N/A,M,N/A,M,N/A,N/A,VH,N/A,M,L,L,N/A
+C_18_181,Manufacturing,Printing and reproduction of recorded media,Printing and service activities related to printing,,Group,ND,N/A,L,N/A,L,N/A,N/A,M,N/A,L,ND,L,N/A
+C_27_272,Manufacturing,Manufacture of electrical equipment,Manufacture of batteries and accumulators,,Group,M,N/A,VL,N/A,L,N/A,N/A,H,N/A,L,L,L,N/A
+C_26_263,Manufacturing,"Manufacture of computer, electronic and optical products",Manufacture of communication equipment,,Group,M,N/A,VL,N/A,L,N/A,N/A,H,N/A,L,L,L,N/A
+C_26_262,Manufacturing,"Manufacture of computer, electronic and optical products",Manufacture of computers and peripheral equipment,,Group,M,N/A,VL,N/A,L,N/A,N/A,H,N/A,L,L,L,N/A
+C_26_264,Manufacturing,"Manufacture of computer, electronic and optical products",Manufacture of consumer electronics,,Group,M,N/A,M,N/A,M,N/A,N/A,H,N/A,L,L,M,N/A
+C_27_274,Manufacturing,Manufacture of electrical equipment,Manufacture of electric lighting equipment,,Group,M,N/A,VL,N/A,L,N/A,N/A,H,N/A,L,L,L,N/A
+C_27_271,Manufacturing,Manufacture of electrical equipment,"Manufacture of electric motors, generators, transformers and electricity distribution and control apparatus",,Group,M,N/A,VL,N/A,L,N/A,N/A,H,N/A,L,L,L,N/A
+C_26_261,Manufacturing,"Manufacture of computer, electronic and optical products",Manufacture of electronic components and boards,,Group,M,N/A,VL,N/A,L,N/A,N/A,H,N/A,L,L,L,N/A
+C_27_273,Manufacturing,Manufacture of electrical equipment,Manufacture of wiring and wiring devices,,Group,M,N/A,VL,N/A,L,N/A,N/A,M,N/A,L,L,L,N/A
+C_26_268,Manufacturing,"Manufacture of computer, electronic and optical products",Manufacture of magnetic and optical media,,Group,M,N/A,M,N/A,H,N/A,N/A,M,N/A,L,L,M,N/A
+C_26_265,Manufacturing,"Manufacture of computer, electronic and optical products","Manufacture of measuring, testing, navigating and control equipment; watches and clocks",,Group,M,N/A,M,N/A,H,N/A,N/A,M,N/A,L,L,M,N/A
+C_26_267,Manufacturing,"Manufacture of computer, electronic and optical products",Manufacture of optical instruments and photographic equipment,,Group,M,N/A,M,N/A,H,N/A,N/A,M,N/A,L,L,M,N/A
+C_27_279,Manufacturing,Manufacture of electrical equipment,Manufacture of other electrical equipment,,Group,M,N/A,VL,N/A,L,N/A,N/A,H,N/A,L,L,L,N/A
+C_15_152,Manufacturing,Manufacture of leather and related products,Manufacture of footwear,,Group,M,N/A,L,N/A,M,N/A,N/A,M,N/A,M,L,M,N/A
+C_23_231,Manufacturing,Manufacture of other non-metallic mineral products,Manufacture of glass and glass products,,Group,M,N/A,M,N/A,M,N/A,N/A,ND,N/A,M,L,M,N/A
+C_23_239,Manufacturing,Manufacture of other non-metallic mineral products,Manufacture of non-metallic mineral products n.e.c.,,Group,M,M,H,N/A,H,N/A,N/A,VH,M,M,L,M,N/A
+C_26_266,Manufacturing,"Manufacture of computer, electronic and optical products","Manufacture of irradiation, electromedical and electrotherapeutic equipment",,Group,M,N/A,M,N/A,H,N/A,N/A,M,N/A,L,L,M,N/A
+C_32_325,Manufacturing,Other manufacturing,Manufacture of medical and dental instruments and supplies,,Group,ND,N/A,M,N/A,H,N/A,N/A,M,N/A,L,ND,M,N/A
+C_25_259,Manufacturing,"Manufacture of fabricated metal products, except machinery and equipment",Manufacture of other fabricated metal products; metalworking service activities,,Group,M,N/A,L,N/A,L,N/A,N/A,VH,N/A,L,L,M,N/A
+C_32_329,Manufacturing,Other manufacturing,Other manufacturing n.e.c.,,Group,M,N/A,M,N/A,H,N/A,N/A,H,N/A,L,L,M,N/A
+C_25_251,Manufacturing,"Manufacture of fabricated metal products, except machinery and equipment","Manufacture of structural metal products, tanks, reservoirs and steam generators",,Group,M,N/A,L,N/A,L,N/A,N/A,M,N/A,L,L,M,N/A
+C_33_332,Manufacturing,Repair and installation of machinery and equipment,Installation of industrial machinery and equipment,,Group,VH,N/A,M,M,M,N/A,N/A,L,N/A,L,L,M,L
+C_18_182,Manufacturing,Printing and reproduction of recorded media,Reproduction of recorded media,,Group,M,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,L,ND,L,N/A
+C_33_331,Manufacturing,Repair and installation of machinery and equipment,"Repair of fabricated metal products, machinery and equipment",,Group,M,N/A,L,L,M,N/A,N/A,M,N/A,L,L,M,N/A
+C_24_241,Manufacturing,Manufacture of basic metals,Manufacture of basic iron and steel,,Group,VH,N/A,H,N/A,H,N/A,N/A,VH,N/A,M,L,M,N/A
+C_32_321,Manufacturing,Other manufacturing,"Manufacture of jewellery, bijouterie and related articles",,Group,M,N/A,M,N/A,H,N/A,N/A,M,N/A,L,L,M,N/A
+C_21_210,Manufacturing,Manufacture of basic pharmaceutical products and pharmaceutical preparations,"Manufacture of pharmaceuticals, medicinal chemical and botanical products",,Group,M,N/A,M,N/A,M,N/A,N/A,M,M,M,L,M,ND
+C_30_301,Manufacturing,Manufacture of other transport equipment,Building of ships and boats,,Group,H,N/A,L,N/A,L,N/A,N/A,H,N/A,L,ND,L,ND
+C_30_303,Manufacturing,Manufacture of other transport equipment,Manufacture of air and spacecraft and related machinery,,Group,H,N/A,L,N/A,L,N/A,N/A,H,N/A,L,L,L,ND
+C_28_281,Manufacturing,Manufacture of machinery and equipment n.e.c.,Manufacture of general-purpose machinery,,Group,M,N/A,L,N/A,M,N/A,N/A,M,N/A,L,L,M,N/A
+C_28_282,Manufacturing,Manufacture of machinery and equipment n.e.c.,Manufacture of special-purpose machinery,,Group,M,N/A,L,N/A,L,N/A,N/A,M,N/A,L,L,M,N/A
+C_29_292,Manufacturing,"Manufacture of motor vehicles, trailers and semi-trailers",Manufacture of bodies (coachwork) for motor vehicles; manufacture of trailers and semi-trailers,,Group,M,N/A,VL,N/A,L,N/A,N/A,M,N/A,L,L,L,N/A
+C_27_275,Manufacturing,Manufacture of electrical equipment,Manufacture of domestic appliances,,Group,M,N/A,L,N/A,L,N/A,N/A,M,N/A,L,L,M,N/A
+C_31_310,Manufacturing,Manufacture of furniture,Manufacture of furniture,,Group,M,N/A,M,N/A,H,N/A,N/A,H,N/A,L,L,M,N/A
+C_30_304,Manufacturing,Manufacture of other transport equipment,Manufacture of military fighting vehicles,,Group,H,N/A,L,N/A,L,N/A,N/A,M,N/A,L,L,L,ND
+C_29_291,Manufacturing,"Manufacture of motor vehicles, trailers and semi-trailers",Manufacture of motor vehicles,,Group,VH,N/A,VL,N/A,L,N/A,N/A,M,N/A,L,L,L,N/A
+C_30_309,Manufacturing,Manufacture of other transport equipment,Manufacture of transport equipment n.e.c.,,Group,M,N/A,VL,N/A,L,N/A,N/A,M,N/A,L,L,L,ND
+C_29_293,Manufacturing,"Manufacture of motor vehicles, trailers and semi-trailers",Manufacture of parts and accessories for motor vehicles,,Group,M,N/A,VL,N/A,L,N/A,N/A,M,N/A,L,L,L,N/A
+C_30_302,Manufacturing,Manufacture of other transport equipment,Manufacture of railway locomotives and rolling stock,,Group,H,N/A,L,N/A,L,N/A,N/A,M,N/A,L,L,L,ND
+C_25_252,Manufacturing,"Manufacture of fabricated metal products, except machinery and equipment",Manufacture of weapons and ammunition,,Group,M,N/A,L,N/A,L,N/A,N/A,M,N/A,L,L,M,N/A
+C_13_131,Manufacturing,Manufacture of textiles,"Spinning, weaving and finishing of textiles",,Group,M,N/A,L,N/A,M,N/A,N/A,M,M,M,L,M,N/A
+C_13_139,Manufacturing,Manufacture of textiles,Manufacture of other textiles,,Group,M,N/A,L,N/A,M,N/A,N/A,M,M,M,L,M,N/A
+C_14_143,Manufacturing,Manufacture of wearing apparel,Manufacture of knitted and crocheted apparel,,Group,M,N/A,L,N/A,M,N/A,N/A,M,N/A,M,L,M,N/A
+C_19_192,Manufacturing,Manufacture of coke and refined petroleum products,Manufacture of refined petroleum products,,Group,VH,N/A,M,N/A,H,N/A,N/A,VH,N/A,M,L,L,N/A
+C_17_170,Manufacturing,Manufacture of paper and paper products,Manufacture of paper and paper products,,Group,M,N/A,M,N/A,H,N/A,N/A,M,N/A,H,L,M,N/A
+C_11_110_1104,Manufacturing,Manufacture of beverages,Manufacture of beverages,Manufacture of soft drinks; production of mineral waters and other bottled waters,Class,M,N/A,L,N/A,L,N/A,N/A,M,H,M,L,M,ND
+C_10_107,Manufacturing,Manufacture of food products,Manufacture of other food products,,Group,M,N/A,L,N/A,L,N/A,N/A,M,ND,M,L,M,ND
+C_10_105,Manufacturing,Manufacture of food products,Manufacture of dairy products,,Group,M,N/A,L,N/A,L,M,N/A,M,ND,M,L,M,N/A
+C_10_106,Manufacturing,Manufacture of food products,"Manufacture of grain mill products, starches and starch products",,Group,M,N/A,L,N/A,M,N/A,N/A,M,ND,M,L,M,ND
+C_10_108,Manufacturing,Manufacture of food products,Manufacture of prepared animal feeds,,Group,M,N/A,L,N/A,L,N/A,N/A,M,M,M,L,M,ND
+C_10_104,Manufacturing,Manufacture of food products,Manufacture of vegetable and animal oils and fats,Manufacture of vegetable and animal oils and fats,Group,M,N/A,L,N/A,M,N/A,N/A,M,H,M,L,M,ND
+C_10_102,Manufacturing,Manufacture of food products,"Processing and preserving of fish, crustaceans and molluscs","Processing and preserving of fish, crustaceans and molluscs",Group,M,N/A,L,N/A,L,N/A,N/A,M,VH,M,L,M,ND
+C_10_103,Manufacturing,Manufacture of food products,Processing and preserving of fruit and vegetables,Processing and preserving of fruit and vegetables,Group,M,N/A,L,N/A,L,L,N/A,N/A,ND,M,L,M,ND
+C_10_101,Manufacturing,Manufacture of food products,Processing and preserving of meat,Processing and preserving of meat,Group,M,N/A,M,N/A,M,N/A,N/A,M,VH,M,L,M,ND
+C_16_162,Manufacturing,"Manufacture of wood and of products of wood and cork, except furniture; manufacture of articles of straw and plaiting materials","Manufacture of products of wood, cork, straw and plaiting materials",,Group,H,N/A,M,N/A,M,N/A,N/A,M,N/A,M,L,M,ND
+C_16_161,Manufacturing,"Manufacture of wood and of products of wood and cork, except furniture; manufacture of articles of straw and plaiting materials",Sawmilling and planing of wood,,Group,M,N/A,M,N/A,M,N/A,N/A,VL,N/A,M,L,M,ND
+C_32_324,Manufacturing,Other manufacturing,Manufacture of games and toys,,Group,M,N/A,M,N/A,H,N/A,N/A,M,N/A,L,L,M,N/A
+C_32_322,Manufacturing,Other manufacturing,Manufacture of musical instruments,,Group,ND,N/A,M,N/A,H,N/A,N/A,M,N/A,L,L,M,N/A
+C_32_323,Manufacturing,Other manufacturing,Manufacture of sports goods,,Group,M,N/A,M,N/A,H,N/A,N/A,M,N/A,L,L,M,N/A
+C_15_151,Manufacturing,Manufacture of leather and related products,"Tanning and dressing of leather; manufacture of luggage, handbags, saddlery and harness; dressing and dyeing of fur",,Group,M,N/A,L,N/A,M,N/A,N/A,H,M,M,L,M,N/A
+C_14_142,Manufacturing,Manufacture of wearing apparel,Manufacture of articles of fur,,Group,M,N/A,L,N/A,L,N/A,N/A,M,N/A,M,L,M,N/A
+C_14_141,Manufacturing,Manufacture of wearing apparel,"Manufacture of wearing apparel, except fur apparel",,Group,M,N/A,L,N/A,L,N/A,N/A,M,N/A,M,L,M,N/A
+C_12_120,Manufacturing,Manufacture of tobacco products,Manufacture of tobacco products,,Group,M,N/A,L,N/A,M,N/A,N/A,H,H,M,L,M,ND
+D_35_351,"Electricity, gas, steam and air conditioning supply","Electricity, gas, steam and air conditioning supply","Electric power generation, transmission and distribution",Biomass energy production,Class,H,ND,H,N/A,H,M,N/A,M,M,H,H,M,N/A
+D_35_352,"Electricity, gas, steam and air conditioning supply","Electricity, gas, steam and air conditioning supply",Manufacture of gas; distribution of gaseous fuels through mains,,Group,M,M,H,N/A,M,N/A,N/A,VH,N/A,L,M,L,N/A
+D_35_351,"Electricity, gas, steam and air conditioning supply","Electricity, gas, steam and air conditioning supply","Electric power generation, transmission and distribution",Geothermal energy production,Class,M,ND,M,N/A,H,N/A,N/A,M,N/A,VL,L,M,N/A
+D_35_351,"Electricity, gas, steam and air conditioning supply","Electricity, gas, steam and air conditioning supply","Electric power generation, transmission and distribution",Hydropower energy production,Class,H,H,L,N/A,N/A,N/A,N/A,ND,N/A,L,M,L,N/A
+D_35_351,"Electricity, gas, steam and air conditioning supply","Electricity, gas, steam and air conditioning supply","Electric power generation, transmission and distribution",Fossil fuels energy production,Class,VH,M,VH,ND,VH,N/A,N/A,VH,N/A,H,M,M,N/A
+D_35_351,"Electricity, gas, steam and air conditioning supply","Electricity, gas, steam and air conditioning supply","Electric power generation, transmission and distribution",Ocean energy production,Class,M,N/A,VL,M,VL,N/A,N/A,VL,N/A,L,L,VL,N/A
+D_35_351,"Electricity, gas, steam and air conditioning supply","Electricity, gas, steam and air conditioning supply","Electric power generation, transmission and distribution",Nuclear power production,Class,M,M,VL,N/A,L,N/A,N/A,M,N/A,H,M,M,N/A
+D_35_351,"Electricity, gas, steam and air conditioning supply","Electricity, gas, steam and air conditioning supply","Electric power generation, transmission and distribution",Solar energy production,Class,VL,N/A,ND,N/A,N/A,N/A,N/A,VL,N/A,VL,L,L,N/A
+D_35_353,"Electricity, gas, steam and air conditioning supply","Electricity, gas, steam and air conditioning supply",Steam and air conditioning supply,,Group,N/A,VL,VH,N/A,VH,N/A,N/A,VL,N/A,H,ND,M,N/A
+D_35_351,"Electricity, gas, steam and air conditioning supply","Electricity, gas, steam and air conditioning supply","Electric power generation, transmission and distribution",Wind energy production,Class,M,N/A,N/A,M,N/A,N/A,N/A,VL,N/A,VL,H,L,N/A
+E_38_381,"Water supply; sewerage, waste management and remediation activities","Waste collection, treatment and disposal activities; materials recovery",Waste collection,,Group,H,N/A,H,ND,M,N/A,N/A,M,M,M,M,M,M
+E_38_383,"Water supply; sewerage, waste management and remediation activities","Waste collection, treatment and disposal activities; materials recovery",Materials recovery,,Group,H,N/A,M,ND,M,N/A,N/A,M,N/A,M,M,M,M
+E_39_390,"Water supply; sewerage, waste management and remediation activities",Remediation activities and other waste management services,Remediation activities and other waste management services,,Group,H,ND,H,ND,M,N/A,N/A,M,M,M,M,M,M
+E_37_370,"Water supply; sewerage, waste management and remediation activities",Sewerage,Sewerage,,Group,VH,M,H,M,L,N/A,N/A,VH,VH,M,L,L,VH
+E_38_382,"Water supply; sewerage, waste management and remediation activities","Waste collection, treatment and disposal activities; materials recovery",Waste treatment and disposal,,Group,H,ND,H,ND,M,N/A,N/A,H,H,M,M,M,M
+E_36_360,"Water supply; sewerage, waste management and remediation activities","Water collection, treatment and supply","Water collection, treatment and supply",,Group,M,H,M,ND,M,N/A,N/A,M,N/A,L,H,L,N/A
+F_41_410,Construction,Construction of buildings,Construction of buildings,,Group,VH,M,H,M,L,N/A,N/A,H,N/A,M,L,L,L
+F_42_429,Construction,Civil engineering,Construction of other civil engineering projects,,Group,VH,VH,M,M,L,N/A,N/A,H,N/A,M,L,L,L
+F_42_421,Construction,Civil engineering,Construction of roads and railways,,Group,VH,M,M,M,L,N/A,N/A,H,N/A,M,L,L,L
+F_43_439,Construction,Specialized construction activities,Other specialized construction activities,,Group,VH,M,M,M,L,N/A,N/A,H,N/A,M,L,L,L
+F_43_433,Construction,Specialized construction activities,Building completion and finishing,,Group,M,N/A,M,N/A,L,N/A,N/A,H,N/A,M,ND,L,L
+F_42_422,Construction,Civil engineering,Construction of utility projects,,Group,VH,VH,M,M,L,N/A,N/A,H,N/A,M,L,L,L
+F_43_431,Construction,Specialized construction activities,Demolition and site preparation,,Group,VH,M,M,M,L,N/A,N/A,H,N/A,M,L,L,L
+F_43_432,Construction,Specialized construction activities,"Electrical, plumbing and other construction installation activities",,Group,M,L,M,M,L,N/A,N/A,M,N/A,M,L,L,L
+G_45_453,Wholesale and retail trade; repair of motor vehicles and motorcycles,Wholesale and retail trade and repair of motor vehicles and motorcycles,Sale of motor vehicle parts and accessories,,Group,L,N/A,M,N/A,L,N/A,N/A,L,N/A,VL,L,M,ND
+G_46_465,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Wholesale trade, except of motor vehicles and motorcycles","Wholesale of machinery, equipment and supplies",,Group,L,N/A,M,N/A,L,N/A,N/A,L,N/A,VL,L,M,ND
+G_46_462,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Wholesale trade, except of motor vehicles and motorcycles",Wholesale of agricultural raw materials and live animals,,Group,L,N/A,M,N/A,L,N/A,N/A,L,N/A,VL,L,M,VH
+G_46_463,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Wholesale trade, except of motor vehicles and motorcycles","Wholesale of food, beverages and tobacco",,Group,L,N/A,M,N/A,L,N/A,N/A,L,N/A,VL,L,M,ND
+G_46_464,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Wholesale trade, except of motor vehicles and motorcycles",Wholesale of household goods,,Group,L,N/A,M,N/A,L,N/A,N/A,L,N/A,VL,L,M,ND
+G_46_461,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Wholesale trade, except of motor vehicles and motorcycles",Wholesale on a fee or contract basis,,Group,L,N/A,M,N/A,L,N/A,N/A,L,N/A,VL,L,M,ND
+G_46_469,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Wholesale trade, except of motor vehicles and motorcycles",Non-specialized wholesale trade,,Group,L,N/A,M,N/A,L,N/A,N/A,L,N/A,VL,L,M,M
+G_45_452,Wholesale and retail trade; repair of motor vehicles and motorcycles,Wholesale and retail trade and repair of motor vehicles and motorcycles,Maintenance and repair of motor vehicles,,Group,ND,N/A,ND,N/A,L,N/A,N/A,M,N/A,VL,L,M,ND
+G_47_471,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Retail trade, except of motor vehicles and motorcycles",Retail sale in non-specialized stores,,Group,VL,N/A,M,N/A,M,N/A,N/A,VL,N/A,VL,L,M,ND
+G_47_479,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Retail trade, except of motor vehicles and motorcycles","Retail trade not in stores, stalls or markets",,Group,VL,N/A,M,N/A,M,N/A,N/A,VL,N/A,VL,L,M,ND
+G_47_477,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Retail trade, except of motor vehicles and motorcycles",Retail sale of other goods in specialized stores,,Group,VL,N/A,M,N/A,M,N/A,N/A,VL,N/A,VL,L,M,ND
+G_47_474,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Retail trade, except of motor vehicles and motorcycles",Retail sale of information and communications equipment in specialized stores,,Group,VL,N/A,M,N/A,M,N/A,N/A,VL,N/A,VL,L,M,ND
+G_47_473,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Retail trade, except of motor vehicles and motorcycles",Retail sale of automotive fuel in specialized stores,,Group,VL,N/A,M,N/A,M,N/A,N/A,M,N/A,L,L,M,ND
+G_47_472,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Retail trade, except of motor vehicles and motorcycles","Retail sale of food, beverages and tobacco in specialized stores",,Group,VL,N/A,M,N/A,M,N/A,N/A,VL,N/A,VL,L,M,ND
+G_47_476,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Retail trade, except of motor vehicles and motorcycles",Retail sale of cultural and recreation goods in specialized stores,,Group,VL,N/A,M,N/A,M,N/A,N/A,VL,N/A,VL,L,M,ND
+G_47_475,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Retail trade, except of motor vehicles and motorcycles",Retail sale of other household equipment in specialized stores,,Group,VL,N/A,M,N/A,M,N/A,N/A,VL,N/A,VL,L,M,ND
+G_47_478,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Retail trade, except of motor vehicles and motorcycles",Retail sale via stalls and markets,,Group,VL,N/A,M,N/A,M,N/A,N/A,VL,N/A,VL,L,M,ND
+G_45_451,Wholesale and retail trade; repair of motor vehicles and motorcycles,Wholesale and retail trade and repair of motor vehicles and motorcycles,Sale of motor vehicles,,Group,L,N/A,M,N/A,L,N/A,N/A,L,N/A,VL,L,M,ND
+G_45_454,Wholesale and retail trade; repair of motor vehicles and motorcycles,Wholesale and retail trade and repair of motor vehicles and motorcycles,"Sale, maintenance and repair of motorcycles and related parts and accessories",,Group,L,N/A,M,N/A,L,N/A,N/A,L,N/A,VL,L,M,ND
+G_46_466,Wholesale and retail trade; repair of motor vehicles and motorcycles,"Wholesale trade, except of motor vehicles and motorcycles",Other specialized wholesale,,Group,L,N/A,M,N/A,L,N/A,N/A,L,N/A,VL,L,M,ND
+H_51_511,Transportation and storage,Air transport,Passenger air transport,,Group,VH,L,H,L,M,N/A,N/A,L,N/A,VL,M,M,VH
+H_52_522_5223,Transportation and storage,Warehousing and support activities for transportation,Support activities for transportation,Service activities incidental to air transportation,Class,VL,VL,M,VL,L,N/A,N/A,L,N/A,L,L,L,N/A
+H_52_522_5224,Transportation and storage,Warehousing and support activities for transportation,Support activities for transportation,Cargo handling,Class,VL,VL,M,VL,L,N/A,N/A,L,VL,L,L,L,H
+H_53_532,Transportation and storage,Postal and courier activities,Courier activities,,Group,M,ND,L,ND,VL,N/A,N/A,L,L,VL,VL,VL,VH
+H_51_512,Transportation and storage,Air transport,Freight air transport,,Group,VH,L,H,L,M,N/A,N/A,L,L,VL,M,M,VH
+H_49_492,Transportation and storage,Land transport and transport via pipelines,Other land transport,,Group,M,N/A,M,N/A,L,N/A,N/A,L,M,VL,M,L,L
+H_52_522_5229,Transportation and storage,Warehousing and support activities for transportation,Support activities for transportation,Other transportation support activities,Class,N/A  ,ND,M,ND,L,N/A,N/A,N/A,VL,L,L,L,ND
+H_53_531,Transportation and storage,Postal and courier activities,Postal activities,,Group,M,ND,L,ND,VL,N/A,N/A,L,N/A,VL,VL,VL,M
+H_52_522_5221,Transportation and storage,Warehousing and support activities for transportation,Support activities for transportation,Service activities incidental to land transportation,Class,VL,ND,M,ND,L,N/A,N/A,L,N/A,L,L,L,N/A
+H_52_521,Transportation and storage,Warehousing and support activities for transportation,Warehousing and storage,,Group,VL,N/A,M,N/A,L,N/A,N/A,VL,N/A,L,L,L,VL
+H_52_522_5222,Transportation and storage,Warehousing and support activities for transportation,Support activities for transportation,Service activities incidental to water transportation,Class,VL,VL,M,M,L,N/A,N/A,L,M,L,L,L,N/A
+H_50_502,Transportation and storage,Water transport,Inland water transport,,Group,M,M,H,N/A,VH,N/A,N/A,L,M,M,N/A,L,M
+H_50_501,Transportation and storage,Water transport,Sea and coastal water transport,,Group,VH,ND,H,M,H,N/A,N/A,L,L,M,N/A,L,VH
+H_49_493,Transportation and storage,Land transport and transport via pipelines,Transport via pipeline,,Group,VL,VL,H,M,M,N/A,ND,M,VL,M,M,M,ND
+H_49_491,Transportation and storage,Land transport and transport via pipelines,Transport via railways,,Group,M,N/A,M,N/A,M,N/A,N/A,L,L,L,M,M,VH
+I_55_559,Accommodation and food service activities,Accommodation,Other accommodation,,Group,L,N/A,L,N/A,N/A,N/A,N/A,L,L,M,L,L,M
+I_55_551,Accommodation and food service activities,Accommodation,Short term accommodation activities,,Group,L,L,L,N/A,N/A,N/A,N/A,L,L,M,L,L,M
+I_55_552,Accommodation and food service activities,Accommodation,"Camping grounds, recreational vehicle parks and trailer parks",,Group,L,L,L,N/A,L,N/A,N/A,L,ND,M,L,L,M
+I_56_563,Accommodation and food service activities,Food and beverage service activities,Beverage serving activities,,Group,L,L,L,N/A,L,N/A,N/A,L,L,M,L,L,N/A
+I_56_562,Accommodation and food service activities,Food and beverage service activities,Event catering and other food service activities,,Group,L,L,L,N/A,L,N/A,N/A,L,L,M,L,L,N/A
+I_56_561,Accommodation and food service activities,Food and beverage service activities,Restaurants and mobile food service activities,,Group,L,L,L,N/A,L,N/A,N/A,L,L,M,L,L,N/A
+J_61_613,Information and communication,Telecommunications,Satellite telecommunications activities,,Group,M,L,L,N/A,VL,N/A,N/A,ND,N/A,VL,VL,VL,N/A
+J_60_602,Information and communication,Programming and broadcasting activities,Television programming and broadcasting activities,,Group,VL,VL,VL,N/A,VL,N/A,N/A,VL,N/A,L,M,L,N/A
+J_58_581,Information and communication,Publishing activities,"Publishing of books, periodicals and other publishing activities",,Group,L,N/A,L,N/A,L,N/A,N/A,L,N/A,L,L,L,N/A
+J_62_620,Information and communication,"Computer programming, consultancy and related activities","Computer programming, consultancy and related activities",,Group,M,N/A,L,N/A,VL,N/A,N/A,L,N/A,VL,M,L,N/A
+J_63_631,Information and communication,Information service activities,"Data processing, hosting and related activities; web portals",,Group,M,N/A,L,L,VL,N/A,N/A,ND,N/A,VL,M,L,N/A
+J_59_591,Information and communication,"Motion picture, video and television programme production, sound recording and music publishing activities","Motion picture, video and television programme activities",,Group,VL,VL,VL,VL,VL,N/A,N/A,VL,N/A,L,M,L,N/A
+J_63_639,Information and communication,Information service activities,Other information service activities,,Group,L,N/A,VL,N/A,VL,N/A,N/A,ND,N/A,L,M,L,N/A
+J_60_601,Information and communication,Programming and broadcasting activities,Radio broadcasting,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,ND,N/A,L,M,L,N/A
+J_58_582,Information and communication,Publishing activities,Software publishing,,Group,L,N/A,L,N/A,VL,N/A,N/A,L,N/A,VL,M,L,N/A
+J_59_592,Information and communication,"Motion picture, video and television programme production, sound recording and music publishing activities",Sound recording and music publishing activities,,Group,L,N/A,L,N/A,L,N/A,N/A,L,N/A,L,L,L,N/A
+J_61_619,Information and communication,Telecommunications,Other telecommunications activities,,Group,L,N/A,L,M,VL,N/A,N/A,L,N/A,VL,VL,VL,N/A
+J_61_611,Information and communication,Telecommunications,Wired telecommunications activities,,Group,L,L,L,M,VL,N/A,N/A,L,N/A,VL,VL,VL,N/A
+J_61_612,Information and communication,Telecommunications,Wireless telecommunications activities,,Group,L,N/A,L,N/A,VL,N/A,N/A,L,N/A,VL,VL,VL,N/A
+K_64_642,Financial and insurance activities,"Financial service activities, except insurance and pension funding",Activities of holding companies,,Group,L,N/A,VL,N/A,VL,N/A,N/A,L,N/A,VL,M,L,N/A
+K_66_662,Financial and insurance activities,Activities auxiliary to financial service and insurance activities,Activities auxiliary to insurance and pension funding,,Group,L,N/A,VL,N/A,VL,N/A,N/A,L,N/A,VL,L,VL,N/A
+K_66_661,Financial and insurance activities,Activities auxiliary to financial service and insurance activities,"Activities auxiliary to financial service activities, except insurance and pension funding",,Group,L,N/A,VL,N/A,VL,N/A,N/A,L,N/A,VL,L,VL,N/A
+K_64_641,Financial and insurance activities,"Financial service activities, except insurance and pension funding",Monetary intermediation,,Group,L,N/A,L,N/A,VL,N/A,N/A,L,N/A,VL,L,VL,N/A
+K_64_649,Financial and insurance activities,"Financial service activities, except insurance and pension funding","Other financial service activities, except insurance and pension funding activities",,Group,L,N/A,L,N/A,VL,N/A,N/A,L,N/A,VL,L,VL,N/A
+K_66_663,Financial and insurance activities,Activities auxiliary to financial service and insurance activities,Fund management activities,,Group,L,N/A,VL,N/A,VL,N/A,N/A,L,N/A,VL,L,VL,N/A
+K_65_651,Financial and insurance activities,"Insurance, reinsurance and pension funding, except compulsory social security",Insurance,,Group,L,N/A,L,N/A,VL,N/A,N/A,L,N/A,VL,L,VL,N/A
+K_65_653,Financial and insurance activities,"Insurance, reinsurance and pension funding, except compulsory social security",Pension funding,,Group,L,N/A,L,N/A,VL,N/A,N/A,L,N/A,VL,L,VL,N/A
+K_65_652,Financial and insurance activities,"Insurance, reinsurance and pension funding, except compulsory social security",Reinsurance,,Group,L,N/A,L,N/A,VL,N/A,N/A,L,N/A,VL,L,VL,N/A
+K_64_643,Financial and insurance activities,"Financial service activities, except insurance and pension funding","Trusts, funds and similar financial entities",,Group,L,N/A,L,N/A,VL,N/A,N/A,L,N/A,VL,L,VL,N/A
+L_68_682,Real estate activities,Real estate activities,Real estate activities on a fee or contract basis,,Group,L,N/A,VL,N/A,VL,N/A,N/A,L,N/A,VL,L,L,N/A
+L_68_681,Real estate activities,Real estate activities,Real estate activities with own or leased property,,Group,L,N/A,VL,N/A,VL,N/A,N/A,L,N/A,VL,L,L,N/A
+M_71_711,"Professional, scientific and technical activities",Architectural and engineering activities; technical testing and analysis,Architectural and engineering activities and related technical consultancy,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+M_69_692,"Professional, scientific and technical activities",Legal and accounting activities,"Accounting, bookkeeping and auditing activities; tax consultancy",,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+M_70_701,"Professional, scientific and technical activities",Activities of head offices; management consultancy activities,Activities of head offices,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+M_69_691,"Professional, scientific and technical activities",Legal and accounting activities,Legal activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+M_70_702,"Professional, scientific and technical activities",Activities of head offices; management consultancy activities,Management consultancy activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+M_74_749,"Professional, scientific and technical activities","Other professional, scientific and technical activities","Other professional, scientific and technical activities n.e.c.",,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+M_73_731,"Professional, scientific and technical activities",Advertising and market research,Advertising,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+M_73_732,"Professional, scientific and technical activities",Advertising and market research,Market research and public opinion polling,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+M_74_742,"Professional, scientific and technical activities","Other professional, scientific and technical activities",Photographic activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+M_72_721,"Professional, scientific and technical activities",Scientific research and development,Research and experimental development on natural sciences and engineering,,Group,L,ND,L,ND,L,VL,ND,L,ND,M,L,M,L
+M_72_722,"Professional, scientific and technical activities",Scientific research and development,Research and experimental development on social sciences and humanities,,Group,L,ND,L,ND,L,N/A,N/A,L,ND,M,L,M,N/A
+M_74_741,"Professional, scientific and technical activities","Other professional, scientific and technical activities",Specialized design activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,ND,VL,M,L,N/A
+M_71_712,"Professional, scientific and technical activities",Architectural and engineering activities; technical testing and analysis,Technical testing and analysis,,Group,VL,ND,VL,ND,VL,N/A,N/A,VL,VL,VL,M,L,N/A
+C_19_191,"Professional, scientific and technical activities",Manufacture of coke and refined petroleum products,Manufacture of coke oven products,,Group,H,N/A,H,N/A,H,N/A,N/A,H,N/A,H,L,L,N/A
+M_75_750,"Professional, scientific and technical activities",Veterinary activities,Veterinary activities,,Group,L,N/A,VL,N/A,L,N/A,N/A,L,ND,M,L,L,N/A
+N_79_799,Administrative and support service activities,"Travel agency, tour operator, reservation service and related activities",Other reservation service and related activities,,Group,L,N/A,L,N/A,L,N/A,N/A,L,N/A,L,M,L,N/A
+N_79_791_7911,Administrative and support service activities,"Travel agency, tour operator, reservation service and related activities",Travel agency and tour operator activities,Travel agency activities,Class,VL,N/A,M,N/A,L,N/A,N/A,VL,N/A,L,L,L,N/A
+N_77_771,Administrative and support service activities,Rental and leasing activities,Renting and leasing of motor vehicles,,Group,L,N/A,VL,N/A,N/A,N/A,N/A,L,L,VL,L,L,L
+N_77_773,Administrative and support service activities,Rental and leasing activities,"Renting and leasing of other machinery, equipment and tangible goods",,Group,L,L,VL,L,N/A,N/A,N/A,L,L,VL,L,L,L
+N_81_811,Administrative and support service activities,Services to buildings and landscape activities,Combined facilities support activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,VL,VL,M,L,N/A
+N_81_812,Administrative and support service activities,Services to buildings and landscape activities,Cleaning activities,,Group,N/A,N/A,VL,N/A,VL,N/A,N/A,L,M,VL,M,L,N/A
+N_81_813,Administrative and support service activities,Services to buildings and landscape activities,Landscape care and maintenance service activities,,Group,N/A,N/A,VL,N/A,VL,VL,L,M,H,VL,M,L,M
+N_79_791_7912,Administrative and support service activities,"Travel agency, tour operator, reservation service and related activities",Travel agency and tour operator activities,Tour operator activities,Class,M,VL,M,M,L,N/A,N/A,VL,N/A,L,L,L,M
+N_82_822,Administrative and support service activities,"Office administrative, office support and other business support activities",Activities of call centres,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+N_82_829,Administrative and support service activities,"Office administrative, office support and other business support activities",Business support service activities n.e.c.,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+N_78_781,Administrative and support service activities,Employment activities,Activities of employment placement agencies,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+N_82_821,Administrative and support service activities,"Office administrative, office support and other business support activities",Office administrative and support activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+N_80_803,Administrative and support service activities,Security and investigation activities,Investigation activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+N_77_774,Administrative and support service activities,Rental and leasing activities,"Leasing of intellectual property and similar products, except copyrighted works",,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+N_82_823,Administrative and support service activities,"Office administrative, office support and other business support activities",Organization of conventions and trade shows,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+N_78_783,Administrative and support service activities,Employment activities,Other human resources provision,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+N_80_801,Administrative and support service activities,Security and investigation activities,Private security activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+N_77_772,Administrative and support service activities,Rental and leasing activities,Renting and leasing of personal and household goods,,Group,L,L,VL,L,VL,N/A,N/A,L,N/A,VL,L,L,N/A
+N_78_782,Administrative and support service activities,Employment activities,Temporary employment agency activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+N_80_802,Administrative and support service activities,Security and investigation activities,Security systems service activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,M,L,N/A
+O_84_842,Public administration and defence; compulsory social security,Public administration and defence; compulsory social security,Provision of services to the community as a whole,,Group,L,N/A,L,N/A,L,N/A,N/A,L,N/A,M,M,M,N/A
+O_84_841,Public administration and defence; compulsory social security,Public administration and defence; compulsory social security,Administration of the State and the economic and social policy of the community,,Group,L,N/A,L,N/A,L,N/A,N/A,L,N/A,M,M,M,N/A
+O_84_843,Public administration and defence; compulsory social security,Public administration and defence; compulsory social security,Compulsory social security activities,,Group,L,N/A,L,N/A,L,N/A,N/A,L,N/A,M,M,M,N/A
+P_85_854,Education,Education,Other education,,Group,L,N/A,L,N/A,VL,N/A,N/A,L,L,M,L,L,N/A
+P_85_855,Education,Education,Educational support activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,L,L,VL,M,L,N/A
+P_85_852,Education,Education,Secondary education,,Group,L,N/A,L,N/A,VL,N/A,N/A,L,L,M,L,L,N/A
+P_85_853,Education,Education,Higher education,,Group,L,N/A,L,N/A,VL,N/A,N/A,L,L,M,L,L,N/A
+P_85_851,Education,Education,Pre-primary and primary education,,Group,L,N/A,L,N/A,VL,N/A,N/A,L,L,M,L,L,N/A
+Q_86_862,Human health and social work activities,Human health activities,Medical and dental practice activities,,Group,L,N/A,VL,N/A,L,N/A,N/A,L,ND,M,L,L,L
+Q_86_869,Human health and social work activities,Human health activities,Other human health activities,,Group,L,N/A,VL,N/A,L,N/A,N/A,L,ND,M,L,L,L
+Q_87_879,Human health and social work activities,Residential care activities,Other residential care activities,,Group,L,N/A,VL,N/A,L,N/A,N/A,L,ND,M,L,L,L
+Q_86_861,Human health and social work activities,Human health activities,Hospital activities,,Group,L,N/A,VL,N/A,L,N/A,N/A,L,ND,M,L,L,L
+Q_87_872,Human health and social work activities,Residential care activities,"Residential care activities for mental retardation, mental health and substance abuse",,Group,L,N/A,VL,N/A,L,N/A,N/A,L,ND,M,L,L,N/A
+Q_87_873,Human health and social work activities,Residential care activities,Residential care activities for the elderly and disabled,,Group,L,N/A,VL,N/A,L,N/A,N/A,L,ND,M,L,L,N/A
+Q_87_871,Human health and social work activities,Residential care activities,Residential nursing care facilities,,Group,L,N/A,VL,N/A,L,N/A,N/A,L,ND,M,L,L,N/A
+Q_88_881,Human health and social work activities,Social work activities without accommodation,Social work activities without accommodation for the elderly and disabled,,Group,L,N/A,VL,N/A,L,N/A,N/A,L,ND,M,L,L,N/A
+Q_88_889,Human health and social work activities,Social work activities without accommodation,Other social work activities without accommodation,,Group,L,N/A,VL,N/A,L,N/A,N/A,L,ND,M,L,L,N/A
+R_93_931,"Arts, entertainment and recreation",Sports activities and amusement and recreation activities,Sports activities,,Group,M,L,L,L,VL,VL,N/A,L,N/A,L,M,L,N/A
+R_93_932,"Arts, entertainment and recreation",Sports activities and amusement and recreation activities,Other amusement and recreation activities,,Group,M,VL,VL,M,VL,VL,N/A,VL,ND,L,M,L,VL
+R_91_910,"Arts, entertainment and recreation","Libraries, archives, museums and other cultural activities","Libraries, archives, museums and other cultural activities",,Group,VL,VL,VL,VL,VL,N/A,ND,VL,VL,L,M,L,VL
+R_90_900,"Arts, entertainment and recreation","Creative, arts and entertainment activities","Creative, arts and entertainment activities",,Group,M,VL,VL,VL,VL,N/A,N/A,VL,VL,L,M,L,N/A
+R_92_920,"Arts, entertainment and recreation",Gambling and betting activities,Gambling and betting activities,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,ND,L,M,L,N/A
+S_94_941,Other service activities,Activities of membership organizations,"Activities of business, employers and professional membership organizations",,Group,VL,N/A,L,N/A,L,N/A,N/A,N/A,N/A,L,M,M,N/A
+S_94_949,Other service activities,Activities of membership organizations,Activities of other membership organizations,,Group,VL,N/A,L,N/A,L,N/A,N/A,N/A,N/A,L,M,M,VL
+S_94_942,Other service activities,Activities of membership organizations,Activities of trade unions,,Group,VL,N/A,L,N/A,L,N/A,N/A,N/A,N/A,L,M,M,N/A
+S_95_951,Other service activities,Repair of computers and personal and household goods,Repair of computers and communication equipment,,Group,L,N/A,L,N/A,L,N/A,N/A,L,N/A,L,ND,M,N/A
+S_95_952,Other service activities,Repair of computers and personal and household goods,Repair of personal and household goods,,Group,L,N/A,M,N/A,M,N/A,N/A,L,N/A,L,ND,M,N/A
+S_96_960,Other service activities,Other personal service activities,Other personal service activities,,Group,L,N/A,L,N/A,L,N/A,N/A,ND,N/A,L,M,L,N/A
+T_97_970,Activities of households as employers; undifferentiated goods- and services-producing activities of households for own use,Activities of households as employers of domestic personnel,Activities of households as employers of domestic personnel,,Group,ND,ND,ND,N/A,VL,ND,ND,VL,N/A,L,L,M,N/A
+T_98_981,Activities of households as employers; undifferentiated goods- and services-producing activities of households for own use,Undifferentiated goods- and services-producing activities of private households for own use,Undifferentiated goods-producing activities of private households for own use,,Group,M,M,VL,N/A,VL,VL,M,M,M,L,L,M,M
+T_98_982,Activities of households as employers; undifferentiated goods- and services-producing activities of households for own use,Undifferentiated goods- and services-producing activities of private households for own use,Undifferentiated service-producing activities of private households for own use,,Group,M,ND,VL,N/A,VL,VL,ND,M,N/A,L,L,M,N/A
+U_99_990,Activities of extraterritorial organizations and bodies,Activities of extraterritorial organizations and bodies,Activities of extraterritorial organizations and bodies,,Group,VL,N/A,VL,N/A,VL,N/A,N/A,VL,N/A,VL,VL,VL,N/A
+D_35_351,"Electricity, gas, steam and air conditioning supply","Electricity, gas, steam and air conditioning supply","Electric power generation, transmission and distribution",Transmission and distribution of electricity,Class,L,L,VL,L,VL,N/A,N/A,L,N/A,L,M,VL,N/A

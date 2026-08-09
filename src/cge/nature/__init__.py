@@ -15,9 +15,15 @@ from cge.nature.encore import (
     MATERIALITY_SCALE,
     EncoreDependencies,
     load_encore_csv,
+    load_encore_ratings_wide,
     materiality_to_score,
 )
 from cge.nature.exposure import compute_exposure
+from cge.nature.real import (
+    encore_data_available,
+    real_encore_dependencies,
+    real_encore_pressures,
+)
 from cge.nature.translate import (
     DEFAULT_INCIDENCE,
     INCIDENCE_BY_ENGINE,
@@ -29,6 +35,7 @@ __all__ = [
     "MATERIALITY_SCALE",
     "EncoreDependencies",
     "load_encore_csv",
+    "load_encore_ratings_wide",
     "materiality_to_score",
     "sector_scores",
     "broadcast_to_goods",
@@ -37,4 +44,7 @@ __all__ = [
     "build_nature_shocks",
     "INCIDENCE_BY_ENGINE",
     "DEFAULT_INCIDENCE",
+    "real_encore_dependencies",
+    "real_encore_pressures",
+    "encore_data_available",
 ]

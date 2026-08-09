@@ -49,13 +49,28 @@ MaterialityClass = Literal["VH", "H", "M", "L", "VL"]
 # matching DNB's practice). Treat it as an assumption to calibrate, not a published elasticity.
 MATERIALITY_SCALE: dict[str, float] = {"VH": 1.0, "H": 0.8, "M": 0.6, "L": 0.4, "VL": 0.2}
 
+# ENCORE's real ratings tables carry two non-scored tokens alongside VH..VL (verified against the
+# May-2026 knowledge base):
+#   - "ND"  = **No Data**: the dependency was not assessed. Genuinely UNKNOWN; must not be silently
+#             treated as "no dependency" — it is kept as a first-class state (nd_mask), so a gap is
+#             visible rather than masquerading as zero risk (review P1 2026-08-07).
+#   - "N/A" = **Not Applicable**: the service does not apply to that process → a true zero. (Blank
+#             cells in the dependency table mean the same: no rated dependency → 0.)
+ND_TOKEN = "ND"
+NA_TOKENS = frozenset({"N/A", "NA", "NAN", ""})  # not-applicable / blank → zero (not unknown)
+
 
 def materiality_to_score(cls: str) -> float:
-    """Map an ENCORE materiality class to its numeric [0, 1] score (``MATERIALITY_SCALE``)."""
+    """Map an ENCORE materiality class to its numeric [0, 1] score (``MATERIALITY_SCALE``).
+
+    ``ND`` (No Data) and ``N/A``/blank are NOT scored here — they are data states, not ratings, and
+    the caller decides their policy (``EncoreDependencies`` keeps ND distinct, N/A/blank as 0).
+    Passing one of them is a programming error, so this raises."""
     key = str(cls).strip().upper()
     if key not in MATERIALITY_SCALE:
         raise ValueError(
-            f"unknown ENCORE materiality class {cls!r}; expected one of {sorted(MATERIALITY_SCALE)}"
+            f"unknown ENCORE materiality class {cls!r}; expected {sorted(MATERIALITY_SCALE)} "
+            f"(data states 'ND'/'N/A'/blank are handled by EncoreDependencies, not scored here)"
         )
     return MATERIALITY_SCALE[key]
 
@@ -63,11 +78,16 @@ def materiality_to_score(cls: str) -> float:
 class EncoreDependencies(_DataObject):
     """ENCORE dependency ratings as first-class, provenance-carrying data.
 
-    ``ratings`` is a long table with columns ``process``, ``service``, ``materiality`` (a class in
-    {VH,H,M,L,VL}). Each (process, service) pair appears at most once. ``services`` is the sorted
-    list of distinct ecosystem services; ``processes`` the sorted list of distinct production
-    processes. The ``score_matrix`` property applies ``MATERIALITY_SCALE`` to give a numeric
-    process × service dependency matrix in [0, 1] — the input to the exposure engine.
+    ``ratings`` is a long table with columns ``process``, ``service``, ``materiality`` — a scored
+    class in {VH,H,M,L,VL} **or** the token ``ND`` (No Data). Not-applicable / blank cells are NOT
+    rows here (absent (process, service) = no rated dependency = 0). Each (process, service) pair
+    appears at most once.
+
+    **ND is first-class, not zero (review P1 2026-08-07).** ``score_matrix`` maps a rated class via
+    ``MATERIALITY_SCALE`` and an absent pair to 0, and — by the documented default policy — treats
+    ``ND`` as 0 *for the numeric propagation* too, BUT ``nd_mask`` flags exactly which cells are ND
+    and ``data_coverage`` reports the rated fraction, so a data gap is visible and never silently
+    read as "no dependency / no risk". A caller can screen or widen ND cells using ``nd_mask``.
     """
 
     _COLUMNS: ClassVar[tuple[str, ...]] = ("process", "service", "materiality")
@@ -81,14 +101,16 @@ class EncoreDependencies(_DataObject):
         missing = [c for c in self._COLUMNS if c not in df.columns]
         if missing:
             raise ValueError(f"EncoreDependencies.ratings is missing columns {missing}")
-        # Every materiality value must be a known class (so the numeric scale is total).
-        bad = sorted(
-            {str(m) for m in df["materiality"] if str(m).strip().upper() not in MATERIALITY_SCALE}
-        )
+        # Every materiality value must be a scored class OR the ND (No Data) token. N/A / blank must
+        # NOT appear as rows (they mean "no dependency" and are absent by construction); catching
+        # them here stops a mis-ingested table silently importing "not applicable" as a state.
+        allowed = set(MATERIALITY_SCALE) | {ND_TOKEN}
+        bad = sorted({str(m) for m in df["materiality"] if str(m).strip().upper() not in allowed})
         if bad:
             raise ValueError(
-                f"EncoreDependencies.ratings has unknown materiality class(es) {bad}; "
-                f"expected {sorted(MATERIALITY_SCALE)}"
+                f"EncoreDependencies.ratings has unrecognised materiality value(s) {bad}; expected "
+                f"a scored class {sorted(MATERIALITY_SCALE)} or 'ND'. (N/A/blank are not rows; an "
+                "absent (process, service) pair already means no rated dependency.)"
             )
         # (process, service) must be unique — a duplicated pair would double-count or silently
         # override, so reject rather than pick one.
@@ -108,13 +130,38 @@ class EncoreDependencies(_DataObject):
     def services(self) -> list[str]:
         return sorted(self.ratings["service"].unique())
 
+    def _is_nd(self, materiality) -> bool:
+        return str(materiality).strip().upper() == ND_TOKEN
+
     def score_matrix(self) -> pd.DataFrame:
-        """A dense process × service numeric dependency matrix in [0, 1] (missing pairs = 0, i.e.
-        no rated dependency). Applies ``MATERIALITY_SCALE`` to each rated class."""
+        """A dense process × service numeric dependency matrix in [0, 1]. A rated class is scored
+        via ``MATERIALITY_SCALE``; an absent pair is 0 (no rated dependency); an ``ND`` cell is 0 in
+        the numeric propagation (documented default) — but see ``nd_mask``/``data_coverage``:
+        ND is a KNOWN-UNKNOWN, tracked separately, not conflated with a genuine zero."""
         m = pd.DataFrame(0.0, index=self.processes, columns=self.services)
         for row in self.ratings.itertuples(index=False):
-            m.loc[row.process, row.service] = materiality_to_score(row.materiality)
+            if not self._is_nd(row.materiality):
+                m.loc[row.process, row.service] = materiality_to_score(row.materiality)
         return m
+
+    def nd_mask(self) -> pd.DataFrame:
+        """Boolean process × service matrix, True where the cell is ``ND`` (No Data) — the explicit
+        record of what is unknown (as opposed to a rated 0 or an absent/not-applicable pair)."""
+        m = pd.DataFrame(False, index=self.processes, columns=self.services)
+        for row in self.ratings.itertuples(index=False):
+            if self._is_nd(row.materiality):
+                m.loc[row.process, row.service] = True
+        return m
+
+    def data_coverage(self) -> float:
+        """Fraction of the rated (process, service) cells that carry an actual rating rather than
+        ``ND`` — a headline data-quality number so a run can report how much of the ENCORE input is
+        genuinely known vs No-Data. 1.0 when nothing is ND; lower as ND cells accumulate."""
+        total = len(self.ratings)
+        if total == 0:
+            return 1.0
+        nd = int(self.ratings["materiality"].map(self._is_nd).sum())
+        return (total - nd) / total
 
 
 def load_encore_csv(
@@ -123,9 +170,112 @@ def load_encore_csv(
     provenance: Provenance,
     kind: Literal["dependency", "impact"] = "dependency",
 ) -> EncoreDependencies:
-    """Ingest an ENCORE ratings CSV (columns ``process``, ``service``, ``materiality``) into an
-    ``EncoreDependencies`` object. This is the real ingestion path the full ENCORE export uses;
-    the shipped fixture (``fixture.py``) constructs the same object in-memory for offline tests.
+    """Ingest an ALREADY-TIDY ratings CSV (long columns ``process``, ``service``, ``materiality``)
+    into an ``EncoreDependencies`` object. This is the simple/pre-processed path; for the **raw
+    ENCORE knowledge-base export** (a wide ISIC×service matrix with ND/N-A cells) use
+    ``load_encore_ratings_wide`` below, which does the real melt + N/A-vs-ND handling.
     """
     df = pd.read_csv(path)
     return EncoreDependencies(provenance=provenance, ratings=df, kind=kind)
+
+
+# The leading columns of ENCORE's wide ratings tables (06/07) are the ISIC identifier hierarchy;
+# every remaining column is an ecosystem service (06) or a pressure/impact driver (07).
+_ISIC_ID_COLUMNS = (
+    "ISIC Unique code",
+    "ISIC Section",
+    "ISIC Division",
+    "ISIC Group",
+    "ISIC Class",
+)
+
+
+def _encore_process_ids(raw: pd.DataFrame, process_col: str) -> pd.Series:
+    """A unique, human-meaningful process id per row of an ENCORE wide ratings table.
+
+    Base is the ISIC code (``process_col``). Where that code appears on more than one row (ENCORE
+    split it into finer production processes), append the finest-populated ISIC name — Class, else
+    Group, else Division — to disambiguate, as ``"<code> — <name>"``. Rows whose code is already
+    unique keep the bare code. Raises if disambiguation still leaves a collision (unexpected)."""
+    code = raw[process_col].astype(str).str.strip()
+
+    def _finest_name(row) -> str:
+        for col in ("ISIC Class", "ISIC Group", "ISIC Division"):
+            val = row.get(col)
+            if val is not None and str(val).strip() and str(val).strip().lower() != "nan":
+                return str(val).strip()
+        return ""
+
+    dup_code = code.duplicated(keep=False)
+    ids = []
+    for i, (_, row) in enumerate(raw.iterrows()):
+        c = code.iloc[i]
+        if dup_code.iloc[i]:
+            name = _finest_name(row)
+            ids.append(f"{c} — {name}" if name else c)
+        else:
+            ids.append(c)
+    out = pd.Series(ids, index=raw.index)
+    if out.duplicated().any():
+        clashes = sorted(out[out.duplicated(keep=False)].unique())[:5]
+        raise ValueError(
+            f"ENCORE process ids still collide after disambiguation, e.g. {clashes}; the ISIC "
+            "code + finest name was not unique. Inspect the ratings file."
+        )
+    return out
+
+
+def load_encore_ratings_wide(
+    path: str,
+    *,
+    provenance: Provenance,
+    kind: Literal["dependency", "impact"] = "dependency",
+    process_col: str = "ISIC Unique code",
+) -> EncoreDependencies:
+    """Ingest a **raw ENCORE knowledge-base ratings CSV** — the wide ISIC×(service|pressure) matrix
+    shipped as ``06. Dependency mat ratings.csv`` / ``07. Pressure mat ratings.csv`` — into an
+    ``EncoreDependencies`` object, doing the real transformations the tidy path assumes away:
+
+    - **wide → long melt.** Each non-ISIC column is a service (dependencies) or pressure/impact
+      driver (pressures); melt to one (process, service, materiality) row per rated cell.
+    - **process id.** ``process_col`` (default the ``ISIC Unique code``, e.g. ``A_1_14_141``) is the
+      stable process identifier used downstream; the other ISIC hierarchy columns are dropped (kept
+      in the raw file for the concordance step).
+    - **N/A vs ND vs blank (review P1 2026-08-07).** ``ND`` (No Data) rows are KEPT with materiality
+      ``ND`` so the contract can track the gap distinctly; ``N/A`` and blank cells mean *not
+      applicable / no dependency* and are DROPPED (an absent pair already scores 0). This is the one
+      transformation the tidy CSV can't express and the whole reason a real adapter is needed.
+
+    **Process identity (real-data subtlety).** The ``ISIC Unique code`` is NOT unique on its own:
+    ENCORE splits some codes into finer *production processes* (e.g. ``D_35_351`` →
+    fossil / nuclear / hydro / solar / wind… energy production), distinguished by the ``ISIC Class``
+    name, while most rows analysed at Group/Division level leave ``ISIC Class`` blank. So the id is
+    composed as ``<ISIC code>`` plus, only where that code repeats, the finest-populated ISIC
+    name (Class → Group → Division) to disambiguate — giving a stable, unique, human-meaningful key.
+
+    Whitespace in ENCORE's headers (e.g. a trailing space on some service names) is stripped, and a
+    UTF-8 BOM on the first column is tolerated (matched on the cleaned name)."""
+    raw = pd.read_csv(path)
+    raw.columns = [str(c).strip().lstrip("﻿") for c in raw.columns]
+    if process_col not in raw.columns:
+        raise ValueError(
+            f"load_encore_ratings_wide: process column {process_col!r} not found; columns start "
+            f"{list(raw.columns)[:6]}"
+        )
+    id_cols = [c for c in _ISIC_ID_COLUMNS if c in raw.columns]
+    extra_meta = [c for c in raw.columns if c.startswith("ISIC level")]  # a non-service note column
+    value_cols = [c for c in raw.columns if c not in id_cols and c not in extra_meta]
+
+    raw = raw.copy()
+    raw["process"] = _encore_process_ids(raw, process_col)
+    long = raw.melt(
+        id_vars=["process"], value_vars=value_cols, var_name="service", value_name="materiality"
+    )
+    long["service"] = long["service"].astype(str).str.strip()
+    long["materiality"] = long["materiality"].map(lambda v: str(v).strip().upper())
+
+    # Drop not-applicable / blank cells (they mean 0 and are absent by construction); keep rated
+    # classes AND ND (No Data), which the contract tracks as a distinct known-unknown.
+    keep = ~long["materiality"].isin(NA_TOKENS)
+    long = long.loc[keep, ["process", "service", "materiality"]].reset_index(drop=True)
+    return EncoreDependencies(provenance=provenance, ratings=long, kind=kind)

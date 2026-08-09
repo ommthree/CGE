@@ -47,7 +47,7 @@ def test_encore_dependencies_validates_and_scores():
 
 
 def test_encore_rejects_unknown_class_and_duplicate_pairs():
-    with pytest.raises(ValueError, match="unknown materiality class"):
+    with pytest.raises(ValueError, match="unrecognised materiality value"):
         EncoreDependencies(
             provenance=_prov(),
             ratings=pd.DataFrame(
@@ -552,3 +552,110 @@ def test_nature_scenario_end_to_end_through_engine():
     v = {(r.region, r.sector): r.value for r in vol.itertuples()}
     # Every good loses output; agriculture (fully exposed) most, manufacturing least.
     assert v[("A", "agriculture")] < v[("A", "manufacturing")] < 0.0
+
+
+# -- Real ENCORE knowledge base ingestion (2026-08-09) — golden-file tests ----------------------
+# These run against the real CC BY-SA 4.0 ENCORE data vendored under data/encore/. Skip cleanly if
+# that directory is absent (a checkout that excluded the data), so the suite still passes.
+import pytest as _pytest  # noqa: E402
+
+from cge.nature.real import encore_data_available  # noqa: E402
+
+_needs_encore = _pytest.mark.skipif(
+    not encore_data_available(), reason="vendored ENCORE data (data/encore/) not present"
+)
+
+
+@_needs_encore
+def test_real_encore_dependency_ingestion_shape_and_values():
+    """The real May-2026 dependency table ingests to the expected shape, real vocabulary, and known
+    cell values — a golden-file guard so a re-vendored file or a broken melt is caught."""
+    from cge.nature.real import real_encore_dependencies
+
+    dep = real_encore_dependencies()
+    assert dep.kind == "dependency"
+    assert len(dep.processes) == 271
+    assert len(dep.services) == 25
+    # Real ENCORE service vocabulary (not our toy labels).
+    for svc in ("Pollination", "Global climate regulation", "Water supply"):
+        assert svc in dep.services
+    sm = dep.score_matrix()
+    # A_1_14_141 (raising cattle) is VH on Biomass provisioning → 1.0.
+    assert sm.loc["A_1_14_141", "Biomass provisioning"] == 1.0
+
+
+@_needs_encore
+def test_real_encore_nd_kept_distinct_not_zeroed():
+    """ND (No Data) cells are tracked distinctly (nd_mask) and NOT silently 0 — the review's core
+    concern. data_coverage reports the rated fraction (<1 because real ND cells exist)."""
+    from cge.nature.real import real_encore_dependencies
+
+    dep = real_encore_dependencies()
+    nd = dep.nd_mask()
+    assert nd.values.sum() > 0  # the real file genuinely has ND cells
+    assert 0.0 < dep.data_coverage() < 1.0  # some rated, some ND
+    # An ND cell scores 0 in the matrix BUT is flagged in nd_mask (known-unknown, not a zero).
+    nd_cells = [(p, s) for p in dep.processes for s in dep.services if nd.loc[p, s]]
+    p, s = nd_cells[0]
+    assert dep.score_matrix().loc[p, s] == 0.0 and nd.loc[p, s]
+
+
+@_needs_encore
+def test_real_encore_process_ids_unique_and_energy_split():
+    """The ISIC code alone is not unique (ENCORE splits some codes into finer production processes);
+    the adapter disambiguates by the finest ISIC name, so process ids are unique and the energy
+    split (D_35_351 → fossil/nuclear/hydro/solar/wind…) is preserved."""
+    from cge.nature.real import real_encore_dependencies
+
+    dep = real_encore_dependencies()
+    assert len(dep.processes) == len(set(dep.processes))  # unique
+    energy = [p for p in dep.processes if p.startswith("D_35_351")]
+    assert len(energy) >= 8  # split into distinct generation processes
+    assert any("Fossil" in p for p in energy) and any("Solar" in p for p in energy)
+
+
+@_needs_encore
+def test_real_encore_pressures_typed_impact():
+    """The pressure/impact table ingests separately, typed kind='impact' — so it is NOT mistaken for
+    a dependency (feeding impacts into the dependency→productivity channel inverts causality)."""
+    from cge.nature.concord import sector_scores
+    from cge.nature.real import real_encore_pressures
+
+    pr = real_encore_pressures()
+    assert pr.kind == "impact"
+    assert len(pr.services) >= 10  # pressure/impact drivers
+    # And the dependency pipeline refuses it (kind guard from the earlier review).
+    with _pytest.raises(ValueError, match="dependency-kind"):
+        sector_scores(pr, toy_encore_concordance(), ["agriculture"])
+
+
+def test_encore_ratings_wide_drops_na_keeps_nd(tmp_path):
+    """Unit test of the wide-melt N/A-vs-ND rule on a tiny synthetic wide file (no real data):
+    a rating is kept, ND is kept as ND, and N/A / blank are dropped (→ absent = 0)."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import Provenance
+    from cge.nature.encore import load_encore_ratings_wide
+
+    wide = pd.DataFrame(
+        {
+            "ISIC Unique code": ["X_1", "X_2"],
+            "ISIC Section": ["s", "s"],
+            "ISIC Division": ["d", "d"],
+            "ISIC Group": ["g1", "g2"],
+            "ISIC Class": ["", ""],
+            "Pollination": ["VH", "ND"],
+            "Water supply": ["N/A", ""],
+        }
+    )
+    csv = tmp_path / "wide.csv"
+    wide.to_csv(csv, index=False)
+    prov = Provenance(
+        source="t", source_version="1", licence="x", reference_year=2026, retrieved="2026-08-09"
+    )
+    dep = load_encore_ratings_wide(str(csv), provenance=prov)
+    rows = {(r.process, r.service): r.materiality for r in dep.ratings.itertuples()}
+    assert rows[("X_1", "Pollination")] == "VH"  # rating kept
+    assert rows[("X_2", "Pollination")] == "ND"  # ND kept distinct
+    assert ("X_1", "Water supply") not in rows  # N/A dropped
+    assert ("X_2", "Water supply") not in rows  # blank dropped

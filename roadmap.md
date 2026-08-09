@@ -447,21 +447,31 @@ suite** (6 checks) is in the standing battery (64/64) covering the exposure inva
 emissions/revenue identity under productivity, the time-path, region-scope, incidence, and manifest
 provenance — so a regression re-surfaces in the battery, not just pytest.
 
+**DONE (2026-08-09): the real ENCORE knowledge base is ingested.** The actual **May-2026 ENCORE KB**
+is vendored under `data/encore/` (CC BY-SA 4.0, attribution in `NOTICE.md`), and
+`load_encore_ratings_wide` ingests the real wide ISIC×service dependency table (271 processes × 25
+services) and the pressure table (typed `kind="impact"`), doing the real transforms: wide→long melt,
+composite ISIC process ids (disambiguating ENCORE's finer splits, e.g. the 9-way energy split), and
+**N/A-vs-ND handling** — `ND` (No Data) is kept as a first-class state (`nd_mask`, `data_coverage`
+≈0.90), never silently zeroed. `real_encore_dependencies()` / `real_encore_pressures()` load them
+with attribution provenance; golden-file tests guard the shape/vocab/values.
+
 **STILL OPEN before Phase-6 sign-off:**
-1. **Real-ENCORE-export adapter** — current-version format, preserved N/A-vs-ND semantics,
-   separately-typed pressure/impact ratings, with golden-file ingestion tests.
-2. **A real published ENCORE↔EXIOBASE concordance** — only the synthetic one-to-one toy concordance
-   exists today (6.2).
-3. **Consulting-readiness methodology blockers (not just data plumbing):** empirical calibration of
+1. **A real published ENCORE↔EXIOBASE concordance** — the real ENCORE processes are ISIC-coded, so a
+   real nature *scenario* end-to-end needs an ISIC→EXIOBASE bridge with cited weights. Only the
+   synthetic one-to-one toy concordance exists today; the raw crosswalk (`data/encore/Crosswalk
+   tables/EXIOBASE - NACE - ISIC…`) is vendored to build it. **← NEXT.**
+2. **Consulting-readiness methodology blockers (not just data plumbing):** empirical calibration of
    the severity→productivity mapping, ecosystem-service interactions, regional output weights, and
    cross-model sensitivity. ENCORE ratings are indicators of *potential* significance, not calibrated
    output/TFP elasticities; the linear materiality ramp and the noisy-OR + engine-incidence choices
    are transparent *assumptions*, not published methods.
 
-The *engineering* pathway (exposure → per-engine incidence → time-path-aware shock → engine →
-standard-runner provenance → store persistence → GUI) is complete, auditable, and battery-gated, and
-the round-1 + round-2 review P1s are fixed. But until 1–3 land, Phase 6 is **experimental**: results
-are illustrative of the method, not calibrated nature risk, and must not be used in consulting work.
+The *engineering* pathway (real ENCORE ingestion → exposure → per-engine incidence → time-path-aware
+shock → engine → standard-runner provenance → store persistence → GUI) is complete, auditable, and
+battery-gated, and the round-1 + round-2 review P1s are fixed. But until 1–2 land, Phase 6 is
+**experimental**: results are illustrative of the method, not calibrated nature risk, and must not be
+used in consulting work.
 
 | # | Task | Effort |
 |---|---|---|
