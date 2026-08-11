@@ -197,11 +197,27 @@ def _preprocess_nature(
         "nature_incidence", INCIDENCE_BY_ENGINE.get(scenario.engine, DEFAULT_INCIDENCE)
     )
     threshold = float(overrides.get("nature_max_link_threshold", 0.0))
-    # The CGE collapses regions unless explicitly run multi-region, and rejects region-scoped
-    # productivity shocks (review P1 round 3). So emit ONE economy-wide shock per sector (regions
-    # aggregated explicitly in shock construction) when the target is the single-region CGE. The
-    # partial-equilibrium engine keeps a region dimension, so it retains per-region shocks.
-    collapse = scenario.engine == "cge_static" and not data.get("multi_region")
+    # Single-region target? The CGE runs single-region unless multi_region is explicitly requested —
+    # which arrives via data_overrides, so check BOTH (review P1 round 4 2026-08-10: reading only
+    # data.get('multi_region') wrongly collapsed a real multi run). partial_eq keeps a region
+    # dimension, so it is never single-region here.
+    multi_region = bool(data.get("multi_region") or overrides.get("multi_region"))
+    single_region_target = scenario.engine == "cge_static" and not multi_region
+    # A region-scoped NatureStress against a single-region model is ILL-POSED: there is no region
+    # dimension to target, and silently collapse-averaging it made a region-A stress identical to an
+    # economy-wide one END TO END (review P1 round 4 — the earlier engine-only guard was bypassed
+    # because the runner stripped the region coverage first). So REJECT it here, at the runner
+    # boundary, rather than collapse it. An economy-wide NatureStress (no region coverage) is fine;
+    # is emitted as one economy-wide shock per sector.
+    if single_region_target:
+        scoped = sorted({r for s in nature for r in s.coverage_regions})
+        if scoped:
+            raise ValueError(
+                f"a region-scoped NatureStress (coverage_regions={scoped}) cannot run against the "
+                f"single-region {scenario.engine!r} model — it has no region dimension to target. "
+                "Use the multi-region CGE (multi_region=True) for region-specific stress, or "
+                "drop the region coverage to apply it economy-wide."
+            )
     allow_water_overlap = bool(overrides.get("nature_allow_water_overlap", False))
     derived = build_nature_shocks(
         nature,
@@ -212,7 +228,7 @@ def _preprocess_nature(
         incidence=incidence,
         max_link_threshold=threshold,
         years=list(scenario.years),  # so a NatureStress time path becomes a per-year shock path
-        collapse_regions=collapse,
+        collapse_regions=single_region_target,  # economy-wide NatureStress → one shock per sector
         allow_water_overlap=allow_water_overlap,
     )
     # Keep any non-nature shocks (e.g. a carbon price alongside the degradation), then append the
@@ -221,31 +237,51 @@ def _preprocess_nature(
 
     from cge.contracts.provenance import content_hash
 
-    # ND (No-Data) coverage for the stressed services (review P1 round 3 2026-08-09): a sector whose
-    # dependency on a degraded service is entirely ND scores 0 numerically — indistinguishable
-    # genuine "no dependency". Record which sector/service pairs are UNKNOWN so a result flags the
-    # data gap rather than silently reading it as "no risk".
-    from cge.nature.concord import sector_nd_mask
+    # ND (No-Data) coverage for the stressed services (review P1 rounds 3–4). sector_scores scores
+    # an ND cell as 0, so a mostly-unknown cell looks like a near-zero dependency. Record BOTH the
+    # entirely-unknown sectors AND — per sector, for each stressed service — the WEIGHTED ND SHARE
+    # (fraction of the sector's concordance weight that is No-Data), so a PARTIALLY unknown cell
+    # is visible too, not just the all-ND ones (round-4 P1: 262 partial-ND cells were hidden).
+    from cge.nature.concord import sector_nd_share
 
     stressed_services = sorted({s.service for s in nature})
     econ_sectors = sorted({lab.split(":", 1)[-1] for lab in io.A.columns})
     nd_flags: dict[str, list[str]] = {}
+    nd_share: dict[str, dict[str, float]] = {}
     try:
-        nd = sector_nd_mask(encore, concordance, econ_sectors)
+        share = sector_nd_share(encore, concordance, econ_sectors)
         for svc in stressed_services:
-            if svc in nd.columns:
-                unknown = [sec for sec in econ_sectors if bool(nd.loc[sec, svc])]
-                if unknown:
-                    nd_flags[svc] = unknown
+            if svc not in share.columns:
+                continue
+            fully = [sec for sec in econ_sectors if float(share.loc[sec, svc]) >= 1.0 - 1e-9]
+            if fully:
+                nd_flags[svc] = fully
+            # Any sector with a non-trivial unknown share (>0) for this stressed service.
+            partial = {
+                sec: round(float(share.loc[sec, svc]), 4)
+                for sec in econ_sectors
+                if float(share.loc[sec, svc]) > 1e-9
+            }
+            if partial:
+                nd_share[svc] = partial
     except (ValueError, KeyError):
         # A concordance that doesn't cover these sectors is already reported elsewhere; don't let a
         # coverage-diagnostic failure break the run.
-        nd_flags = {}
+        nd_flags, nd_share = {}, {}
 
     stamp = {
         "translation_version": NATURE_TRANSLATION_VERSION,
         "stresses": [
-            {"service": s.service, "severity": s.severity, "path": s.path} for s in nature
+            {
+                "service": s.service,
+                "severity": s.severity,
+                "path": s.path,
+                # The ORIGINAL NatureStress coverage (sectors/regions it named), so a run is fully
+                # reconstructible from the manifest — not just the derived shocks (review P2).
+                "coverage_sectors": list(s.coverage_sectors),
+                "coverage_regions": list(s.coverage_regions),
+            }
+            for s in nature
         ],
         "encore_source": encore.provenance.source,
         "encore_version": encore.provenance.source_version,
@@ -256,7 +292,7 @@ def _preprocess_nature(
         "exposure_rule": rule,
         "incidence": incidence,
         "max_link_threshold": threshold,
-        "collapse_regions": collapse,
+        "collapse_regions": single_region_target,
         "allow_water_overlap": allow_water_overlap,
         "derived_productivity_shocks": len(derived),
         # Shock coverage: the (region, sector) pairs the derived productivity shocks actually touch,
@@ -271,6 +307,10 @@ def _preprocess_nature(
         # Data-coverage: per stressed service, sectors whose dependency is entirely ND (unknown).
         # A NON-EMPTY entry means those sectors' zero shock is "no data", NOT "no dependency".
         "nd_unknown_sectors": nd_flags,
+        # Weighted ND share: per stressed service, {sector: fraction of concordance weight that is
+        # No-Data}. Surfaces PARTIALLY-unknown cells (0<share<1), not just the all-ND ones — so a
+        # sector whose dependency is, say, 90% unknown is visible in the manifest.
+        "nd_weighted_share": nd_share,
     }
     return shocks, stamp
 

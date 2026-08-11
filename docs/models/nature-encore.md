@@ -22,11 +22,14 @@
   uncalibrated. So results are **illustrative of the method, not calibrated nature risk** — not for
   consulting. The toy fixture remains for offline CI. See the roadmap Phase 6 status.
 
-> **Honest scope.** Every dependency rating shipped here is a small hand-entered subset seeded from
-> the central-bank literature ([vanToor2020], [ENCORE]) and **labelled illustrative** in its
-> provenance. It is enough to exercise and test the mechanism end-to-end; it is **not** an
-> analytical result. Nature-scenario numbers are illustrative until run on the licensed ENCORE data,
-> exactly as climate-damage numbers are labelled illustrative in Phase 7.
+> **Honest scope.** The **real May-2026 ENCORE knowledge base** is now vendored (`data/encore/`, CC
+> BY-SA 4.0) and ingested, and the real EXIOBASE↔ENCORE concordance is built — so nature runs on real
+> ratings, not a fixture. A small synthetic fixture is ALSO shipped, but only for offline CI. The
+> numbers remain **illustrative of the method, not calibrated risk**, for a methodological reason,
+> not a data one: ENCORE materiality ratings indicate *potential* significance (not calibrated TFP/
+> output elasticities), the EXIOBASE↔ENCORE concordance is **equal-weighted** (a documented v1
+> assumption), and severity→productivity is a scenario assumption — exactly as climate-damage numbers
+> are labelled illustrative in Phase 7.
 
 ## 1. Purpose & scope
 
@@ -204,8 +207,9 @@ benchmark replication / homogeneity / Walras are untouched (proven over random p
 not just asserted).
 
 - **Closed** (single region): a −20% hit on bread raises its price ~+11%, cuts its output ~−17%, and
-  drags its upstream input supplier down too. Matched by sector (single-region, so a shock's region
-  tag is ignored).
+  drags its upstream input supplier down too. This variant is single-region, so a **region-scoped**
+  NatureStress is **rejected** (there is no region dimension to target — use the multi variant); an
+  economy-wide stress is applied as one shock per sector.
 - **Open** (Armington/CET, home + ROW): the same hit raises the home price and cuts home output, but
   now demand shifts toward **imports** and the un-degraded domestic sector expands (Armington
   substitution) — a richer response than the closed variant. Matched by sector.

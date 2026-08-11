@@ -10,7 +10,12 @@ per-good ``ProductivityShock``s the economic engines consume (``translate``). Se
 resulting ``ProductivityShock``s as a supply-side output hit.
 """
 
-from cge.nature.concord import broadcast_to_goods, sector_nd_mask, sector_scores
+from cge.nature.concord import (
+    broadcast_to_goods,
+    sector_nd_mask,
+    sector_nd_share,
+    sector_scores,
+)
 from cge.nature.encore import (
     MATERIALITY_SCALE,
     EncoreDependencies,
@@ -40,6 +45,7 @@ __all__ = [
     "materiality_to_score",
     "sector_scores",
     "sector_nd_mask",
+    "sector_nd_share",
     "broadcast_to_goods",
     "compute_exposure",
     "nature_to_productivity",

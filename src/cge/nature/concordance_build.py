@@ -50,7 +50,10 @@ class ConcordanceAudit:
     n_encore_processes_used: int
     multi_process_sectors: dict[str, list[str]] = field(default_factory=dict)  # sector -> processes
     unresolved_sectors: list[str] = field(default_factory=list)
-    rollback_used: dict[str, str] = field(default_factory=dict)  # isic code -> resolved process id
+    # ISIC code -> the resolved ENCORE process id(s). A list because a code that ENCORE split into
+    # finer named processes (e.g. the electricity code → fossil/nuclear/solar…) resolves to SEVERAL
+    # process ids across the crosswalk's rows; a plain str would overwrite all but one (review P2).
+    rollback_used: dict[str, list[str]] = field(default_factory=dict)
 
     def summary(self) -> str:
         return (
@@ -134,10 +137,13 @@ def build_exiobase_encore_concordance(
             continue
         # Record ISIC-code → resolved-process (the audit trail): note where rollback fired, i.e. the
         # full crosswalk code did NOT equal its resolved ENCORE process id (ENCORE rated a coarser
-        # level or a named split).
+        # level or a named split). Accumulate a list so a code split into several named processes
+        # keeps all of them (not just the last one seen).
         code_str = str(code).strip()
         if code_str != pid:
-            audit.rollback_used[code_str] = pid
+            resolved = audit.rollback_used.setdefault(code_str, [])
+            if pid not in resolved:
+                resolved.append(pid)
         procs = sector_to_procs.setdefault(sector, [])
         if pid not in procs:  # distinct processes only; the crosswalk repeats codes across rows
             procs.append(pid)

@@ -68,29 +68,47 @@ def sector_scores(
     return out
 
 
-def sector_nd_mask(
+def sector_nd_share(
     dep: EncoreDependencies,
     concordance: ConcordanceMap,
     sectors: list[str],
 ) -> pd.DataFrame:
-    """Boolean sectors × service mask, True where a sector's dependency on a service is **entirely
-    unknown** — i.e. EVERY ENCORE process the sector maps to is ``ND`` (No Data) on that service
-    (review P1 round 3 2026-08-09).
+    """Sectors × service matrix of the **weighted ND share**: the fraction of a sector's concordance
+    weight whose contributing ENCORE process is ``ND`` (No Data) on that service (review P1 round 4
+    2026-08-10).
 
-    The numeric ``sector_scores`` scores an all-ND cell as 0, indistinguishable from a genuine
-    "no dependency". This mask preserves the distinction so a run can FLAG the gap (e.g. wholesale
-    trade's water-purification dependency is unknown, not zero) rather than silently reporting no
-    risk — matching ENCORE's own N/A-vs-ND semantics. A cell is *not* masked if any contributing
-    process has a real rating (a partial gap still yields a usable, if under-estimated, score)."""
+    ``sector_scores`` averages process scores by concordance weight and scores an ND cell as 0, so a
+    cell where 90% of the weight is unknown looks almost the same as a genuine near-zero dependency.
+    This returns that hidden uncertainty as a number in [0, 1]: 0 = fully rated, 1 = fully unknown,
+    0.9 = 90% of the sector's weight for that service is No-Data. A run can then surface a partially
+    unknown cell (not only the all-ND cells the earlier boolean mask caught), matching ENCORE's
+    N/A-vs-ND semantics. Weights are the concordance's (which sum to 1 per sector)."""
     nd = dep.nd_mask()  # ENCORE process × service (True = ND)
-    out = pd.DataFrame(False, index=sectors, columns=list(nd.columns))
+    out = pd.DataFrame(0.0, index=sectors, columns=list(nd.columns))
     for s in sectors:
-        procs = [p for p in concordance.weights.get(s, {}) if p in nd.index]
-        if not procs:
+        wmap = {p: w for p, w in concordance.weights.get(s, {}).items() if p in nd.index}
+        total_w = sum(wmap.values())
+        if total_w <= 0:
             continue
-        # A sector/service is unknown iff ALL its contributing processes are ND there.
-        out.loc[s] = nd.loc[procs].all(axis=0)
+        # Weighted fraction of the sector's mapped weight that is ND on each service.
+        share = sum(w * nd.loc[p].astype(float) for p, w in wmap.items()) / total_w
+        out.loc[s] = share
     return out
+
+
+def sector_nd_mask(
+    dep: EncoreDependencies,
+    concordance: ConcordanceMap,
+    sectors: list[str],
+    *,
+    threshold: float = 1.0,
+) -> pd.DataFrame:
+    """Boolean sectors × service mask, True where the **weighted ND share** (``sector_nd_share``) is
+    at or above ``threshold``. The default ``threshold=1.0`` flags only ENTIRELY-unknown cells (the
+    original all-ND behaviour, back-compatible); a lower threshold (e.g. 0.5) flags cells that are
+    mostly No-Data. See ``sector_nd_share`` for the underlying fraction."""
+    share = sector_nd_share(dep, concordance, sectors)
+    return share >= threshold - 1e-12
 
 
 def broadcast_to_goods(sector_score: pd.DataFrame, goods: list[str]) -> pd.DataFrame:

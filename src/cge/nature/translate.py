@@ -56,7 +56,7 @@ DEFAULT_INCIDENCE = "total"  # for an unknown engine: the conservative reduced-f
 # incidence handling). Recorded in a nature run's manifest ALONGSIDE the engine version, because the
 # runner-level translation can change results without the engine version moving (review P2
 # 2026-08-07). Bump on any change to the translation math or the incidence/aggregation rules.
-NATURE_TRANSLATION_VERSION = "0.2.0"
+NATURE_TRANSLATION_VERSION = "0.3.0"
 
 Incidence = Literal["direct", "total"]
 

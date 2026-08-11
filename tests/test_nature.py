@@ -220,6 +220,19 @@ def test_exposure_max_rule_materiality_threshold_screens_negligible_links():
     assert thresh.loc["clean", "w"] == 0.0  # screened out above the threshold
 
 
+def test_exposure_nonzero_threshold_rejected_under_weighted_mean():
+    """Review P2 (2026-08-10): the max-link threshold applies only to 'max'; a nonzero value
+    under 'weighted_mean' is a no-op and must be REJECTED as an inapplicable control, not silently
+    recorded (0 and 0.999 previously gave identical results)."""
+    idx = ["x", "y"]
+    A = pd.DataFrame([[0.0, 0.3], [0.2, 0.0]], index=idx, columns=idx)
+    d = pd.DataFrame([[0.5], [0.1]], index=idx, columns=["w"])
+    with pytest.raises(ValueError, match="no effect under the 'weighted_mean'"):
+        compute_exposure(A, d, rule="weighted_mean", max_link_threshold=0.5)
+    # A zero threshold is always fine (the default no-op).
+    compute_exposure(A, d, rule="weighted_mean", max_link_threshold=0.0)
+
+
 def test_sector_scores_rejects_impact_kind_object():
     """Review P1 (2026-08-07): ENCORE impacts (the economy's pressure ON nature) must NOT feed into
     the dependency→productivity channel — that inverts the causality. sector_scores rejects a
@@ -404,6 +417,69 @@ def test_collapsed_cge_rejects_region_scoped_shock_isolated():
     _assert_no_region_scoped_productivity(
         [ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"])], "closed"
     )
+
+
+def test_runner_rejects_region_scoped_nature_stress_end_to_end():
+    """Review P1 round 4 (2026-08-10): the round-3 engine guard was BYPASSED because the runner
+    stripped region coverage (collapse) BEFORE the engine saw it — so a region-scoped NatureStress
+    ran identically to an economy-wide one END TO END. This tests the REAL boundary (run_scenario):
+    a region-scoped NatureStress against the single-region CGE is rejected; economy-wide runs;
+    and the two are no longer identical (the defect was that they were)."""
+    from cge.contracts.shocks import NatureStress
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    region_scoped = Scenario(
+        name="a",
+        engine="cge_static",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4, coverage_regions=["A"])],
+    )
+    with pytest.raises(ValueError, match="region-scoped NatureStress"):
+        run_scenario(region_scoped, data_source="toy")
+    # Economy-wide (no region coverage) runs fine.
+    economy_wide = Scenario(
+        name="g",
+        engine="cge_static",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4)],
+    )
+    res = run_scenario(economy_wide, data_source="toy")
+    assert (res.data["variable"] == "volume_change").any()
+
+
+def test_runner_multi_region_flag_from_overrides_not_collapsed():
+    """Review P1 round 4: multi_region arrives via data_overrides (merged after preprocessing), so
+    reading only data.get('multi_region') wrongly collapsed a real multi run. The runner must read
+    the flag from overrides too — so a region-scoped NatureStress is NOT rejected when multi_region
+    is requested through data_overrides."""
+    from cge.contracts.shocks import NatureStress
+    from cge.runner import _preprocess_nature
+    from cge.scenarios.loader import Scenario
+    from cge.validation.toy import toy_economy
+
+    io, _ = toy_economy()
+    sc = Scenario(
+        name="m",
+        engine="cge_static",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4, coverage_regions=["A"])],
+    )
+    # With multi_region via overrides, the region-scoped stress must NOT be rejected (it collapses
+    # only when single-region). It should preprocess without raising the single-region error.
+    from cge.contracts.engine import registry
+
+    shocks, stamp = _preprocess_nature(
+        sc,
+        {
+            "IOSystem": io,
+            "EncoreDependencies": encore_fixture(),
+            "ConcordanceMap": toy_encore_concordance(),
+        },
+        registry.get("cge_static"),
+        {"multi_region": True},
+    )
+    assert stamp is not None and stamp["collapse_regions"] is False
 
 
 def test_nature_pipeline_runs_with_encore_injected_via_overrides():
@@ -741,6 +817,72 @@ def test_sector_nd_mask_flags_all_nd_cells_not_as_zero():
 
 
 @_needs_encore
+def test_sector_nd_share_surfaces_partial_unknowns():
+    """Review P1 round 4 (2026-08-10): partially-ND cells (e.g. 90% of a sector's concordance weight
+    is No-Data) score ≈0 and were hidden by the all-or-nothing mask. sector_nd_share returns the
+    WEIGHTED unknown fraction in [0, 1], so a partially-unknown cell is visible; a fully-unknown one
+    is 1.0 and a fully-rated cell is 0.0."""
+    from cge.nature.concord import sector_nd_share
+    from cge.nature.real import real_encore_concordance, real_encore_dependencies
+
+    dep = real_encore_dependencies()
+    cmap, _ = real_encore_concordance()
+    share = sector_nd_share(dep, cmap, list(cmap.weights)[:80])
+    vals = share.to_numpy()
+    assert (vals >= -1e-9).all() and (vals <= 1.0 + 1e-9).all()  # a fraction
+    # There exist genuinely partial cells (0 < share < 1), not only 0/1.
+    assert ((vals > 1e-6) & (vals < 1 - 1e-6)).any()
+    # The fully-unknown wholesale/Water-purification cell is 1.0.
+    whole = "Wholesale trade and commission trade, except of motor vehicles and motorcycles (51)"
+    w = sector_nd_share(dep, cmap, [whole])
+    assert w.loc[whole, "Water purification"] == pytest.approx(1.0)
+
+
+@_needs_encore
+def test_manifest_records_weighted_nd_share():
+    """A real nature run records the weighted ND share per stressed service in the manifest, so a
+    partially-unknown sector/service is visible — not only the all-ND ones."""
+    import numpy as np
+
+    from cge.contracts.data_objects import Classification, IOSystem
+    from cge.contracts.engine import registry
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.real import real_encore_concordance, real_encore_dependencies
+    from cge.runner import _preprocess_nature
+    from cge.scenarios.loader import Scenario
+
+    dep = real_encore_dependencies()
+    cmap, _ = real_encore_concordance()
+    secs = ["Cultivation of cereal grains nec", "Animal products nec"]
+    labels = [f"R:{s}" for s in secs]
+    io = IOSystem(
+        provenance=_prov(),
+        sectors=Classification(name="e", kind="sector", labels=secs),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=pd.DataFrame(np.full((2, 2), 0.05), index=labels, columns=labels),
+        final_demand=pd.DataFrame({"final_demand": [100.0, 100.0]}, index=labels),
+        unit="MEUR",
+        currency="EUR",
+    )
+    sc = Scenario(
+        name="n",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="Global climate regulation", severity=0.4)],
+    )
+    _shocks, stamp = _preprocess_nature(
+        sc,
+        {"IOSystem": io},
+        registry.get("partial_eq"),
+        {"IOSystem": io, "EncoreDependencies": dep, "ConcordanceMap": cmap},
+    )
+    assert "nd_weighted_share" in stamp
+    share = stamp["nd_weighted_share"].get("Global climate regulation", {})
+    # Animal products nec is partially unknown on this service (a real partial-ND cell).
+    assert any(0.0 < v < 1.0 for v in share.values())
+
+
+@_needs_encore
 def test_nature_run_records_nd_unknown_sectors_in_manifest():
     """A real nature run whose stressed service is entirely unknown for some sectors records those
     sectors in the manifest's nd_unknown_sectors — so the zero shock reads as 'no data', not 'no
@@ -852,3 +994,77 @@ def test_real_nature_scenario_runs_end_to_end_through_runner_and_engine():
     # Full nature provenance in the manifest (reconstructible).
     nat = res.manifest.assumptions["nature"]
     assert nat["encore_source"] and nat["shock_coverage"]
+
+
+@_needs_encore
+def test_real_nature_runs_from_a_persisted_store_build(tmp_path):
+    """Review P1 round 4 (2026-08-11): prove a nature scenario runs from a genuinely PERSISTED build
+    — real ENCORE + real concordance saved through DataStore, then a NatureStress run via
+    run_scenario(data_source=build_id) (the store→runner→engine path), not an override injection.
+    The economy uses real EXIOBASE labels the real concordance covers. (This is a real-labelled
+    build; a normal AGGREGATED EXIOBASE build still needs an aggregation-aware concordance — a
+    documented follow-up.)"""
+    import numpy as np
+
+    from cge.contracts.data_objects import (
+        Classification,
+        IOSystem,
+        SatelliteAccount,
+    )
+    from cge.contracts.shocks import NatureStress
+    from cge.data.metadata import BuildMeta
+    from cge.data.store import DataStore
+    from cge.nature.real import real_encore_concordance, real_encore_dependencies
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    dep = real_encore_dependencies()
+    cmap, _ = real_encore_concordance()
+    secs = ["Cultivation of cereal grains nec", "Cultivation of crops nec"]
+    labels = [f"R:{s}" for s in secs]
+    io = IOSystem(
+        provenance=_prov(),
+        sectors=Classification(name="e", kind="sector", labels=secs),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=pd.DataFrame(np.full((2, 2), 0.05), index=labels, columns=labels),
+        final_demand=pd.DataFrame({"final_demand": [100.0, 100.0]}, index=labels),
+        unit="MEUR",
+        currency="EUR",
+    )
+    sat = SatelliteAccount(
+        provenance=_prov(),
+        name="GHG",
+        units={"CO2": "t/MEUR", "CO2e": "tCO2e/MEUR"},
+        data=pd.DataFrame(
+            {labels[0]: [1000.0, 1000.0], labels[1]: [1000.0, 1000.0]}, index=["CO2", "CO2e"]
+        ),
+    )
+    store = DataStore(tmp_path)
+    meta = BuildMeta(
+        build_id="real_nat",
+        source="real-labelled",
+        source_version="v",
+        reference_year=2026,
+        licence="x",
+        currency="EUR",
+        monetary_unit="MEUR",
+        retrieved="2026-08-11",
+    )
+    store.save(meta=meta, io=io, satellites=[sat], encore=dep, concordance=cmap)
+
+    # Nature data must have round-tripped, so the scenario runs from the build id alone.
+    loaded = store.load("real_nat")
+    assert "EncoreDependencies" in loaded and "ConcordanceMap" in loaded
+
+    sc = Scenario(
+        name="real",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="Water purification", severity=0.4)],
+    )
+    res = run_scenario(sc, data_source="real_nat", store=store)
+    res.validate_schema()
+    vol = res.data[(res.data["variable"] == "volume_change") & (res.data["scenario"] == "central")]
+    v = {r.sector: r.value for r in vol.itertuples()}
+    assert v["Cultivation of cereal grains nec"] < 0.0  # real degradation from the persisted build
+    assert res.manifest.assumptions["nature"]["encore_source"]

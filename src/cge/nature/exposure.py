@@ -84,6 +84,15 @@ def compute_exposure(
         raise ValueError(
             f"exposure: max_link_threshold must be finite and ≥ 0 (got {max_link_threshold!r})"
         )
+    # The threshold only applies to the ``max`` rule (which screens supply-chain links). Under
+    # ``weighted_mean`` it has NO effect, so a NONZERO value is an inapplicable control — reject it
+    # rather than silently record a no-op (review P2 2026-08-10: 0 and 0.999 were identical).
+    if rule == "weighted_mean" and max_link_threshold != 0.0:
+        raise ValueError(
+            f"exposure: max_link_threshold={max_link_threshold} has no effect under the "
+            "'weighted_mean' rule (it screens links only for the 'max' rule). Use rule='max', or "
+            "leave the threshold at 0."
+        )
 
     a = A.to_numpy(dtype=float)
     if not np.isfinite(a).all():
@@ -121,7 +130,10 @@ def compute_exposure(
         )
     # Now align onto the economy's goods; a good the input does NOT rate (absent row) has 0 direct
     # dependency (its exposure, if any, is entirely upstream). fillna only touches these new rows.
-    D = direct.reindex(index=goods).fillna(0.0)
+    # SNAP the ε artifacts (validated within _bound_tol above) exactly into [0, 1] so the returned
+    # direct scores and the ``total ≥ direct`` invariant hold to the contract, not merely to
+    # tolerance (review P2 2026-08-10 — don't let the tolerance leak a 1.0000000002 into results).
+    D = direct.reindex(index=goods).fillna(0.0).clip(lower=0.0, upper=1.0)
     services = list(D.columns)
     Dv = D.to_numpy(dtype=float)
 
