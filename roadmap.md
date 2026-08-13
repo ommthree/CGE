@@ -495,14 +495,24 @@ coverage + shock coverage + ND + collapse/overlap flags; the direct-score tolera
 [0,1] rather than loosening the contract; and the nature-translation (v0.3.0) and CGE (v0.13.0)
 versions are bumped.
 
+**Round-5 fixes (2026-08-13):** a typoed `coverage_regions`/`coverage_sectors` is now REJECTED (it
+silently produced a zero-response baseline); DIRECT incidence skips the (expensive) total-exposure
+propagation and rejects an inapplicable rule/threshold there; the duplicate-service and water-overlap
+guards test the actual TARGET GOODS (disjoint regional stresses on one service are now allowed);
+region collapse averages over ALL regions incl. zeros (was biased by the sub-threshold filter);
+`nature.real`'s `root` argument has one convention (the dataset root); and a normal build now
+**persists ENCORE + a concordance** — the SMALL/aggregated build gets an **aggregation-aware
+concordance** (`aggregate_concordance`) composing the fine concordance with the sector-aggregation
+map, so an aggregated build runs nature from `run_scenario(data_source=build_id)` with no manual
+assembly. Plus P3 hardening (nd-mask threshold validation, nd-share missing-process guard, empty-years
+guard).
+
 The *engineering* pathway (real ENCORE ingestion → real EXIOBASE↔ENCORE concordance → exposure →
 per-engine incidence → time-path-aware shock → engine → standard-runner provenance → store
-persistence) runs **end-to-end on real data** (real-EXIOBASE-labelled build) and is battery-gated;
-rounds 1–4 review P1s are fixed. **Honest remaining scope:** a *normal AGGREGATED* EXIOBASE build
-(food/energy/mfg labels) still needs an **aggregation-aware concordance** — the 162-label real
-concordance matches only un-aggregated EXIOBASE labels — so "nature on any stored build" is NOT yet
-universal. And until 1–3 below land, Phase 6 is **experimental**: results are illustrative of the
-method, not calibrated nature risk, and must not be used in consulting work. (The GUI page still uses
+persistence, incl. an aggregation-aware concordance for aggregated builds) runs **end-to-end on real
+data** and is battery-gated; rounds 1–5 review P1s are fixed. Until 1–3 below land, Phase 6 is
+**experimental**: results are illustrative of the method, not calibrated nature risk, and must not be
+used in consulting work. (The GUI page still uses
 the toy fixture for an offline demo.)
 
 | # | Task | Effort |

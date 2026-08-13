@@ -15,6 +15,8 @@
   is wired. **N/A vs ND** is honoured: ND (No Data) is a distinct state and an all-ND sector/service
   is flagged in the manifest (`nd_unknown_sectors`), never silently zeroed. The **water-supply
   overlap** (a combined ENCORE service) is rejected when stressed with its components.
+  A normal build now **persists ENCORE + a (possibly aggregation-aware) concordance** so a nature
+  scenario runs from `run_scenario(data_source=build_id)` with no manual assembly.
   **Remaining before sign-off — now all METHODOLOGY, not data plumbing:** the concordance is
   **equal-weighted** (a documented v1 assumption, not output-weighted); severity→productivity is a
   **scenario assumption**, not a calibrated elasticity (ENCORE ratings indicate *potential*
@@ -77,8 +79,11 @@ in a convex ramp (e.g. VH=1.0, H=0.5, M=0.25, L=0.1, VL=0.0), one constant, no o
 `ratings` is a long table `(process, service, materiality)`; the validator rejects an unknown
 materiality class (so the numeric scale is total) and a duplicated `(process, service)` pair (which
 would double-count or silently override). `score_matrix()` applies the scale to give a dense
-**process × service** matrix in [0, 1] (an unrated pair is 0 — *no* rated dependency). `load_encore_csv`
-is the real ingestion path; `fixture.encore_fixture()` builds the same object in memory for tests.
+**process × service** matrix in [0, 1] (an unrated pair is 0 — *no* rated dependency).
+`load_encore_ratings_wide` is the **real** ingestion path — it reads the raw ENCORE knowledge-base
+wide ISIC×service CSV (melt, composite process ids, N/A-vs-ND handling); `load_encore_csv` is a
+convenience for an already-tidy long CSV; `fixture.encore_fixture()` builds the same object in memory
+for offline tests.
 
 ## 4. Concordance (6.2)
 

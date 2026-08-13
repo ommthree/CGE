@@ -419,6 +419,55 @@ def test_collapsed_cge_rejects_region_scoped_shock_isolated():
     )
 
 
+def test_typoed_stress_coverage_rejected_not_silent_baseline():
+    """Review P1 round 5 (2026-08-13): a misspelled coverage_region/sector matches no good and
+    silently produces zero shocks — a "successful" baseline run with no sign it was invalid. Both
+    are now rejected before translation (the service name was validated; coverage was not)."""
+    from cge.contracts.shocks import NatureStress
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    for cov in ({"coverage_regions": ["TYPO"]}, {"coverage_sectors": ["TYPO"]}):
+        sc = Scenario(
+            name="t",
+            engine="partial_eq",
+            years=[2020],
+            shocks=[NatureStress(service="surface_water", severity=0.4, **cov)],
+        )
+        with pytest.raises(ValueError, match="unknown coverage"):
+            run_scenario(sc, data_source="toy")
+    # Valid coverage (toy region A, sector agriculture) still runs.
+    ok = Scenario(
+        name="ok",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4, coverage_regions=["A"])],
+    )
+    assert run_scenario(ok, data_source="toy").manifest.assumptions["nature"][
+        "derived_productivity_shocks"
+    ]
+
+
+def test_direct_incidence_skips_total_and_rejects_inapplicable_controls():
+    """Review P1 round 5: under incidence='direct' the shock uses only each good's dependency, so
+    the upstream propagation (and its rule/threshold) is not computed — a non-default rule/threshold
+    is then an inapplicable control and is rejected, and the direct result is unchanged."""
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.fixture import encore_fixture, toy_encore_concordance
+    from cge.nature.translate import build_nature_shocks
+
+    io, _ = toy_economy()
+    ns = [NatureStress(service="surface_water", severity=0.5)]
+    # direct with defaults works; a nonzero threshold / non-default rule is rejected.
+    assert build_nature_shocks(
+        ns, io, encore_fixture(), toy_encore_concordance(), incidence="direct"
+    )
+    with pytest.raises(ValueError, match="NO effect under incidence='direct'"):
+        build_nature_shocks(
+            ns, io, encore_fixture(), toy_encore_concordance(), incidence="direct", rule="max"
+        )
+
+
 def test_runner_rejects_region_scoped_nature_stress_end_to_end():
     """Review P1 round 4 (2026-08-10): the round-3 engine guard was BYPASSED because the runner
     stripped region coverage (collapse) BEFORE the engine saw it — so a region-scoped NatureStress
@@ -535,14 +584,16 @@ def test_incidence_invalid_value_rejected():
         )
 
 
-def test_duplicate_service_stresses_rejected():
-    """Review P2: two stresses on the SAME service compound as if independent — reject rather than
-    silently double-count (composition is across DISTINCT services)."""
+def test_duplicate_service_same_good_rejected_but_disjoint_allowed():
+    """Review P2 (2026-08-07, round 5): two stresses on the SAME service that both
+    reach the SAME good compound as if independent — rejected. But DISJOINT regional coverage on one
+    service (the natural way to express heterogeneous regional degradation) is ALLOWED."""
     from cge.contracts.shocks import NatureStress
     from cge.nature.translate import build_nature_shocks
 
     io, _ = toy_economy()
-    with pytest.raises(ValueError, match="duplicate NatureStress service"):
+    # Both economy-wide → both hit every good → conflict.
+    with pytest.raises(ValueError, match="both cover good"):
         build_nature_shocks(
             [
                 NatureStress(service="surface_water", severity=0.3),
@@ -552,6 +603,16 @@ def test_duplicate_service_stresses_rejected():
             encore_fixture(),
             toy_encore_concordance(),
         )
+    # Disjoint regions (A vs B) on the same service → no shared good → allowed.
+    assert build_nature_shocks(
+        [
+            NatureStress(service="surface_water", severity=0.2, coverage_regions=["A"]),
+            NatureStress(service="surface_water", severity=0.6, coverage_regions=["B"]),
+        ],
+        io,
+        encore_fixture(),
+        toy_encore_concordance(),
+    )
 
 
 def test_water_supply_overlap_rejected_by_default_and_opt_out():
@@ -575,6 +636,19 @@ def test_water_supply_overlap_rejected_by_default_and_opt_out():
     # Opt-out allows it; the combined service alone is always fine.
     assert nature_to_productivity(combo, exp, allow_water_overlap=True)
     assert nature_to_productivity([NatureStress(service="Water supply", severity=0.3)], exp)
+    # DISJOINT coverage (combined in A, component in B) — no good gets both — is allowed (round 5).
+    exp2 = pd.DataFrame(
+        0.5,
+        index=["A:s", "B:s"],
+        columns=["Water supply", "Water purification", "Water flow regulation"],
+    )
+    assert nature_to_productivity(
+        [
+            NatureStress(service="Water supply", severity=0.3, coverage_regions=["A"]),
+            NatureStress(service="Water purification", severity=0.3, coverage_regions=["B"]),
+        ],
+        exp2,
+    )
 
 
 def test_shock_validation_rejects_invalid_values():
@@ -1068,3 +1142,98 @@ def test_real_nature_runs_from_a_persisted_store_build(tmp_path):
     v = {r.sector: r.value for r in vol.itertuples()}
     assert v["Cultivation of cereal grains nec"] < 0.0  # real degradation from the persisted build
     assert res.manifest.assumptions["nature"]["encore_source"]
+
+
+@_needs_encore
+def test_aggregation_aware_concordance_runs_on_grouped_sectors(tmp_path):
+    """Review P1 round 5 (2026-08-13): an AGGREGATED build (coarse sector groups, not real EXIOBASE
+    labels) can run nature via an aggregation-aware concordance — from the real concordance with
+    the sector-aggregation map. Persist it through DataStore and run from the build id."""
+    import numpy as np
+
+    from cge.contracts.data_objects import (
+        Classification,
+        IOSystem,
+        SatelliteAccount,
+    )
+    from cge.contracts.shocks import NatureStress
+    from cge.data.metadata import BuildMeta
+    from cge.data.store import DataStore
+    from cge.nature.concordance_build import aggregate_concordance
+    from cge.nature.real import real_encore_concordance, real_encore_dependencies
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    dep = real_encore_dependencies()
+    full_cmap, _ = real_encore_concordance()
+    # Map several real EXIOBASE sectors into two coarse groups (the build's sectors).
+    fine = list(full_cmap.weights)[:6]
+    sector_map = {fine[i]: ("primary" if i < 3 else "services") for i in range(6)}
+    agg = aggregate_concordance(full_cmap, sector_map)
+    groups = ["primary", "services"]
+    assert set(agg.weights) == set(groups)  # both groups covered
+
+    labels = [f"R:{g}" for g in groups]
+    io = IOSystem(
+        provenance=_prov(),
+        sectors=Classification(name="e", kind="sector", labels=groups),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=pd.DataFrame(np.full((2, 2), 0.05), index=labels, columns=labels),
+        final_demand=pd.DataFrame({"final_demand": [100.0, 100.0]}, index=labels),
+        unit="MEUR",
+        currency="EUR",
+    )
+    sat = SatelliteAccount(
+        provenance=_prov(),
+        name="GHG",
+        units={"CO2": "t/MEUR", "CO2e": "tCO2e/MEUR"},
+        data=pd.DataFrame(
+            {labels[0]: [1000.0, 1000.0], labels[1]: [1000.0, 1000.0]}, index=["CO2", "CO2e"]
+        ),
+    )
+    store = DataStore(tmp_path)
+    meta = BuildMeta(
+        build_id="agg_nat",
+        source="aggregated",
+        source_version="v",
+        reference_year=2026,
+        licence="x",
+        currency="EUR",
+        monetary_unit="MEUR",
+        retrieved="2026-08-13",
+    )
+    store.save(meta=meta, io=io, satellites=[sat], encore=dep, concordance=agg)
+
+    sc = Scenario(
+        name="agg",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="Water purification", severity=0.4)],
+    )
+    res = run_scenario(sc, data_source="agg_nat", store=store)
+    res.validate_schema()
+    assert (
+        res.data["variable"] == "volume_change"
+    ).any()  # aggregated build runs nature end-to-end
+
+
+def test_build_from_pymrio_attaches_nature_for_covered_sectors(tmp_path):
+    """The normal build orchestration persists nature: build_from_pymrio attaches the ENCORE
+    concordance for a build whose sectors are real EXIOBASE labels (review P1 round 5). The offline
+    test MRIO's labels are NOT EXIOBASE, so build_test skips nature cleanly — asserted here so the
+    'optional, skipped when inapplicable' contract is pinned."""
+    from cge.data.build import _nature_for_sectors, build_test
+    from cge.data.store import DataStore
+
+    # Real EXIOBASE sector labels → nature attaches.
+    from cge.nature.real import real_encore_concordance
+
+    real_sectors = list(real_encore_concordance()[0].weights)[:3]
+    enc, conc = _nature_for_sectors(real_sectors)
+    assert enc is not None and conc is not None
+    assert set(conc.weights) == set(real_sectors)
+    # The offline test-MRIO build's aggregated sectors are NOT EXIOBASE labels → nature skipped, and
+    # the build still succeeds (no nature persisted, no error).
+    store = DataStore(tmp_path)
+    written = build_test(store=store)
+    assert "EncoreDependencies" not in store.load(written["small"])

@@ -45,6 +45,40 @@ def _region_row_labels(io: IOSystem) -> list[str]:
     return [r for r in io.regions.labels if r.upper().startswith("W") or r.startswith("RoW")]
 
 
+def _nature_for_sectors(sector_labels):
+    """Return ``(EncoreDependencies, ConcordanceMap)`` restricted to ``sector_labels`` if they are
+    real EXIOBASE sectors the real concordance covers AND the vendored ENCORE data is present; else
+    ``(None, None)``. Restricting the concordance to the build's own sectors keeps the persisted map
+    small and makes a coverage gap explicit (an uncovered sector is simply absent)."""
+    try:
+        from cge.nature.real import encore_data_available, real_encore_concordance
+    except ImportError:  # pragma: no cover - nature module optional
+        return None, None
+    if not encore_data_available():
+        return None, None
+    dep, (full_cmap, _audit) = None, (None, None)
+    try:
+        from cge.nature.real import real_encore_dependencies
+
+        dep = real_encore_dependencies()
+        full_cmap, _audit = real_encore_concordance()
+    except Exception:  # pragma: no cover - defensive: nature is optional, never break a build
+        return None, None
+    covered = [s for s in sector_labels if s in full_cmap.weights]
+    if not covered:
+        return None, None  # labels aren't EXIOBASE (e.g. the offline test MRIO) → no nature
+    # Restrict the concordance to the build's covered sectors.
+    from cge.contracts.data_objects import ConcordanceMap
+
+    restricted = ConcordanceMap(
+        provenance=full_cmap.provenance,
+        from_classification=full_cmap.from_classification,
+        to_classification=full_cmap.to_classification,
+        weights={s: full_cmap.weights[s] for s in covered},
+    )
+    return dep, restricted
+
+
 def build_from_pymrio(
     pio: pymrio.IOSystem,
     *,
@@ -60,10 +94,18 @@ def build_from_pymrio(
     gas_aliases: dict[str, str] | None = None,
     currency: str = "EUR",
     monetary_unit: str = "MEUR",
+    attach_nature: bool = True,
 ) -> dict[str, str]:
     """Adapt, quality-check, store a full build and (optionally) a derived small build.
 
     Returns a dict of {'full': build_id, 'small': build_id?} actually written.
+
+    ``attach_nature`` (review P1 round 5 2026-08-13): if the build's sector labels are covered by
+    real EXIOBASE↔ENCORE concordance, persist the ENCORE dependency ratings + concordance alongside
+    the build so a NatureStress scenario runs from ``run_scenario(data_source=build_id)`` with no
+    manual assembly. The SMALL (aggregated) build gets an **aggregation-aware** concordance derived
+    from the sector map. Silently skipped when the labels aren't EXIOBASE (e.g. the offline MRIO)
+    or the ENCORE data isn't present — nature is optional, and a build without it behaves as before.
     """
     store = store or default_store()
     io, satellites = adapt_pymrio(
@@ -90,7 +132,20 @@ def build_from_pymrio(
         retrieved=date.today().isoformat(),
     )
     quality = build_quality_report(build_id, io, satellites, row_regions=_region_row_labels(io))
-    store.save(meta=meta, io=io, satellites=satellites, quality=quality)
+    # Nature: derive the ENCORE concordance for the FULL build's (real EXIOBASE) sector labels if
+    # they are covered, so the build carries nature. None when labels aren't EXIOBASE or ENCORE data
+    # is absent — nature is optional (review P1 round 5).
+    full_encore, full_conc = (
+        _nature_for_sectors(io.sectors.labels) if attach_nature else (None, None)
+    )
+    store.save(
+        meta=meta,
+        io=io,
+        satellites=satellites,
+        quality=quality,
+        encore=full_encore,
+        concordance=full_conc,
+    )
     written = {"full": build_id}
 
     if make_small and small_sector_map and small_region_map:
@@ -137,7 +192,23 @@ def build_from_pymrio(
         # Fold the cross-stage conservation checks into the stored small-build report.
         for c in agg_check.checks:
             s_quality.add(c)
-        store.save(meta=s_meta, io=s_io, satellites=s_sats, quality=s_quality)
+        # Nature for the SMALL build: an AGGREGATION-AWARE concordance, composing the full build's
+        # concordance with the sector map (fine EXIOBASE sector → coarse group), so the aggregated
+        # build runs nature too (review P1 round 5).
+        small_encore, small_conc = (None, None)
+        if attach_nature and full_encore is not None and full_conc is not None:
+            from cge.nature.concordance_build import aggregate_concordance
+
+            small_encore = full_encore
+            small_conc = aggregate_concordance(full_conc, small_sector_map)
+        store.save(
+            meta=s_meta,
+            io=s_io,
+            satellites=s_sats,
+            quality=s_quality,
+            encore=small_encore,
+            concordance=small_conc,
+        )
         written["small"] = small_id
 
     return written

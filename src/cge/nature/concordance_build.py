@@ -183,3 +183,56 @@ def build_exiobase_encore_concordance(
         weights=weights,
     )
     return cmap, audit
+
+
+def aggregate_concordance(
+    fine: ConcordanceMap,
+    sector_map: dict[str, str],
+    *,
+    to_classification: str = "aggregated-sectors",
+) -> ConcordanceMap:
+    """Compose a fine EXIOBASE→ENCORE ``ConcordanceMap`` with a **sector-aggregation map**
+    (fine EXIOBASE sector → coarse group) to give a coarse ``group → ENCORE process`` concordance
+    (review P1 round 5 2026-08-13). This makes an AGGREGATED build (whose sectors are the coarse
+    groups) runnable against ENCORE without a bespoke concordance.
+
+    Each group's weight over ENCORE processes is the **equal-weighted average of its member sectors'
+    weight vectors**, renormalised to sum to 1. Equal member weights are the same documented v1
+    assumption as the fine concordance (output weights unavailable here). A group with no covered
+    member is omitted (``sector_scores`` then flags it, rather than silently zeroing)."""
+    # group -> accumulated {process: weight}
+    grouped: dict[str, dict[str, float]] = {}
+    members: dict[str, int] = {}
+    for fine_sector, group in sector_map.items():
+        w = fine.weights.get(fine_sector)
+        if not w:
+            continue
+        acc = grouped.setdefault(group, {})
+        for proc, weight in w.items():
+            acc[proc] = acc.get(proc, 0.0) + weight  # member vectors summed (equal member weight)
+        members[group] = members.get(group, 0) + 1
+
+    weights: dict[str, dict[str, float]] = {}
+    for group, acc in grouped.items():
+        total = sum(acc.values())
+        if total <= 0:
+            continue
+        weights[group] = {p: w / total for p, w in acc.items()}  # renormalise to sum to 1
+
+    prov = Provenance(
+        source=f"{fine.provenance.source} → aggregated",
+        source_version=f"{fine.provenance.source_version}; aggregation-aware",
+        licence=fine.provenance.licence,
+        reference_year=fine.provenance.reference_year,
+        retrieved=fine.provenance.retrieved,
+        notes=(
+            "Aggregation-aware concordance: fine EXIOBASE→ENCORE weights averaged (equal member "
+            "weight) into the build's coarse sector groups; equal-weighted v1, not calibrated."
+        ),
+    )
+    return ConcordanceMap(
+        provenance=prov,
+        from_classification=to_classification,
+        to_classification=fine.to_classification,
+        weights=weights,
+    )

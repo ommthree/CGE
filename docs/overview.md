@@ -132,8 +132,8 @@ its imports rise and its exports fall — with a **CES value-added nest** and **
 sweeps**. It also runs as a **true multi-region economy** with bilateral trade between build
 regions — each trade route has its own destination-specific price, every bilateral market clears
 explicitly, and a carbon price in one region relocates production and raises imports from partners
-(cross-region leakage). Still to come: an IOSystem-driven multi-region SAM build (today it requires
-a supplied SAM).
+(cross-region leakage). The IOSystem-driven multi-region SAM build is **implemented** (Phase 5.1b,
+`build_multi_sam`); only the *live* EXIOBASE download vs. the offline test MRIO remains.
 → [`docs/models/cge-static.md`](models/cge-static.md) (equation-level) · **plan:**
 [`docs/phase-5-plan.md`](phase-5-plan.md).
 

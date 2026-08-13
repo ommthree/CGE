@@ -82,11 +82,23 @@ def sector_nd_share(
     This returns that hidden uncertainty as a number in [0, 1]: 0 = fully rated, 1 = fully unknown,
     0.9 = 90% of the sector's weight for that service is No-Data. A run can then surface a partially
     unknown cell (not only the all-ND cells the earlier boolean mask caught), matching ENCORE's
-    N/A-vs-ND semantics. Weights are the concordance's (which sum to 1 per sector)."""
+    N/A-vs-ND semantics. Weights are the concordance's (which sum to 1 per sector).
+
+    A concordance process that is NOT in the ENCORE data is REJECTED (review P3 round 5 2026-08-13):
+    silently dropping it and renormalising over the remainder would understate the unknown share and
+    mislead a direct caller. (The standard runner is protected because ``sector_scores`` validates
+    process coverage first, but this helper must not be silently wrong on its own.)"""
     nd = dep.nd_mask()  # ENCORE process × service (True = ND)
     out = pd.DataFrame(0.0, index=sectors, columns=list(nd.columns))
     for s in sectors:
-        wmap = {p: w for p, w in concordance.weights.get(s, {}).items() if p in nd.index}
+        wmap = concordance.weights.get(s, {})
+        unknown_procs = [p for p in wmap if p not in nd.index]
+        if unknown_procs:
+            raise ValueError(
+                f"sector {s!r} maps to ENCORE process(es) {unknown_procs} not in the dependency "
+                "data; cannot compute the ND share without them (dropping them understates the "
+                "unknown fraction). Fix the concordance or the ENCORE object."
+            )
         total_w = sum(wmap.values())
         if total_w <= 0:
             continue
@@ -107,6 +119,16 @@ def sector_nd_mask(
     at or above ``threshold``. The default ``threshold=1.0`` flags only ENTIRELY-unknown cells (the
     original all-ND behaviour, back-compatible); a lower threshold (e.g. 0.5) flags cells that are
     mostly No-Data. See ``sector_nd_share`` for the underlying fraction."""
+    import math
+
+    if not (isinstance(threshold, int | float) and math.isfinite(threshold)) or not (
+        0.0 <= threshold <= 1.0
+    ):
+        # A NaN threshold would flag nothing, a negative one flag everything — either silently wrong
+        # (review P3 round 5 2026-08-13). The share is in [0, 1], so a threshold must be too.
+        raise ValueError(
+            f"sector_nd_mask threshold must be a finite value in [0, 1]; got {threshold!r}"
+        )
     share = sector_nd_share(dep, concordance, sectors)
     return share >= threshold - 1e-12
 

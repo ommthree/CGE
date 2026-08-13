@@ -106,43 +106,61 @@ def nature_to_productivity(
                 f"(services: {sorted(services)}); it would have no effect. Check the service name "
                 "or the ENCORE data."
             )
-    # Composition is across DISTINCT services (multiplicative, independent). Two stresses on the
-    # SAME service would compound as if independent — almost certainly a scenario mistake, and not
-    # what the model documents — so reject a duplicated service (review P2 2026-08-07).
-    seen = [st.service for st in stresses]
-    dupes = sorted({s for s in seen if seen.count(s) > 1})
-    if dupes:
-        raise ValueError(
-            f"duplicate NatureStress service(s) {dupes}: the model composes across DISTINCT "
-            "services; two stresses on one service would compound as if independent. Combine them "
-            "into a single stress (or a time path) instead."
-        )
-    # ENCORE water-service overlap (review P1 round 3 2026-08-09): "Water supply" is a combined
-    # service duplicating its components; stressing them together double-counts. Reject by default,
-    # with an explicit opt-out for a caller who has a reason to keep both.
-    lowered = {s.lower() for s in seen}
-    if (
-        not allow_water_overlap
-        and _WATER_SUPPLY_COMBINED in lowered
-        and lowered & _WATER_SUPPLY_COMPONENTS
-    ):
-        overlap = sorted(lowered & _WATER_SUPPLY_COMPONENTS)
-        raise ValueError(
-            f"NatureStress overlap: 'Water supply' is a COMBINED ENCORE service that duplicates "
-            f"{overlap} (ENCORE Explanatory note #1 advises excluding it to avoid duplication). "
-            "Stressing them together overstates the water hit. Drop 'Water supply' (or the "
-            "service(s)), or pass allow_water_overlap=True if you intend the overlap."
-        )
+
+    # The overlap guards below test conflicts at the level of the actual TARGET GOODS, not just the
+    # service names (review P2 round 5 2026-08-13): DISJOINT regional stresses (surface_water 20% in
+    # A, 60% in B) are the natural way to express heterogeneous regional degradation and must be
+    # ALLOWED; only two stresses that can hit the SAME good conflict.
+    def _goods_of(st: NatureStress) -> set[str]:
+        out = set()
+        for g in goods:
+            region, sector = (g.split(":", 1) + [""])[:2] if ":" in g else (g, g)
+            if st.applies_to(sector, region):
+                out.add(g)
+        return out
+
+    # Composition is across DISTINCT services (multiplicative). Two stresses on the SAME
+    # service that both reach the SAME good would compound as if independent — reject that; disjoint
+    # coverage on one service is fine.
+    for i, a in enumerate(stresses):
+        for b in stresses[i + 1 :]:
+            if a.service == b.service and (_goods_of(a) & _goods_of(b)):
+                clash = sorted(_goods_of(a) & _goods_of(b))[:3]
+                raise ValueError(
+                    f"two NatureStress on service {a.service!r} both cover good(s) {clash}: they "
+                    "would compound as if independent. Combine them (or a time path), or give them "
+                    "disjoint coverage. (Disjoint regional/sector stresses on one service ARE "
+                    "allowed.)"
+                )
+    # ENCORE water-service overlap (review P1 round 3, round 5): "Water supply" is a combined
+    # service duplicating its components; a good that gets BOTH double-counts. Reject only where the
+    # combined and a component reach the SAME good — "Water supply in A + Water purification in
+    # B" is fine (no good gets both).
+    if not allow_water_overlap:
+        supply = [s for s in stresses if s.service.lower() == _WATER_SUPPLY_COMBINED]
+        components = [s for s in stresses if s.service.lower() in _WATER_SUPPLY_COMPONENTS]
+        for a in supply:
+            for b in components:
+                if _goods_of(a) & _goods_of(b):
+                    raise ValueError(
+                        f"NatureStress overlap: 'Water supply' (a COMBINED ENCORE service) and "
+                        f"{b.service!r} both cover a good — this double-counts (ENCORE Explanatory "
+                        "note #1 advises excluding the combined service). Drop one, give them "
+                        "disjoint coverage, or pass allow_water_overlap=True to keep the overlap."
+                    )
 
     # A path is time-varying if some stress carries one. If the caller didn't pass ``years``, derive
     # them from the union of the stresses' own path years, so a DIRECT call to this helper does not
     # silently collapse a time path to its scalar (review P2 2026-08-09 — previously only the
     # which passes years, was safe). An explicit ``years`` still takes precedence.
     any_path = any(st.path for st in stresses)
-    if years is None and any_path:
+    # An EMPTY ``years`` with a path present would silently produce no shocks (review P3 round 5
+    # 2026-08-13): treat ``years is None`` OR ``years == []`` the same — derive the years from the
+    # union of the stresses' own path years, so a direct helper call is never silently empty.
+    if not years and any_path:
         years = sorted({y for st in stresses if st.path for y in st.path})
-    has_path = any_path and years is not None
-    path_years = list(years) if years is not None else []
+    has_path = any_path and bool(years)
+    path_years = list(years) if years else []
 
     def _delta_at(g: str, sector: str, region: str, severity_of) -> float:
         """Surviving-productivity − 1 for good g, given a per-stress severity accessor."""
@@ -153,6 +171,16 @@ def nature_to_productivity(
             loss = float(severity_of(st)) * float(exposure.loc[g, st.service])
             surviving *= 1.0 - loss
         return surviving - 1.0  # ≤ 0
+
+    # When collapsing regions, aggregate the FULL per-sector delta (over ALL regions of that sector,
+    # INCLUDING zero/sub-threshold regions) — otherwise the equal-region mean is taken only
+    # over the shocked regions and a zero-exposure region is silently excluded, biasing the mean up
+    # (review P2 round 5 2026-08-13). So for the collapse path we build one economy-wide shock per
+    # sector from the mean across the sector's regions here, not from the filtered per-good shocks.
+    if collapse_regions:
+        return _collapse_full(
+            goods, _delta_at, path_years if has_path else None, min_delta, stresses
+        )
 
     out: list[ProductivityShock] = []
     for g in goods:
@@ -183,30 +211,46 @@ def nature_to_productivity(
                 path=shock_path,
             )
         )
-    if collapse_regions:
-        out = _collapse_to_economy_wide(out, path_years if has_path else None)
     return out
 
 
-def _collapse_to_economy_wide(
-    shocks: list[ProductivityShock], path_years: list[int] | None
+def _collapse_full(
+    goods: list[str],
+    delta_at,
+    path_years: list[int] | None,
+    min_delta: float,
+    stresses: list[NatureStress],
 ) -> list[ProductivityShock]:
-    """Aggregate per-region shocks into ONE economy-wide (region-less) shock per sector, for a
-    single-region target engine (review P1 round 3 2026-08-09). Each sector's economy-wide delta is
-    the **mean across its regions** of the per-good delta (equal region weights — the documented
-    assumption; output weights unavailable here). The result carries NO region coverage, so it is
-    accepted by the collapsed CGE rather than rejected as region-scoped. Region aggregation now
-    happens explicitly in shock construction, not silently inside the engine."""
-    by_sector: dict[str, list[ProductivityShock]] = {}
-    for s in shocks:
-        key = s.coverage_sectors[0] if s.coverage_sectors else ""
-        by_sector.setdefault(key, []).append(s)
+    """Aggregate to ONE economy-wide (region-less) shock per sector for a single-region target
+    (review P1 round 3; zeros fix round 5 2026-08-13). Each sector's economy-wide delta is the mean
+    over **ALL regions of that sector, including regions with zero/sub-threshold loss** — computed
+    from the full delta function, not from the already-filtered per-good shocks, so a zero-exposure
+    region is included in the mean (equal region weights, the documented assumption). A sector whose
+    mean loss is below ``min_delta`` in every year gets no shock."""
+    # Group the economy's goods by their (bare) sector, keeping every region of each sector.
+    by_sector: dict[str, list[tuple[str, str]]] = {}  # sector -> [(good, region)]
+    for g in goods:
+        region, sector = (g.split(":", 1) + [""])[:2] if ":" in g else (g, g)
+        by_sector.setdefault(sector, []).append((g, region))
+
     out: list[ProductivityShock] = []
-    for sector, group in by_sector.items():
+    for sector, members in by_sector.items():
         if path_years:
             path = {
-                y: float(np.mean([s._path_level_at(y, s.delta) for s in group])) for y in path_years
+                y: float(
+                    np.mean(
+                        [
+                            delta_at(
+                                g, sector, region, lambda st, y=y: st._path_level_at(y, st.severity)
+                            )
+                            for g, region in members
+                        ]
+                    )
+                )
+                for y in path_years
             }
+            if all(-dv < min_delta for dv in path.values()):
+                continue
             out.append(
                 ProductivityShock(
                     delta=path[path_years[0]],
@@ -216,7 +260,13 @@ def _collapse_to_economy_wide(
                 )
             )
         else:
-            mean_delta = float(np.mean([s.delta for s in group]))
+            mean_delta = float(
+                np.mean(
+                    [delta_at(g, sector, region, lambda st: st.severity) for g, region in members]
+                )
+            )
+            if -mean_delta < min_delta:
+                continue
             out.append(
                 ProductivityShock(
                     delta=mean_delta,
@@ -276,12 +326,33 @@ def build_nature_shocks(
             "'total' (reduced-form direct+upstream)."
         )
     io.assert_integrity()
+    # Validate each stress's COVERAGE against the economy's labels (review P1 round 5 2026-08-13): a
+    # misspelled coverage_region/sector matches no good, so translation silently makes ZERO shocks
+    # — a "successful" baseline run with no sign the scenario was invalid. Reject unknown labels
+    # up front (the service name is checked in nature_to_productivity; coverage was not).
+    _validate_stress_coverage(stresses, io)
+
     ssc = sector_scores(encore, concordance, io.sectors.labels)
     direct_scores = broadcast_to_goods(ssc, list(io.A.columns))
-    total, direct_aligned = compute_exposure(
-        io.A, direct_scores, rule=rule, max_link_threshold=max_link_threshold
-    )
-    exposure = direct_aligned if incidence == "direct" else total
+    # Under DIRECT incidence the shock uses only each good's OWN dependency, so the upstream
+    # propagation is not needed — skip the (expensive, dense) total-exposure fixed point entirely
+    # (review P1 round 5). ``rule``/``max_link_threshold`` then do nothing under direct, so
+    # a non-default value there is an inapplicable control and is rejected rather than silently
+    # ignored.
+    if incidence == "direct":
+        if rule != "weighted_mean" or max_link_threshold != 0.0:
+            raise ValueError(
+                f"exposure rule/threshold (rule={rule!r}, max_link_threshold={max_link_threshold}) "
+                "have NO effect under incidence='direct' (each good is shocked for its own direct "
+                "dependency; there is no upstream propagation to tune). Use incidence='total' to "
+                "apply them, or leave them at their defaults."
+            )
+        exposure = direct_scores.reindex(index=list(io.A.columns)).fillna(0.0)
+    else:
+        total, _direct_aligned = compute_exposure(
+            io.A, direct_scores, rule=rule, max_link_threshold=max_link_threshold
+        )
+        exposure = total
     return nature_to_productivity(
         stresses,
         exposure,
@@ -289,3 +360,25 @@ def build_nature_shocks(
         collapse_regions=collapse_regions,
         allow_water_overlap=allow_water_overlap,
     )
+
+
+def _validate_stress_coverage(stresses: list[NatureStress], io: IOSystem) -> None:
+    """Reject a ``NatureStress`` whose ``coverage_regions``/``coverage_sectors`` name a label the
+    economy does not have — a typo that would silently match no good and produce a zero-response
+    baseline run (review P1 round 5 2026-08-13)."""
+    regions = set(io.regions.labels)
+    sectors = set(io.sectors.labels)
+    for st in stresses:
+        bad_r = [r for r in st.coverage_regions if r not in regions]
+        bad_s = [s for s in st.coverage_sectors if s not in sectors]
+        if bad_r or bad_s:
+            problems = []
+            if bad_r:
+                problems.append(f"region(s) {bad_r} (have: {sorted(regions)})")
+            if bad_s:
+                problems.append(f"sector(s) {bad_s} (have: {sorted(sectors)})")
+            raise ValueError(
+                f"NatureStress on {st.service!r} names unknown coverage {'; '.join(problems)}. A "
+                "coverage label matching no good would silently produce zero shocks (a baseline "
+                "run). Fix the label or drop the coverage to apply the stress economy-wide."
+            )

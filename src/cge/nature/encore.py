@@ -13,14 +13,11 @@ the roadmap flags:
   buried — it drives every downstream number, so it is a named, cited choice a reviewer can change.
 - **Ratings are DATA, not code.** An ``EncoreDependencies`` object carries its own provenance
   (source, version, retrieved date) so a run records exactly which ENCORE snapshot produced it. The
-  shipped fixture is a small, hand-entered **synthetic / expert-designed** set, informed by the
-  qualitative pattern of the central-bank literature but NOT substantiated cell-by-cell against a
-  published table (review P1 2026-08-07 — it is illustrative, not "published-sourced"). The full
-  ENCORE export drops in via the same ``EncoreDependencies`` contract, but the *current* ENCORE
-  release distinguishes ``N/A`` from ``ND`` ("No Data") and carries separate dependency and
-  pressure/impact pathways; this contract models only the five dependency materiality classes, so a
-  real-export adapter (preserving N/A-vs-ND and typing pressures separately) is still required — the
-  "drops in with no code change" claim holds only after that documented preprocessing step.
+  **real May-2026 ENCORE knowledge base is ingested** via ``load_encore_ratings_wide`` (the raw wide
+  ISIC×service export): it distinguishes ``ND`` ("No Data", kept as a first-class state — see
+  ``nd_mask``) from ``N/A``/blank (a genuine zero), and the pressure/impact ratings are ingested
+  separately (``kind="impact"``). A small **synthetic/expert-designed** fixture is also shipped for
+  offline CI; it is illustrative, not published-sourced.
 
 See ``docs/models/nature-encore.md`` for the equations and sourcing.
 """
