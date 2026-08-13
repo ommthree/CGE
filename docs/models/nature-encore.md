@@ -10,13 +10,19 @@
 - **Status: BUILT on REAL data, EXPERIMENTAL — not signed off.** The **real May-2026 ENCORE
   knowledge base** is ingested (`load_encore_ratings_wide`, 271 processes × 25 services, CC BY-SA
   4.0, `data/encore/`), the **real EXIOBASE↔ENCORE concordance** is built (`concordance_build`, 162
-  sectors, ISIC-level rollback), and a real nature scenario runs **end-to-end through the standard
-  runner → engine → ResultSet** on a real-EXIOBASE-labelled economy. Store persistence of nature data
-  is wired. **N/A vs ND** is honoured: ND (No Data) is a distinct state and an all-ND sector/service
-  is flagged in the manifest (`nd_unknown_sectors`), never silently zeroed. The **water-supply
-  overlap** (a combined ENCORE service) is rejected when stressed with its components.
-  A normal build now **persists ENCORE + a (possibly aggregation-aware) concordance** so a nature
-  scenario runs from `run_scenario(data_source=build_id)` with no manual assembly.
+  industry labels, ISIC-level rollback), and a real nature scenario runs **end-to-end through the
+  standard runner → engine → ResultSet** on a real-EXIOBASE-labelled economy. Store persistence of
+  nature data is wired. **N/A vs ND** is honoured: ND (No Data) is a distinct state and an all-ND
+  sector/service is flagged in the manifest (`nd_unknown_sectors`), never silently zeroed. The
+  **water-supply overlap** (a combined ENCORE service) is rejected when stressed with its components.
+  The **default live build is `system="pxp"`** (200 EXIOBASE *product* labels); the crosswalk is
+  keyed by *industry* labels, so a **product→industry→ENCORE bridge** (`pxp_to_ixi_industries` /
+  `bridge_to_products`, via pymrio's `exio3_pxp`/`exio3_ixi` classifications) re-keys the concordance
+  onto all 200 products before it is persisted, so a normal pxp build **attaches ENCORE + a COMPLETE
+  concordance** and runs from `run_scenario(data_source=build_id)` with no manual assembly. Coverage
+  is complete-or-nothing: a build only partially covered fails the build (`attach_nature=auto|
+  required`) rather than silently persisting a covered subset; the SMALL build gets an
+  **aggregation-aware** concordance that audits any uncovered group member.
   **Remaining before sign-off — now all METHODOLOGY, not data plumbing:** the concordance is
   **equal-weighted** (a documented v1 assumption, not output-weighted); severity→productivity is a
   **scenario assumption**, not a calibrated elasticity (ENCORE ratings indicate *potential*

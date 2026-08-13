@@ -913,6 +913,51 @@ def test_sector_nd_share_surfaces_partial_unknowns():
 
 
 @_needs_encore
+def test_sector_nd_share_rejects_uncovered_sector():
+    """Review P3 round 6 (2026-08-14): a sector absent from the concordance previously got an
+    all-zero (0% unknown = fully KNOWN) row — the opposite of the truth. It must be rejected, the
+    same way sector_scores does."""
+    from cge.nature.concord import sector_nd_share
+    from cge.nature.real import real_encore_concordance, real_encore_dependencies
+
+    dep = real_encore_dependencies()
+    cmap, _ = real_encore_concordance()
+    with pytest.raises(ValueError, match="does not cover"):
+        sector_nd_share(dep, cmap, ["NO_SUCH_SECTOR"])
+
+
+def test_nature_to_productivity_rejects_typoed_coverage():
+    """Review P2 round 6 (2026-08-14): the exported translator must reject a typo'd
+    coverage_regions/coverage_sectors instead of silently baselining (matching no good → no shocks →
+    a clean-looking zero-response run). Vocabulary is derived from the exposure index."""
+    from cge.contracts.shocks import NatureStress
+    from cge.nature.translate import nature_to_productivity
+
+    exposure = pd.DataFrame(
+        {"Water purification": [0.5, 0.5]},
+        index=["RegA:farming", "RegB:farming"],
+    )
+    # A real region/sector works.
+    ok = nature_to_productivity(
+        [NatureStress(service="Water purification", severity=0.4, coverage_regions=["RegA"])],
+        exposure,
+    )
+    assert any(s.delta < 0 for s in ok)
+    # A typo'd region is rejected (was: silent empty result).
+    with pytest.raises(ValueError, match="coverage_regions"):
+        nature_to_productivity(
+            [NatureStress(service="Water purification", severity=0.4, coverage_regions=["TYPO"])],
+            exposure,
+        )
+    # A typo'd sector is rejected too.
+    with pytest.raises(ValueError, match="coverage_sectors"):
+        nature_to_productivity(
+            [NatureStress(service="Water purification", severity=0.4, coverage_sectors=["TYPO"])],
+            exposure,
+        )
+
+
+@_needs_encore
 def test_manifest_records_weighted_nd_share():
     """A real nature run records the weighted ND share per stressed service in the manifest, so a
     partially-unknown sector/service is visible — not only the all-ND ones."""
@@ -1217,23 +1262,99 @@ def test_aggregation_aware_concordance_runs_on_grouped_sectors(tmp_path):
     ).any()  # aggregated build runs nature end-to-end
 
 
-def test_build_from_pymrio_attaches_nature_for_covered_sectors(tmp_path):
-    """The normal build orchestration persists nature: build_from_pymrio attaches the ENCORE
-    concordance for a build whose sectors are real EXIOBASE labels (review P1 round 5). The offline
-    test MRIO's labels are NOT EXIOBASE, so build_test skips nature cleanly — asserted here so the
-    'optional, skipped when inapplicable' contract is pinned."""
-    from cge.data.build import _nature_for_sectors, build_test
-    from cge.data.store import DataStore
+def _pxp_pymrio_system(regions=("RegA", "RegB")):
+    """A minimal pymrio IOSystem whose sector labels are the REAL 200 EXIOBASE **product** (pxp)
+    labels from pymrio's ``exio3_pxp`` classification — the actual default-build classification, not
+    a hand-picked subset (review P1 round 6 2026-08-14). Small dense A + household FD so the adapter
+    and quality gates accept it without a multi-GB download."""
+    import numpy as np
+    import pymrio
 
-    # Real EXIOBASE sector labels → nature attaches.
+    products = [str(x).strip() for x in pymrio.get_classification("exio3_pxp").sectors["ExioName"]]
+    idx = pd.MultiIndex.from_product([list(regions), products], names=["region", "sector"])
+    n = len(idx)
+    A = pd.DataFrame(np.full((n, n), 0.001), index=idx, columns=idx)
+    y_cols = pd.MultiIndex.from_product(
+        [list(regions), ["Household final consumption"]], names=["region", "category"]
+    )
+    Y = pd.DataFrame(np.full((n, len(y_cols)), 1.0), index=idx, columns=y_cols)
+    pio = pymrio.IOSystem(A=A, Y=Y)
+    pio.x = pymrio.calc_x_from_L(pymrio.calc_L(A), Y.sum(axis=1))
+    # A trivial GHG extension so the adapter emits a SatelliteAccount (partial_eq requires one). The
+    # stressor is aliased to CO2 at build time; values are uniform — we only need the account there.
+    F = pd.DataFrame(np.full((1, n), 1.0), index=["emission_type1"], columns=idx)
+    ext = pymrio.Extension(name="emissions", F=F)
+    ext.unit = pd.DataFrame({"unit": ["t"]}, index=["emission_type1"])
+    pio.emissions = ext
+    return pio, products
+
+
+@_needs_encore
+def test_build_from_pymrio_attaches_nature_for_real_pxp_products(tmp_path):
+    """The DEFAULT (pxp) live-build classification runs nature end to end (review P1 round 6).
+
+    Drives the REAL orchestration — build_from_pymrio over the actual 200 EXIOBASE product labels,
+    not a hand-picked subset — under the STRICT ``required`` policy, so the product→industry→ENCORE
+    bridge must cover every one of the 200 products or the build fails. Then a NatureStress scenario
+    runs from the persisted build id (store→runner→engine), proving the previously-broken live pxp
+    path is genuinely closed."""
+    from cge.contracts.shocks import NatureStress
+    from cge.data.build import build_from_pymrio
+    from cge.data.store import DataStore
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    pio, products = _pxp_pymrio_system()
+    store = DataStore(tmp_path)
+    written = build_from_pymrio(
+        pio,
+        source="EXIOBASE",
+        source_version="3-pxp-test",
+        reference_year=2019,
+        build_id="exio-pxp",
+        store=store,
+        make_small=False,
+        gas_aliases={"emission_type1": "CO2"},
+        attach_nature="required",  # every one of the 200 products must be covered, or raise
+    )
+    loaded = store.load(written["full"])
+    assert "EncoreDependencies" in loaded and "ConcordanceMap" in loaded
+    assert set(loaded["ConcordanceMap"].weights) == set(products)  # complete coverage, all 200
+
+    sc = Scenario(
+        name="pxp-nature",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="Water purification", severity=0.4)],
+    )
+    res = run_scenario(sc, data_source="exio-pxp", store=store)
+    res.validate_schema()
+    vol = res.data[(res.data["variable"] == "volume_change") & (res.data["scenario"] == "central")]
+    assert (vol["value"] < 0.0).any()  # real degradation propagates through the persisted pxp build
+    assert res.manifest.assumptions["nature"]["encore_source"]
+
+
+@_needs_encore
+def test_build_partial_coverage_is_a_hard_error_not_a_silent_subset(tmp_path):
+    """A build whose sectors are only PARTIALLY covered must fail, not persist a covered subset
+    (review P1 round 6 — the old logic persisted a 13/200 concordance then failed at run time)."""
+    from cge.data.build import NatureAttachError, _nature_for_sectors
     from cge.nature.real import real_encore_concordance
 
-    real_sectors = list(real_encore_concordance()[0].weights)[:3]
-    enc, conc = _nature_for_sectors(real_sectors)
-    assert enc is not None and conc is not None
-    assert set(conc.weights) == set(real_sectors)
-    # The offline test-MRIO build's aggregated sectors are NOT EXIOBASE labels → nature skipped, and
-    # the build still succeeds (no nature persisted, no error).
+    covered = list(real_encore_concordance()[0].weights)[:2]
+    labels = [*covered, "NOT_AN_EXIOBASE_SECTOR"]
+    # 'auto' still rejects a partial match (it is a real defect, not optional-data absence).
+    for policy in ("auto", "required"):
+        with pytest.raises(NatureAttachError, match="covers only"):
+            _nature_for_sectors(labels, policy=policy)
+
+
+def test_build_test_skips_nature_cleanly_when_labels_not_exiobase(tmp_path):
+    """The offline test MRIO's labels are NOT EXIOBASE, so the default 'auto' policy skips nature
+    cleanly and the build still succeeds — the 'optional, skipped when inapplicable' contract."""
+    from cge.data.build import build_test
+    from cge.data.store import DataStore
+
     store = DataStore(tmp_path)
     written = build_test(store=store)
     assert "EncoreDependencies" not in store.load(written["small"])

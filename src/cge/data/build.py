@@ -45,36 +45,91 @@ def _region_row_labels(io: IOSystem) -> list[str]:
     return [r for r in io.regions.labels if r.upper().startswith("W") or r.startswith("RoW")]
 
 
-def _nature_for_sectors(sector_labels):
-    """Return ``(EncoreDependencies, ConcordanceMap)`` restricted to ``sector_labels`` if they are
-    real EXIOBASE sectors the real concordance covers AND the vendored ENCORE data is present; else
-    ``(None, None)``. Restricting the concordance to the build's own sectors keeps the persisted map
-    small and makes a coverage gap explicit (an uncovered sector is simply absent)."""
+class NatureAttachError(RuntimeError):
+    """Raised when nature attachment is *required* (or *auto* and the data is present-but-broken)
+    but the ENCORE data cannot be loaded / does not cover the build's sectors."""
+
+
+def _nature_for_sectors(sector_labels, *, policy: str = "auto"):
+    """Return ``(EncoreDependencies, ConcordanceMap)`` covering **every** sector in
+    ``sector_labels``, or ``(None, None)`` when nature is legitimately absent.
+
+    Coverage is COMPLETE-or-nothing (review P1 round 6 2026-08-14): the previous logic persisted a
+    concordance if *any* sector matched, so a full pxp build got a 13-sector map and then failed the
+    other 187 at run time. Here the build's sectors must be either all EXIOBASE **industry** labels
+    OR all EXIOBASE **product** (pxp) labels the product bridge covers; a partial match is a hard
+    error under ``required``/``auto`` rather than a silent partial persist.
+
+    ``policy`` (review P2 round 6):
+      * ``off``    — never attach (returns ``(None, None)``).
+      * ``auto``   — attach when the ENCORE data is present AND the labels are EXIOBASE-covered;
+                     skip silently only when the data is genuinely ABSENT or the labels aren't
+                     EXIOBASE at all (e.g. the offline test MRIO). Data present-but-broken, or a
+                     PARTIAL EXIOBASE match, raises — that is a real defect, not "optional data".
+      * ``required`` — like ``auto`` but any failure to attach (absent data included) raises."""
+    if policy == "off":
+        return None, None
+    labels = list(sector_labels)
     try:
-        from cge.nature.real import encore_data_available, real_encore_concordance
-    except ImportError:  # pragma: no cover - nature module optional
+        from cge.nature.real import encore_data_available
+    except ImportError as exc:  # pragma: no cover - nature module optional
+        if policy == "required":
+            raise NatureAttachError(
+                "nature module unavailable but attach policy is 'required'"
+            ) from exc
         return None, None
     if not encore_data_available():
+        if policy == "required":
+            raise NatureAttachError(
+                "ENCORE data absent (data/encore/) but attach policy is 'required'"
+            )
         return None, None
-    dep, (full_cmap, _audit) = None, (None, None)
-    try:
-        from cge.nature.real import real_encore_dependencies
+    # Data is present. Under 'auto' a load/validation failure now is a genuine defect (corrupt CSV,
+    # schema drift) — surface it, don't disguise it as "optional data absent" (review P2 round 6).
+    from cge.nature.real import (
+        real_encore_concordance,
+        real_encore_concordance_products,
+        real_encore_dependencies,
+    )
 
+    try:
         dep = real_encore_dependencies()
-        full_cmap, _audit = real_encore_concordance()
-    except Exception:  # pragma: no cover - defensive: nature is optional, never break a build
+        industry_cmap, _audit = real_encore_concordance()
+    except Exception as exc:  # present-but-broken → always an error (auto and required)
+        raise NatureAttachError(f"ENCORE data present but failed to load: {exc}") from exc
+
+    # Pick the label space that covers the build BEST: the industry-keyed concordance or the product
+    # (pxp) bridge. A few names appear in both spaces, so choose by coverage count, not "any hit" —
+    # a pxp build has ~13 incidental industry-name collisions but is fully covered by the product
+    # bridge (review P1 round 6).
+    industry_hits = sum(1 for s in labels if s in industry_cmap.weights)
+    product_cmap, _uncovered = real_encore_concordance_products()
+    product_hits = sum(1 for s in labels if s in product_cmap.weights)
+    if industry_hits == 0 and product_hits == 0:
+        # No EXIOBASE labels at all (e.g. the offline test MRIO's 'sector1'…) — nature simply
+        # doesn't apply. That is legitimate absence, not a defect.
+        if policy == "required":
+            raise NatureAttachError(
+                "build sectors are not EXIOBASE labels (industry or product); cannot attach "
+                "nature under policy 'required'"
+            )
         return None, None
-    covered = [s for s in sector_labels if s in full_cmap.weights]
-    if not covered:
-        return None, None  # labels aren't EXIOBASE (e.g. the offline test MRIO) → no nature
-    # Restrict the concordance to the build's covered sectors.
+    full_cmap = product_cmap if product_hits >= industry_hits else industry_cmap
+
+    missing = [s for s in labels if s not in full_cmap.weights]
+    if missing:  # PARTIAL EXIOBASE coverage — the P1 defect. Fail loud, never persist a subset.
+        raise NatureAttachError(
+            f"nature concordance covers only {len(labels) - len(missing)}/{len(labels)} build "
+            f"sectors; {len(missing)} uncovered (e.g. {missing[:5]}). A partial concordance would "
+            "fail at run time. Extend the concordance/bridge, or set the attach policy to 'off'."
+        )
     from cge.contracts.data_objects import ConcordanceMap
 
     restricted = ConcordanceMap(
         provenance=full_cmap.provenance,
         from_classification=full_cmap.from_classification,
         to_classification=full_cmap.to_classification,
-        weights={s: full_cmap.weights[s] for s in covered},
+        weights={s: full_cmap.weights[s] for s in labels},
     )
     return dep, restricted
 
@@ -94,19 +149,30 @@ def build_from_pymrio(
     gas_aliases: dict[str, str] | None = None,
     currency: str = "EUR",
     monetary_unit: str = "MEUR",
-    attach_nature: bool = True,
+    attach_nature: str = "auto",
 ) -> dict[str, str]:
     """Adapt, quality-check, store a full build and (optionally) a derived small build.
 
     Returns a dict of {'full': build_id, 'small': build_id?} actually written.
 
-    ``attach_nature`` (review P1 round 5 2026-08-13): if the build's sector labels are covered by
-    real EXIOBASE↔ENCORE concordance, persist the ENCORE dependency ratings + concordance alongside
-    the build so a NatureStress scenario runs from ``run_scenario(data_source=build_id)`` with no
-    manual assembly. The SMALL (aggregated) build gets an **aggregation-aware** concordance derived
-    from the sector map. Silently skipped when the labels aren't EXIOBASE (e.g. the offline MRIO)
-    or the ENCORE data isn't present — nature is optional, and a build without it behaves as before.
-    """
+    ``attach_nature`` is an ``auto|required|off`` **policy** (review P2 round 6 2026-08-14; replaces
+    the earlier bool that swallowed every failure). When nature attaches, the ENCORE dependency
+    ratings + a COMPLETE EXIOBASE↔ENCORE concordance are persisted alongside the build so a
+    NatureStress scenario runs from ``run_scenario(data_source=build_id)`` with no manual assembly;
+    the SMALL (aggregated) build gets an **aggregation-aware** concordance derived from the sector
+    map. A pxp (product) build is bridged product→industry→ENCORE (review P1 round 6).
+      * ``auto``     — attach if ENCORE data is present and the labels are fully EXIOBASE-covered;
+                       skip silently only for genuine absence (no data, or non-EXIOBASE labels like
+                       the offline MRIO). Present-but-broken data, or PARTIAL coverage, raises.
+      * ``required`` — any failure to attach raises (use in CI to assert nature is wired).
+      * ``off``      — never attach.
+    Accepts ``True``/``False`` for back-compatibility (→ ``auto``/``off``)."""
+    if attach_nature is True:
+        attach_nature = "auto"
+    elif attach_nature is False:
+        attach_nature = "off"
+    if attach_nature not in ("auto", "required", "off"):
+        raise ValueError(f"attach_nature must be auto|required|off, got {attach_nature!r}")
     store = store or default_store()
     io, satellites = adapt_pymrio(
         pio,
@@ -135,9 +201,7 @@ def build_from_pymrio(
     # Nature: derive the ENCORE concordance for the FULL build's (real EXIOBASE) sector labels if
     # they are covered, so the build carries nature. None when labels aren't EXIOBASE or ENCORE data
     # is absent — nature is optional (review P1 round 5).
-    full_encore, full_conc = (
-        _nature_for_sectors(io.sectors.labels) if attach_nature else (None, None)
-    )
+    full_encore, full_conc = _nature_for_sectors(io.sectors.labels, policy=attach_nature)
     store.save(
         meta=meta,
         io=io,
@@ -196,11 +260,16 @@ def build_from_pymrio(
         # concordance with the sector map (fine EXIOBASE sector → coarse group), so the aggregated
         # build runs nature too (review P1 round 5).
         small_encore, small_conc = (None, None)
-        if attach_nature and full_encore is not None and full_conc is not None:
+        if full_encore is not None and full_conc is not None:
             from cge.nature.concordance_build import aggregate_concordance
 
             small_encore = full_encore
-            small_conc = aggregate_concordance(full_conc, small_sector_map)
+            # Under 'required' the aggregated concordance must cover every member of every group,
+            # too — a silently renormalised covered-subset is the same partial-coverage defect
+            # (review P1 round 6). 'auto' tolerates the subset average (records it in provenance).
+            small_conc = aggregate_concordance(
+                full_conc, small_sector_map, require_complete=(attach_nature == "required")
+            )
         store.save(
             meta=s_meta,
             io=s_io,

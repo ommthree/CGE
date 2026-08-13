@@ -87,8 +87,21 @@ def sector_nd_share(
     A concordance process that is NOT in the ENCORE data is REJECTED (review P3 round 5 2026-08-13):
     silently dropping it and renormalising over the remainder would understate the unknown share and
     mislead a direct caller. (The standard runner is protected because ``sector_scores`` validates
-    process coverage first, but this helper must not be silently wrong on its own.)"""
+    process coverage first, but this helper must not be silently wrong on its own.)
+
+    An UNCOVERED sector is likewise REJECTED (review P3 round 6 2026-08-14): a sector absent from
+    the concordance would get an empty weight map → an all-zero (0% unknown) row, i.e. reported as
+    KNOWN — the opposite of the truth, and a contradiction of this helper's own fail-safe. Apply the
+    same missing-sector check as ``sector_scores``."""
     nd = dep.nd_mask()  # ENCORE process × service (True = ND)
+    missing_sectors = [s for s in sectors if s not in concordance.weights]
+    if missing_sectors:
+        raise ValueError(
+            f"ENCORE concordance does not cover economy sector(s) {missing_sectors}; every sector "
+            "must map to at least one ENCORE process (an uncovered sector would be reported as 0% "
+            "unknown, i.e. fully known — the opposite of the truth). Add the mapping or drop the "
+            "sector."
+        )
     out = pd.DataFrame(0.0, index=sectors, columns=list(nd.columns))
     for s in sectors:
         wmap = concordance.weights.get(s, {})

@@ -107,3 +107,18 @@ def real_encore_concordance(root: str | Path | None = None):
 
     dep = real_encore_dependencies(root)
     return build_exiobase_encore_concordance(dep, crosswalk_path=_crosswalk_path(root))
+
+
+def real_encore_concordance_products(root: str | Path | None = None):
+    """The real EXIOBASE **product** (pxp) → ENCORE concordance.
+
+    The crosswalk is keyed by industry-style labels, but the default live build is ``system="pxp"``
+    (product labels). This bridges each product to its producing ixi industry(ies) via the pymrio
+    ``exio3_pxp``/``exio3_ixi`` classifications, then averages the industry concordance onto the
+    products (review P1 round 6 2026-08-14). Returns ``(ConcordanceMap, uncovered_products)`` — a
+    product whose producing industries are all uncovered is reported, not silently dropped, so the
+    build's complete-coverage gate can act on it. ``root`` is the dataset root."""
+    from cge.nature.concordance_build import bridge_to_products, pxp_to_ixi_industries
+
+    industry_conc, _audit = real_encore_concordance(root)
+    return bridge_to_products(industry_conc, pxp_to_ixi_industries())

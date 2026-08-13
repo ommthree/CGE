@@ -143,11 +143,14 @@ ENCORE knowledge base, propagates those through the supply chain (reusing Engine
 machinery), and translates degradation scenarios into `NatureStress` shocks that become per-good
 `ProductivityShock`s consumed by Engine 2 and the CGE. This is the nature-risk extension the
 platform was specifically designed to reach. The **real May-2026 ENCORE knowledge base** is ingested
-and the **real EXIOBASE↔ENCORE concordance** is built, so a real nature scenario runs end-to-end;
-the GUI page still uses the toy fixture for an offline demo. It is **explicitly experimental** — the
-concordance is equal-weighted (a documented v1 assumption) and ENCORE ratings indicate *potential*
-significance, not calibrated elasticities, so results are illustrative of the method, not calibrated
-risk. The remaining sign-off blockers are methodological (calibration), not data.
+and the **real EXIOBASE↔ENCORE concordance** is built, so a real nature scenario runs end-to-end; the
+default `system="pxp"` build re-keys the industry-based crosswalk onto all 200 product labels via a
+**product→industry→ENCORE bridge** and attaches a complete concordance to the build (a partially
+covered build fails rather than silently persisting a subset). The GUI page still uses the toy fixture
+for an offline demo. It is **explicitly experimental** — the concordance is equal-weighted (a
+documented v1 assumption) and ENCORE ratings indicate *potential* significance, not calibrated
+elasticities, so results are illustrative of the method, not calibrated risk. The remaining sign-off
+blockers are methodological (calibration), not data.
 → [`docs/models/nature-encore.md`](models/nature-encore.md) · Roadmap [Phase 6](../roadmap.md).
 
 ### Pathway stack — *"a CGE that speaks IAM" (planned, Phase 7)*

@@ -507,6 +507,23 @@ map, so an aggregated build runs nature from `run_scenario(data_source=build_id)
 assembly. Plus P3 hardening (nd-mask threshold validation, nd-share missing-process guard, empty-years
 guard).
 
+**Round-6 fixes (2026-08-14):** the round-5 "normal build runs nature" claim was **overstated** — the
+default build is `system="pxp"` (200 EXIOBASE *product* labels) but the crosswalk is keyed by
+*industry* labels, so only 13/200 matched and the round-5 test hand-picked known keys instead of
+driving the real orchestration. Fixed: a **product→industry→ENCORE bridge** (`pxp_to_ixi_industries`
+/ `bridge_to_products`, from pymrio's `exio3_pxp`/`exio3_ixi` classifications: exact-code 1:1 where it
+exists, else longest numeric-NACE-prefix rollback; the one crosswalk-missing residual industry
+`Production of electricity nec` falls back to its covered NACE siblings) re-keys the concordance onto
+all 200 products. Coverage is now **complete-or-nothing**: `_nature_for_sectors` fails the build on a
+partial match rather than persisting a covered subset, `aggregate_concordance` audits/rejects omitted
+group members, and `attach_nature` is an `auto|required|off` **policy** — `auto` skips only genuinely
+ABSENT data, but a present-but-broken file or a partial match now raises (it is a real defect, not
+"optional data"). The build integration test drives `build_from_pymrio` over the **actual 200 pxp
+classification** under `required` and runs a NatureStress scenario from the persisted build. Plus the
+exported `nature_to_productivity` now validates `coverage_regions`/`coverage_sectors` against the
+exposure index (was silent-baseline on a typo), and `sector_nd_share` rejects an uncovered sector
+(was reported as 0% unknown = fully known).
+
 The *engineering* pathway (real ENCORE ingestion → real EXIOBASE↔ENCORE concordance → exposure →
 per-engine incidence → time-path-aware shock → engine → standard-runner provenance → store
 persistence, incl. an aggregation-aware concordance for aggregated builds) runs **end-to-end on real

@@ -25,6 +25,7 @@ stay illustrative-of-method. See ``docs/models/nature-encore.md`` and ``data/enc
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -185,11 +186,167 @@ def build_exiobase_encore_concordance(
     return cmap, audit
 
 
+def _numeric_nace_key(exio_code: str) -> str:
+    """Normalise an EXIOBASE ``ExioCode`` (``p23.20.a`` / ``i23.2``) to its numeric-NACE prefix.
+
+    Drops the leading ``p``/``i`` classification marker, keeps only the leading dotted-numeric run
+    (so the alphabetic product/industry sub-suffix ``.a``/``.b`` is discarded), and normalises the
+    EXIOBASE trailing-zero notation (``23.20`` == ISIC/NACE ``23.2``) by stripping a single trailing
+    zero from any multi-digit segment. This is what lets a pxp *product* code line up with its ixi
+    *industry* code when they differ only by that notation."""
+    bare = str(exio_code).strip()[1:]  # drop the p/i marker
+    m = re.match(r"^(\d+(?:\.\d+)*)", bare)
+    num = m.group(1) if m else bare
+    segs = [(s.rstrip("0") if len(s) > 1 and s.endswith("0") else s) for s in num.split(".")]
+    return ".".join(segs)
+
+
+def pxp_to_ixi_industries(
+    pxp_sectors: pd.DataFrame | None = None,
+    ixi_sectors: pd.DataFrame | None = None,
+) -> dict[str, list[str]]:
+    """Map each EXIOBASE **product** (pxp) label to the **industry** (ixi) label(s) that produce it.
+
+    The ENCORE crosswalk is keyed by industry-style EXIOBASE labels, but the default live build is
+    ``system="pxp"`` (200 product labels), so a product→industry bridge is required before a pxp
+    build can carry nature (review P1 round 6 2026-08-14). Resolution, per product:
+
+    1. **Exact base-code match** — a product whose ``ExioCode`` base equals an industry's (e.g.
+       ``p40.11.a`` ↔ ``i40.11.a``: *Electricity by coal* ↔ *Production of electricity by coal*)
+       maps 1:1, preserving the fine generation split.
+    2. Else **longest numeric-NACE-prefix rollback** — a product-only split (the 18 refinery
+       products ``p23.20.*`` → *Petroleum Refinery* ``i23.2``; the biofuels ``p24.*`` → the
+       chemicals industries ``i24.*``) maps to every industry sharing that NACE prefix.
+
+    Passing the pymrio classification frames is optional; they default to the bundled EXIOBASE
+    classifications. Returns ``{product_label: [industry_label, …]}`` for all 200 products."""
+    if pxp_sectors is None or ixi_sectors is None:
+        import pymrio
+
+        pxp_sectors = pymrio.get_classification("exio3_pxp").sectors
+        ixi_sectors = pymrio.get_classification("exio3_ixi").sectors
+
+    def _base(code: str) -> str:
+        return str(code).strip()[1:]
+
+    ixi_by_base: dict[str, str] = {}
+    ixi_by_num: dict[str, list[str]] = {}
+    for row in ixi_sectors.itertuples():
+        name = str(row.ExioName).strip()
+        ixi_by_base[_base(row.ExioCode)] = name
+        ixi_by_num.setdefault(_numeric_nace_key(row.ExioCode), []).append(name)
+
+    mapping: dict[str, list[str]] = {}
+    for row in pxp_sectors.itertuples():
+        product = str(row.ExioName).strip()
+        base = _base(row.ExioCode)
+        if base in ixi_by_base:  # (1) exact code — keep the 1:1 split
+            mapping[product] = [ixi_by_base[base]]
+            continue
+        segs = _numeric_nace_key(row.ExioCode).split(".")  # (2) longest numeric-prefix rollback
+        for j in range(len(segs), 0, -1):
+            cand = ".".join(segs[:j])
+            if cand in ixi_by_num:
+                mapping[product] = list(ixi_by_num[cand])
+                break
+    return mapping
+
+
+def bridge_to_products(
+    industry_conc: ConcordanceMap,
+    product_to_industries: dict[str, list[str]],
+    *,
+    from_classification: str = "EXIOBASE-pxp",
+    ixi_sectors: pd.DataFrame | None = None,
+) -> tuple[ConcordanceMap, list[str]]:
+    """Re-key an **industry**-keyed EXIOBASE→ENCORE concordance onto **product** labels.
+
+    Each product's ENCORE-process weight vector is the equal-weighted average of its producing
+    industries' vectors (renormalised to sum to 1) — the same documented equal-weight v1 assumption
+    as the industry concordance. An industry the concordance does not cover contributes nothing; a
+    product whose producing industries are ALL uncovered is omitted and returned in the second
+    element (``uncovered_products``) so the caller can enforce complete coverage rather than
+    silently dropping it (review P1 round 6).
+
+    NACE-sibling fallback: the crosswalk omits exactly one ixi industry, ``Production of electricity
+    nec`` — a residual generation category sharing NACE 35.11 with the covered generation
+    industries. An uncovered industry falls back to the equal-weighted mean of the covered
+    industries sharing its numeric-NACE key (so ``Electricity nec`` inherits the generation
+    processes' dependencies rather than dropping out), keeping coverage complete. Pass
+    ``ixi_sectors`` to override the bundled classification used to compute those keys."""
+    if ixi_sectors is None:
+        import pymrio
+
+        ixi_sectors = pymrio.get_classification("exio3_ixi").sectors
+    # numeric-NACE key -> covered industries (those the concordance actually rates), for fallback
+    nace_covered: dict[str, list[str]] = {}
+    ind_nace: dict[str, str] = {}
+    for row in ixi_sectors.itertuples():
+        name = str(row.ExioName).strip()
+        key = _numeric_nace_key(row.ExioCode)
+        ind_nace[name] = key
+        if industry_conc.weights.get(name):
+            nace_covered.setdefault(key, []).append(name)
+
+    def _industry_vector(ind: str) -> dict[str, float] | None:
+        """The industry's own ENCORE weights, or a NACE-sibling fallback if it is uncovered."""
+        wv = industry_conc.weights.get(ind)
+        if wv:
+            return wv
+        siblings = nace_covered.get(ind_nace.get(ind, ""), [])
+        if not siblings:
+            return None
+        acc: dict[str, float] = {}
+        for sib in siblings:  # equal-weighted mean of covered NACE siblings
+            for proc, w in industry_conc.weights[sib].items():
+                acc[proc] = acc.get(proc, 0.0) + w
+        total = sum(acc.values())
+        return {p: w / total for p, w in acc.items()} if total > 0 else None
+
+    weights: dict[str, dict[str, float]] = {}
+    uncovered: list[str] = []
+    for product, industries in product_to_industries.items():
+        acc: dict[str, float] = {}
+        n_covered = 0
+        for ind in industries:
+            wv = _industry_vector(ind)
+            if not wv:
+                continue
+            n_covered += 1
+            for proc, w in wv.items():
+                acc[proc] = acc.get(proc, 0.0) + w
+        if n_covered == 0 or not acc:
+            uncovered.append(product)
+            continue
+        total = sum(acc.values())
+        weights[product] = {p: w / total for p, w in acc.items()}
+    prov = Provenance(
+        source=f"{industry_conc.provenance.source} → pxp products",
+        source_version=f"{industry_conc.provenance.source_version}; product bridge",
+        licence=industry_conc.provenance.licence,
+        reference_year=industry_conc.provenance.reference_year,
+        retrieved=industry_conc.provenance.retrieved,
+        notes=(
+            "EXIOBASE product→industry bridge (pymrio exio3_pxp/exio3_ixi classifications): each "
+            "product's ENCORE weights = equal-weighted mean of its producing industries', "
+            "renormalised. Equal-weighted v1, not calibrated."
+        ),
+    )
+    cmap = ConcordanceMap(
+        provenance=prov,
+        from_classification=from_classification,
+        to_classification=industry_conc.to_classification,
+        weights=weights,
+    )
+    return cmap, uncovered
+
+
 def aggregate_concordance(
     fine: ConcordanceMap,
     sector_map: dict[str, str],
     *,
     to_classification: str = "aggregated-sectors",
+    require_complete: bool = False,
 ) -> ConcordanceMap:
     """Compose a fine EXIOBASE→ENCORE ``ConcordanceMap`` with a **sector-aggregation map**
     (fine EXIOBASE sector → coarse group) to give a coarse ``group → ENCORE process`` concordance
@@ -198,19 +355,35 @@ def aggregate_concordance(
 
     Each group's weight over ENCORE processes is the **equal-weighted average of its member sectors'
     weight vectors**, renormalised to sum to 1. Equal member weights are the same documented v1
-    assumption as the fine concordance (output weights unavailable here). A group with no covered
-    member is omitted (``sector_scores`` then flags it, rather than silently zeroing)."""
-    # group -> accumulated {process: weight}
+    assumption as the fine concordance (output weights unavailable here).
+
+    Omitted-member auditing (review P1 round 6 2026-08-14): a fine member the concordance does NOT
+    cover was previously skipped silently, so a group could be built from a covered *subset* and
+    renormalised — masking partial coverage. Every omitted member is now recorded on the returned
+    map's provenance notes. With ``require_complete=True`` any group that loses a member raises
+    ``ValueError`` (the build's complete-coverage gate) rather than quietly renormalising the rest.
+    A group with NO covered member is always omitted (``sector_scores`` then flags it)."""
+    # group -> accumulated {process: weight}; also track which members were covered vs omitted.
     grouped: dict[str, dict[str, float]] = {}
-    members: dict[str, int] = {}
+    group_members: dict[str, list[str]] = {}
+    omitted: dict[str, list[str]] = {}
     for fine_sector, group in sector_map.items():
+        group_members.setdefault(group, []).append(fine_sector)
         w = fine.weights.get(fine_sector)
         if not w:
+            omitted.setdefault(group, []).append(fine_sector)
             continue
         acc = grouped.setdefault(group, {})
         for proc, weight in w.items():
             acc[proc] = acc.get(proc, 0.0) + weight  # member vectors summed (equal member weight)
-        members[group] = members.get(group, 0) + 1
+
+    if require_complete and omitted:
+        detail = "; ".join(f"{g}: {sorted(m)}" for g, m in sorted(omitted.items()))
+        raise ValueError(
+            "aggregate_concordance: incomplete coverage — the fine concordance does not cover "
+            f"every member of {len(omitted)} aggregated group(s): {detail}. Either extend the "
+            "concordance or pass require_complete=False to accept a covered-subset average."
+        )
 
     weights: dict[str, dict[str, float]] = {}
     for group, acc in grouped.items():
@@ -219,6 +392,13 @@ def aggregate_concordance(
             continue
         weights[group] = {p: w / total for p, w in acc.items()}  # renormalise to sum to 1
 
+    audit_note = ""
+    if omitted:
+        n_om = sum(len(m) for m in omitted.values())
+        audit_note = (
+            f" WARNING: {n_om} fine member(s) across {len(omitted)} group(s) were uncovered and "
+            f"excluded from the average: {dict(sorted(omitted.items()))}."
+        )
     prov = Provenance(
         source=f"{fine.provenance.source} → aggregated",
         source_version=f"{fine.provenance.source_version}; aggregation-aware",
@@ -228,6 +408,7 @@ def aggregate_concordance(
         notes=(
             "Aggregation-aware concordance: fine EXIOBASE→ENCORE weights averaged (equal member "
             "weight) into the build's coarse sector groups; equal-weighted v1, not calibrated."
+            + audit_note
         ),
     )
     return ConcordanceMap(

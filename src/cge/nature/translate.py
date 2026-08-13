@@ -99,12 +99,37 @@ def nature_to_productivity(
     author specified."""
     goods = list(exposure.index)
     services = set(exposure.columns)
+    # Valid region/sector vocabulary derived from the exposure INDEX (goods are 'region:sector' or a
+    # bare sector). A typo'd coverage_regions/coverage_sectors matches no good → the stress silently
+    # does nothing and the run looks like a clean baseline (review P2 round 6 2026-08-14). The
+    # standard build_nature_shocks path already validates coverage against the IO; validate here too
+    # so the EXPORTED translator can't silent-baseline on a typo either.
+    valid_regions: set[str] = set()
+    valid_sectors: set[str] = set()
+    for g in goods:
+        region, sector = (g.split(":", 1) + [""])[:2] if ":" in g else (g, g)
+        valid_regions.add(region)
+        valid_sectors.add(sector)
     for st in stresses:
         if st.service not in services:
             raise ValueError(
                 f"NatureStress service {st.service!r} is not in the exposure matrix "
                 f"(services: {sorted(services)}); it would have no effect. Check the service name "
                 "or the ENCORE data."
+            )
+        bad_r = [r for r in (st.coverage_regions or []) if r not in valid_regions]
+        if bad_r:
+            raise ValueError(
+                f"NatureStress coverage_regions {bad_r} are not in the exposure matrix "
+                f"(regions: {sorted(valid_regions)}); the stress would match no good and silently "
+                "do nothing. Check the region label(s)."
+            )
+        bad_s = [s for s in (st.coverage_sectors or []) if s not in valid_sectors]
+        if bad_s:
+            raise ValueError(
+                f"NatureStress coverage_sectors {bad_s} are not in the exposure matrix "
+                f"(sectors: {sorted(valid_sectors)}); the stress would match no good and silently "
+                "do nothing. Check the sector label(s)."
             )
 
     # The overlap guards below test conflicts at the level of the actual TARGET GOODS, not just the
