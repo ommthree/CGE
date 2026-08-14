@@ -22,6 +22,24 @@ def _prov():
     )
 
 
+def tmp_json(obj) -> str:
+    """Write ``obj`` to a temp JSON file and return its path (for artifact-validation tests)."""
+    import json
+    import tempfile
+
+    fd, path = tempfile.mkstemp(suffix=".json")
+    with open(fd, "w") as fh:
+        json.dump(obj, fh)
+    return path
+
+
+def _read_json(path: str):
+    import json
+
+    with open(path) as fh:
+        return json.load(fh)
+
+
 # -- 6.1 materiality scale + ingestion --------------------------------------------------------
 def test_materiality_scale_is_monotone_and_bounded():
     """The documented VH..VL scale is strictly decreasing and lands in (0, 1] — it drives every
@@ -809,6 +827,56 @@ def test_zero_supply_products_fall_back_and_are_audited():
     assert manure in fallbacks
     assert "no market supply" in audit.entries[manure].fallback_reason
     assert audit.n_supply_share == 184  # the rest use observed shares
+
+
+@_needs_supply_shares
+def test_supply_share_artifact_validation_rejects_incomplete():
+    """A malformed/incomplete artifact must FAIL on load, not silently degrade the bridge back to
+    the prefix method (review P2 round 8 2026-08-14). Removing a product without declaring it
+    zero-supply — the reviewer's reproduction — is rejected."""
+    from cge.nature.real import SupplyShareValidationError, load_supply_shares
+
+    art = _read_json("data/exiobase/supply_shares_2019.json")
+    # (1) product missing from BOTH shares and zero_supply_products → 199 total → rejected.
+    del art["shares"]["Motor Gasoline"]
+    p = tmp_json(art)
+    with pytest.raises(SupplyShareValidationError, match="199 products|exactly 200"):
+        load_supply_shares(path=p)
+    # (2) weights that don't sum to 1 → rejected.
+    art2 = _read_json("data/exiobase/supply_shares_2019.json")
+    k = next(iter(art2["shares"]))
+    art2["shares"][k] = {next(iter(art2["shares"][k])): 0.5}
+    with pytest.raises(SupplyShareValidationError, match="sum to"):
+        load_supply_shares(path=tmp_json(art2))
+
+
+@_needs_supply_shares
+def test_supply_shares_year_binding_falls_back_visibly():
+    """A build year without its own artifact falls back to the default year, but the mismatch is
+    recorded in provenance — never silent (review P2 round 8 2026-08-14)."""
+    from cge.nature.real import load_supply_shares
+
+    _shares, prov = load_supply_shares(2020)  # no 2020 artifact → falls back to 2019
+    assert "year_fallback" in prov and "2020" in prov["year_fallback"]
+    # The default year loads with NO fallback note.
+    _s19, prov19 = load_supply_shares(2019)
+    assert "year_fallback" not in prov19
+
+
+@_needs_encore
+@_needs_supply_shares
+def test_persisted_concordance_provenance_carries_supply_share_version():
+    """The PERSISTED product-bridge concordance provenance must record the MRSUT version (review P2
+    round 8: previously only the discarded audit carried it, so a stored concordance concealed which
+    SUT year produced its weights)."""
+    from cge.nature.real import real_encore_concordance_products
+
+    cmap, _uncovered = real_encore_concordance_products(year=2019)
+    assert "MRSUT" in cmap.provenance.source_version
+    assert "supply-share" in cmap.provenance.source_version
+    # A year fallback surfaces on the concordance provenance too.
+    cmap20, _ = real_encore_concordance_products(year=2020)
+    assert "2020" in cmap20.provenance.source_version
 
 
 @_needs_encore

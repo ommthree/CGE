@@ -50,7 +50,7 @@ class NatureAttachError(RuntimeError):
     but the ENCORE data cannot be loaded / does not cover the build's sectors."""
 
 
-def _nature_for_sectors(sector_labels, *, policy: str = "auto"):
+def _nature_for_sectors(sector_labels, *, policy: str = "auto", reference_year: int | None = None):
     """Return ``(EncoreDependencies, ConcordanceMap)`` covering **every** sector in
     ``sector_labels``, or ``(None, None)`` when nature is legitimately absent.
 
@@ -105,7 +105,10 @@ def _nature_for_sectors(sector_labels, *, policy: str = "auto"):
     # a pxp build has ~13 incidental industry-name collisions but is fully covered by the product
     # bridge (review P1 round 6).
     industry_hits = sum(1 for s in labels if s in industry_cmap.weights)
-    product_cmap, _uncovered = real_encore_concordance_products()
+    # Year-bind the product bridge's supply shares to the build's reference year: a 2020 build must
+    # not silently use 2019 shares. load_supply_shares records a year_fallback in provenance if the
+    # year has no artifact (review P2 round 8 2026-08-14).
+    product_cmap, _uncovered = real_encore_concordance_products(year=reference_year)
     product_hits = sum(1 for s in labels if s in product_cmap.weights)
     if industry_hits == 0 and product_hits == 0:
         # No EXIOBASE labels at all (e.g. the offline test MRIO's 'sector1'…) — nature simply
@@ -203,7 +206,9 @@ def build_from_pymrio(
     # Nature: derive the ENCORE concordance for the FULL build's (real EXIOBASE) sector labels if
     # they are covered, so the build carries nature. None when labels aren't EXIOBASE or ENCORE data
     # is absent — nature is optional (review P1 round 5).
-    full_encore, full_conc = _nature_for_sectors(io.sectors.labels, policy=attach_nature)
+    full_encore, full_conc = _nature_for_sectors(
+        io.sectors.labels, policy=attach_nature, reference_year=reference_year
+    )
     store.save(
         meta=meta,
         io=io,

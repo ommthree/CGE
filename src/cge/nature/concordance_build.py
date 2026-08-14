@@ -445,14 +445,19 @@ def bridge_to_products(
             fallback_reason=reason,
         )
 
-    src_note = (
-        "observed MRSUT supply shares where available, else equal-weighted code-prefix fallback"
-        if supply_shares is not None
-        else "equal-weighted code-prefix fallback (no MRSUT supply shares loaded)"
-    )
+    # Embed the supply-share artifact version in the PERSISTED provenance (review P2 round 8
+    # 2026-08-14): previously only the discarded audit carried it, so a stored concordance concealed
+    # which MRSUT year/version produced its weights (and any year fallback).
+    if supply_shares is not None and audit.n_supply_share > 0:
+        ver = supply_shares_version or "unversioned MRSUT supply shares"
+        src_note = f"observed EXIOBASE MRSUT supply shares ({ver}); code-prefix fallback otherwise"
+        version_tag = f"product bridge; supply-share weighting [{ver}]"
+    else:
+        src_note = "equal-weighted code-prefix fallback (no MRSUT supply shares loaded)"
+        version_tag = "product bridge; code-prefix fallback"
     prov = Provenance(
         source=f"{industry_conc.provenance.source} → pxp products",
-        source_version=f"{industry_conc.provenance.source_version}; product bridge",
+        source_version=f"{industry_conc.provenance.source_version}; {version_tag}",
         licence=industry_conc.provenance.licence,
         reference_year=industry_conc.provenance.reference_year,
         retrieved=industry_conc.provenance.retrieved,

@@ -29,12 +29,15 @@ jobs:
           cache: pip
 
       - name: Install
-        # Core + the CGE solver extra (scipy) + dev tooling (pytest, ruff), plus streamlit so the
-        # GUI page/service tests run rather than skip. pymrio/duckdb are intentionally omitted — the
-        # handful of tests needing them skip cleanly (as they do in local dev), keeping CI light.
+        # Core + the CGE solver extra (scipy) + dev tooling (pytest, ruff) + the DATA extra
+        # (pymrio/duckdb/pyarrow) + streamlit for the GUI tests. The data extra is REQUIRED, not
+        # optional: cge.data.adapters.exiobase and cge.data.build import pymrio at module level, so
+        # the data-layer and nature integration tests fail at COLLECTION (not skip) without it
+        # (review P1 round 8 2026-08-14). The nature integration tests also genuinely build pymrio
+        # systems, so CI must actually exercise them.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[cge,dev]" "streamlit>=1.33"
+          pip install -e ".[cge,dev,data]" "streamlit>=1.33"
 
       - name: Ruff lint
         run: ruff check src tests

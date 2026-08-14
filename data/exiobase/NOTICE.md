@@ -21,9 +21,17 @@ back to the code-prefix method for those (recorded in the `ProductBridgeAudit`).
 > Time Series of Detailed Environmentally Extended Multi-Regional Input-Output Tables.* Journal of
 > Industrial Ecology 22(3), 502–515.
 
-- **Version:** EXIOBASE 3.8.2, MRSUT vers 20210125, year 2019 (current-price Euro).
+- **Version:** EXIOBASE 3.8.2, MRSUT vers 20210125, year 2019 (current-price Euro). The SUT
+  year/version are read from the archive's own `meta.json` (not a hand-set flag), and stamped into
+  the artifact provenance (`sut_year`, `sut_version`).
 - **DOI / source:** <https://doi.org/10.5281/zenodo.5589597> (open-access Zenodo record).
 - **Retrieved:** 2026-08-14. **Regenerate with:** `python scripts/build_supply_shares.py`.
+
+**Year binding.** Artifacts are named `supply_shares_{year}.json`; only 2019 is vendored. A build for
+a year without its own artifact falls back to the 2019 shares, and that substitution is recorded as a
+`year_fallback` note in the persisted concordance provenance — never applied silently. Each annual
+`MRSUT_YYYY.zip` on the Zenodo record can be turned into its own artifact by re-running the generator
+against it.
 
 ## Licence — CC BY-SA 4.0
 

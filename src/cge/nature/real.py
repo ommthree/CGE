@@ -29,9 +29,21 @@ from cge.nature.encore import EncoreDependencies, load_encore_ratings_wide
 _DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "data" / "encore"
 # The vendored EXIOBASE MRSUT-derived product→industry supply shares (review P1-methodology round 7
 # 2026-08-14). CC BY-SA 4.0; see data/exiobase/NOTICE.md. Rebuilt by scripts/build_supply_shares.py.
-_SUPPLY_SHARES_PATH = (
-    Path(__file__).resolve().parents[3] / "data" / "exiobase" / "supply_shares_2019.json"
-)
+# Artifacts are YEAR-BOUND: supply_shares_{year}.json. Only 2019 is vendored today; a build for a
+# year without its own artifact falls back to this default year, but the mismatch is recorded in
+# provenance rather than silently using the wrong year (review P2 round 8 2026-08-14).
+_EXIOBASE_DATA_DIR = Path(__file__).resolve().parents[3] / "data" / "exiobase"
+_DEFAULT_SUPPLY_SHARE_YEAR = 2019
+# The 200-product count the artifact must match (industry membership is checked against the live ixi
+# vocabulary, not a hard-coded count).
+_N_EXIOBASE_PRODUCTS = 200
+
+
+def _supply_shares_path(year: int | None = None) -> Path:
+    yr = _DEFAULT_SUPPLY_SHARE_YEAR if year is None else year
+    return _EXIOBASE_DATA_DIR / f"supply_shares_{yr}.json"
+
+
 _ENCORE_SUBDIR = "ENCORE files"
 _CROSSWALK_SUBDIR = "Crosswalk tables"
 _DEPENDENCY_CSV = "06. Dependency mat ratings.csv"
@@ -129,23 +141,102 @@ def real_encore_concordance_industries(root: str | Path | None = None):
     return complete_industry_concordance(industry_conc)
 
 
-def supply_shares_available(path: str | Path | None = None) -> bool:
-    """True if the vendored EXIOBASE supply-share artifact is present."""
-    return (Path(path) if path else _SUPPLY_SHARES_PATH).exists()
+def supply_shares_available(year: int | None = None, path: str | Path | None = None) -> bool:
+    """True if a vendored EXIOBASE supply-share artifact is present for ``year`` (or the default
+    year when ``year`` is None / has no artifact of its own)."""
+    if path is not None:
+        return Path(path).exists()
+    if _supply_shares_path(year).exists():
+        return True
+    return _supply_shares_path(_DEFAULT_SUPPLY_SHARE_YEAR).exists()
 
 
-def load_supply_shares(path: str | Path | None = None) -> tuple[dict[str, dict[str, float]], dict]:
-    """Load the vendored EXIOBASE product→industry **supply shares** and their provenance.
+class SupplyShareValidationError(ValueError):
+    """A vendored supply-share artifact is malformed / incomplete — better to fail than to silently
+    degrade a build back to the code-prefix methodology (review P2 round 8 2026-08-14)."""
+
+
+def _valid_industry_vocab() -> set[str]:
+    import pymrio
+
+    return {str(x).strip() for x in pymrio.get_classification("exio3_ixi").sectors["ExioName"]}
+
+
+def _validate_supply_share_artifact(art: dict, source: str) -> None:
+    """Reject a malformed artifact instead of letting it silently degrade the bridge (P2 round 8).
+
+    Checks: (1) shares and zero_supply_products partition EXACTLY the 200 EXIOBASE products,
+    disjointly; (2) every producing industry is in the 163-industry vocabulary; (3) each product's
+    weights are finite, non-negative, and sum to 1. A product merely MISSING from both sets is the
+    dangerous case (it would be treated as zero-supply and reported as 'no market supply' though it
+    was really dropped), so a wrong product count fails here."""
+    prov = art.get("provenance", {})
+    shares = art.get("shares")
+    if not isinstance(shares, dict):
+        raise SupplyShareValidationError(f"{source}: 'shares' missing or not an object")
+    zero = prov.get("zero_supply_products", [])
+    if not isinstance(zero, list):
+        raise SupplyShareValidationError(f"{source}: provenance.zero_supply_products not a list")
+    share_keys, zero_keys = set(shares), set(zero)
+    overlap = share_keys & zero_keys
+    if overlap:
+        raise SupplyShareValidationError(
+            f"{source}: {len(overlap)} product(s) are in BOTH shares and zero_supply_products "
+            f"(e.g. {sorted(overlap)[:3]}); the two sets must be disjoint."
+        )
+    total = len(share_keys) + len(zero_keys)
+    if total != _N_EXIOBASE_PRODUCTS:
+        raise SupplyShareValidationError(
+            f"{source}: shares ∪ zero_supply_products cover {total} products, expected exactly "
+            f"{_N_EXIOBASE_PRODUCTS}. A product missing from both would be silently mistaken for "
+            "'no market supply'. Regenerate the artifact from the MRSUT."
+        )
+    vocab = _valid_industry_vocab()
+    for product, wmap in shares.items():
+        if not isinstance(wmap, dict) or not wmap:
+            raise SupplyShareValidationError(f"{source}: product {product!r} has no weights")
+        bad_ind = [i for i in wmap if i not in vocab]
+        if bad_ind:
+            raise SupplyShareValidationError(
+                f"{source}: product {product!r} maps to non-EXIOBASE industry(ies) {bad_ind[:3]}"
+            )
+        vals = list(wmap.values())
+        if any((not isinstance(v, int | float)) or v != v or v < 0 for v in vals):  # NaN/neg
+            raise SupplyShareValidationError(
+                f"{source}: product {product!r} has a non-finite/negative weight"
+            )
+        if abs(sum(vals) - 1.0) > 1e-6:
+            raise SupplyShareValidationError(
+                f"{source}: product {product!r} weights sum to {sum(vals):.6f}, not 1"
+            )
+
+
+def load_supply_shares(
+    year: int | None = None, path: str | Path | None = None
+) -> tuple[dict[str, dict[str, float]], dict]:
+    """Load and VALIDATE the vendored EXIOBASE product→industry **supply shares** for ``year``.
 
     Returns ``(shares, provenance)`` where ``shares[product][industry]`` is the observed fraction of
     the product's total monetary supply produced by that industry (summed over regions, sums to 1).
-    Products with no market supply (recycling/treatment residuals) are ABSENT from ``shares`` — the
-    caller falls back to the classification-prefix method for those. ``provenance`` carries the
-    EXIOBASE DOI, SUT version, threshold, and the list of zero-supply products (review P1-method
-    round 7 2026-08-14; CC BY-SA 4.0, see data/exiobase/NOTICE.md)."""
+    Products with no market supply (recycling/treatment residuals) are ABSENT from ``shares`` and
+    listed in ``provenance.zero_supply_products`` — the caller falls back to the code-prefix method
+    for exactly those. The provenance carries the EXIOBASE DOI, SUT year+version, threshold, and —
+    when the requested ``year`` has no artifact — a ``year_fallback`` note recording that the
+    default year's shares were substituted (review P2 round 8 2026-08-14; the mismatch is
+    provenance-visible, never silent). The artifact is validated on load; a malformed one raises
+    ``SupplyShareValidationError`` rather than silently degrading the bridge. CC BY-SA 4.0."""
     import json
 
-    p = Path(path) if path else _SUPPLY_SHARES_PATH
+    fell_back_year: int | None = None
+    if path is not None:
+        p = Path(path)
+    else:
+        p = _supply_shares_path(year)
+        if not p.exists() and year is not None:
+            fallback = _supply_shares_path(_DEFAULT_SUPPLY_SHARE_YEAR)
+            if fallback.exists():
+                fell_back_year = year
+                p = fallback
     if not p.exists():
         raise FileNotFoundError(
             f"EXIOBASE supply-share artifact not found at {p}. Regenerate it with "
@@ -153,12 +244,20 @@ def load_supply_shares(path: str | Path | None = None) -> tuple[dict[str, dict[s
         )
     with open(p) as fh:
         art = json.load(fh)
-    return art["shares"], art["provenance"]
+    _validate_supply_share_artifact(art, source=str(p))
+    prov = dict(art.get("provenance", {}))
+    if fell_back_year is not None:
+        prov["year_fallback"] = (
+            f"build year {fell_back_year} has no supply-share artifact; used the "
+            f"{_DEFAULT_SUPPLY_SHARE_YEAR} shares instead (producing-industry mix assumed stable)."
+        )
+    return art["shares"], prov
 
 
 def real_encore_concordance_products(
     root: str | Path | None = None,
     *,
+    year: int | None = None,
     with_audit: bool = False,
 ):
     """The real EXIOBASE **product** (pxp) → ENCORE concordance.
@@ -180,9 +279,11 @@ def real_encore_concordance_products(
 
     industry_conc, _audit = real_encore_concordance(root)
     shares, version = (None, "")
-    if supply_shares_available():
-        shares, prov = load_supply_shares()
+    if supply_shares_available(year):
+        shares, prov = load_supply_shares(year)
         version = prov.get("source_version", "")
+        if prov.get("year_fallback"):  # make the year mismatch visible on the bridge provenance too
+            version = f"{version} [{prov['year_fallback']}]"
     cmap, uncovered, bridge_audit = bridge_to_products(
         industry_conc,
         pxp_to_ixi_industries(),
