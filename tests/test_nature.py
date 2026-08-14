@@ -735,6 +735,98 @@ _needs_encore = _pytest.mark.skipif(
 )
 
 
+def _supply_shares_present() -> bool:
+    from cge.nature.real import supply_shares_available
+
+    return supply_shares_available()
+
+
+_needs_supply_shares = _pytest.mark.skipif(
+    not _supply_shares_present(),
+    reason="vendored EXIOBASE supply-share artifact (data/exiobase/) not present",
+)
+
+
+@_needs_encore
+@_needs_supply_shares
+def test_product_bridge_uses_observed_supply_shares_not_prefix_guess():
+    """Review P1-methodology round 7 (2026-08-14): the pxp product bridge must weight producing
+    industries by the OBSERVED EXIOBASE MRSUT supply shares, not a code-prefix guess. The six
+    products the reviewer flagged (which previously all received byte-identical prefix-inferred
+    chemical weights) must now resolve by supply share to their real dominant producer AND be
+    mutually distinct."""
+    import json
+
+    from cge.nature.real import real_encore_concordance_products
+
+    cmap, uncovered, audit = real_encore_concordance_products(with_audit=True)
+    assert not uncovered and len(cmap.weights) == 200
+    # Dominant producing industry per flagged product, from the observed supply matrix.
+    expected_dominant = {
+        "Motor Gasoline": "Petroleum Refinery",
+        "Natural Gas Liquids": "Extraction of natural gas and services related to natural gas "
+        "extraction, excluding surveying",
+        "Biodiesels": "Chemicals nec",
+        "Biogasoline": "Chemicals nec",
+        "Charcoal": "Chemicals nec",
+        "Additives/Blending Components": "Chemicals nec",
+        "Other Liquid Biofuels": "Chemicals nec",
+        "Electricity by coal": "Production of electricity by coal",
+        "Electricity nec": "Production of electricity nec",
+    }
+    for product, dominant in expected_dominant.items():
+        entry = audit.entries[product]
+        assert entry.method == "supply-share", f"{product} did not use observed supply shares"
+        top = max(entry.industry_weights.items(), key=lambda kv: kv[1])[0]
+        assert top == dominant, f"{product}: dominant industry {top!r} != expected {dominant!r}"
+
+    # The five biofuel/chemical products that were byte-identical under the prefix method must now
+    # have DISTINCT ENCORE weight vectors (the reviewer's core complaint).
+    biofuels = [
+        "Biodiesels",
+        "Biogasoline",
+        "Charcoal",
+        "Additives/Blending Components",
+        "Other Liquid Biofuels",
+    ]
+    hashes = {json.dumps(cmap.weights[p], sort_keys=True) for p in biofuels}
+    assert len(hashes) == len(biofuels), "biofuel products still collapse to identical weights"
+
+
+@_needs_encore
+@_needs_supply_shares
+def test_zero_supply_products_fall_back_and_are_audited():
+    """Products with NO market supply in the MRSUT (recycling/treatment residuals, extra-territorial
+    bodies) legitimately can't use supply shares — they must fall back to the code-prefix method and
+    say so in the audit, not silently drop out (review P1-methodology round 7)."""
+    from cge.nature.real import real_encore_concordance_products
+
+    _cmap, _uncovered, audit = real_encore_concordance_products(with_audit=True)
+    # There are exactly the 16 supply-less products; all present and flagged as fallbacks.
+    fallbacks = {p for p, e in audit.entries.items() if e.method == "code-prefix-fallback"}
+    assert len(fallbacks) == 16
+    manure = "Manure (conventional treatment)"
+    assert manure in fallbacks
+    assert "no market supply" in audit.entries[manure].fallback_reason
+    assert audit.n_supply_share == 184  # the rest use observed shares
+
+
+@_needs_encore
+def test_product_bridge_falls_back_cleanly_without_supply_shares():
+    """With no supply-share artifact (MRSUT-absent checkout), the bridge must still cover all 200
+    products via the code-prefix fallback — nature runs without the multi-GB download (round-6
+    behaviour preserved)."""
+    from cge.nature.concordance_build import bridge_to_products, pxp_to_ixi_industries
+    from cge.nature.real import real_encore_concordance
+
+    industry_conc, _ = real_encore_concordance()
+    cmap, uncovered, audit = bridge_to_products(
+        industry_conc, pxp_to_ixi_industries(), supply_shares=None
+    )
+    assert not uncovered and len(cmap.weights) == 200
+    assert audit.n_supply_share == 0 and audit.n_fallback == 200
+
+
 @_needs_encore
 def test_real_encore_dependency_ingestion_shape_and_values():
     """The real May-2026 dependency table ingests to the expected shape, real vocabulary, and known
@@ -1262,16 +1354,14 @@ def test_aggregation_aware_concordance_runs_on_grouped_sectors(tmp_path):
     ).any()  # aggregated build runs nature end-to-end
 
 
-def _pxp_pymrio_system(regions=("RegA", "RegB")):
-    """A minimal pymrio IOSystem whose sector labels are the REAL 200 EXIOBASE **product** (pxp)
-    labels from pymrio's ``exio3_pxp`` classification — the actual default-build classification, not
-    a hand-picked subset (review P1 round 6 2026-08-14). Small dense A + household FD so the adapter
-    and quality gates accept it without a multi-GB download."""
+def _pymrio_system_for_labels(labels, regions=("RegA", "RegB")):
+    """A minimal pymrio IOSystem over the given REAL EXIOBASE sector ``labels`` — a small dense A +
+    household FD + a trivial GHG extension, so the adapter and quality gates accept it without a
+    multi-GB download. Used to exercise the real orchestration over the actual classifications."""
     import numpy as np
     import pymrio
 
-    products = [str(x).strip() for x in pymrio.get_classification("exio3_pxp").sectors["ExioName"]]
-    idx = pd.MultiIndex.from_product([list(regions), products], names=["region", "sector"])
+    idx = pd.MultiIndex.from_product([list(regions), list(labels)], names=["region", "sector"])
     n = len(idx)
     A = pd.DataFrame(np.full((n, n), 0.001), index=idx, columns=idx)
     y_cols = pd.MultiIndex.from_product(
@@ -1286,7 +1376,17 @@ def _pxp_pymrio_system(regions=("RegA", "RegB")):
     ext = pymrio.Extension(name="emissions", F=F)
     ext.unit = pd.DataFrame({"unit": ["t"]}, index=["emission_type1"])
     pio.emissions = ext
-    return pio, products
+    return pio
+
+
+def _pxp_pymrio_system(regions=("RegA", "RegB")):
+    """A minimal pymrio IOSystem whose sector labels are the REAL 200 EXIOBASE **product** (pxp)
+    labels from pymrio's ``exio3_pxp`` classification — the actual default-build classification, not
+    a hand-picked subset (review P1 round 6 2026-08-14)."""
+    import pymrio
+
+    products = [str(x).strip() for x in pymrio.get_classification("exio3_pxp").sectors["ExioName"]]
+    return _pymrio_system_for_labels(products, regions=regions), products
 
 
 @_needs_encore
@@ -1332,6 +1432,55 @@ def test_build_from_pymrio_attaches_nature_for_real_pxp_products(tmp_path):
     vol = res.data[(res.data["variable"] == "volume_change") & (res.data["scenario"] == "central")]
     assert (vol["value"] < 0.0).any()  # real degradation propagates through the persisted pxp build
     assert res.manifest.assumptions["nature"]["encore_source"]
+
+
+@_needs_encore
+def test_build_from_pymrio_attaches_nature_for_real_ixi_industries(tmp_path):
+    """The supported ``system="ixi"`` classification also runs nature end to end (P2 round 7).
+
+    Drives build_from_pymrio over the actual 163 EXIOBASE INDUSTRY labels under ``required``. The
+    crosswalk covers 162; the residual ``Production of electricity nec`` is filled by the shared
+    NACE-sibling fallback (``complete_industry_concordance``), so the direct ixi path attaches over
+    the WHOLE classification — previously it failed 162/163. Then a NatureStress runs from the
+    persisted build."""
+    import pymrio
+
+    from cge.contracts.shocks import NatureStress
+    from cge.data.build import build_from_pymrio
+    from cge.data.store import DataStore
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    ixi = pymrio.get_classification("exio3_ixi").sectors
+    industries = [str(x).strip() for x in ixi["ExioName"]]
+    assert len(industries) == 163
+    pio = _pymrio_system_for_labels(industries)
+    store = DataStore(tmp_path)
+    written = build_from_pymrio(
+        pio,
+        source="EXIOBASE",
+        source_version="3-ixi-test",
+        reference_year=2019,
+        build_id="exio-ixi",
+        store=store,
+        make_small=False,
+        gas_aliases={"emission_type1": "CO2"},
+        attach_nature="required",  # every one of the 163 industries must be covered, or raise
+    )
+    loaded = store.load(written["full"])
+    assert set(loaded["ConcordanceMap"].weights) == set(industries)  # all 163, incl. the residual
+    assert "Production of electricity nec" in loaded["ConcordanceMap"].weights
+
+    sc = Scenario(
+        name="ixi-nature",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="Water purification", severity=0.4)],
+    )
+    res = run_scenario(sc, data_source="exio-ixi", store=store)
+    res.validate_schema()
+    vol = res.data[(res.data["variable"] == "volume_change") & (res.data["scenario"] == "central")]
+    assert (vol["value"] < 0.0).any()
 
 
 @_needs_encore

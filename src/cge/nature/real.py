@@ -27,6 +27,11 @@ from cge.nature.encore import EncoreDependencies, load_encore_ratings_wide
 # round 5 2026-08-13: the dependency and concordance loaders previously disagreed on what ``root``
 # meant).
 _DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "data" / "encore"
+# The vendored EXIOBASE MRSUT-derived product→industry supply shares (review P1-methodology round 7
+# 2026-08-14). CC BY-SA 4.0; see data/exiobase/NOTICE.md. Rebuilt by scripts/build_supply_shares.py.
+_SUPPLY_SHARES_PATH = (
+    Path(__file__).resolve().parents[3] / "data" / "exiobase" / "supply_shares_2019.json"
+)
 _ENCORE_SUBDIR = "ENCORE files"
 _CROSSWALK_SUBDIR = "Crosswalk tables"
 _DEPENDENCY_CSV = "06. Dependency mat ratings.csv"
@@ -109,16 +114,81 @@ def real_encore_concordance(root: str | Path | None = None):
     return build_exiobase_encore_concordance(dep, crosswalk_path=_crosswalk_path(root))
 
 
-def real_encore_concordance_products(root: str | Path | None = None):
+def real_encore_concordance_industries(root: str | Path | None = None):
+    """The real EXIOBASE **industry** (ixi) → ENCORE concordance, COMPLETED over the full
+    163-industry classification via the shared NACE-sibling fallback (review P2 round 7 2026-08-14).
+
+    The vendored crosswalk covers 162 industries; the one it omits (``Production of electricity
+    nec``) is filled from its covered NACE siblings, so a direct ``system="ixi"`` build attaches
+    nature over the whole classification — the same completed object the product bridge consumes.
+    Returns ``(ConcordanceMap, filled)`` where ``filled`` records the fallback for the audit.
+    ``root`` is the dataset root."""
+    from cge.nature.concordance_build import complete_industry_concordance
+
+    industry_conc, _audit = real_encore_concordance(root)
+    return complete_industry_concordance(industry_conc)
+
+
+def supply_shares_available(path: str | Path | None = None) -> bool:
+    """True if the vendored EXIOBASE supply-share artifact is present."""
+    return (Path(path) if path else _SUPPLY_SHARES_PATH).exists()
+
+
+def load_supply_shares(path: str | Path | None = None) -> tuple[dict[str, dict[str, float]], dict]:
+    """Load the vendored EXIOBASE product→industry **supply shares** and their provenance.
+
+    Returns ``(shares, provenance)`` where ``shares[product][industry]`` is the observed fraction of
+    the product's total monetary supply produced by that industry (summed over regions, sums to 1).
+    Products with no market supply (recycling/treatment residuals) are ABSENT from ``shares`` — the
+    caller falls back to the classification-prefix method for those. ``provenance`` carries the
+    EXIOBASE DOI, SUT version, threshold, and the list of zero-supply products (review P1-method
+    round 7 2026-08-14; CC BY-SA 4.0, see data/exiobase/NOTICE.md)."""
+    import json
+
+    p = Path(path) if path else _SUPPLY_SHARES_PATH
+    if not p.exists():
+        raise FileNotFoundError(
+            f"EXIOBASE supply-share artifact not found at {p}. Regenerate it with "
+            "`python scripts/build_supply_shares.py` from the MRSUT download (see NOTICE.md)."
+        )
+    with open(p) as fh:
+        art = json.load(fh)
+    return art["shares"], art["provenance"]
+
+
+def real_encore_concordance_products(
+    root: str | Path | None = None,
+    *,
+    with_audit: bool = False,
+):
     """The real EXIOBASE **product** (pxp) → ENCORE concordance.
 
     The crosswalk is keyed by industry-style labels, but the default live build is ``system="pxp"``
-    (product labels). This bridges each product to its producing ixi industry(ies) via the pymrio
-    ``exio3_pxp``/``exio3_ixi`` classifications, then averages the industry concordance onto the
-    products (review P1 round 6 2026-08-14). Returns ``(ConcordanceMap, uncovered_products)`` — a
-    product whose producing industries are all uncovered is reported, not silently dropped, so the
-    build's complete-coverage gate can act on it. ``root`` is the dataset root."""
+    (product labels). This bridges each product to its producing ixi industry(ies) and averages the
+    industry concordance onto the products. The producing-industry weights come from the **observed
+    EXIOBASE MRSUT supply shares** when the vendored artifact is present (review P1-method round 7
+    2026-08-14) — so, e.g., the biofuels no longer receive byte-identical prefix-inferred weights;
+    products with no market supply (and any product not in the artifact) fall back to the
+    classification-prefix method. When the artifact is absent, the whole bridge uses the prefix
+    method (the round-6 behaviour), so nature still runs without the multi-GB download.
+
+    Returns ``(ConcordanceMap, uncovered_products)`` (or, with ``with_audit=True``,
+    ``(ConcordanceMap, uncovered_products, ProductBridgeAudit)``) — a product whose producing
+    industries are all uncovered is reported, not silently dropped, so the build's complete-coverage
+    gate can act on it. ``root`` is the dataset root."""
     from cge.nature.concordance_build import bridge_to_products, pxp_to_ixi_industries
 
     industry_conc, _audit = real_encore_concordance(root)
-    return bridge_to_products(industry_conc, pxp_to_ixi_industries())
+    shares, version = (None, "")
+    if supply_shares_available():
+        shares, prov = load_supply_shares()
+        version = prov.get("source_version", "")
+    cmap, uncovered, bridge_audit = bridge_to_products(
+        industry_conc,
+        pxp_to_ixi_industries(),
+        supply_shares=shares,
+        supply_shares_version=version,
+    )
+    if with_audit:
+        return cmap, uncovered, bridge_audit
+    return cmap, uncovered

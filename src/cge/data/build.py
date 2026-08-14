@@ -87,14 +87,16 @@ def _nature_for_sectors(sector_labels, *, policy: str = "auto"):
     # Data is present. Under 'auto' a load/validation failure now is a genuine defect (corrupt CSV,
     # schema drift) — surface it, don't disguise it as "optional data absent" (review P2 round 6).
     from cge.nature.real import (
-        real_encore_concordance,
+        real_encore_concordance_industries,
         real_encore_concordance_products,
         real_encore_dependencies,
     )
 
     try:
         dep = real_encore_dependencies()
-        industry_cmap, _audit = real_encore_concordance()
+        # Completed 163-industry concordance (crosswalk-missing residual filled via NACE siblings),
+        # so a direct system="ixi" build attaches over the FULL classification (review P2 round 7).
+        industry_cmap, _filled = real_encore_concordance_industries()
     except Exception as exc:  # present-but-broken → always an error (auto and required)
         raise NatureAttachError(f"ENCORE data present but failed to load: {exc}") from exc
 

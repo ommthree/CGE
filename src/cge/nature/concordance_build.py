@@ -64,6 +64,43 @@ class ConcordanceAudit:
         )
 
 
+@dataclass
+class ProductBridgeEntry:
+    """How ONE EXIOBASE product resolved to its producing industry weights, for the audit."""
+
+    product: str
+    method: str  # 'supply-share' (observed MRSUT) | 'code-prefix-fallback'
+    industry_weights: dict[str, float]  # producing industry -> weight (sums to 1)
+    fallback_reason: str = ""  # populated only for code-prefix-fallback
+
+
+@dataclass
+class ProductBridgeAudit:
+    """A reviewable record of the pxp product→industry bridge (review P1-methodology round 7).
+
+    Records, per product, the candidate producing industries, how they were weighted (observed
+    EXIOBASE MRSUT **supply shares** vs the **code-prefix fallback**), and — for fallbacks — why the
+    observed shares were unavailable. This is the load-bearing nature-methodology surface, so it is
+    generated, reviewable data, not opaque."""
+
+    entries: dict[str, ProductBridgeEntry] = field(default_factory=dict)
+    supply_shares_version: str = ""  # provenance of the observed shares, if any
+
+    @property
+    def n_supply_share(self) -> int:
+        return sum(1 for e in self.entries.values() if e.method == "supply-share")
+
+    @property
+    def n_fallback(self) -> int:
+        return sum(1 for e in self.entries.values() if e.method == "code-prefix-fallback")
+
+    def summary(self) -> str:
+        return (
+            f"{len(self.entries)} products bridged: {self.n_supply_share} by observed MRSUT "
+            f"supply share, {self.n_fallback} by code-prefix fallback."
+        )
+
+
 def _build_process_index(encore: EncoreDependencies) -> tuple[dict[str, str], dict[str, str]]:
     """Return two lookups over ENCORE process ids:
     - ``by_code``: bare ISIC code → process id, for codes that are NOT split (unique).
@@ -220,10 +257,15 @@ def pxp_to_ixi_industries(
 
     Passing the pymrio classification frames is optional; they default to the bundled EXIOBASE
     classifications. Returns ``{product_label: [industry_label, …]}`` for all 200 products."""
-    if pxp_sectors is None or ixi_sectors is None:
+    # Default each frame INDEPENDENTLY — passing only one custom frame must not silently revert both
+    # to the bundled defaults (review P3 round 7 2026-08-14).
+    if pxp_sectors is None:
         import pymrio
 
         pxp_sectors = pymrio.get_classification("exio3_pxp").sectors
+    if ixi_sectors is None:
+        import pymrio
+
         ixi_sectors = pymrio.get_classification("exio3_ixi").sectors
 
     def _base(code: str) -> str:
@@ -252,28 +294,25 @@ def pxp_to_ixi_industries(
     return mapping
 
 
-def bridge_to_products(
+def complete_industry_concordance(
     industry_conc: ConcordanceMap,
-    product_to_industries: dict[str, list[str]],
     *,
-    from_classification: str = "EXIOBASE-pxp",
     ixi_sectors: pd.DataFrame | None = None,
-) -> tuple[ConcordanceMap, list[str]]:
-    """Re-key an **industry**-keyed EXIOBASE→ENCORE concordance onto **product** labels.
+) -> tuple[ConcordanceMap, dict[str, list[str]]]:
+    """Fill any ixi **industry** the crosswalk omits, via a **NACE-sibling fallback**, so the result
+    covers the FULL 163-industry EXIOBASE classification (review P2 round 7 2026-08-14).
 
-    Each product's ENCORE-process weight vector is the equal-weighted average of its producing
-    industries' vectors (renormalised to sum to 1) — the same documented equal-weight v1 assumption
-    as the industry concordance. An industry the concordance does not cover contributes nothing; a
-    product whose producing industries are ALL uncovered is omitted and returned in the second
-    element (``uncovered_products``) so the caller can enforce complete coverage rather than
-    silently dropping it (review P1 round 6).
+    The vendored crosswalk omits exactly one ixi industry — ``Production of electricity nec``, a
+    residual generation category sharing NACE 35.11 with the covered generation industries. An
+    uncovered industry inherits the equal-weighted mean of the covered industries sharing its
+    numeric-NACE key. This is the SINGLE place that fallback lives, so **both** a direct ixi build
+    and the product bridge attach nature over the whole classification (previously the fallback
+    lived only inside ``bridge_to_products``, so a direct ``system="ixi"`` build failed on it).
 
-    NACE-sibling fallback: the crosswalk omits exactly one ixi industry, ``Production of electricity
-    nec`` — a residual generation category sharing NACE 35.11 with the covered generation
-    industries. An uncovered industry falls back to the equal-weighted mean of the covered
-    industries sharing its numeric-NACE key (so ``Electricity nec`` inherits the generation
-    processes' dependencies rather than dropping out), keeping coverage complete. Pass
-    ``ixi_sectors`` to override the bundled classification used to compute those keys."""
+    Returns ``(completed_concordance, filled)`` where ``filled`` maps each newly-covered industry to
+    the covered NACE siblings it was averaged from (for the audit). An industry with NO covered
+    sibling is left uncovered (there is nothing to inherit from). Pass ``ixi_sectors`` to override
+    the bundled classification used to compute NACE keys."""
     if ixi_sectors is None:
         import pymrio
 
@@ -281,45 +320,136 @@ def bridge_to_products(
     # numeric-NACE key -> covered industries (those the concordance actually rates), for fallback
     nace_covered: dict[str, list[str]] = {}
     ind_nace: dict[str, str] = {}
+    all_industries: list[str] = []
     for row in ixi_sectors.itertuples():
         name = str(row.ExioName).strip()
         key = _numeric_nace_key(row.ExioCode)
         ind_nace[name] = key
+        all_industries.append(name)
         if industry_conc.weights.get(name):
             nace_covered.setdefault(key, []).append(name)
 
-    def _industry_vector(ind: str) -> dict[str, float] | None:
-        """The industry's own ENCORE weights, or a NACE-sibling fallback if it is uncovered."""
-        wv = industry_conc.weights.get(ind)
-        if wv:
-            return wv
+    weights = dict(industry_conc.weights)  # start from the crosswalk-covered industries
+    filled: dict[str, list[str]] = {}
+    for ind in all_industries:
+        if industry_conc.weights.get(ind):
+            continue  # already covered by the crosswalk
         siblings = nace_covered.get(ind_nace.get(ind, ""), [])
         if not siblings:
-            return None
+            continue  # nothing to inherit from → leave uncovered (caller's coverage gate decides)
         acc: dict[str, float] = {}
         for sib in siblings:  # equal-weighted mean of covered NACE siblings
             for proc, w in industry_conc.weights[sib].items():
                 acc[proc] = acc.get(proc, 0.0) + w
         total = sum(acc.values())
-        return {p: w / total for p, w in acc.items()} if total > 0 else None
+        if total > 0:
+            weights[ind] = {p: w / total for p, w in acc.items()}
+            filled[ind] = list(siblings)
+
+    fill_note = ""
+    if filled:
+        fill_note = (
+            f" NACE-sibling fallback filled {len(filled)} crosswalk-missing industry(ies): "
+            f"{dict(sorted(filled.items()))}."
+        )
+    prov = Provenance(
+        source=industry_conc.provenance.source,
+        source_version=f"{industry_conc.provenance.source_version}; complete-industry",
+        licence=industry_conc.provenance.licence,
+        reference_year=industry_conc.provenance.reference_year,
+        retrieved=industry_conc.provenance.retrieved,
+        notes=(industry_conc.provenance.notes or "") + fill_note,
+    )
+    completed = ConcordanceMap(
+        provenance=prov,
+        from_classification=industry_conc.from_classification,
+        to_classification=industry_conc.to_classification,
+        weights=weights,
+    )
+    return completed, filled
+
+
+def bridge_to_products(
+    industry_conc: ConcordanceMap,
+    product_to_industries: dict[str, list[str]],
+    *,
+    from_classification: str = "EXIOBASE-pxp",
+    ixi_sectors: pd.DataFrame | None = None,
+    supply_shares: dict[str, dict[str, float]] | None = None,
+    supply_shares_version: str = "",
+) -> tuple[ConcordanceMap, list[str], ProductBridgeAudit]:
+    """Re-key an **industry**-keyed EXIOBASE→ENCORE concordance onto **product** labels.
+
+    Each product's ENCORE-process weight vector is a weighted average of its producing industries'
+    vectors (renormalised to sum to 1). The producing-industry weights come from:
+
+    1. **Observed EXIOBASE MRSUT supply shares** (``supply_shares[product]``) when available — the
+       fraction of the product's monetary supply produced by each industry, from the supply-use
+       table (review P1-method round 7 2026-08-14). This replaces the code-prefix guess with the
+       real product→industry relationship, so, e.g., the biofuels no longer receive byte-identical
+       weights. Only industries present in the (completed) concordance contribute; the observed
+       shares over those are renormalised.
+    2. **Code-prefix fallback** — equal weight across the ``product_to_industries`` candidate set
+       (``pxp_to_ixi_industries``) when the product has no observed supply (recycling/treatment
+       residuals) or ``supply_shares`` is absent (no MRSUT download). This is the round-6 behaviour.
+
+    The industry concordance is first completed via ``complete_industry_concordance`` (the shared
+    NACE-sibling fallback), so the residual ``Production of electricity nec`` is covered here as for
+    a direct ixi build. A product whose producing industries are ALL uncovered is omitted and
+    returned in ``uncovered_products`` so the caller's complete-coverage gate can act on it. Also
+    returns a ``ProductBridgeAudit`` recording each product's method, industry weights, and fallback
+    reason. Pass ``ixi_sectors`` to override the bundled classification."""
+    completed, _filled = complete_industry_concordance(industry_conc, ixi_sectors=ixi_sectors)
+    audit = ProductBridgeAudit(supply_shares_version=supply_shares_version)
 
     weights: dict[str, dict[str, float]] = {}
     uncovered: list[str] = []
     for product, industries in product_to_industries.items():
-        acc: dict[str, float] = {}
-        n_covered = 0
-        for ind in industries:
-            wv = _industry_vector(ind)
-            if not wv:
-                continue
-            n_covered += 1
-            for proc, w in wv.items():
-                acc[proc] = acc.get(proc, 0.0) + w
-        if n_covered == 0 or not acc:
+        # Choose the producing-industry weights: observed supply shares (over concordance-covered
+        # industries) if present, else equal weight across the prefix candidate set.
+        obs = (supply_shares or {}).get(product)
+        method = "code-prefix-fallback"
+        reason = ""
+        ind_weights: dict[str, float] = {}
+        if obs:
+            covered_obs = {i: s for i, s in obs.items() if completed.weights.get(i)}
+            if covered_obs:
+                tot = sum(covered_obs.values())
+                ind_weights = {i: s / tot for i, s in covered_obs.items()}
+                method = "supply-share"
+            else:
+                reason = "observed supply industries are all uncovered by the concordance"
+        elif supply_shares is None:
+            reason = "no supply-share artifact loaded (MRSUT not available)"
+        else:
+            reason = "product has no market supply in the MRSUT (recycling/treatment residual)"
+        if not ind_weights:  # fallback: equal weight over the covered prefix candidates
+            covered = [i for i in industries if completed.weights.get(i)]
+            if covered:
+                ind_weights = {i: 1.0 / len(covered) for i in covered}
+
+        if not ind_weights:
             uncovered.append(product)
             continue
+
+        acc: dict[str, float] = {}
+        for ind, iw in ind_weights.items():
+            for proc, w in completed.weights[ind].items():
+                acc[proc] = acc.get(proc, 0.0) + iw * w
         total = sum(acc.values())
         weights[product] = {p: w / total for p, w in acc.items()}
+        audit.entries[product] = ProductBridgeEntry(
+            product=product,
+            method=method,
+            industry_weights=ind_weights,
+            fallback_reason=reason,
+        )
+
+    src_note = (
+        "observed MRSUT supply shares where available, else equal-weighted code-prefix fallback"
+        if supply_shares is not None
+        else "equal-weighted code-prefix fallback (no MRSUT supply shares loaded)"
+    )
     prov = Provenance(
         source=f"{industry_conc.provenance.source} → pxp products",
         source_version=f"{industry_conc.provenance.source_version}; product bridge",
@@ -327,9 +457,9 @@ def bridge_to_products(
         reference_year=industry_conc.provenance.reference_year,
         retrieved=industry_conc.provenance.retrieved,
         notes=(
-            "EXIOBASE product→industry bridge (pymrio exio3_pxp/exio3_ixi classifications): each "
-            "product's ENCORE weights = equal-weighted mean of its producing industries', "
-            "renormalised. Equal-weighted v1, not calibrated."
+            "EXIOBASE product→industry bridge: each product's ENCORE weights = supply-share-"
+            f"weighted mean of its producing industries', renormalised. Weighting: {src_note}. "
+            "ENCORE ratings remain indicators of potential significance, not calibrated."
         ),
     )
     cmap = ConcordanceMap(
@@ -338,7 +468,7 @@ def bridge_to_products(
         to_classification=industry_conc.to_classification,
         weights=weights,
     )
-    return cmap, uncovered
+    return cmap, uncovered, audit
 
 
 def aggregate_concordance(

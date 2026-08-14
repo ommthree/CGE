@@ -475,10 +475,21 @@ golden-file tests.
    output/TFP elasticities; the linear materiality ramp and the noisy-OR + engine-incidence choices
    are transparent *assumptions*, not published methods.
 2. **Concordance weighting** — the EXIOBASE↔ENCORE map is built but **equal-weighted** across
-   multi-process sectors; output-weighting (or expert per-mapping weights) and validation against a
-   real full-EXIOBASE build (the concordance covers the 162 crosswalk sectors, which a live EXIOBASE
-   build's labels must match) are follow-ups.
-3. **Pressure/impact channel** — pressures are ingested and typed, but no engine consumes them yet.
+   multi-process sectors; output-weighting (or expert per-mapping weights) is a follow-up.
+3. **Product bridge — now on OBSERVED supply shares (round-7 P1-methodology, DONE).** The default
+   pxp build re-keys the 162/163-industry crosswalk onto all 200 products via `pxp_to_ixi_industries`
+   / `bridge_to_products`. The producing-industry weights come from the **observed EXIOBASE MRSUT
+   supply matrix** (year-specific product→industry production shares, `data/exiobase/`, derived by
+   `scripts/build_supply_shares.py` from the EXIOBASE 3 MRSUT, CC BY-SA 4.0), not a code-prefix guess
+   — so the refined-petroleum/biofuel products that used to get byte-identical weights now resolve to
+   their real dominant producer and are mutually distinct (184/200 products; the 16 with no market
+   supply, plus any MRSUT-absent checkout, fall back to the prefix method). A `ProductBridgeAudit`
+   (`product_bridge_audit_2019.json`) records each product's method / industry weights / fallback
+   reason / SUT version. Still note: the **classification-level orchestration test** proves membership
+   + executability over pymrio's exact 200/163 classifications, which is NOT the same as an actual
+   multi-GB live-build execution; and monetary supply shares are a producing-mix measure, not
+   calibrated dependency — the severity→productivity mapping remains the uncalibrated assumption (1).
+4. **Pressure/impact channel** — pressures are ingested and typed, but no engine consumes them yet.
 
 **Rounds 3–4 review fixes (2026-08-09 → 08-11):** region-scoped `NatureStress` is now rejected **at
 the runner boundary** for the single-region CGE (round 3 guarded only the engine helper, which the

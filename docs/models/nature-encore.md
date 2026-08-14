@@ -53,11 +53,13 @@ water-dependent agricultural inputs still shows the inherited exposure.
 ENCORE↔economy concordance as reviewable weighted data; and the exposure engine (direct scores +
 two upstream-propagation rules).
 
-**Explicitly not modelled here:** the *economic effect* of a degradation (that is Phase 6.4 —
-translating a `NatureStress` into `ProductivityShock`s scaled by these exposure scores, fed to the
-economic engines); the physical *state* of the services themselves (Phase 6b); and region-specific
-dependency (dependency is treated as a per-unit-of-output intensity, identical across regions, until
-region-specific ENCORE data is available — a documented follow-up).
+**Out of scope for *this* exposure layer (§1–§3):** the *economic effect* of a degradation — that is
+**Phase 6.4, which IS implemented** and documented in §5 below (translating a `NatureStress` into
+`ProductivityShock`s scaled by these exposure scores, fed to the economic engines). This section
+covers only the exposure computation (6.1–6.3); the effect is layered on top of it in 6.4, not
+elsewhere. Still genuinely **not modelled anywhere**: the physical *state* of the services themselves
+(Phase 6b) and region-specific dependency (dependency is treated as a per-unit-of-output intensity,
+identical across regions, until region-specific ENCORE data is available — a documented follow-up).
 
 ## 2. The materiality → numeric scale (the load-bearing choice)
 
@@ -102,6 +104,39 @@ a code constant. Every sector must be covered; an unmapped sector is rejected (i
 silent-zero dependency). `broadcast_to_goods` then gives every region the same per-sector dependency
 intensity (dependency is per unit of output; region-specific dependency needs region-specific ENCORE
 data — a follow-up).
+
+### 4a. The product→industry bridge (default `system="pxp"` builds)
+
+The ENCORE crosswalk is keyed by EXIOBASE **industry** labels (162 of the 163-industry `ixi`
+classification). But the **default live build is `system="pxp"`** — 200 EXIOBASE **product** labels.
+So before a pxp build can carry nature, each product is bridged to its producing industry(ies) and
+the industry concordance is averaged onto the products (`concordance_build.pxp_to_ixi_industries` +
+`bridge_to_products`).
+
+**Which industries produce a product** comes from the pymrio `exio3_pxp`/`exio3_ixi` classifications:
+an exact `ExioCode`-base match where it exists (keeping the fine electricity split 1:1), else the
+longest numeric-NACE-prefix rollback. **How much each contributes** is the key methodological choice:
+
+- **Observed supply shares (default when the artifact is present).** The producing-industry weights
+  are the **observed EXIOBASE MRSUT supply shares** — the fraction of each product's monetary supply
+  produced by each industry, from the year-specific supply-use table (`data/exiobase/`, derived by
+  `scripts/build_supply_shares.py` from the EXIOBASE 3 MRSUT, CC BY-SA 4.0). This is a *measured*
+  product→industry relationship, not a classification guess. It matters: the refined-petroleum and
+  biofuel products (Motor Gasoline, Biodiesels, Biogasoline, Charcoal, Additives, Other Liquid
+  Biofuels, Natural Gas Liquids) previously all received byte-identical prefix-inferred weights;
+  under supply shares each resolves to its real dominant producer (e.g. Motor Gasoline → 94% Petroleum
+  Refinery; NGL → 99.7% natural-gas extraction) and they are mutually distinct.
+- **Code-prefix fallback.** 16 products have **no market supply** in the MRSUT (recycling/treatment
+  residuals, extra-territorial bodies) and any product not in the artifact (or a checkout without the
+  MRSUT) falls back to equal weight across the prefix-candidate industries. The one crosswalk-missing
+  industry `Production of electricity nec` is filled from its covered NACE siblings
+  (`complete_industry_concordance`), used identically by a direct `ixi` build.
+
+Every product's resolution — candidate industries, method (`supply-share` vs `code-prefix-fallback`),
+weights, fallback reason, and SUT version — is recorded in a **`ProductBridgeAudit`**
+(`data/exiobase/product_bridge_audit_2019.json`), so this load-bearing surface is reviewable data,
+not opaque. The supply shares themselves are still monetary supply, not calibrated dependency — the
+severity→productivity mapping (§2) remains the uncalibrated assumption.
 
 ## 5. The exposure engine (6.3)
 
@@ -282,7 +317,9 @@ The page operates on the illustrative ENCORE fixture and labels it as such at th
 - **[ENCORE]** ENCORE Partners (Natural Capital Finance Alliance & UNEP-WCMC). *ENCORE: Exploring
   Natural Capital Opportunities, Risks and Exposure.* — The dependency/impact knowledge base.
 - **[vanToor2020]** van Toor, J. et al. (2020). *Indebted to nature: Exploring biodiversity risks for
-  the Dutch financial sector.* De Nederlandsche Bank / PBL. — Source of the ENCORE↔sector mapping
-  approach and the materiality→numeric scale.
+  the Dutch financial sector.* De Nederlandsche Bank / PBL. — Source of the ENCORE↔sector exposure-
+  **screening approach** (ordinal materiality classes; in practice their H/VH-only focus). It does
+  **NOT** publish our specific 1.0/0.8/0.6/0.4/0.2 numeric ramp — that ramp is our synthetic /
+  expert-designed default to calibrate (see §2), not a DNB value.
 
 See [`docs/references.md`](../references.md) for full citations.

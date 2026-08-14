@@ -99,17 +99,45 @@ def nature_to_productivity(
     author specified."""
     goods = list(exposure.index)
     services = set(exposure.columns)
-    # Valid region/sector vocabulary derived from the exposure INDEX (goods are 'region:sector' or a
-    # bare sector). A typo'd coverage_regions/coverage_sectors matches no good → the stress silently
-    # does nothing and the run looks like a clean baseline (review P2 round 6 2026-08-14). The
-    # standard build_nature_shocks path already validates coverage against the IO; validate here too
-    # so the EXPORTED translator can't silent-baseline on a typo either.
+
+    def _region_sector(good: str) -> tuple[str | None, str]:
+        """Split a good into (region, sector). A 'region:sector' good has both; a BARE-sector good
+        has NO region axis, so its region is ``None`` (review P3 round 7 2026-08-14: a bare-sector
+        matrix must NOT accept a sector name as a region)."""
+        if ":" in good:
+            region, sector = good.split(":", 1)
+            return region, sector
+        return None, good
+
+    # Valid region/sector vocabulary derived from the exposure INDEX. For a bare-sector matrix the
+    # region vocabulary is EMPTY (no region axis), so any coverage_regions is rejected below.
     valid_regions: set[str] = set()
     valid_sectors: set[str] = set()
     for g in goods:
-        region, sector = (g.split(":", 1) + [""])[:2] if ":" in g else (g, g)
-        valid_regions.add(region)
+        region, sector = _region_sector(g)
+        if region is not None:
+            valid_regions.add(region)
         valid_sectors.add(sector)
+
+    # The overlap guards below test conflicts at the level of the actual TARGET GOODS, not just the
+    # service names (review P2 round 5 2026-08-13): DISJOINT regional stresses (surface_water 20% in
+    # A, 60% in B) are the natural way to express heterogeneous regional degradation and must be
+    # ALLOWED; only two stresses that can hit the SAME good conflict.
+    def _goods_of(st: NatureStress) -> set[str]:
+        out = set()
+        for g in goods:
+            region, sector = _region_sector(g)
+            # A bare-sector good has no region; treat its region as the sector so a sector-only
+            # coverage still applies, but region coverage on such a matrix matches nothing.
+            if st.applies_to(sector, region if region is not None else sector):
+                out.add(g)
+        return out
+
+    # A typo'd / off-axis coverage matches no good → the stress silently does nothing and the run
+    # looks like a clean baseline (review P2 round 6, P3 round 7). The standard build_nature_shocks
+    # path validates coverage against the IO; validate here too so the EXPORTED translator can't
+    # silent-baseline either. Reject (1) unknown region/sector LABELS and (2) any stress whose FINAL
+    # target set — after applying region AND sector constraints together — is empty.
     for st in stresses:
         if st.service not in services:
             raise ValueError(
@@ -119,10 +147,11 @@ def nature_to_productivity(
             )
         bad_r = [r for r in (st.coverage_regions or []) if r not in valid_regions]
         if bad_r:
+            axis = "the matrix has no region axis" if not valid_regions else sorted(valid_regions)
             raise ValueError(
                 f"NatureStress coverage_regions {bad_r} are not in the exposure matrix "
-                f"(regions: {sorted(valid_regions)}); the stress would match no good and silently "
-                "do nothing. Check the region label(s)."
+                f"(regions: {axis}); the stress would match no good and silently do nothing. "
+                "Check the region label(s)."
             )
         bad_s = [s for s in (st.coverage_sectors or []) if s not in valid_sectors]
         if bad_s:
@@ -131,18 +160,16 @@ def nature_to_productivity(
                 f"(sectors: {sorted(valid_sectors)}); the stress would match no good and silently "
                 "do nothing. Check the sector label(s)."
             )
-
-    # The overlap guards below test conflicts at the level of the actual TARGET GOODS, not just the
-    # service names (review P2 round 5 2026-08-13): DISJOINT regional stresses (surface_water 20% in
-    # A, 60% in B) are the natural way to express heterogeneous regional degradation and must be
-    # ALLOWED; only two stresses that can hit the SAME good conflict.
-    def _goods_of(st: NatureStress) -> set[str]:
-        out = set()
-        for g in goods:
-            region, sector = (g.split(":", 1) + [""])[:2] if ":" in g else (g, g)
-            if st.applies_to(sector, region):
-                out.add(g)
-        return out
+        # Both labels can be individually valid yet select disjoint goods (region A only has sector
+        # x, the covered sector y lives only in region B) → the intersection is empty. Reject that
+        # too, so no stress ever silently resolves to nothing.
+        if (st.coverage_regions or st.coverage_sectors) and not _goods_of(st):
+            raise ValueError(
+                f"NatureStress coverage_regions={st.coverage_regions} / "
+                f"coverage_sectors={st.coverage_sectors} together match no good in the exposure "
+                "matrix (their region and sector constraints select disjoint goods); it would "
+                "silently do nothing. Check the coverage."
+            )
 
     # Composition is across DISTINCT services (multiplicative). Two stresses on the SAME
     # service that both reach the SAME good would compound as if independent — reject that; disjoint
