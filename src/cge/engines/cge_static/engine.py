@@ -112,7 +112,14 @@ _SAVINV_ACCOUNT = "SAVINV"
 #   multi_region           — multi IO build dispatch flag — multi IO only.
 #   closure controls       — per variant (gov/inv/labour/adaptation/trade/elasticities), both
 #                            entries of that variant.
-_MODEL_CONTROLS = frozenset({"va_elast", "energy_sectors", "energy_elasticities"})
+# ``factor_endowment_scale`` is the Phase-7.1 recursive-dynamic hook: the wrapper re-solves each
+# year
+# with the CAP/LAB endowments scaled to carry capital (and exogenous labour) forward. Allowed on
+# every
+# variant; a single static run never sets it.
+_MODEL_CONTROLS = frozenset(
+    {"va_elast", "energy_sectors", "energy_elasticities", "factor_endowment_scale"}
+)
 _CLOSURE_KEYS = {
     "closed": frozenset(
         {
@@ -404,6 +411,93 @@ ASSUMPTIONS = {
     ),
     "reference": "Hosoe, Gasawa & Hashimoto (2010), Textbook of CGE Modeling [Hosoe2010]",
 }
+
+
+def _apply_factor_scale(cal, scale):
+    """Scale named factor endowments on a calibrated model (Phase 7.1 recursive-dynamic hook).
+
+    ``scale`` is ``None`` (no change) or ``{factor: s}`` where ``s`` is a scalar (uniform) or, for
+    multi-region model, ``{region: s}`` per region. Only the CAP/LAB endowments are meant to move
+    (capital carried forward, labour demographics); an unknown factor raises. Returns a new
+    ``CalibratedModel`` (frozen) with the scaled ``endowment``; the benchmark identities stay intact
+    because scaling happens AFTER calibration — the result is a different YEAR's economy, not a
+    re-benchmark."""
+    if not scale:
+        return cal
+    import dataclasses
+
+    factors = list(cal.factors)
+    endowment = np.array(cal.endowment, dtype=float)  # [f] (closed/open) or [f, r] (multi)
+    regions = list(getattr(cal, "regions", []) or [])
+    for factor, spec in scale.items():
+        if factor not in factors:
+            raise ValueError(
+                f"factor_endowment_scale names factor {factor!r} not in the model factors {factors}"
+            )
+        fi = factors.index(factor)
+        if isinstance(spec, dict):
+            if endowment.ndim != 2:
+                raise ValueError(
+                    f"per-region factor_endowment_scale for {factor!r} needs the multi-region "
+                    "model; this variant has a single aggregate endowment."
+                )
+            for region, s in spec.items():
+                if region not in regions:
+                    raise ValueError(
+                        f"factor_endowment_scale[{factor!r}] names region {region!r} not in "
+                        f"{regions}"
+                    )
+                _check_scale(s, factor, region)
+                endowment[fi, regions.index(region)] *= float(s)
+        else:
+            _check_scale(spec, factor, None)
+            if endowment.ndim == 2:
+                endowment[fi, :] *= float(spec)
+            else:
+                endowment[fi] *= float(spec)
+    return dataclasses.replace(cal, endowment=endowment)
+
+
+def _check_scale(s, factor: str, region: str | None) -> None:
+    where = f"{factor!r}" + (f" region {region!r}" if region else "")
+    if not np.isfinite(s) or float(s) <= 0:
+        raise ValueError(
+            f"factor_endowment_scale for {where} must be a finite positive factor; got {s!r}"
+        )
+
+
+def _capital_dynamics_manifest(cal) -> dict:
+    """Benchmark capital stock K0 + implied growth for the manifest (Phase 5d.3/7.1).
+
+    The recursive-dynamic wrapper reads K0 (the stock the accumulation identity steps from) and the
+    implied benchmark growth g = INV0/K0 − δ from here, so the stock–flow bridge is transparent and
+    the wrapper needn't re-derive it. Returns ``{"available": False, ...}`` when the model has no
+    capital factor or no investment account (nothing to accumulate)."""
+    from cge.engines.cge_static.capital import (
+        _CAPITAL_FACTOR,
+        DEFAULT_DEPRECIATION_RATE,
+        DEFAULT_NET_RETURN,
+        benchmark_capital,
+        implied_growth_rate,
+    )
+
+    if _CAPITAL_FACTOR not in list(cal.factors):
+        return {"available": False, "reason": "no capital factor"}
+    if not getattr(cal, "has_investment", False):
+        return {"available": False, "reason": "no savings-investment account"}
+    k0 = benchmark_capital(cal)
+    g = implied_growth_rate(cal)
+    return {
+        "available": True,
+        "benchmark_capital_stock": [round(float(x), 12) for x in np.atleast_1d(k0)],
+        "implied_benchmark_growth": [round(float(x), 12) for x in np.atleast_1d(g)],
+        "depreciation_rate": DEFAULT_DEPRECIATION_RATE,
+        "net_return": DEFAULT_NET_RETURN,
+        "note": (
+            "K0 from capital income via the Jorgensonian user cost u = net_return + δ; implied "
+            "growth g = INV0/K0 − δ (negative ⇒ benchmark investment below replacement)."
+        ),
+    }
 
 
 def _va_nest_description(va_elast: np.ndarray) -> str:
@@ -738,6 +832,16 @@ class CGEStaticEngine:
             energy_sectors=data.get("energy_sectors"),
             energy_elasticities=data.get("energy_elasticities"),
         )
+        # Factor-endowment scaling hook (Phase 7.1): the recursive-dynamic wrapper carries the
+        # capital
+        # stock (and exogenous labour) forward by re-solving with a scaled CAP/LAB endowment. The
+        # PRISTINE ``cal_benchmark`` is kept for the replication gate (which must verify the true
+        # SAM,
+        # not the scaled year); the scaled ``cal`` is the year's economy the base + shock solve
+        # against.
+        # A single static run leaves the scale None → cal is cal_benchmark, unchanged.
+        cal_benchmark = cal
+        cal = _apply_factor_scale(cal, data.get("factor_endowment_scale"))
         if inv_closure != "savings_driven" and not cal.has_investment:
             raise ValueError(
                 f"inv_closure={inv_closure!r} needs a {_SAVINV_ACCOUNT!r} account in the SAM; "
@@ -846,8 +950,14 @@ class CGEStaticEngine:
                 "floor on the POST-SHOCK wage and must be below the benchmark wage to be "
                 "meaningful (the benchmark is full employment at wage 1 by construction)."
             )
+        # The base ("vs" denominator) and the replication gate use the PRISTINE benchmark (Phase
+        # 7.1):
+        # a scaled year's economy is a counterfactual, not the SAM to replicate — and reporting each
+        # year's change against the ORIGINAL benchmark is what makes capital accumulation VISIBLE in
+        # the GDP path (a growing capital stock raises output relative to the benchmark). Without a
+        # scale, cal is cal_benchmark and this is byte-identical to the pre-7.1 behaviour.
         base_sol, _ = _solve(
-            cal,
+            cal_benchmark,
             carbon_cost=np.zeros(ns),
             recycling="none",
             inv_closure=inv_closure,
@@ -855,7 +965,7 @@ class CGEStaticEngine:
             carbon_revenue_recipient=carbon_revenue_recipient,
         )
         base = M.derive_state(
-            cal,
+            cal_benchmark,
             base_sol.x[:ns],
             base_sol.x[ns:],
             inv_closure=inv_closure,
@@ -867,7 +977,7 @@ class CGEStaticEngine:
         # household↔commodity loop), in which case the benchmark does not reproduce the SAM and
         # every % change is silently measured against a wrong base. Assert the benchmark state
         # reproduces the calibrated quantities, or refuse the run.
-        _assert_closed_replicates(cal, base, base_sol.x)
+        _assert_closed_replicates(cal_benchmark, base, base_sol.x)
 
         records: list[dict] = []
         backends: set[str] = {base_sol.backend}
@@ -962,6 +1072,14 @@ class CGEStaticEngine:
                 "benchmark_savings_rate_of_disposable_income": (
                     round(float(cal.sav_rate0), 12) if cal.has_investment else 0.0
                 ),
+                # Capital stock–flow bridge (Phase 5d.3/7.1): the benchmark capital STOCK K0 (from
+                # the
+                # capital-income flow via the Jorgensonian user cost) and the benchmark's IMPLIED
+                # capital growth g = INV0/K0 − δ, so the recursive-dynamic wrapper — and a reader —
+                # can
+                # SEE the stock the accumulation identity steps from and whether the benchmark
+                # investment is above/below replacement. Reported on the PRISTINE benchmark.
+                "capital_dynamics": _capital_dynamics_manifest(cal_benchmark),
                 # Labour-market closure (Phase 5d.4): the default flexible-wage/full-employment, or
                 # a wage floor. ``labour_floor_bound`` records whether the floor actually bound in
                 # any year (a configured-but-slack floor leaves the full-employment result and is
@@ -1979,6 +2097,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         energy_sectors=data.get("energy_sectors"),  # Phase 5d.5 (opt-in KL-E-M nest)
         energy_elasticities=data.get("energy_elasticities"),
     )
+    cal = _apply_factor_scale(cal, data.get("factor_endowment_scale"))  # Phase 7.1 recursive hook
     if inv_closure != "savings_driven" and not cal.has_investment:
         raise ValueError(
             f"inv_closure={inv_closure!r} needs a {_SAVINV_ACCOUNT!r} account in the SAM; "
@@ -2577,6 +2696,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         energy_sectors=data.get("energy_sectors"),  # Phase 5d.5 (opt-in KL-E-M nest per region)
         energy_elasticities=data.get("energy_elasticities"),
     )
+    cal = _apply_factor_scale(cal, data.get("factor_endowment_scale"))  # Phase 7.1 recursive hook
 
     def _solve_year(cc, theta=None):
         sol = solve(

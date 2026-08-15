@@ -3,9 +3,9 @@
 A **standalone, stateless** perpetual-inventory update: given a capital stock, this period's
 investment, a depreciation rate, and an optional premature-retirement fraction, return next
 period's stock. Deliberately **not** wired into the equilibrium solve — 5d.3's scope is the
-*identity*, unit-tested in isolation, ready for the recursive-dynamic wrapper (roadmap Phase 7.1)
-to call between static solves. The wrapper (a multi-year loop that re-solves the CGE each year
-with the updated stock) is Phase 7.1's job, not this module's.
+*identity*, unit-tested in isolation. The recursive-dynamic wrapper that calls it between static
+solves (a multi-year loop re-solving the CGE each year with the updated stock) is now **built** in
+``cge.dynamics`` (Phase 7.1); see ``docs/models/recursive-dynamics.md``.
 
 **The identity** [perpetual-inventory method, OECD2009 ch. 5]:
 

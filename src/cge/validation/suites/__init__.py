@@ -5,6 +5,7 @@ runner can discover them. Add a module here per engine/model and import it below
 from cge.validation.suites import (  # noqa: F401
     cge_static,
     data_layer,
+    dynamics,
     exiobase_live,
     io_price,
     macro,
@@ -22,4 +23,5 @@ __all__ = [
     "cge_static",
     "nature",
     "nature_state",
+    "dynamics",
 ]
