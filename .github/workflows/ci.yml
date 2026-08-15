@@ -40,10 +40,10 @@ jobs:
           pip install -e ".[cge,dev,data]" "streamlit>=1.33"
 
       - name: Ruff lint
-        run: ruff check src tests
+        run: ruff check src tests scripts
 
       - name: Ruff format check
-        run: ruff format --check src tests
+        run: ruff format --check src tests scripts
 
       - name: Pytest
         run: pytest -q

@@ -5,8 +5,8 @@ product→industry production shares the nature product-bridge uses instead of a
 (review P1-methodology round 7 2026-08-14). It is run once, offline, against the multi-GB EXIOBASE
 MRSUT download; the small derived artifact is what the code and tests consume.
 
-Input: the EXIOBASE 3 MRSUT ``supply.csv`` (industries × products, region-qualified on both axes;
-cell V[product, industry] = monetary supply of the product by the industry).
+Input: the EXIOBASE 3 MRSUT ``supply.csv`` — **product rows × industry columns**, region-qualified
+on both axes; cell V[product, industry] = monetary supply of the product by the industry.
 Method: sum V over ALL regions → a global product × industry supply table; normalise each row
 to shares summing to 1; drop shares < ``THRESHOLD`` and renormalise the kept subset (compact,
 review-friendly, and immaterial to the averaged ENCORE weights). Products with no market supply

@@ -287,6 +287,10 @@ def _preprocess_nature(
         "encore_version": encore.provenance.source_version,
         "encore_content_hash": content_hash(encore.ratings.to_dict(orient="records")),
         "concordance_source": concordance.provenance.source,
+        # The concordance's source_version carries the MRSUT supply-share version AND any
+        # year-fallback disclosure (e.g. "2019 fallback for 2020"); record it so the run manifest is
+        # full nature provenance, not just a source label + hash (review P2 round 9 2026-08-15).
+        "concordance_version": concordance.provenance.source_version,
         "concordance_content_hash": content_hash(concordance.weights),
         "materiality_scale": dict(MATERIALITY_SCALE),
         "exposure_rule": rule,

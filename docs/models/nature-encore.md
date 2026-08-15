@@ -126,11 +126,15 @@ longest numeric-NACE-prefix rollback. **How much each contributes** is the key m
   Biofuels, Natural Gas Liquids) previously all received byte-identical prefix-inferred weights;
   under supply shares each resolves to its real dominant producer (e.g. Motor Gasoline → 94% Petroleum
   Refinery; NGL → 99.7% natural-gas extraction) and they are mutually distinct.
-- **Code-prefix fallback.** 16 products have **no market supply** in the MRSUT (recycling/treatment
-  residuals, extra-territorial bodies) and any product not in the artifact (or a checkout without the
-  MRSUT) falls back to equal weight across the prefix-candidate industries. The one crosswalk-missing
-  industry `Production of electricity nec` is filled from its covered NACE siblings
-  (`complete_industry_concordance`), used identically by a direct `ixi` build.
+- **Code-prefix fallback.** Exactly the 16 products with **no market supply** in the MRSUT
+  (recycling/treatment residuals, extra-territorial bodies — listed in the artifact's
+  `zero_supply_products`) fall back to equal weight across the prefix-candidate industries; so does
+  every product when the artifact is **wholly absent** (a checkout without the MRSUT). A product that
+  is silently *missing* from an otherwise-present artifact is NOT treated as a fallback — the load
+  validator rejects such a file (its products must equal pymrio's 200 pxp names exactly), so a
+  dropped product fails loudly rather than masquerading as "no market supply" (review P2 round 9).
+  The one crosswalk-missing industry `Production of electricity nec` is filled from its covered NACE
+  siblings (`complete_industry_concordance`), used identically by a direct `ixi` build.
 
 Every product's resolution — candidate industries, method (`supply-share` vs `code-prefix-fallback`),
 weights, fallback reason, and SUT version — is recorded in a **`ProductBridgeAudit`**

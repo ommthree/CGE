@@ -837,17 +837,34 @@ def test_supply_share_artifact_validation_rejects_incomplete():
     from cge.nature.real import SupplyShareValidationError, load_supply_shares
 
     art = _read_json("data/exiobase/supply_shares_2019.json")
-    # (1) product missing from BOTH shares and zero_supply_products → 199 total → rejected.
+    # (1) product missing from BOTH shares and zero_supply → not the 200 pxp set → rejected.
     del art["shares"]["Motor Gasoline"]
-    p = tmp_json(art)
-    with pytest.raises(SupplyShareValidationError, match="199 products|exactly 200"):
-        load_supply_shares(path=p)
-    # (2) weights that don't sum to 1 → rejected.
+    with pytest.raises(SupplyShareValidationError, match="do not match pymrio|missing"):
+        load_supply_shares(path=tmp_json(art))
+    # (2) a FAKE product name preserving the COUNT is still rejected — identity, not count (P2
+    # round 9): the reviewer swapped Motor Gasoline for a fake name and it slipped through before.
+    art_fake = _read_json("data/exiobase/supply_shares_2019.json")
+    art_fake["shares"]["FAKE PRODUCT XYZ"] = art_fake["shares"].pop("Motor Gasoline")
+    with pytest.raises(SupplyShareValidationError, match="unknown name|do not match pymrio"):
+        load_supply_shares(path=tmp_json(art_fake))
+    # (3) weights that don't sum to 1 → rejected.
     art2 = _read_json("data/exiobase/supply_shares_2019.json")
     k = next(iter(art2["shares"]))
     art2["shares"][k] = {next(iter(art2["shares"][k])): 0.5}
     with pytest.raises(SupplyShareValidationError, match="sum to"):
         load_supply_shares(path=tmp_json(art2))
+
+
+@_needs_supply_shares
+def test_supply_shares_sut_year_identity_is_enforced():
+    """A file whose declared sut_year disagrees with the requested year is rejected — the file's
+    content and its year binding must agree (review P2 round 9 2026-08-15)."""
+    from cge.nature.real import SupplyShareValidationError, load_supply_shares
+
+    art = _read_json("data/exiobase/supply_shares_2019.json")
+    art["provenance"]["sut_year"] = 1995  # content says 1995…
+    with pytest.raises(SupplyShareValidationError, match="sut_year"):
+        load_supply_shares(2019, path=tmp_json(art))  # …but we asked for 2019
 
 
 @_needs_supply_shares
@@ -861,6 +878,91 @@ def test_supply_shares_year_binding_falls_back_visibly():
     # The default year loads with NO fallback note.
     _s19, prov19 = load_supply_shares(2019)
     assert "year_fallback" not in prov19
+
+
+@_needs_encore
+@_needs_supply_shares
+def test_nature_manifest_carries_concordance_version_and_year_fallback(tmp_path):
+    """The run manifest's nature stamp must record the concordance version — which carries the MRSUT
+    supply-share version AND any year-fallback disclosure — not just a source label + hash (review
+    P2 round 9 2026-08-15: 'full nature provenance')."""
+    import numpy as np
+
+    from cge.contracts.data_objects import Classification, IOSystem, SatelliteAccount
+    from cge.contracts.shocks import NatureStress
+    from cge.data.metadata import BuildMeta
+    from cge.data.store import DataStore
+    from cge.nature.real import real_encore_concordance_products, real_encore_dependencies
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    dep = real_encore_dependencies()
+    cmap, _unc = real_encore_concordance_products(year=2020)  # 2020 → year fallback to 2019
+    secs = list(cmap.weights)[:2]
+    labels = [f"R:{s}" for s in secs]
+    io = IOSystem(
+        provenance=_prov(),
+        sectors=Classification(name="e", kind="sector", labels=secs),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=pd.DataFrame(np.full((2, 2), 0.05), index=labels, columns=labels),
+        final_demand=pd.DataFrame({"final_demand": [100.0, 100.0]}, index=labels),
+        unit="MEUR",
+        currency="EUR",
+    )
+    sat = SatelliteAccount(
+        provenance=_prov(),
+        name="GHG",
+        units={"CO2": "t/MEUR", "CO2e": "tCO2e/MEUR"},
+        data=pd.DataFrame(
+            {labels[0]: [1000.0, 1000.0], labels[1]: [1000.0, 1000.0]}, index=["CO2", "CO2e"]
+        ),
+    )
+    store = DataStore(tmp_path)
+    store.save(
+        meta=BuildMeta(
+            build_id="b",
+            source="s",
+            source_version="v",
+            reference_year=2020,
+            licence="x",
+            currency="EUR",
+            monetary_unit="MEUR",
+            retrieved="2026-08-15",
+        ),
+        io=io,
+        satellites=[sat],
+        encore=dep,
+        concordance=cmap,
+    )
+    sc = Scenario(
+        name="r",
+        engine="partial_eq",
+        years=[2020],
+        shocks=[NatureStress(service="Water purification", severity=0.4)],
+    )
+    res = run_scenario(sc, data_source="b", store=store)
+    nat = res.manifest.assumptions["nature"]
+    assert "concordance_version" in nat
+    assert "MRSUT" in nat["concordance_version"]  # supply-share version survived
+    assert "2020" in nat["concordance_version"] and "FALLBACK" in nat["concordance_version"]
+
+
+@_needs_encore
+def test_ixi_build_unaffected_by_damaged_product_artifact(monkeypatch):
+    """An ixi build whose labels all match the industry concordance must NOT construct the product
+    bridge, so a damaged pxp supply-share artifact can't block it (review P3 round 9 2026-08-15)."""
+    import cge.nature.real as R
+    from cge.data.build import _nature_for_sectors
+
+    ind, _ = R.real_encore_concordance_industries()
+    labels = list(ind.weights)  # all 163 industry labels
+
+    def _boom(*a, **k):
+        raise AssertionError("product bridge should not be built for a fully-covered ixi build")
+
+    monkeypatch.setattr(R, "real_encore_concordance_products", _boom)
+    enc, conc = _nature_for_sectors(labels, policy="required", reference_year=2019)
+    assert enc is not None and set(conc.weights) == set(labels)
 
 
 @_needs_encore

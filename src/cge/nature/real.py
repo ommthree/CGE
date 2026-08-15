@@ -34,9 +34,6 @@ _DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "data" / "encore"
 # provenance rather than silently using the wrong year (review P2 round 8 2026-08-14).
 _EXIOBASE_DATA_DIR = Path(__file__).resolve().parents[3] / "data" / "exiobase"
 _DEFAULT_SUPPLY_SHARE_YEAR = 2019
-# The 200-product count the artifact must match (industry membership is checked against the live ixi
-# vocabulary, not a hard-coded count).
-_N_EXIOBASE_PRODUCTS = 200
 
 
 def _supply_shares_path(year: int | None = None) -> Path:
@@ -162,14 +159,20 @@ def _valid_industry_vocab() -> set[str]:
     return {str(x).strip() for x in pymrio.get_classification("exio3_ixi").sectors["ExioName"]}
 
 
+def _valid_product_vocab() -> set[str]:
+    import pymrio
+
+    return {str(x).strip() for x in pymrio.get_classification("exio3_pxp").sectors["ExioName"]}
+
+
 def _validate_supply_share_artifact(art: dict, source: str) -> None:
     """Reject a malformed artifact instead of letting it silently degrade the bridge (P2 round 8).
 
-    Checks: (1) shares and zero_supply_products partition EXACTLY the 200 EXIOBASE products,
-    disjointly; (2) every producing industry is in the 163-industry vocabulary; (3) each product's
-    weights are finite, non-negative, and sum to 1. A product merely MISSING from both sets is the
-    dangerous case (it would be treated as zero-supply and reported as 'no market supply' though it
-    was really dropped), so a wrong product count fails here."""
+    Checks: (1) shares and zero_supply_products partition the EXIOBASE products DISJOINTLY and
+    EXACTLY equal pymrio's 200 pxp product names — an identity check, not merely a count (review P2
+    round 9 2026-08-15: a fake product name preserving the count would otherwise slip through and
+    silently become a prefix fallback); (2) every producing industry is in the 163-industry
+    vocabulary; (3) each product's weights are finite, non-negative, and sum to 1."""
     prov = art.get("provenance", {})
     shares = art.get("shares")
     if not isinstance(shares, dict):
@@ -184,12 +187,16 @@ def _validate_supply_share_artifact(art: dict, source: str) -> None:
             f"{source}: {len(overlap)} product(s) are in BOTH shares and zero_supply_products "
             f"(e.g. {sorted(overlap)[:3]}); the two sets must be disjoint."
         )
-    total = len(share_keys) + len(zero_keys)
-    if total != _N_EXIOBASE_PRODUCTS:
+    covered = share_keys | zero_keys
+    product_vocab = _valid_product_vocab()
+    unknown = covered - product_vocab  # names not in the real pxp classification
+    missing = product_vocab - covered  # real products absent from the artifact
+    if unknown or missing:
         raise SupplyShareValidationError(
-            f"{source}: shares ∪ zero_supply_products cover {total} products, expected exactly "
-            f"{_N_EXIOBASE_PRODUCTS}. A product missing from both would be silently mistaken for "
-            "'no market supply'. Regenerate the artifact from the MRSUT."
+            f"{source}: the artifact's products do not match pymrio's {len(product_vocab)} pxp "
+            f"classification exactly — {len(unknown)} unknown (e.g. {sorted(unknown)[:3]}), "
+            f"{len(missing)} real product(s) missing (e.g. {sorted(missing)[:3]}). A miscounted or "
+            "renamed product would silently become a prefix fallback. Regenerate from the MRSUT."
         )
     vocab = _valid_industry_vocab()
     for product, wmap in shares.items():
@@ -246,6 +253,18 @@ def load_supply_shares(
         art = json.load(fh)
     _validate_supply_share_artifact(art, source=str(p))
     prov = dict(art.get("provenance", {}))
+    # Year IDENTITY check (review P2 round 9 2026-08-15): the artifact's own sut_year must equal the
+    # year we resolved to — the requested year, or the fallback default year when a fallback fired.
+    # This catches a file whose NAME/requested year disagrees with its CONTENT (e.g. a 2020-named
+    # file carrying sut_year 2019 with no fallback recorded), which the name check alone misses.
+    sut_year = prov.get("sut_year")
+    expected_year = _DEFAULT_SUPPLY_SHARE_YEAR if fell_back_year is not None else year
+    if expected_year is not None and sut_year is not None and int(sut_year) != int(expected_year):
+        raise SupplyShareValidationError(
+            f"{p}: artifact sut_year {sut_year} does not match the resolved year {expected_year} "
+            f"(requested {year}, fallback {fell_back_year}). The file's content and its "
+            "year binding disagree; regenerate it or load the correct year."
+        )
     if fell_back_year is not None:
         prov["year_fallback"] = (
             f"build year {fell_back_year} has no supply-share artifact; used the "
@@ -283,7 +302,7 @@ def real_encore_concordance_products(
         shares, prov = load_supply_shares(year)
         version = prov.get("source_version", "")
         if prov.get("year_fallback"):  # make the year mismatch visible on the bridge provenance too
-            version = f"{version} [{prov['year_fallback']}]"
+            version = f"{version}; YEAR FALLBACK: {prov['year_fallback']}"
     cmap, uncovered, bridge_audit = bridge_to_products(
         industry_conc,
         pxp_to_ixi_industries(),

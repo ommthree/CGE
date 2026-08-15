@@ -104,22 +104,30 @@ def _nature_for_sectors(sector_labels, *, policy: str = "auto", reference_year: 
     # (pxp) bridge. A few names appear in both spaces, so choose by coverage count, not "any hit" —
     # a pxp build has ~13 incidental industry-name collisions but is fully covered by the product
     # bridge (review P1 round 6).
+    #
+    # SHORT-CIRCUIT (review P3 round 9 2026-08-15): only construct the product bridge when it is
+    # actually needed. An ixi build whose labels ALL match the industry concordance never touches
+    # the product/supply-share artifact, so a damaged pxp artifact cannot block an otherwise
+    # independent ixi build; and a non-EXIOBASE build (offline test MRIO) skips the bridge entirely.
     industry_hits = sum(1 for s in labels if s in industry_cmap.weights)
-    # Year-bind the product bridge's supply shares to the build's reference year: a 2020 build must
-    # not silently use 2019 shares. load_supply_shares records a year_fallback in provenance if the
-    # year has no artifact (review P2 round 8 2026-08-14).
-    product_cmap, _uncovered = real_encore_concordance_products(year=reference_year)
-    product_hits = sum(1 for s in labels if s in product_cmap.weights)
-    if industry_hits == 0 and product_hits == 0:
-        # No EXIOBASE labels at all (e.g. the offline test MRIO's 'sector1'…) — nature simply
-        # doesn't apply. That is legitimate absence, not a defect.
-        if policy == "required":
-            raise NatureAttachError(
-                "build sectors are not EXIOBASE labels (industry or product); cannot attach "
-                "nature under policy 'required'"
-            )
-        return None, None
-    full_cmap = product_cmap if product_hits >= industry_hits else industry_cmap
+    if industry_hits == len(labels):
+        full_cmap = industry_cmap
+    else:
+        # Year-bind the product bridge's supply shares to the build's reference year: a 2020 build
+        # must not silently use 2019 shares. load_supply_shares records a year_fallback in the
+        # provenance if the year has no artifact (review P2 round 8 2026-08-14).
+        product_cmap, _uncovered = real_encore_concordance_products(year=reference_year)
+        product_hits = sum(1 for s in labels if s in product_cmap.weights)
+        if industry_hits == 0 and product_hits == 0:
+            # No EXIOBASE labels at all (e.g. the offline test MRIO's 'sector1'…) — nature simply
+            # doesn't apply. That is legitimate absence, not a defect.
+            if policy == "required":
+                raise NatureAttachError(
+                    "build sectors are not EXIOBASE labels (industry or product); cannot attach "
+                    "nature under policy 'required'"
+                )
+            return None, None
+        full_cmap = product_cmap if product_hits >= industry_hits else industry_cmap
 
     missing = [s for s in labels if s not in full_cmap.weights]
     if missing:  # PARTIAL EXIOBASE coverage — the P1 defect. Fail loud, never persist a subset.
