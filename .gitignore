@@ -20,3 +20,6 @@ runs/
 .DS_Store
 .idea/
 .vscode/
+
+# Raw ENCORE download (the used subset is vendored under data/encore/ with attribution)
+ENCORE_data.zip

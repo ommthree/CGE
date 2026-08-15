@@ -132,8 +132,8 @@ its imports rise and its exports fall — with a **CES value-added nest** and **
 sweeps**. It also runs as a **true multi-region economy** with bilateral trade between build
 regions — each trade route has its own destination-specific price, every bilateral market clears
 explicitly, and a carbon price in one region relocates production and raises imports from partners
-(cross-region leakage). Still to come: an IOSystem-driven multi-region SAM build (today it requires
-a supplied SAM).
+(cross-region leakage). The IOSystem-driven multi-region SAM build is **implemented** (Phase 5.1b,
+`build_multi_sam`); only the *live* EXIOBASE download vs. the offline test MRIO remains.
 → [`docs/models/cge-static.md`](models/cge-static.md) (equation-level) · **plan:**
 [`docs/phase-5-plan.md`](phase-5-plan.md).
 
@@ -142,11 +142,15 @@ Maps sectors to their **dependencies on ecosystem services** (pollination, water
 ENCORE knowledge base, propagates those through the supply chain (reusing Engine 1's Leontief
 machinery), and translates degradation scenarios into `NatureStress` shocks that become per-good
 `ProductivityShock`s consumed by Engine 2 and the CGE. This is the nature-risk extension the
-platform was specifically designed to reach. It is **built and demonstrable on an illustrative
-synthetic ENCORE fixture, but explicitly experimental** — the ratings are synthetic, and a
-methodological/provenance follow-up (direct-vs-total shock incidence; `NatureStress` in the standard
-manifest pipeline; a real-ENCORE-export adapter) is outstanding, so nature results are illustrative
-of the method, not calibrated risk.
+platform was specifically designed to reach. The **real May-2026 ENCORE knowledge base** is ingested
+and the **real EXIOBASE↔ENCORE concordance** is built, so a real nature scenario runs end-to-end; the
+default `system="pxp"` build re-keys the industry-based crosswalk onto all 200 product labels via a
+**product→industry→ENCORE bridge** and attaches a complete concordance to the build (a partially
+covered build fails rather than silently persisting a subset). The GUI page still uses the toy fixture
+for an offline demo. It is **explicitly experimental** — the concordance is equal-weighted (a
+documented v1 assumption) and ENCORE ratings indicate *potential* significance, not calibrated
+elasticities, so results are illustrative of the method, not calibrated risk. The remaining sign-off
+blockers are methodological (calibration), not data.
 → [`docs/models/nature-encore.md`](models/nature-encore.md) · Roadmap [Phase 6](../roadmap.md).
 
 ### Pathway stack — *"a CGE that speaks IAM" (planned, Phase 7)*
@@ -244,7 +248,7 @@ resolving its methodological/provenance follow-ups and the live-EXIOBASE build a
 | 4b — Macro aggregates | GVA/GDP/deflators, real vs nominal (PE tier) | ✅ [model doc](models/macro-aggregates.md) |
 | 5 — Engine 3 (CGE) | GE price+volume, **revenue recycling**, **open economy** (Armington/CET, carbon leakage), **CES value added**, elasticity sweeps, **true multi-region** (bilateral trade, destination-specific prices) — pilot core complete; government/investment/energy nest reopened as 5d | ✅ [model doc](models/cge-static.md) |
 | 5d — Macro closure | government/fiscal account (balanced-budget + deficit-financed), savings-investment + capital identity, KL-E-M energy nest, wage-floor labour market, adaptation investment, trade closures — all three variants | ✅ [model doc](models/cge-static.md) |
-| 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | 🧪 built, experimental (synthetic fixture; real-ENCORE adapter + calibration outstanding) [roadmap](../roadmap.md) |
+| 6 — Nature (ENCORE) | ecosystem-service exposure + nature stress | 🧪 built on REAL ENCORE data + real concordance, experimental (equal-weighted concordance; severity→productivity is a scenario assumption, not calibrated) [roadmap](../roadmap.md) |
 | 7 — Pathway stack | NGFS-driven dynamics + FaIR climate | ⬜ [roadmap](../roadmap.md) |
 
 The completed work is the minimum viable version of the original ask, and then some (cost +

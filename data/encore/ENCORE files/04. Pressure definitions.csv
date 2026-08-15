@@ -1,0 +1,16 @@
+﻿Pressure,Definition
+"Disturbances (e.g noise, light)","Activity produces noise or light pollution that has potential to harm organisms. Examples of metrics include decibels and duration of noise, lumens and duration of light, at site of impact."
+Area of freshwater use ,"Freshwater area is used for the activity. Examples of metrics include area of wetland, ponds, lakes, streams, rivers or peatland necessary to provide ecosystem services such as water purification, fish spawning, areas of infrastructure necessary to use rivers and lakes such as bridges, dams, and flood barriers, etc. Impacts include hydrological changes, freshwater geomorphology and fluvial processes. "
+Emissions of GHG ,"Activity emits GHG. Examples include volume of carbon dioxide (CO2), methane (CH4), nitrous oxide (N2O), Sulphur hexafluoride (SF6), Hydrofluorocarbons (HFCs), and perfluorocarbons (PFCs), etc."
+Area of seabed use ,"Seabed area is used for the activity. Examples of metrics include area of aquaculture by type, area of seabed mining by type, etc. Impacts include hydrological changes, freshwater geomorphology and fluvial processes. "
+Emissions of non-GHG air pollutants ,"Activity emits non GHG air pollutants. Examples include volume of fine particulate matter (PM2.5) and coarse particulate matter (PM10), Volatile Organic Compounds (VOCs), mono-nitrogen oxides (NO and NO2, commonly referred to as NOx), Sulphur dioxide (SO2), Carbon monoxide (CO), etc."
+"Other biotic resource extraction (e.g. fish, timber) ","Activity extracts biotic resources including fish and timber. Examples of metrics include volume of wild-caught fish by species, number of wild-caught mammals by species, volume of timber by species, etc."
+Other abiotic resource extraction,Activity extracts abiotic resources. Examples include volume of mineral extracted.
+Generation and release of solid waste,"Activity generates and releases solid waste. Example metrics include volume of waste by classification (i.e., nonhazardous, hazardous, and radioactive), by specific material constituents (e.g., lead, plastic), or by disposal method (e.g., landfill, incineration, recycling, specialist processing)."
+Area of land use,"Activity uses land area. Example metrics include area of agriculture by type, area of forest plantation by type, area of open cast mine by type, etc."
+Emissions of toxic pollutants to water and soil,"Activity emits toxic pollutants that can directly harm organisms and the environment. Examples include volume discharged to receiving water body of toxic substances (e.g., heavy metals and chemicals)."
+Emissions of nutrient pollutants to water and soil,"Activity emits nutrient pollutants that can lead to eutrophication. Example metrics include volume discharged to receiving water body of nutrients (e.g., nitrates and phosphates)."
+Volume of water use ,"Water is used for the activity. Example metrics include volume of groundwater consumed, volume of surface water consumed, etc."
+Introduction of invasive species,Activity directly introduces non-native invasive species into areas of operation.
+,
+Source: Natural Capital Coalition. 2016. “Natural Capital Protocol”. (Online). Available at: www.naturalcapitalcoalition.org/protocol,

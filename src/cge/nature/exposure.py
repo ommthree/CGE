@@ -77,6 +77,22 @@ def compute_exposure(
         raise ValueError(f"exposure: max_iter must be ≥ 1 (got {max_iter})")
     if not (tol > 0.0):
         raise ValueError(f"exposure: tol must be > 0 (got {tol})")
+    # The max-link threshold must be finite and non-negative (review P2 2026-08-09): a NaN threshold
+    # would make every ``> threshold`` comparison False (kill all propagation), and a negative one
+    # would turn genuine zero coefficients into "links" and spread the global maximum everywhere.
+    if not np.isfinite(max_link_threshold) or max_link_threshold < 0.0:
+        raise ValueError(
+            f"exposure: max_link_threshold must be finite and ≥ 0 (got {max_link_threshold!r})"
+        )
+    # The threshold only applies to the ``max`` rule (which screens supply-chain links). Under
+    # ``weighted_mean`` it has NO effect, so a NONZERO value is an inapplicable control — reject it
+    # rather than silently record a no-op (review P2 2026-08-10: 0 and 0.999 were identical).
+    if rule == "weighted_mean" and max_link_threshold != 0.0:
+        raise ValueError(
+            f"exposure: max_link_threshold={max_link_threshold} has no effect under the "
+            "'weighted_mean' rule (it screens links only for the 'max' rule). Use rule='max', or "
+            "leave the threshold at 0."
+        )
 
     a = A.to_numpy(dtype=float)
     if not np.isfinite(a).all():
@@ -104,14 +120,20 @@ def compute_exposure(
             "explicit missing value must not silently become zero dependency — impute or drop it "
             "first. (ENCORE distinguishes N/A from ND ('No Data'); do not conflate them.)"
         )
-    if (supplied < 0.0).any() or (supplied > 1.0).any():
+    # Tolerance absorbs floating-point artifacts from weighted concordance sums (e.g. equal weights
+    # over N processes summing to 1.0 + a few ε); a genuine out-of-range value still trips it.
+    _bound_tol = 1e-9
+    if (supplied < -_bound_tol).any() or (supplied > 1.0 + _bound_tol).any():
         raise ValueError(
             f"exposure: direct dependency scores must be in [0, 1] (got range "
             f"[{supplied.min():.4f}, {supplied.max():.4f}])"
         )
     # Now align onto the economy's goods; a good the input does NOT rate (absent row) has 0 direct
     # dependency (its exposure, if any, is entirely upstream). fillna only touches these new rows.
-    D = direct.reindex(index=goods).fillna(0.0)
+    # SNAP the ε artifacts (validated within _bound_tol above) exactly into [0, 1] so the returned
+    # direct scores and the ``total ≥ direct`` invariant hold to the contract, not merely to
+    # tolerance (review P2 2026-08-10 — don't let the tolerance leak a 1.0000000002 into results).
+    D = direct.reindex(index=goods).fillna(0.0).clip(lower=0.0, upper=1.0)
     services = list(D.columns)
     Dv = D.to_numpy(dtype=float)
 

@@ -68,6 +68,84 @@ def sector_scores(
     return out
 
 
+def sector_nd_share(
+    dep: EncoreDependencies,
+    concordance: ConcordanceMap,
+    sectors: list[str],
+) -> pd.DataFrame:
+    """Sectors × service matrix of the **weighted ND share**: the fraction of a sector's concordance
+    weight whose contributing ENCORE process is ``ND`` (No Data) on that service (review P1 round 4
+    2026-08-10).
+
+    ``sector_scores`` averages process scores by concordance weight and scores an ND cell as 0, so a
+    cell where 90% of the weight is unknown looks almost the same as a genuine near-zero dependency.
+    This returns that hidden uncertainty as a number in [0, 1]: 0 = fully rated, 1 = fully unknown,
+    0.9 = 90% of the sector's weight for that service is No-Data. A run can then surface a partially
+    unknown cell (not only the all-ND cells the earlier boolean mask caught), matching ENCORE's
+    N/A-vs-ND semantics. Weights are the concordance's (which sum to 1 per sector).
+
+    A concordance process that is NOT in the ENCORE data is REJECTED (review P3 round 5 2026-08-13):
+    silently dropping it and renormalising over the remainder would understate the unknown share and
+    mislead a direct caller. (The standard runner is protected because ``sector_scores`` validates
+    process coverage first, but this helper must not be silently wrong on its own.)
+
+    An UNCOVERED sector is likewise REJECTED (review P3 round 6 2026-08-14): a sector absent from
+    the concordance would get an empty weight map → an all-zero (0% unknown) row, i.e. reported as
+    KNOWN — the opposite of the truth, and a contradiction of this helper's own fail-safe. Apply the
+    same missing-sector check as ``sector_scores``."""
+    nd = dep.nd_mask()  # ENCORE process × service (True = ND)
+    missing_sectors = [s for s in sectors if s not in concordance.weights]
+    if missing_sectors:
+        raise ValueError(
+            f"ENCORE concordance does not cover economy sector(s) {missing_sectors}; every sector "
+            "must map to at least one ENCORE process (an uncovered sector would be reported as 0% "
+            "unknown, i.e. fully known — the opposite of the truth). Add the mapping or drop the "
+            "sector."
+        )
+    out = pd.DataFrame(0.0, index=sectors, columns=list(nd.columns))
+    for s in sectors:
+        wmap = concordance.weights.get(s, {})
+        unknown_procs = [p for p in wmap if p not in nd.index]
+        if unknown_procs:
+            raise ValueError(
+                f"sector {s!r} maps to ENCORE process(es) {unknown_procs} not in the dependency "
+                "data; cannot compute the ND share without them (dropping them understates the "
+                "unknown fraction). Fix the concordance or the ENCORE object."
+            )
+        total_w = sum(wmap.values())
+        if total_w <= 0:
+            continue
+        # Weighted fraction of the sector's mapped weight that is ND on each service.
+        share = sum(w * nd.loc[p].astype(float) for p, w in wmap.items()) / total_w
+        out.loc[s] = share
+    return out
+
+
+def sector_nd_mask(
+    dep: EncoreDependencies,
+    concordance: ConcordanceMap,
+    sectors: list[str],
+    *,
+    threshold: float = 1.0,
+) -> pd.DataFrame:
+    """Boolean sectors × service mask, True where the **weighted ND share** (``sector_nd_share``) is
+    at or above ``threshold``. The default ``threshold=1.0`` flags only ENTIRELY-unknown cells (the
+    original all-ND behaviour, back-compatible); a lower threshold (e.g. 0.5) flags cells that are
+    mostly No-Data. See ``sector_nd_share`` for the underlying fraction."""
+    import math
+
+    if not (isinstance(threshold, int | float) and math.isfinite(threshold)) or not (
+        0.0 <= threshold <= 1.0
+    ):
+        # A NaN threshold would flag nothing, a negative one flag everything — either silently wrong
+        # (review P3 round 5 2026-08-13). The share is in [0, 1], so a threshold must be too.
+        raise ValueError(
+            f"sector_nd_mask threshold must be a finite value in [0, 1]; got {threshold!r}"
+        )
+    share = sector_nd_share(dep, concordance, sectors)
+    return share >= threshold - 1e-12
+
+
 def broadcast_to_goods(sector_score: pd.DataFrame, goods: list[str]) -> pd.DataFrame:
     """Broadcast a sectors × service score matrix onto the economy's GOODS (``region:sector``),
     giving every region the same per-sector dependency (dependency is a per-unit intensity). Goods

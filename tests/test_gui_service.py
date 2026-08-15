@@ -254,21 +254,17 @@ def test_service_run_nature_end_to_end_partial_eq(tmp_path):
     result.validate_schema()
 
 
-def test_service_run_nature_through_cge_is_single_region_and_does_not_compound(tmp_path):
+def test_service_run_nature_through_cge_collapses_regions_economy_wide(tmp_path):
     """The nature scenario runs through the GE engine. The toy IO has no by-region final demand, so
-    the CGE runs SINGLE-REGION (its closed variant, region collapses to 'R') — NOT multi-region, and
-    it does NOT compound the two region-tagged agriculture shocks into a 0.64 aggregate (review P1
-    2026-08-07). agriculture's output loss must be ~the single-region severity·exposure, not the
-    (1-loss)² compounded value."""
+    the CGE runs SINGLE-REGION (region collapses to 'R'). The runner emits ONE economy-wide shock
+    sector (regions aggregated explicitly in shock construction — review P1 round 3 2026-08-09), so
+    the single-region CGE accepts it (no region-scoped rejection) and agriculture takes a real,
+    substantial loss without the old 0.64 double-count."""
     svc = _service(tmp_path)
     result = svc.run_nature(stresses=[("surface_water", 0.4)], engine="cge_static", years=[2020])
     d = result.data
-    # Single-region: region collapses to the closed placeholder 'R', not A/B.
-    assert set(d["region"].unique()) == {"R"}
+    assert set(d["region"].unique()) == {"R"}  # single-region
     vol = d[(d["variable"] == "volume_change") & (d["scenario"] == "central")]
     v = {r.sector: r.value for r in vol.itertuples()}
-    # agriculture is fully water-exposed (E=1); a 40% degradation aggregated (not compounded) across
-    # the two regions gives ~−40% output, NOT the compounded 1−0.6² = −64% the old bug produced.
-    assert v["agriculture"] > -0.5  # not the compounded ~−0.64
-    assert v["agriculture"] < -0.2  # but a real, substantial loss
+    assert -0.5 < v["agriculture"] < -0.2  # a real loss, not the compounded ~−0.64
     result.validate_schema()

@@ -7,24 +7,37 @@
 - **Capabilities:** ecosystem-service dependency exposure (direct + upstream) per good; a
   `NatureStress` degradation scenario run end-to-end through an economic engine, in both the
   partial-equilibrium (Engine 2) and general-equilibrium (Engine 3, all variants) tiers
-- **Status: BUILT, EXPERIMENTAL — not signed off.** Implemented and tested on the toy economy with a
-  **synthetic, expert-designed illustrative fixture** (informed by the qualitative pattern of the
-  central-bank literature, but NOT substantiated cell-by-cell against a published table). The
-  engineering pathway (ingestion → concordance → exposure → severity→productivity translation with
-  per-engine incidence → consumption by Engine 2 and all three CGE variants → standard-runner
-  provenance → GUI) is complete and auditable. **Remaining before sign-off:** a real-ENCORE-export
-  adapter (current format, preserved N/A-vs-ND semantics, separately-typed pressure/impact), store
-  persistence + load of nature data, and — as consulting-readiness blockers, not just data plumbing
-  — empirical calibration of the severity→productivity mapping, service interactions, regional
-  weights, and cross-model sensitivity. So the "drops in with **no code change**" claim does NOT yet
-  hold (an adapter and store wiring are still required), and results are illustrative of the method,
-  not calibrated risk. See the roadmap Phase 6 status.
+- **Status: BUILT on REAL data, EXPERIMENTAL — not signed off.** The **real May-2026 ENCORE
+  knowledge base** is ingested (`load_encore_ratings_wide`, 271 processes × 25 services, CC BY-SA
+  4.0, `data/encore/`), the **real EXIOBASE↔ENCORE concordance** is built (`concordance_build`, 162
+  industry labels, ISIC-level rollback), and a real nature scenario runs **end-to-end through the
+  standard runner → engine → ResultSet** on a real-EXIOBASE-labelled economy. Store persistence of
+  nature data is wired. **N/A vs ND** is honoured: ND (No Data) is a distinct state and an all-ND
+  sector/service is flagged in the manifest (`nd_unknown_sectors`), never silently zeroed. The
+  **water-supply overlap** (a combined ENCORE service) is rejected when stressed with its components.
+  The **default live build is `system="pxp"`** (200 EXIOBASE *product* labels); the crosswalk is
+  keyed by *industry* labels, so a **product→industry→ENCORE bridge** (`pxp_to_ixi_industries` /
+  `bridge_to_products`, via pymrio's `exio3_pxp`/`exio3_ixi` classifications) re-keys the concordance
+  onto all 200 products before it is persisted, so a normal pxp build **attaches ENCORE + a COMPLETE
+  concordance** and runs from `run_scenario(data_source=build_id)` with no manual assembly. Coverage
+  is complete-or-nothing: a build only partially covered fails the build (`attach_nature=auto|
+  required`) rather than silently persisting a covered subset; the SMALL build gets an
+  **aggregation-aware** concordance that audits any uncovered group member.
+  **Remaining before sign-off — now all METHODOLOGY, not data plumbing:** the concordance is
+  **equal-weighted** (a documented v1 assumption, not output-weighted); severity→productivity is a
+  **scenario assumption**, not a calibrated elasticity (ENCORE ratings indicate *potential*
+  significance); and service interactions / regional weights / cross-model sensitivity are
+  uncalibrated. So results are **illustrative of the method, not calibrated nature risk** — not for
+  consulting. The toy fixture remains for offline CI. See the roadmap Phase 6 status.
 
-> **Honest scope.** Every dependency rating shipped here is a small hand-entered subset seeded from
-> the central-bank literature ([vanToor2020], [ENCORE]) and **labelled illustrative** in its
-> provenance. It is enough to exercise and test the mechanism end-to-end; it is **not** an
-> analytical result. Nature-scenario numbers are illustrative until run on the licensed ENCORE data,
-> exactly as climate-damage numbers are labelled illustrative in Phase 7.
+> **Honest scope.** The **real May-2026 ENCORE knowledge base** is now vendored (`data/encore/`, CC
+> BY-SA 4.0) and ingested, and the real EXIOBASE↔ENCORE concordance is built — so nature runs on real
+> ratings, not a fixture. A small synthetic fixture is ALSO shipped, but only for offline CI. The
+> numbers remain **illustrative of the method, not calibrated risk**, for a methodological reason,
+> not a data one: ENCORE materiality ratings indicate *potential* significance (not calibrated TFP/
+> output elasticities), the EXIOBASE↔ENCORE concordance is **equal-weighted** (a documented v1
+> assumption), and severity→productivity is a scenario assumption — exactly as climate-damage numbers
+> are labelled illustrative in Phase 7.
 
 ## 1. Purpose & scope
 
@@ -40,11 +53,13 @@ water-dependent agricultural inputs still shows the inherited exposure.
 ENCORE↔economy concordance as reviewable weighted data; and the exposure engine (direct scores +
 two upstream-propagation rules).
 
-**Explicitly not modelled here:** the *economic effect* of a degradation (that is Phase 6.4 —
-translating a `NatureStress` into `ProductivityShock`s scaled by these exposure scores, fed to the
-economic engines); the physical *state* of the services themselves (Phase 6b); and region-specific
-dependency (dependency is treated as a per-unit-of-output intensity, identical across regions, until
-region-specific ENCORE data is available — a documented follow-up).
+**Out of scope for *this* exposure layer (§1–§3):** the *economic effect* of a degradation — that is
+**Phase 6.4, which IS implemented** and documented in §5 below (translating a `NatureStress` into
+`ProductivityShock`s scaled by these exposure scores, fed to the economic engines). This section
+covers only the exposure computation (6.1–6.3); the effect is layered on top of it in 6.4, not
+elsewhere. Still genuinely **not modelled anywhere**: the physical *state* of the services themselves
+(Phase 6b) and region-specific dependency (dependency is treated as a per-unit-of-output intensity,
+identical across regions, until region-specific ENCORE data is available — a documented follow-up).
 
 ## 2. The materiality → numeric scale (the load-bearing choice)
 
@@ -72,8 +87,11 @@ in a convex ramp (e.g. VH=1.0, H=0.5, M=0.25, L=0.1, VL=0.0), one constant, no o
 `ratings` is a long table `(process, service, materiality)`; the validator rejects an unknown
 materiality class (so the numeric scale is total) and a duplicated `(process, service)` pair (which
 would double-count or silently override). `score_matrix()` applies the scale to give a dense
-**process × service** matrix in [0, 1] (an unrated pair is 0 — *no* rated dependency). `load_encore_csv`
-is the real ingestion path; `fixture.encore_fixture()` builds the same object in memory for tests.
+**process × service** matrix in [0, 1] (an unrated pair is 0 — *no* rated dependency).
+`load_encore_ratings_wide` is the **real** ingestion path — it reads the raw ENCORE knowledge-base
+wide ISIC×service CSV (melt, composite process ids, N/A-vs-ND handling); `load_encore_csv` is a
+convenience for an already-tidy long CSV; `fixture.encore_fixture()` builds the same object in memory
+for offline tests.
 
 ## 4. Concordance (6.2)
 
@@ -86,6 +104,45 @@ a code constant. Every sector must be covered; an unmapped sector is rejected (i
 silent-zero dependency). `broadcast_to_goods` then gives every region the same per-sector dependency
 intensity (dependency is per unit of output; region-specific dependency needs region-specific ENCORE
 data — a follow-up).
+
+### 4a. The product→industry bridge (default `system="pxp"` builds)
+
+The ENCORE crosswalk is keyed by EXIOBASE **industry** labels (162 of the 163-industry `ixi`
+classification). But the **default live build is `system="pxp"`** — 200 EXIOBASE **product** labels.
+So before a pxp build can carry nature, each product is bridged to its producing industry(ies) and
+the industry concordance is averaged onto the products (`concordance_build.pxp_to_ixi_industries` +
+`bridge_to_products`).
+
+**Which industries produce a product** comes from the pymrio `exio3_pxp`/`exio3_ixi` classifications:
+an exact `ExioCode`-base match where it exists (keeping the fine electricity split 1:1), else the
+longest numeric-NACE-prefix rollback. **How much each contributes** is the key methodological choice:
+
+- **Observed supply shares (default when the artifact is present).** The producing-industry weights
+  are the **observed EXIOBASE MRSUT supply shares** — the fraction of each product's monetary supply
+  produced by each industry, from the year-specific supply-use table (`data/exiobase/`, derived by
+  `scripts/build_supply_shares.py` from the EXIOBASE 3 MRSUT, CC BY-SA 4.0). This is a *measured*
+  product→industry relationship, not a classification guess. It matters: the refined-petroleum and
+  biofuel products (Motor Gasoline, Biodiesels, Biogasoline, Charcoal, Additives, Other Liquid
+  Biofuels, Natural Gas Liquids) previously all received byte-identical prefix-inferred weights;
+  under supply shares each resolves to its real dominant producer (e.g. Motor Gasoline → 94% Petroleum
+  Refinery; NGL → 99.7% natural-gas extraction) and they are mutually distinct.
+- **Code-prefix fallback.** Exactly the 16 products with **no market supply** in the MRSUT
+  (recycling/treatment residuals, extra-territorial bodies — listed in the artifact's
+  `zero_supply_products`) fall back to equal weight across the prefix-candidate industries; so does
+  every product when the **derived supply-share artifact** (`data/exiobase/supply_shares_{year}.json`)
+  is absent — the runtime depends on that artifact, not the raw multi-GB MRSUT archive, which is only
+  needed once to regenerate it. A product that
+  is silently *missing* from an otherwise-present artifact is NOT treated as a fallback — the load
+  validator rejects such a file (its products must equal pymrio's 200 pxp names exactly), so a
+  dropped product fails loudly rather than masquerading as "no market supply" (review P2 round 9).
+  The one crosswalk-missing industry `Production of electricity nec` is filled from its covered NACE
+  siblings (`complete_industry_concordance`), used identically by a direct `ixi` build.
+
+Every product's resolution — candidate industries, method (`supply-share` vs `code-prefix-fallback`),
+weights, fallback reason, and SUT version — is recorded in a **`ProductBridgeAudit`**
+(`data/exiobase/product_bridge_audit_2019.json`), so this load-bearing surface is reviewable data,
+not opaque. The supply shares themselves are still monetary supply, not calibrated dependency — the
+severity→productivity mapping (§2) remains the uncalibrated assumption.
 
 ## 5. The exposure engine (6.3)
 
@@ -202,8 +259,9 @@ benchmark replication / homogeneity / Walras are untouched (proven over random p
 not just asserted).
 
 - **Closed** (single region): a −20% hit on bread raises its price ~+11%, cuts its output ~−17%, and
-  drags its upstream input supplier down too. Matched by sector (single-region, so a shock's region
-  tag is ignored).
+  drags its upstream input supplier down too. This variant is single-region, so a **region-scoped**
+  NatureStress is **rejected** (there is no region dimension to target — use the multi variant); an
+  economy-wide stress is applied as one shock per sector.
 - **Open** (Armington/CET, home + ROW): the same hit raises the home price and cuts home output, but
   now demand shifts toward **imports** and the un-degraded domestic sector expands (Armington
   substitution) — a richer response than the closed variant. Matched by sector.
@@ -265,7 +323,9 @@ The page operates on the illustrative ENCORE fixture and labels it as such at th
 - **[ENCORE]** ENCORE Partners (Natural Capital Finance Alliance & UNEP-WCMC). *ENCORE: Exploring
   Natural Capital Opportunities, Risks and Exposure.* — The dependency/impact knowledge base.
 - **[vanToor2020]** van Toor, J. et al. (2020). *Indebted to nature: Exploring biodiversity risks for
-  the Dutch financial sector.* De Nederlandsche Bank / PBL. — Source of the ENCORE↔sector mapping
-  approach and the materiality→numeric scale.
+  the Dutch financial sector.* De Nederlandsche Bank / PBL. — Source of the ENCORE↔sector exposure-
+  **screening approach** (ordinal materiality classes; in practice their H/VH-only focus). It does
+  **NOT** publish our specific 1.0/0.8/0.6/0.4/0.2 numeric ramp — that ramp is our synthetic /
+  expert-designed default to calibrate (see §2), not a DNB value.
 
 See [`docs/references.md`](../references.md) for full citations.

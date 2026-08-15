@@ -115,9 +115,10 @@ class GuiService:
         Returns ``(direct, total, io)``: ``direct`` is each good's own dependency on each service
         (goods × service), ``total`` adds the upstream supply-chain propagation under ``rule``
         (``weighted_mean`` noisy-OR or ``max`` worst-in-chain), and ``io`` is the toy IOSystem the
-        propagation ran through (so a drill-down page can show the upstream chain). The ENCORE data
-        is a small hand-entered, published-sourced **illustrative fixture** — the real gated export
-        drops into the same contract with no code change (see docs/models/nature-encore.md)."""
+        propagation ran through (so a drill-down page can show the upstream chain). This GUI method
+        uses the small **synthetic / expert-designed toy fixture** for an offline demo; the real
+        ENCORE knowledge base is ingested elsewhere (``cge.nature.real``) and drives real runs (see
+        docs/models/nature-encore.md)."""
         from cge.nature.concord import broadcast_to_goods, sector_scores
         from cge.nature.exposure import compute_exposure
         from cge.nature.fixture import encore_fixture, toy_encore_concordance

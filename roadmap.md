@@ -420,13 +420,15 @@ NOT for consulting use yet.
 
 ENCORE ingestion + the documented materiality→numeric scale (a **synthetic/expert-designed** ramp,
 NOT a published DNB value), the ENCORE↔economy concordance via the P1 framework, and the exposure
-engine (direct + upstream propagation, `weighted_mean`/`max`, now with validated preconditions and
-convergence) all landed against a small **synthetic illustrative fixture** (the licensed ENCORE
-export needs a real-format adapter — N/A-vs-ND semantics, separately-typed pressure/impact — before
-"drops in with no code change" holds). 6.4 adds `nature.translate` and `ProductivityShock` consumption
-in **both tiers**: Engine 2 (`partial_eq` v0.4.0) as a supply-side output hit, and Engine 3
-(`cge_static` v0.11.0, all three variants) as a Hicks-neutral θ on **technology only** (the carbon
-wedge is unscaled, so the emissions/revenue contract holds). 6.5 adds the **nature GUI page** (a
+engine (direct + upstream propagation, `weighted_mean`/`max`, with validated preconditions and
+convergence). The **real May-2026 ENCORE knowledge base is now ingested** (`load_encore_ratings_wide`)
+and the **real EXIOBASE↔ENCORE concordance built** — real ratings drive real runs; the synthetic
+fixture remains for offline CI. The real export's pressure/impact ratings are ingested and typed
+separately (`kind="impact"`), and N/A-vs-ND is honoured. 6.4 adds `nature.translate` and
+`ProductivityShock` consumption in **both tiers**: Engine 2 (`partial_eq` v0.4.0) as a supply-side
+output hit, and Engine 3 (`cge_static` v0.13.0, all three variants) as a Hicks-neutral θ on
+**technology only** (the carbon wedge is unscaled, so the emissions/revenue contract holds). 6.5 adds
+the **nature GUI page** (a
 dependency heatmap, supply-chain drill-down, and a nature-scenario runner). Impact/pressure ingestion
 and heatmaps are NOT implemented (dependencies only).
 
@@ -447,26 +449,104 @@ suite** (6 checks) is in the standing battery (64/64) covering the exposure inva
 emissions/revenue identity under productivity, the time-path, region-scope, incidence, and manifest
 provenance — so a regression re-surfaces in the battery, not just pytest.
 
+**DONE (2026-08-09): the real ENCORE knowledge base is ingested.** The actual **May-2026 ENCORE KB**
+is vendored under `data/encore/` (CC BY-SA 4.0, attribution in `NOTICE.md`), and
+`load_encore_ratings_wide` ingests the real wide ISIC×service dependency table (271 processes × 25
+services) and the pressure table (typed `kind="impact"`), doing the real transforms: wide→long melt,
+composite ISIC process ids (disambiguating ENCORE's finer splits, e.g. the 9-way energy split), and
+**N/A-vs-ND handling** — `ND` (No Data) is kept as a first-class state (`nd_mask`, `data_coverage`
+≈0.90), never silently zeroed. `real_encore_dependencies()` / `real_encore_pressures()` load them
+with attribution provenance; golden-file tests guard the shape/vocab/values.
+
+**DONE (2026-08-09): the real EXIOBASE↔ENCORE concordance is built.**
+`cge.nature.concordance_build.build_exiobase_encore_concordance` derives the `ConcordanceMap` from
+the vendored EXIOBASE↔ISIC crosswalk via ISIC-level rollback (100% resolution: all **162 EXIOBASE
+sectors → 271 ENCORE processes**, 0 unresolved), with the 9 electricity-generation splits matched by
+name. Multi-process sectors (95 of 162) are **equal-weighted — a documented v1 assumption** with a
+full `ConcordanceAudit`. `real_encore_concordance()` returns it. A **real nature computation now runs
+end-to-end on real data**: real ENCORE ratings → real EXIOBASE-sector dependencies → exposure (e.g.
+cereal cultivation comes out highly water/biomass-dependent from the real ratings), covered by
+golden-file tests.
+
 **STILL OPEN before Phase-6 sign-off:**
-1. **Real-ENCORE-export adapter** — current-version format, preserved N/A-vs-ND semantics,
-   separately-typed pressure/impact ratings, with golden-file ingestion tests.
-2. **A real published ENCORE↔EXIOBASE concordance** — only the synthetic one-to-one toy concordance
-   exists today (6.2).
-3. **Consulting-readiness methodology blockers (not just data plumbing):** empirical calibration of
+1. **Consulting-readiness methodology blockers (not just data plumbing):** empirical calibration of
    the severity→productivity mapping, ecosystem-service interactions, regional output weights, and
    cross-model sensitivity. ENCORE ratings are indicators of *potential* significance, not calibrated
    output/TFP elasticities; the linear materiality ramp and the noisy-OR + engine-incidence choices
    are transparent *assumptions*, not published methods.
+2. **Concordance weighting** — the EXIOBASE↔ENCORE map is built but **equal-weighted** across
+   multi-process sectors; output-weighting (or expert per-mapping weights) is a follow-up.
+3. **Product bridge — now on OBSERVED supply shares (round-7 P1-methodology, DONE).** The default
+   pxp build re-keys the 162/163-industry crosswalk onto all 200 products via `pxp_to_ixi_industries`
+   / `bridge_to_products`. The producing-industry weights come from the **observed EXIOBASE MRSUT
+   supply matrix** (year-specific product→industry production shares, `data/exiobase/`, derived by
+   `scripts/build_supply_shares.py` from the EXIOBASE 3 MRSUT, CC BY-SA 4.0), not a code-prefix guess
+   — so the refined-petroleum/biofuel products that used to get byte-identical weights now resolve to
+   their real dominant producer and are mutually distinct (184/200 products; the 16 with no market
+   supply, plus any MRSUT-absent checkout, fall back to the prefix method). A `ProductBridgeAudit`
+   (`product_bridge_audit_2019.json`) records each product's method / industry weights / fallback
+   reason / SUT version. Still note: the **classification-level orchestration test** proves membership
+   + executability over pymrio's exact 200/163 classifications, which is NOT the same as an actual
+   multi-GB live-build execution; and monetary supply shares are a producing-mix measure, not
+   calibrated dependency — the severity→productivity mapping remains the uncalibrated assumption (1).
+4. **Pressure/impact channel** — pressures are ingested and typed, but no engine consumes them yet.
 
-The *engineering* pathway (exposure → per-engine incidence → time-path-aware shock → engine →
-standard-runner provenance → store persistence → GUI) is complete, auditable, and battery-gated, and
-the round-1 + round-2 review P1s are fixed. But until 1–3 land, Phase 6 is **experimental**: results
-are illustrative of the method, not calibrated nature risk, and must not be used in consulting work.
+**Rounds 3–4 review fixes (2026-08-09 → 08-11):** region-scoped `NatureStress` is now rejected **at
+the runner boundary** for the single-region CGE (round 3 guarded only the engine helper, which the
+runner bypassed by stripping region coverage — so a region-A stress ran identically to economy-wide;
+round 4 fixed the real boundary and reads `multi_region` from overrides too); real ENCORE **ND (No
+Data)** is surfaced as a **weighted ND share** per sector/service (round 3 flagged only ALL-ND cells,
+hiding ~262 partially-unknown ones), recorded in the manifest (`nd_weighted_share` + `nd_unknown_
+sectors`); a nature scenario runs from a **genuinely persisted store build** (real ENCORE +
+concordance through `DataStore` → `run_scenario(data_source=build_id)`), not only an override
+injection; the **water-supply overlap** is rejected by default (ENCORE Explanatory note #1). Plus
+P2s: max-link-threshold rejected under `weighted_mean` (a no-op there); direct translate calls
+preserve time paths; `rollback_used` keeps all named splits; the manifest records original stress
+coverage + shock coverage + ND + collapse/overlap flags; the direct-score tolerance snaps ε into
+[0,1] rather than loosening the contract; and the nature-translation (v0.3.0) and CGE (v0.13.0)
+versions are bumped.
+
+**Round-5 fixes (2026-08-13):** a typoed `coverage_regions`/`coverage_sectors` is now REJECTED (it
+silently produced a zero-response baseline); DIRECT incidence skips the (expensive) total-exposure
+propagation and rejects an inapplicable rule/threshold there; the duplicate-service and water-overlap
+guards test the actual TARGET GOODS (disjoint regional stresses on one service are now allowed);
+region collapse averages over ALL regions incl. zeros (was biased by the sub-threshold filter);
+`nature.real`'s `root` argument has one convention (the dataset root); and a normal build now
+**persists ENCORE + a concordance** — the SMALL/aggregated build gets an **aggregation-aware
+concordance** (`aggregate_concordance`) composing the fine concordance with the sector-aggregation
+map, so an aggregated build runs nature from `run_scenario(data_source=build_id)` with no manual
+assembly. Plus P3 hardening (nd-mask threshold validation, nd-share missing-process guard, empty-years
+guard).
+
+**Round-6 fixes (2026-08-14):** the round-5 "normal build runs nature" claim was **overstated** — the
+default build is `system="pxp"` (200 EXIOBASE *product* labels) but the crosswalk is keyed by
+*industry* labels, so only 13/200 matched and the round-5 test hand-picked known keys instead of
+driving the real orchestration. Fixed: a **product→industry→ENCORE bridge** (`pxp_to_ixi_industries`
+/ `bridge_to_products`, from pymrio's `exio3_pxp`/`exio3_ixi` classifications: exact-code 1:1 where it
+exists, else longest numeric-NACE-prefix rollback; the one crosswalk-missing residual industry
+`Production of electricity nec` falls back to its covered NACE siblings) re-keys the concordance onto
+all 200 products. Coverage is now **complete-or-nothing**: `_nature_for_sectors` fails the build on a
+partial match rather than persisting a covered subset, `aggregate_concordance` audits/rejects omitted
+group members, and `attach_nature` is an `auto|required|off` **policy** — `auto` skips only genuinely
+ABSENT data, but a present-but-broken file or a partial match now raises (it is a real defect, not
+"optional data"). The build integration test drives `build_from_pymrio` over the **actual 200 pxp
+classification** under `required` and runs a NatureStress scenario from the persisted build. Plus the
+exported `nature_to_productivity` now validates `coverage_regions`/`coverage_sectors` against the
+exposure index (was silent-baseline on a typo), and `sector_nd_share` rejects an uncovered sector
+(was reported as 0% unknown = fully known).
+
+The *engineering* pathway (real ENCORE ingestion → real EXIOBASE↔ENCORE concordance → exposure →
+per-engine incidence → time-path-aware shock → engine → standard-runner provenance → store
+persistence, incl. an aggregation-aware concordance for aggregated builds) runs **end-to-end on real
+data** and is battery-gated; rounds 1–5 review P1s are fixed. Until 1–3 below land, Phase 6 is
+**experimental**: results are illustrative of the method, not calibrated nature risk, and must not be
+used in consulting work. (The GUI page still uses
+the toy fixture for an offline demo.)
 
 | # | Task | Effort |
 |---|---|---|
-| 6.1 ✅ (dependency only) | ENCORE ingestion: parse **dependency** ratings (production process × ecosystem service); map materiality classes to a documented numeric scale; version the snapshot. NB **impact/pressure-driver ratings are NOT yet implemented** (the contract carries a `kind` field and rejects `impact` objects in the dependency pipeline, but a separately-typed pressure/impact channel is a follow-up — review P1 2026-08-07). The materiality ramp is a **synthetic/expert-designed** default, not a published DNB value. | 2–3 d |
-| 6.2 ⚠️ (toy only) | ENCORE↔EXIOBASE concordance via the P1 framework. **Only a SYNTHETIC one-to-one toy concordance exists** (`toy_encore_concordance`); a real, published-sourced ENCORE↔EXIOBASE concordance (seeded from DNB/ECB/World Bank mappings, every weighting judgement documented) is NOT yet built and is required for real analysis (review 2026-08-07). | 1–2 wk |
+| 6.1 ✅ | ENCORE ingestion: the real May-2026 KB is parsed for **dependency** ratings (`load_encore_ratings_wide`, wide ISIC×service → long, ND-vs-N/A handling) and, separately, **pressure/impact-driver** ratings (typed `kind="impact"`, ingested and provenance-stamped). Materiality classes map to a documented numeric scale (a **synthetic/expert-designed** ramp, not a published DNB value). NB the pressure/impact ratings are ingested but **no engine consumes them yet** — the dependency channel drives productivity; a pressure/impact→economy channel is a follow-up. | 2–3 d |
+| 6.2 ✅ (equal-weighted v1) | ENCORE↔EXIOBASE concordance via the P1 framework. The **real** EXIOBASE↔ENCORE concordance is built (`concordance_build`, all 162 EXIOBASE sectors → 271 ENCORE processes via ISIC-level rollback, `ConcordanceAudit` trail). Multi-process sectors are **EQUAL-WEIGHTED — a documented v1 assumption**, NOT output-weighted or expert-curated; that calibration is the outstanding methodology follow-up. A synthetic toy concordance (`toy_encore_concordance`) remains for offline CI. | 1–2 wk |
 | 6.3 ✅ | Exposure engine: direct dependency/impact scores per sector → upstream propagation through the input–output structure (reusing P2 machinery) → "good X depends on pollination/water/… directly and via inputs"; aggregation choice (max vs weighted mean) exposed as a parameter, not buried | 1–2 wk |
 | 6.4 ✅ | `NatureStress` shocks: degradation scenario → productivity shocks per sector/region scaled by dependency scores → fed to the engines through the standard shock vocabulary (consumed by Engine 2 and by **all three** Engine-3 CGE variants as a Hicks-neutral θ — closed, open, multi-region with cross-region leakage); start from published scenario sets (NGFS nature scenarios, World Bank/PIK) | 1–2 wk |
 | 6.5 ✅ (dependency only) | GUI: **dependency** heatmap (good × ecosystem service), supply-chain dependency drill-down, nature-scenario runner — within the P3 framework (`gui/pages/nature.py`, driven by `GuiService.nature_exposure`/`run_nature`; headless-render + service tests green). Impact/pressure heatmaps await 6.1's impact channel. The CGE runner is single-region on the toy fixture (no by-region final demand); multi-region GE leakage needs a fixture with by-consuming-region FD (follow-up). | 2–3 d |

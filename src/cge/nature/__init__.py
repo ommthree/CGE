@@ -10,14 +10,26 @@ per-good ``ProductivityShock``s the economic engines consume (``translate``). Se
 resulting ``ProductivityShock``s as a supply-side output hit.
 """
 
-from cge.nature.concord import broadcast_to_goods, sector_scores
+from cge.nature.concord import (
+    broadcast_to_goods,
+    sector_nd_mask,
+    sector_nd_share,
+    sector_scores,
+)
 from cge.nature.encore import (
     MATERIALITY_SCALE,
     EncoreDependencies,
     load_encore_csv,
+    load_encore_ratings_wide,
     materiality_to_score,
 )
 from cge.nature.exposure import compute_exposure
+from cge.nature.real import (
+    encore_data_available,
+    real_encore_concordance,
+    real_encore_dependencies,
+    real_encore_pressures,
+)
 from cge.nature.translate import (
     DEFAULT_INCIDENCE,
     INCIDENCE_BY_ENGINE,
@@ -29,12 +41,19 @@ __all__ = [
     "MATERIALITY_SCALE",
     "EncoreDependencies",
     "load_encore_csv",
+    "load_encore_ratings_wide",
     "materiality_to_score",
     "sector_scores",
+    "sector_nd_mask",
+    "sector_nd_share",
     "broadcast_to_goods",
     "compute_exposure",
     "nature_to_productivity",
     "build_nature_shocks",
     "INCIDENCE_BY_ENGINE",
     "DEFAULT_INCIDENCE",
+    "real_encore_dependencies",
+    "real_encore_pressures",
+    "real_encore_concordance",
+    "encore_data_available",
 ]

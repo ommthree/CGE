@@ -12,8 +12,10 @@ Three things, all within the P3 framework and driven by ``GuiService``:
    ENCORE→exposure→``NatureStress``→``ProductivityShock``→engine chain end-to-end (Phase 6.4),
    showing the resulting per-good output response.
 
-The shipped ENCORE ratings are a small **synthetic / expert-designed illustrative fixture** (NOT the
-gated real export, and a real-ENCORE adapter is still required) — surfaced honestly on the page.
+This GUI page runs on the small **synthetic / expert-designed toy fixture** (for an offline,
+self-contained demo) — surfaced honestly on the page. The **real** ENCORE knowledge base is ingested
+elsewhere (`cge.nature.real`) and drives real runs through the standard runner; wiring the real data
+into this GUI page is a follow-up.
 """
 
 from __future__ import annotations
@@ -24,12 +26,12 @@ import streamlit as st
 from cge.gui.service import get_service
 
 _ILLUSTRATIVE = (
-    "**Experimental.** The ENCORE dependency ratings here are a small hand-entered **synthetic / "
-    "expert-designed** fixture on the toy economy — informed by the qualitative pattern of the "
-    "central-bank literature, but NOT the registration-gated ENCORE knowledge base and NOT "
-    "calibrated. The severity→productivity mapping is a transparent scenario assumption, not an "
-    "empirical elasticity. Read every number as *illustrative of the method*, not as risk. A real "
-    "ENCORE adapter is still required. See `docs/models/nature-encore.md`."
+    "**Experimental — this page uses the toy fixture.** The ratings shown here are a small "
+    "hand-entered **synthetic / expert-designed** fixture on the toy economy (an offline demo), "
+    "NOT the real ENCORE knowledge base. The real ENCORE data IS ingested elsewhere and drives "
+    "runs, but even there the severity→productivity mapping is a transparent scenario assumption, "
+    "not a calibrated elasticity. Read every number as *illustrative of the method*, not as risk. "
+    "See `docs/models/nature-encore.md`."
 )
 
 

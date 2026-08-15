@@ -105,27 +105,42 @@ def _time_path():
     return gap < 1e-6, f"agri Δ: 2020={by_year[2020]:.3f} 2030={by_year[2030]:.3f}", gap, 0.0
 
 
-@check(SUITE, "region_scoped_shock_not_economy_wide")
+@check(SUITE, "region_scoped_nature_rejected_end_to_end")
 def _region_scope():
-    """In the collapsed single-region CGE, a shock on one region (A) is NOT economy-wide: unshocked
-    regions contribute θ=1, so A-only gives θ_agri=0.9 (mean 0.8,1.0), distinct from both=0.8
-    (review P1 round 2)."""
-    from cge.contracts.shocks import ProductivityShock
-    from cge.engines.cge_static.engine import _productivity_by_sector
+    """A region-scoped NatureStress against the single-region CGE must be REJECTED via the RUNNER
+    — the boundary where the defect actually lived (review P1 round 4 2026-08-10: the earlier
+    engine-only guard was bypassed because the runner stripped region coverage first, so a region-A
+    stress ran identically to an economy-wide one). This drives run_scenario, not the private
+    helper."""
+    from cge.contracts.shocks import NatureStress
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
 
-    sectors = ["agriculture", "energy"]
-    a_only = [
-        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["A"]),
-        ProductivityShock(delta=-0.05, coverage_sectors=["energy"], coverage_regions=["A"]),
-        ProductivityShock(delta=-0.05, coverage_sectors=["energy"], coverage_regions=["B"]),
-    ]
-    both = a_only + [
-        ProductivityShock(delta=-0.2, coverage_sectors=["agriculture"], coverage_regions=["B"])
-    ]
-    ta = _productivity_by_sector(a_only, sectors, 2020)[0]
-    tb = _productivity_by_sector(both, sectors, 2020)[0]
-    ok = abs(ta - 0.9) < 1e-9 and abs(tb - 0.8) < 1e-9
-    return ok, f"θ_agri: A-only={ta:.3f} (want 0.9), both={tb:.3f} (want 0.8)", ta, 0.9
+    scoped = Scenario(
+        name="rs",
+        engine="cge_static",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4, coverage_regions=["A"])],
+    )
+    try:
+        run_scenario(scoped, data_source="toy")
+        rejected = False
+    except ValueError:
+        rejected = True
+    # An economy-wide NatureStress (no region coverage) must still run.
+    wide = Scenario(
+        name="ew",
+        engine="cge_static",
+        years=[2020],
+        shocks=[NatureStress(service="surface_water", severity=0.4)],
+    )
+    ran = (run_scenario(wide, data_source="toy").data["variable"] == "volume_change").any()
+    ok = rejected and ran
+    return (
+        ok,
+        f"region-scoped NatureStress rejected via runner={rejected}, economy-wide ran={ran}",
+        None,
+    )
 
 
 @check(SUITE, "incidence_direct_vs_total_differ")
