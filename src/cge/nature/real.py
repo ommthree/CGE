@@ -175,28 +175,34 @@ _valid_product_vocab = exiobase_product_labels
 def _validate_supply_share_artifact(art: dict, source: str) -> None:
     """Reject a malformed artifact instead of letting it silently degrade the bridge (P2 round 8).
 
-    Checks: (0) a provenance OBJECT with an integer ``sut_year`` and a non-empty ``sut_version``
-    (review P2 round 10 2026-08-15 — these must be present so the year-identity check can't be
-    bypassed by simply omitting them); (1) shares and zero_supply_products partition the EXIOBASE
-    products DISJOINTLY and EXACTLY equal pymrio's 200 pxp product names — an identity check, not
-    merely a count (review P2 round 9); (2) every producing industry is in the 163-industry
+    Checks: (0) the top-level value is an OBJECT (a JSON list would otherwise AttributeError on
+    ``.get``, review P3 round 11 2026-08-15) with a provenance OBJECT carrying a genuine (non-bool,
+    non-fractional) integer ``sut_year``, a non-empty ``sut_version``, AND a non-empty
+    ``source_version`` (the field propagated into the persisted concordance + run manifest, which
+    must not silently degrade to "unversioned"); (1) shares and zero_supply_products partition the
+    EXIOBASE products DISJOINTLY and EXACTLY equal pymrio's 200 pxp names — an identity check,
+    not merely a count (review P2 round 9); (2) every producing industry is in the 163-industry
     vocabulary; (3) each product's weights are finite, non-negative, and sum to 1."""
+    if not isinstance(art, dict):
+        raise SupplyShareValidationError(
+            f"{source}: the top-level JSON value must be an object, got {type(art).__name__}"
+        )
     prov = art.get("provenance")
     if not isinstance(prov, dict):
         raise SupplyShareValidationError(f"{source}: 'provenance' missing or not an object")
-    try:
-        sut_year = int(prov["sut_year"])
-    except (KeyError, TypeError, ValueError) as exc:
+    # A genuine integer year: reject bool (a subtype of int) and any fractional value — int(2019.9)
+    # would silently truncate to 2019 (review P3 round 11).
+    raw_year = prov.get("sut_year")
+    if isinstance(raw_year, bool) or not isinstance(raw_year, int):
         raise SupplyShareValidationError(
-            f"{source}: provenance.sut_year must be an integer year; got "
-            f"{prov.get('sut_year')!r} ({exc})"
-        ) from exc
-    prov["sut_year"] = sut_year  # normalise to int for the downstream identity check
-    sut_version = prov.get("sut_version")
-    if not isinstance(sut_version, str) or not sut_version.strip():
-        raise SupplyShareValidationError(
-            f"{source}: provenance.sut_version must be a non-empty string; got {sut_version!r}"
+            f"{source}: provenance.sut_year must be an integer year; got {raw_year!r}"
         )
+    for field_name in ("sut_version", "source_version"):
+        val = prov.get(field_name)
+        if not isinstance(val, str) or not val.strip():
+            raise SupplyShareValidationError(
+                f"{source}: provenance.{field_name} must be a non-empty string; got {val!r}"
+            )
     shares = art.get("shares")
     if not isinstance(shares, dict):
         raise SupplyShareValidationError(f"{source}: 'shares' missing or not an object")
@@ -281,7 +287,7 @@ def load_supply_shares(
     # fallback default when a fallback fired, or the DEFAULT year when loading the vendored default
     # artifact (year=None, no path). This catches a file whose name/requested year disagrees
     # with its CONTENT (e.g. a 2020-named file carrying sut_year 2019 with no fallback recorded).
-    sut_year = int(prov["sut_year"])
+    sut_year = prov["sut_year"]  # validated as a genuine int above
     if fell_back_year is not None:
         expected_year = _DEFAULT_SUPPLY_SHARE_YEAR
     elif year is not None:

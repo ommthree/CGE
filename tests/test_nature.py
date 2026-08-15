@@ -899,6 +899,44 @@ def test_supply_shares_require_complete_provenance():
 
 
 @_needs_supply_shares
+def test_supply_shares_schema_hardening():
+    """Defensive schema checks with no bypass (review P3 round 11 2026-08-15): a top-level list, a
+    fractional or boolean sut_year, and a missing source_version must all be rejected."""
+    from cge.nature.real import SupplyShareValidationError, load_supply_shares
+
+    # (1) top-level JSON list → rejected (not an AttributeError on .get).
+    with pytest.raises(SupplyShareValidationError, match="top-level"):
+        load_supply_shares(path=tmp_json([1, 2, 3]))
+
+    def _with_prov(field, value):
+        art = _read_json("data/exiobase/supply_shares_2019.json")
+        art["provenance"][field] = value
+        return tmp_json(art)
+
+    # (2) fractional / boolean sut_year → rejected (int() would silently truncate 2019.9→2019).
+    for bad in (2019.9, True):
+        with pytest.raises(SupplyShareValidationError, match="sut_year"):
+            load_supply_shares(2019, path=_with_prov("sut_year", bad))
+    # (3) source_version (the field propagated into the manifest) missing / empty → rejected.
+    for bad in (None, ""):
+        with pytest.raises(SupplyShareValidationError, match="source_version"):
+            load_supply_shares(2019, path=_with_prov("source_version", bad))
+
+
+@_needs_encore
+def test_mixed_classification_build_reports_distinctly():
+    """A build mixing EXIOBASE product-only and industry-only labels is rejected with a message that
+    names the mix — not the misleading '0/N not EXIOBASE labels (e.g. [])' (review P4 round 11)."""
+    from cge.data.build import NatureAttachError, _nature_for_sectors
+    from cge.nature.real import exiobase_industry_labels, exiobase_product_labels
+
+    ixi_only = sorted(exiobase_industry_labels() - exiobase_product_labels())
+    pxp_only = sorted(exiobase_product_labels() - exiobase_industry_labels())
+    with pytest.raises(NatureAttachError, match="mixes EXIOBASE product and industry"):
+        _nature_for_sectors([ixi_only[0], pxp_only[0]], policy="required")
+
+
+@_needs_supply_shares
 def test_supply_shares_year_binding_falls_back_visibly():
     """A build year without its own artifact falls back to the default year, but the mismatch is
     recorded in provenance — never silent (review P2 round 8 2026-08-14)."""

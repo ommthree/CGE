@@ -109,36 +109,50 @@ def _nature_for_sectors(
     ixi_vocab, pxp_vocab = exiobase_industry_labels(), exiobase_product_labels()
     all_ixi = all(s in ixi_vocab for s in labels)
     all_pxp = all(s in pxp_vocab for s in labels)
-    any_exiobase = any((s in ixi_vocab) or (s in pxp_vocab) for s in labels)
 
     if system is None:
-        if not any_exiobase:
-            # No EXIOBASE labels at all (e.g. the offline test MRIO's 'sector1'…) — nature simply
-            # doesn't apply. That is legitimate absence, not a defect.
+        # Distinguish the three failure modes precisely (review P4 round 11 2026-08-15): UNKNOWN
+        # labels (in neither classification), a MIXED build (all EXIOBASE but split across pxp-only
+        # and ixi-only, so no single classification covers it), and an AMBIGUOUS build (every label
+        # is a name shared by both classifications).
+        unknown = [s for s in labels if s not in ixi_vocab and s not in pxp_vocab]
+        if unknown and len(unknown) == len(labels):
+            # NONE of the labels are EXIOBASE (e.g. the offline test MRIO's 'sector1'…) — nature
+            # simply doesn't apply. Legitimate absence, not a defect.
             if policy == "required":
                 raise NatureAttachError(
                     "build sectors are not EXIOBASE labels (industry or product); cannot attach "
                     "nature under policy 'required'"
                 )
             return None, None
-        if not all_ixi and not all_pxp:
-            # SOME but not all labels are EXIOBASE — a partial match. Fail loud (the same
-            # complete-or-nothing contract the concordance-coverage gate enforces below).
-            unknown = [s for s in labels if s not in ixi_vocab and s not in pxp_vocab]
+        if unknown:
+            # SOME labels are EXIOBASE, some are not — a partial build. Fail loud.
             raise NatureAttachError(
                 f"{len(unknown)}/{len(labels)} build sector(s) are not EXIOBASE labels "
                 f"(e.g. {unknown[:5]}); nature needs a fully EXIOBASE-classified build. Fix the "
                 "labels or set the attach policy to 'off'."
             )
+        if not all_ixi and not all_pxp:
+            # Every label IS EXIOBASE, but no single classification covers them all: the build mixes
+            # product-only and industry-only labels. Nature needs one consistent classification.
+            pxp_only = [s for s in labels if s in pxp_vocab and s not in ixi_vocab]
+            ixi_only = [s for s in labels if s in ixi_vocab and s not in pxp_vocab]
+            raise NatureAttachError(
+                f"the build mixes EXIOBASE product and industry labels — {len(pxp_only)} are "
+                f"product-only (e.g. {pxp_only[:3]}) and {len(ixi_only)} are industry-only "
+                f"(e.g. {ixi_only[:3]}); no single classification covers them. Rebuild with one "
+                "classification (system='pxp' or 'ixi')."
+            )
         if all_ixi and all_pxp:
-            # AMBIGUOUS: every label is one of the 13 names shared by both classifications, whose
-            # concordance vectors differ. Guessing would silently pick the wrong one (P2 round 10).
-            # The caller must disambiguate with an explicit system.
+            # AMBIGUOUS: every label is one of the 13 names shared by both classifications. Guessing
+            # could pick the wrong vectors (P2 round 10). Only actually WRONG when the shared names'
+            # vectors differ, but we cannot know that without building both concordances, so require
+            # an explicit system regardless.
             raise NatureAttachError(
                 f"the build's {len(labels)} sector label(s) are all names shared by the EXIOBASE "
-                "product AND industry classifications, whose concordance vectors differ — the "
-                "classification is ambiguous. Pass system='pxp' or system='ixi' (build_exiobase "
-                "does this) so the correct concordance is selected."
+                "product AND industry classifications, so the classification is ambiguous (for "
+                "most such names the two concordance vectors differ). Pass system='pxp' "
+                "or system='ixi' (build_exiobase does this) so the correct concordance is selected."
             )
         resolved_system = "ixi" if all_ixi else "pxp"
     else:

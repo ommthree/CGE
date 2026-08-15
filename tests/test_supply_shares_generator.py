@@ -93,14 +93,22 @@ def test_generator_year_crosscheck_passes_when_matching(tmp_path):
 
 
 @pytest.mark.skipif(not _HAS_ENCORE, reason="vendored ENCORE data (data/encore/) not present")
-def test_export_product_bridge_audit_from_generated_shares(tmp_path):
-    """export_product_bridge_audit must build the audit from the GIVEN shares file (this run's
-    output), not a hard-coded vendored artifact (review P3 round 10 — the generator-test module
-    previously never invoked it). Uses the REAL 2019 shares so the ENCORE bridge resolves."""
+def test_export_product_bridge_audit_uses_the_supplied_shares_file(tmp_path):
+    """export_product_bridge_audit must build the audit from the GIVEN shares file, not a hard-coded
+    default (review P3 round 11 2026-08-15). Copy the real 2019 artifact to a temp path with a
+    UNIQUE source_version marker; an implementation ignoring shares_path would not carry it."""
+    marker = "UNIQUE-MARKER-r11-abc123"
+    art = json.loads(Path("data/exiobase/supply_shares_2019.json").read_text())
+    art["provenance"]["source_version"] = marker
+    shares_path = tmp_path / "supply_shares_custom.json"
+    shares_path.write_text(json.dumps(art))
+
     audit_out = tmp_path / "audit.json"
-    export_product_bridge_audit(str(audit_out), shares_path="data/exiobase/supply_shares_2019.json")
+    export_product_bridge_audit(str(audit_out), shares_path=str(shares_path))
     data = json.loads(audit_out.read_text())
-    # 184 products by observed supply share + 16 zero-supply fallbacks = 200 entries.
+    # The audit's version came from the SUPPLIED file, proving shares_path was honoured.
+    assert marker in data["supply_shares_version"]
+    # And the bridge still resolved the real 2019 data: 184 supply-share + 16 fallbacks.
     assert data["n_supply_share"] == 184
     assert data["n_fallback"] == 16
     assert data["entries"]["Motor Gasoline"]["method"] == "supply-share"
