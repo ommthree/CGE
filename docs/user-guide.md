@@ -762,6 +762,44 @@ Two habits make results defensible:
 
 ---
 
+## Step 12 — Going dynamic: a capital path to 2050 (Phase 7.1)
+
+Every CGE run so far has been **one year, vs the benchmark** — comparative statics. Phase 7.1 turns
+that into a **recursive-dynamic** path: solve the CGE year by year, and carry the **capital stock**
+forward between solves. Each year's investment builds next year's capital; capital depreciates; and you
+can layer exogenous labour (demographics) and productivity trends on top. There is **no perfect
+foresight** — it is bookkeeping between static solves, the standard applied-CGE dynamic closure.
+
+This is an API (`cge.dynamics.run_recursive`) rather than a GUI feature yet, so here it is in Python:
+
+```python
+from cge.dynamics import run_recursive, DynamicConfig
+from cge.scenarios.loader import Scenario
+
+sc = Scenario(name="path", engine="cge_static", years=[2025, 2030, 2035, 2040], shocks=[])
+cfg = DynamicConfig(depreciation=0.05, labour_growth=0.01, productivity_growth=0.01)
+path = run_recursive(sc, config=cfg, data_source="toy_cge_gov")
+
+print(path.capital_stock)   # the capital stock at each year
+print(path.growth)          # its year-on-year growth rate
+```
+
+The result's `capital_stock` / `capital_growth` rows show the path; the manifest records the mode
+("no perfect foresight"), the depreciation rate, the trends, and — importantly — the benchmark's
+**implied growth** `g = INV0/K0 − δ`. On the toy SAM that `g` is *negative*: the benchmark's investment
+is below replacement, so a zero-trend run shows a gently **contracting** capital stock. That is not a
+bug — it is the model being honest that the toy benchmark isn't at steady state, and it is exactly the
+kind of thing the stock–flow bridge (`docs/models/recursive-dynamics.md`) is designed to surface rather
+than hide. Add a `retirement={2035: 0.2}` to strand 20% of the capital in one year (e.g. fossil assets
+under a carbon shock) and watch the path drop.
+
+> **Scope, honestly.** This is the **closed/gov single-region** CGE for now (open/multi-region capital
+> accumulation is a follow-up), and magnitudes are illustrative on the toy calibration. The value is the
+> **mechanism** — a static CGE turned into a capital-carrying path — which is the backbone the NGFS and
+> climate pathway stack (Phase 7.2/7.3) build on. See `docs/models/recursive-dynamics.md`.
+
+---
+
 ## Where to go next
 
 - **The method, to equation level:** [`docs/models/io-price-model.md`](models/io-price-model.md)
