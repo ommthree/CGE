@@ -410,13 +410,22 @@ account and 5d.5's energy nest to harmonize NGFS pathways against).
 
 ### Phase 6 — Nature extension via ENCORE (3–6 wk) — parallel with P4/P5
 
-**Status: 6.1–6.5 BUILT, but the nature→macroeconomy pathway is EXPERIMENTAL, not sign-off complete**
-(`src/cge/nature/`, model doc `docs/models/nature-encore.md`). An independent review (2026-08-07)
-found six real P1s; the correctness bugs among them are FIXED (carbon+productivity emissions/revenue
-identity, exposure precondition guards, the GUI variant + regional-shock compounding, impact-kind
-rejection, honest synthetic-fixture labelling, ruff-format gate), but two methodological/architecture
-items are still open (see below), so nature results should stay **explicitly illustrative** and are
-NOT for consulting use yet.
+**Status: 6.1–6.5 BUILT and MERGED to main (2026-08-15). Hardened through ELEVEN independent review
+rounds to no P0/P1/P2** (`src/cge/nature/`, model doc `docs/models/nature-encore.md`). The engineering
+pathway is complete on real data: real May-2026 ENCORE KB → real EXIOBASE↔ENCORE concordance
+(completed over all 163 ixi industries) → a product→industry→ENCORE bridge weighted by the **observed
+EXIOBASE MRSUT supply matrix** (vendored, provenance-stamped, byte-reproducible artifact +
+`ProductBridgeAudit`) → exposure → per-engine incidence → time-path-aware shock → engine → standard
+runner provenance → store persistence. Explicit `system=pxp|ixi` dispatch, complete-coverage gate,
+`auto|required|off` attach policy, year-bound artifacts with provenance-visible fallback, strict
+artifact validation, and full nature provenance in the run manifest. 627 tests, 64/64 validation.
+
+**Remaining before consulting sign-off is METHODOLOGY, not plumbing** (see the numbered list below):
+the concordance is equal-weighted; the severity→productivity mapping is a scenario assumption
+(ENCORE = *potential* significance, not calibrated elasticity); service interactions / regional
+weights / cross-model sensitivity uncalibrated; the pressure/impact channel is ingested but unconsumed.
+So nature results stay **explicitly illustrative**, NOT for consulting use yet — but the code path is
+sound and merged.
 
 ENCORE ingestion + the documented materiality→numeric scale (a **synthetic/expert-designed** ramp,
 NOT a published DNB value), the ENCORE↔economy concordance via the P1 framework, and the exposure
