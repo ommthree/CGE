@@ -328,6 +328,14 @@ def run_scenario(
 ) -> ResultSet:
     engine = registry.get(scenario.engine)
 
+    # Expand any Phase-6b physical state pathways (scenario.nature_state) into NatureStress shocks,
+    # so a scenario file can express a physical degradation trajectory rather than a bare severity
+    # number (Phase 6b.3). The runner then treats them exactly like hand-written NatureStress.
+    if scenario.nature_state:
+        scenario = scenario.model_copy(
+            update={"shocks": scenario.expanded_shocks(scenario.years), "nature_state": []}
+        )
+
     # NatureStress is not consumed by engines directly — it is translated to ProductivityShocks here
     # (the auditable step), so support is checked on the TRANSLATED shocks below, not the raw ones.
     from cge.contracts.shocks import NatureStress
