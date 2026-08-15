@@ -15,7 +15,18 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `scripts` importable
-from scripts.build_supply_shares import _read_meta, build_supply_shares  # noqa: E402
+from scripts.build_supply_shares import (  # noqa: E402
+    _read_meta,
+    build_supply_shares,
+    export_product_bridge_audit,
+)
+
+try:
+    from cge.nature.real import encore_data_available
+
+    _HAS_ENCORE = encore_data_available()
+except Exception:  # pragma: no cover
+    _HAS_ENCORE = False
 
 
 def _tiny_mrsut(tmp_path: Path, *, year: int = 2019, vers: str = "20210125") -> str:
@@ -79,3 +90,17 @@ def test_generator_year_crosscheck_passes_when_matching(tmp_path):
     mrsut = _tiny_mrsut(tmp_path, year=2019)
     art = build_supply_shares(mrsut, str(tmp_path / "o.json"), year=2019)
     assert art["provenance"]["sut_year"] == 2019
+
+
+@pytest.mark.skipif(not _HAS_ENCORE, reason="vendored ENCORE data (data/encore/) not present")
+def test_export_product_bridge_audit_from_generated_shares(tmp_path):
+    """export_product_bridge_audit must build the audit from the GIVEN shares file (this run's
+    output), not a hard-coded vendored artifact (review P3 round 10 — the generator-test module
+    previously never invoked it). Uses the REAL 2019 shares so the ENCORE bridge resolves."""
+    audit_out = tmp_path / "audit.json"
+    export_product_bridge_audit(str(audit_out), shares_path="data/exiobase/supply_shares_2019.json")
+    data = json.loads(audit_out.read_text())
+    # 184 products by observed supply share + 16 zero-supply fallbacks = 200 entries.
+    assert data["n_supply_share"] == 184
+    assert data["n_fallback"] == 16
+    assert data["entries"]["Motor Gasoline"]["method"] == "supply-share"

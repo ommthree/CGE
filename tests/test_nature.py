@@ -868,6 +868,37 @@ def test_supply_shares_sut_year_identity_is_enforced():
 
 
 @_needs_supply_shares
+def test_supply_shares_require_complete_provenance():
+    """The provenance object, an integer sut_year, and a non-empty sut_version must all be present —
+    so the year-identity check can't be bypassed by simply omitting them (review P2 round 10)."""
+    from cge.nature.real import SupplyShareValidationError, load_supply_shares
+
+    base = _read_json("data/exiobase/supply_shares_2019.json")
+
+    def _mutate(fn):
+        art = _read_json("data/exiobase/supply_shares_2019.json")
+        fn(art)
+        return art
+
+    # sut_year missing / non-integer.
+    for mut in (
+        lambda a: a["provenance"].pop("sut_year"),
+        lambda a: a["provenance"].__setitem__("sut_year", "twenty-nineteen"),
+    ):
+        with pytest.raises(SupplyShareValidationError, match="sut_year"):
+            load_supply_shares(2019, path=tmp_json(_mutate(mut)))
+    # sut_version empty.
+    empty_ver = _mutate(lambda a: a["provenance"].__setitem__("sut_version", ""))
+    with pytest.raises(SupplyShareValidationError, match="sut_version"):
+        load_supply_shares(2019, path=tmp_json(empty_ver))
+    # provenance object missing entirely.
+    no_prov = dict(base)
+    no_prov.pop("provenance")
+    with pytest.raises(SupplyShareValidationError, match="provenance"):
+        load_supply_shares(2019, path=tmp_json(no_prov))
+
+
+@_needs_supply_shares
 def test_supply_shares_year_binding_falls_back_visibly():
     """A build year without its own artifact falls back to the default year, but the mismatch is
     recorded in provenance — never silent (review P2 round 8 2026-08-14)."""
@@ -1662,10 +1693,40 @@ def test_build_partial_coverage_is_a_hard_error_not_a_silent_subset(tmp_path):
 
     covered = list(real_encore_concordance()[0].weights)[:2]
     labels = [*covered, "NOT_AN_EXIOBASE_SECTOR"]
-    # 'auto' still rejects a partial match (it is a real defect, not optional-data absence).
+    # 'auto' still rejects a PARTIAL match — some real EXIOBASE labels + a junk one — as a hard
+    # error, not a silent skip (it is a real defect, not optional-data absence). The vocabulary
+    # pre-check now catches this before any concordance is built (review P2 round 10).
     for policy in ("auto", "required"):
-        with pytest.raises(NatureAttachError, match="covers only"):
+        with pytest.raises(NatureAttachError, match="not EXIOBASE labels|covers only"):
             _nature_for_sectors(labels, policy=policy)
+
+
+@_needs_encore
+@_needs_supply_shares
+def test_ambiguous_subset_requires_explicit_system():
+    """A subset of ONLY names shared by the pxp and ixi classifications (whose concordance vectors
+    differ) is ambiguous: system=None must REJECT it, and an explicit system must pick the matching
+    concordance's vectors (review P2 round 10 2026-08-15)."""
+    from cge.data.build import NatureAttachError, _nature_for_sectors
+    from cge.nature.real import (
+        real_encore_concordance_industries,
+        real_encore_concordance_products,
+    )
+
+    ind, _ = real_encore_concordance_industries()
+    prod, _ = real_encore_concordance_products()
+    shared = set(ind.weights) & set(prod.weights)
+    overlap = [n for n in shared if ind.weights[n] != prod.weights[n]]
+    assert overlap  # there ARE names shared with differing vectors (e.g. N-fertiliser)
+    sub = overlap[:4]
+
+    with pytest.raises(NatureAttachError, match="ambiguous"):
+        _nature_for_sectors(sub, policy="required", reference_year=2019)  # system=None → reject
+
+    _e, conc_pxp = _nature_for_sectors(sub, policy="required", reference_year=2019, system="pxp")
+    assert all(conc_pxp.weights[n] == prod.weights[n] for n in sub)
+    _e, conc_ixi = _nature_for_sectors(sub, policy="required", reference_year=2019, system="ixi")
+    assert all(conc_ixi.weights[n] == ind.weights[n] for n in sub)
 
 
 def test_build_test_skips_nature_cleanly_when_labels_not_exiobase(tmp_path):

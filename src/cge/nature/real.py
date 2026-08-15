@@ -153,27 +153,50 @@ class SupplyShareValidationError(ValueError):
     degrade a build back to the code-prefix methodology (review P2 round 8 2026-08-14)."""
 
 
-def _valid_industry_vocab() -> set[str]:
+def exiobase_industry_labels() -> set[str]:
+    """The 163 EXIOBASE ixi (industry) ``ExioName`` labels from pymrio's classification."""
     import pymrio
 
     return {str(x).strip() for x in pymrio.get_classification("exio3_ixi").sectors["ExioName"]}
 
 
-def _valid_product_vocab() -> set[str]:
+def exiobase_product_labels() -> set[str]:
+    """The 200 EXIOBASE pxp (product) ``ExioName`` labels from pymrio's classification."""
     import pymrio
 
     return {str(x).strip() for x in pymrio.get_classification("exio3_pxp").sectors["ExioName"]}
 
 
+# Back-compat internal aliases (used by the artifact validator below).
+_valid_industry_vocab = exiobase_industry_labels
+_valid_product_vocab = exiobase_product_labels
+
+
 def _validate_supply_share_artifact(art: dict, source: str) -> None:
     """Reject a malformed artifact instead of letting it silently degrade the bridge (P2 round 8).
 
-    Checks: (1) shares and zero_supply_products partition the EXIOBASE products DISJOINTLY and
-    EXACTLY equal pymrio's 200 pxp product names — an identity check, not merely a count (review P2
-    round 9 2026-08-15: a fake product name preserving the count would otherwise slip through and
-    silently become a prefix fallback); (2) every producing industry is in the 163-industry
+    Checks: (0) a provenance OBJECT with an integer ``sut_year`` and a non-empty ``sut_version``
+    (review P2 round 10 2026-08-15 — these must be present so the year-identity check can't be
+    bypassed by simply omitting them); (1) shares and zero_supply_products partition the EXIOBASE
+    products DISJOINTLY and EXACTLY equal pymrio's 200 pxp product names — an identity check, not
+    merely a count (review P2 round 9); (2) every producing industry is in the 163-industry
     vocabulary; (3) each product's weights are finite, non-negative, and sum to 1."""
-    prov = art.get("provenance", {})
+    prov = art.get("provenance")
+    if not isinstance(prov, dict):
+        raise SupplyShareValidationError(f"{source}: 'provenance' missing or not an object")
+    try:
+        sut_year = int(prov["sut_year"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SupplyShareValidationError(
+            f"{source}: provenance.sut_year must be an integer year; got "
+            f"{prov.get('sut_year')!r} ({exc})"
+        ) from exc
+    prov["sut_year"] = sut_year  # normalise to int for the downstream identity check
+    sut_version = prov.get("sut_version")
+    if not isinstance(sut_version, str) or not sut_version.strip():
+        raise SupplyShareValidationError(
+            f"{source}: provenance.sut_version must be a non-empty string; got {sut_version!r}"
+        )
     shares = art.get("shares")
     if not isinstance(shares, dict):
         raise SupplyShareValidationError(f"{source}: 'shares' missing or not an object")
@@ -253,13 +276,21 @@ def load_supply_shares(
         art = json.load(fh)
     _validate_supply_share_artifact(art, source=str(p))
     prov = dict(art.get("provenance", {}))
-    # Year IDENTITY check (review P2 round 9 2026-08-15): the artifact's own sut_year must equal the
-    # year we resolved to — the requested year, or the fallback default year when a fallback fired.
-    # This catches a file whose NAME/requested year disagrees with its CONTENT (e.g. a 2020-named
-    # file carrying sut_year 2019 with no fallback recorded), which the name check alone misses.
-    sut_year = prov.get("sut_year")
-    expected_year = _DEFAULT_SUPPLY_SHARE_YEAR if fell_back_year is not None else year
-    if expected_year is not None and sut_year is not None and int(sut_year) != int(expected_year):
+    # Year IDENTITY check (review P2 round 9/10 2026-08-15): the artifact's own sut_year (guaranteed
+    # a present int by the validator) must equal the year we resolved to — the requested year, the
+    # fallback default when a fallback fired, or the DEFAULT year when loading the vendored default
+    # artifact (year=None, no path). This catches a file whose name/requested year disagrees
+    # with its CONTENT (e.g. a 2020-named file carrying sut_year 2019 with no fallback recorded).
+    sut_year = int(prov["sut_year"])
+    if fell_back_year is not None:
+        expected_year = _DEFAULT_SUPPLY_SHARE_YEAR
+    elif year is not None:
+        expected_year = year
+    elif path is None:
+        expected_year = _DEFAULT_SUPPLY_SHARE_YEAR  # loading the default vendored artifact
+    else:
+        expected_year = None  # arbitrary caller-supplied path with no year expectation
+    if expected_year is not None and sut_year != int(expected_year):
         raise SupplyShareValidationError(
             f"{p}: artifact sut_year {sut_year} does not match the resolved year {expected_year} "
             f"(requested {year}, fallback {fell_back_year}). The file's content and its "
@@ -285,10 +316,12 @@ def real_encore_concordance_products(
     (product labels). This bridges each product to its producing ixi industry(ies) and averages the
     industry concordance onto the products. The producing-industry weights come from the **observed
     EXIOBASE MRSUT supply shares** when the vendored artifact is present (review P1-method round 7
-    2026-08-14) — so, e.g., the biofuels no longer receive byte-identical prefix-inferred weights;
-    products with no market supply (and any product not in the artifact) fall back to the
-    classification-prefix method. When the artifact is absent, the whole bridge uses the prefix
-    method (the round-6 behaviour), so nature still runs without the multi-GB download.
+    2026-08-14) — so, e.g., the biofuels no longer receive byte-identical prefix-inferred weights.
+    Only the products the artifact explicitly lists as having no market supply (its
+    ``zero_supply_products``) fall back to the code-prefix method; a product *missing* from
+    an otherwise-present artifact is not a fallback — ``load_supply_shares`` rejects such a file
+    (review P2 round 9). When the artifact is wholly ABSENT, the whole bridge uses the prefix method
+    (the round-6 behaviour), so nature still runs without the multi-GB download.
 
     Returns ``(ConcordanceMap, uncovered_products)`` (or, with ``with_audit=True``,
     ``(ConcordanceMap, uncovered_products, ProductBridgeAudit)``) — a product whose producing

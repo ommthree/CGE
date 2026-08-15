@@ -50,7 +50,13 @@ class NatureAttachError(RuntimeError):
     but the ENCORE data cannot be loaded / does not cover the build's sectors."""
 
 
-def _nature_for_sectors(sector_labels, *, policy: str = "auto", reference_year: int | None = None):
+def _nature_for_sectors(
+    sector_labels,
+    *,
+    policy: str = "auto",
+    reference_year: int | None = None,
+    system: str | None = None,
+):
     """Return ``(EncoreDependencies, ConcordanceMap)`` covering **every** sector in
     ``sector_labels``, or ``(None, None)`` when nature is legitimately absent.
 
@@ -59,6 +65,14 @@ def _nature_for_sectors(sector_labels, *, policy: str = "auto", reference_year: 
     other 187 at run time. Here the build's sectors must be either all EXIOBASE **industry** labels
     OR all EXIOBASE **product** (pxp) labels the product bridge covers; a partial match is a hard
     error under ``required``/``auto`` rather than a silent partial persist.
+
+    ``system`` (review P2 round 10 2026-08-15) says which EXIOBASE classification the labels are:
+    ``"pxp"`` (products → product bridge) or ``"ixi"`` (industries → industry concordance). The live
+    build knows this, so ``build_exiobase`` passes it. When ``system`` is ``None`` (a generic
+    build), the classification is INFERRED from the pxp/ixi vocabularies — but 13 EXIOBASE names
+    occur in BOTH classifications (12 with different concordance vectors), so a SUBSET consisting
+    only of those ambiguous names is REJECTED (rather than silently defaulting to one classification
+    and taking the wrong vectors); the caller must pass ``system``.
 
     ``policy`` (review P2 round 6):
       * ``off``    — never attach (returns ``(None, None)``).
@@ -69,6 +83,8 @@ def _nature_for_sectors(sector_labels, *, policy: str = "auto", reference_year: 
       * ``required`` — like ``auto`` but any failure to attach (absent data included) raises."""
     if policy == "off":
         return None, None
+    if system not in (None, "pxp", "ixi"):
+        raise ValueError(f"system must be None|'pxp'|'ixi', got {system!r}")
     labels = list(sector_labels)
     try:
         from cge.nature.real import encore_data_available
@@ -84,6 +100,50 @@ def _nature_for_sectors(sector_labels, *, policy: str = "auto", reference_year: 
                 "ENCORE data absent (data/encore/) but attach policy is 'required'"
             )
         return None, None
+
+    # Decide the classification BEFORE loading any concordance, so a non-EXIOBASE build (or an
+    # ixi build) never touches the product/supply-share artifact (review P3 round 9/10). It uses
+    # the lightweight pxp/ixi label VOCABULARIES, not the built concordances.
+    from cge.nature.real import exiobase_industry_labels, exiobase_product_labels
+
+    ixi_vocab, pxp_vocab = exiobase_industry_labels(), exiobase_product_labels()
+    all_ixi = all(s in ixi_vocab for s in labels)
+    all_pxp = all(s in pxp_vocab for s in labels)
+    any_exiobase = any((s in ixi_vocab) or (s in pxp_vocab) for s in labels)
+
+    if system is None:
+        if not any_exiobase:
+            # No EXIOBASE labels at all (e.g. the offline test MRIO's 'sector1'…) — nature simply
+            # doesn't apply. That is legitimate absence, not a defect.
+            if policy == "required":
+                raise NatureAttachError(
+                    "build sectors are not EXIOBASE labels (industry or product); cannot attach "
+                    "nature under policy 'required'"
+                )
+            return None, None
+        if not all_ixi and not all_pxp:
+            # SOME but not all labels are EXIOBASE — a partial match. Fail loud (the same
+            # complete-or-nothing contract the concordance-coverage gate enforces below).
+            unknown = [s for s in labels if s not in ixi_vocab and s not in pxp_vocab]
+            raise NatureAttachError(
+                f"{len(unknown)}/{len(labels)} build sector(s) are not EXIOBASE labels "
+                f"(e.g. {unknown[:5]}); nature needs a fully EXIOBASE-classified build. Fix the "
+                "labels or set the attach policy to 'off'."
+            )
+        if all_ixi and all_pxp:
+            # AMBIGUOUS: every label is one of the 13 names shared by both classifications, whose
+            # concordance vectors differ. Guessing would silently pick the wrong one (P2 round 10).
+            # The caller must disambiguate with an explicit system.
+            raise NatureAttachError(
+                f"the build's {len(labels)} sector label(s) are all names shared by the EXIOBASE "
+                "product AND industry classifications, whose concordance vectors differ — the "
+                "classification is ambiguous. Pass system='pxp' or system='ixi' (build_exiobase "
+                "does this) so the correct concordance is selected."
+            )
+        resolved_system = "ixi" if all_ixi else "pxp"
+    else:
+        resolved_system = system
+
     # Data is present. Under 'auto' a load/validation failure now is a genuine defect (corrupt CSV,
     # schema drift) — surface it, don't disguise it as "optional data absent" (review P2 round 6).
     from cge.nature.real import (
@@ -94,40 +154,17 @@ def _nature_for_sectors(sector_labels, *, policy: str = "auto", reference_year: 
 
     try:
         dep = real_encore_dependencies()
-        # Completed 163-industry concordance (crosswalk-missing residual filled via NACE siblings),
-        # so a direct system="ixi" build attaches over the FULL classification (review P2 round 7).
-        industry_cmap, _filled = real_encore_concordance_industries()
+        if resolved_system == "ixi":
+            # Completed 163-industry concordance (crosswalk-missing residual filled via NACE
+            # siblings), so a direct system="ixi" build attaches over the FULL classification.
+            full_cmap, _filled = real_encore_concordance_industries()
+        else:
+            # Year-bind the product bridge's supply shares to the build's reference year: a 2020
+            # build must not silently use 2019 shares. load_supply_shares records a year_fallback in
+            # the provenance if the year has no artifact (review P2 round 8 2026-08-14).
+            full_cmap, _uncovered = real_encore_concordance_products(year=reference_year)
     except Exception as exc:  # present-but-broken → always an error (auto and required)
         raise NatureAttachError(f"ENCORE data present but failed to load: {exc}") from exc
-
-    # Pick the label space that covers the build BEST: the industry-keyed concordance or the product
-    # (pxp) bridge. A few names appear in both spaces, so choose by coverage count, not "any hit" —
-    # a pxp build has ~13 incidental industry-name collisions but is fully covered by the product
-    # bridge (review P1 round 6).
-    #
-    # SHORT-CIRCUIT (review P3 round 9 2026-08-15): only construct the product bridge when it is
-    # actually needed. An ixi build whose labels ALL match the industry concordance never touches
-    # the product/supply-share artifact, so a damaged pxp artifact cannot block an otherwise
-    # independent ixi build; and a non-EXIOBASE build (offline test MRIO) skips the bridge entirely.
-    industry_hits = sum(1 for s in labels if s in industry_cmap.weights)
-    if industry_hits == len(labels):
-        full_cmap = industry_cmap
-    else:
-        # Year-bind the product bridge's supply shares to the build's reference year: a 2020 build
-        # must not silently use 2019 shares. load_supply_shares records a year_fallback in the
-        # provenance if the year has no artifact (review P2 round 8 2026-08-14).
-        product_cmap, _uncovered = real_encore_concordance_products(year=reference_year)
-        product_hits = sum(1 for s in labels if s in product_cmap.weights)
-        if industry_hits == 0 and product_hits == 0:
-            # No EXIOBASE labels at all (e.g. the offline test MRIO's 'sector1'…) — nature simply
-            # doesn't apply. That is legitimate absence, not a defect.
-            if policy == "required":
-                raise NatureAttachError(
-                    "build sectors are not EXIOBASE labels (industry or product); cannot attach "
-                    "nature under policy 'required'"
-                )
-            return None, None
-        full_cmap = product_cmap if product_hits >= industry_hits else industry_cmap
 
     missing = [s for s in labels if s not in full_cmap.weights]
     if missing:  # PARTIAL EXIOBASE coverage — the P1 defect. Fail loud, never persist a subset.
@@ -163,10 +200,15 @@ def build_from_pymrio(
     currency: str = "EUR",
     monetary_unit: str = "MEUR",
     attach_nature: str = "auto",
+    nature_system: str | None = None,
 ) -> dict[str, str]:
     """Adapt, quality-check, store a full build and (optionally) a derived small build.
 
     Returns a dict of {'full': build_id, 'small': build_id?} actually written.
+
+    ``nature_system`` (``"pxp"``/``"ixi"``/``None``) tells the nature attachment which EXIOBASE
+    classification the sector labels are, so the right (product vs industry) concordance is selected
+    without name-collision ambiguity (review P2 round 10 2026-08-15); ``build_exiobase`` passes it.
 
     ``attach_nature`` is an ``auto|required|off`` **policy** (review P2 round 6 2026-08-14; replaces
     the earlier bool that swallowed every failure). When nature attaches, the ENCORE dependency
@@ -215,7 +257,10 @@ def build_from_pymrio(
     # they are covered, so the build carries nature. None when labels aren't EXIOBASE or ENCORE data
     # is absent — nature is optional (review P1 round 5).
     full_encore, full_conc = _nature_for_sectors(
-        io.sectors.labels, policy=attach_nature, reference_year=reference_year
+        io.sectors.labels,
+        policy=attach_nature,
+        reference_year=reference_year,
+        system=nature_system,
     )
     store.save(
         meta=meta,
@@ -325,6 +370,9 @@ def build_exiobase(
         small_sector_map=sec_map,
         small_region_map=reg_map,
         concordance_id=DEFAULT_CONCORDANCE_VERSION,
+        # The live build KNOWS its classification, so pass it — nature selects the product vs
+        # industry concordance explicitly, no name-collision guessing (review P2 round 10).
+        nature_system=system,
     )
 
 
