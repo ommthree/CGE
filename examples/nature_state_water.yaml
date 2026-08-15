@@ -1,0 +1,29 @@
+# Physical nature-STATE scenario (Phase 6b): a modelled water-stock decline, not a bare severity.
+#
+# EXPERIMENTAL / ILLUSTRATIVE. On the built-in `toy` source this runs against a SYNTHETIC ENCORE
+# fixture and an illustrative toy state channel (`toy_water`), so every number is illustrative of the
+# METHOD, not calibrated nature risk. See docs/models/nature-state.md and docs/models/nature-encore.md.
+#
+#   cge run --scenario examples/nature_state_water.yaml --data toy
+#
+# The difference from examples/nature_stress_water.yaml (Phase 6): there, the author asserts
+# `severity: 0.4` directly. HERE the scenario specifies a PHYSICAL trajectory — the renewable water
+# stock (index, baseline 100) falls to 70 by 2040 — and Phase 6b derives the per-year severity from
+# the channel's documented state->severity response, then hands off to the same Phase-6 pipeline.
+name: "Water-stock decline (physical pathway)"
+description: >
+  The renewable water stock falls from baseline (100) to 70 by 2040 — a 30% shortfall. The toy_water
+  channel's proportional response turns that into a ~30% surface-water service degradation, which the
+  exposure layer scales per good (agriculture hardest). This is a modelled physical pathway, not an
+  assumed severity number.
+engine: partial_eq
+years: [2030, 2040]
+nature_state:
+  - channel: toy_water
+    states: {2030: 90, 2040: 70}   # physical water-stock index (baseline = 100)
+
+# Opt-in nonlinearity / recovery (documented, never silent) — e.g. a tipping point + slow recovery:
+#   - channel: toy_water
+#     states: {2030: 90, 2035: 45, 2040: 100}   # collapses then is restored
+#     recovery_rate: 5            # the SERVICE recovers <= 5 index pts/yr even as the stock rebounds
+# (a `degradation_rate:` form is also supported instead of `states:`)

@@ -567,6 +567,18 @@ the toy fixture for an offline demo.)
 
 ### Phase 6b — Physical nature-state and ecosystem-service scenario modelling (4–8 wk) — after P6
 
+**Status: BUILT (2026-08-15), EXPERIMENTAL.** `cge.nature.state` (`channels`/`baselines`/`pathways`/
+`translate_state`/`double_count`), model doc `docs/models/nature-state.md`, `nature_state` validation
+suite (5 checks, part of 69/69), Step 9 of the user guide + runnable `examples/nature_state_water.yaml`.
+All of 6b.1–6b.5 delivered: five cited state channels (water, pollination, soil, forestry, fisheries);
+scenario-driven degradation/restoration pathways with opt-in recovery hysteresis; a documented linear
+state→severity response with an opt-in convex tipping-point threshold; translation into the existing
+Phase-6.4 `NatureStress` vocabulary (so a scenario expresses a *physical pathway*, not a bare severity
+number — wired into `Scenario.nature_state` YAML + the runner); and the 6b.5 double-counting
+reconciliation rule + automated check vs Phase-7c climate channels. Magnitudes stay **illustrative of
+the method** (baselines cited, but sensitivities/response shapes are scenario assumptions), exactly
+like 6.4 and 7.4.
+
 Phase 6 gives **exposure**: which sectors depend on which ecosystem services, and by how much.
 Phase 6b adds the missing **state** layer: a physical model of the ecosystem services themselves,
 so a "30% pollination decline" scenario is a modelled physical trajectory, not an assumed number

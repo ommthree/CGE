@@ -9,10 +9,12 @@ pass-through; **Engine 2 (`partial_eq`)**, production-**volume** response; and *
 (Armington/CET, carbon leakage), **CES value added**, elasticity sweeps and **multiple regions**
 (bilateral trade), plus the **macro closure** (a government/fiscal account, savings-investment, and a
 KL-E-M energy nest) — plus **macro aggregates** (GVA/GDP/deflators, real vs nominal) on every run, a
-data layer (build, store, quality), and a web GUI. The **nature (ENCORE) extension** is built and
-demonstrable in the GUI but **explicitly experimental** (illustrative synthetic ratings, with a
-methodological/provenance follow-up outstanding — see [`roadmap.md`](../roadmap.md) Phase 6); the
-pathway stack is planned. This guide covers the economic engines that run now.
+data layer (build, store, quality), and a web GUI. The **nature (ENCORE) extension** — ecosystem-
+service exposure (Phase 6) and a physical nature-state layer (Phase 6b) — is built and has its own
+walkthrough in **Step 9**; it runs end-to-end but is **explicitly experimental** (magnitudes
+illustrative of the method, not calibrated risk — see [`roadmap.md`](../roadmap.md) Phase 6/6b). The
+pathway stack (recursive dynamics, NGFS, climate) is planned. This guide covers everything that runs
+now, engines and nature alike.
 
 This guide **teaches the economics as it goes** — each idea (a Leontief inverse, a numéraire,
 revenue recycling, carbon leakage, factor substitution) is explained from first principles the first
@@ -232,7 +234,7 @@ never makes it into the store.
 **USD** (the pymrio fixture's real currency). Engine 1 applies a euro-specific cost-share scaling and
 therefore **refuses a non-EUR build** — this is correct behaviour, not a bug: it would rather reject
 the run than return a wrongly-scaled number. So the `--test` build is for exercising the **data layer**
-(build → store → quality → the Explorer in Step 9), while a *priced* `io_price`/`partial_eq` run needs
+(build → store → quality → the Explorer in Step 10), while a *priced* `io_price`/`partial_eq` run needs
 a **EUR** build, which the live EXIOBASE build (Step 6) provides. You can still point a run at a build
 with `--data <build_id>`:
 
@@ -618,7 +620,96 @@ output fall faster than total output — the difference is the fuel switching.
 
 ---
 
-## Step 9 — The web GUI (full tour)
+## Step 9 — Nature: ecosystem-service risk (Phase 6 & 6b)
+
+So far every shock has been about *carbon* — a price on emissions, an energy-cost change. The other
+half of the platform is **nature**: the economy also depends on *ecosystem services* (pollination,
+fresh water, soil quality, forest and fish stocks), and degrading them hits output too. This step has
+two parts: **9a** shows how a nature shock propagates (Phase 6, *exposure*), and **9b** replaces the
+assumed shock number with a *modelled physical trajectory* (Phase 6b, *state*).
+
+> **Read this first — scope.** On the offline `toy` source, nature runs against a **synthetic ENCORE
+> fixture** with simplified service labels, so every number is **illustrative of the method**, not
+> calibrated risk. The real machinery uses the actual ENCORE knowledge base and a real
+> EXIOBASE↔ENCORE concordance (see `docs/models/nature-encore.md`), but the *magnitudes* stay
+> illustrative until channel-by-channel calibration. Treat this as "what the mechanism does," not "how
+> big it is."
+
+### 9a — Exposure: a degradation you assert (Phase 6)
+
+A `nature_stress` shock names an ecosystem **service** and a **severity** (the fraction of it lost).
+The model translates that into per-good productivity hits, **scaled by each good's dependence** on
+that service — computed from ENCORE ratings, both directly and through the supply chain. Agriculture
+depends on water directly; food manufacturing inherits much of its exposure through its agricultural
+inputs. That "direct + upstream" propagation reuses the same input-output machinery as Engine 2.
+
+```bash
+$ cge run --scenario examples/nature_stress_water.yaml --data toy
+```
+
+The scenario asserts a 40% surface-water decline. Read the volume response: **agriculture is hit
+hardest** (fully water-dependent), **manufacturing less** (its exposure is inherited, not direct). The
+run manifest records the full nature provenance — the ENCORE and concordance hashes, the materiality
+scale, the exposure rule, the incidence — so the result is reconstructible.
+
+The one thing to notice for 9b: **the `severity: 0.4` is an assumption the author typed in.** Where
+did 40% come from? Nothing in 9a models it — it is a bare number.
+
+### 9b — State: a degradation you *model* (Phase 6b)
+
+Phase 6b sits one layer upstream and answers "where does the severity come from?" by modelling the
+**physical state** of the service itself — a water stock, a pollinator-abundance index, a soil-quality
+index, timber and fish stocks — with a **baseline** from published environmental accounts (AQUASTAT,
+IPBES, FAO). A scenario then specifies a *physical trajectory* for that state, and the model derives
+the severity from a documented **state → severity response** (linear by default: a 30% stock shortfall
+is a 30% service loss, before exposure weighting).
+
+Instead of `severity: 0.4`, the scenario says how the physical stock moves:
+
+```yaml
+nature_state:
+  - channel: toy_water
+    states: {2030: 90, 2040: 70}   # renewable water stock index (baseline = 100)
+```
+
+```bash
+$ cge run --scenario examples/nature_state_water.yaml --data toy
+```
+
+The water stock falls to 70% of baseline by 2040; the channel's response turns that into a ~30%
+surface-water service degradation *per year*, which then flows through the *same* Phase-6 exposure
+pipeline you saw in 9a. The scenario now expresses a **physical pathway**, not a guessed number — and
+because it is a per-year path, the hit grows as the stock declines.
+
+**Two things Phase 6b makes first-class (and never silent):**
+
+- **Tipping points.** The default response is linear, but a channel can opt into a **threshold**:
+  below a critical state fraction the damage turns *convex* (accelerates). You choose it explicitly;
+  the model never assumes a nonlinearity for you.
+- **Slow recovery.** Ecosystems don't rebound the instant you stop degrading them. A `recovery_rate`
+  makes the *service* recover only gradually even if the physical stock is restored overnight —
+  restoration lags degradation. Uncomment the block at the bottom of the example file to see a stock
+  that collapses and is restored, with the service still lagging behind.
+
+**Why keep 9a and 9b separate?** 9a is the *exposure* map (who depends on what) — that is the
+credibility surface, real ENCORE data. 9b is the *scenario driver* (how bad, and on what trajectory).
+Keeping them apart means you can trust the exposure structure while treating the physical pathway as
+the research-frontier assumption it is.
+
+> **Double-counting with climate.** Some nature mechanisms — water and soil stress — are *also*
+> physical-climate-risk pathways (heat, drought). When the climate-damage layer (Phase 7c) lands, a
+> scenario invoking both must not apply the same physical effect twice; Phase 6b already ships the
+> reconciliation rule and an automated check (`docs/models/nature-state.md` §double-counting) so this
+> is caught, not silently summed.
+
+> **Scope, honestly.** The channels, baselines, and response shapes are documented and cited, but the
+> magnitudes are **illustrative of the method**, exactly like the carbon-damage numbers in Phase 7.
+> The value here is the *chain* — physical state → service loss → exposure → output — made explicit
+> and auditable, not a calibrated forecast. See `docs/models/nature-state.md`.
+
+---
+
+## Step 10 — The web GUI (full tour)
 
 You've already used the GUI's Run and Results pages throughout Step 7. Here is the whole app — walk
 the pages left to right; they mirror this guide:
@@ -647,7 +738,7 @@ the pages left to right; they mirror this guide:
 
 ---
 
-## Step 10 — Trust the numbers: provenance and validation
+## Step 11 — Trust the numbers: provenance and validation
 
 Two habits make results defensible:
 

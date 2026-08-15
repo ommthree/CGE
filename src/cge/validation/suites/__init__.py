@@ -9,6 +9,7 @@ from cge.validation.suites import (  # noqa: F401
     io_price,
     macro,
     nature,
+    nature_state,
     partial_eq,
 )
 
@@ -20,4 +21,5 @@ __all__ = [
     "macro",
     "cge_static",
     "nature",
+    "nature_state",
 ]
