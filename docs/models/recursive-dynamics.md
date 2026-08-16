@@ -3,11 +3,13 @@
 - **Implements:** `cge.dynamics` (`recursive.py`), building on `cge.engines.cge_static.capital`
   (Phase 5d.3) and the engine's `factor_endowment_scale` hook.
 - **Roadmap phase:** 7.1 (needs 5d.3's capital-accumulation identity).
-- **Status: BUILT, single capital-region scope.** Runs end-to-end on the closed/gov CGE **and the
-  open economy** (Armington/CET + rest-of-world), both of which carry one aggregate capital stock; a
-  dynamic-capable open SAM (`toy_cge_open_gov`) ships. Multi-region capital accumulation (a
-  per-region capital path) is a documented follow-up. Magnitudes remain **illustrative** (toy
-  calibration), like the rest of the CGE tier.
+- **Status: BUILT, all three CGE variants.** Runs end-to-end on the closed/gov CGE, the open
+  economy (Armington/CET + rest-of-world) — both carrying one aggregate capital stock — **and the
+  multi-region CGE, which carries a per-region capital path** (each region's stock steps by its own
+  investment). Dynamic-capable SAMs ship for each: `toy_cge_gov`, `toy_cge_open_gov`,
+  `toy_cge_multi_gov`. Labour/productivity trends are exogenous and applied uniformly across regions
+  (region-specific trends are a follow-up). Magnitudes remain **illustrative** (toy calibration),
+  like the rest of the CGE tier.
 
 ## 1. What it is (and is not)
 
@@ -78,10 +80,13 @@ horizon, δ, trends, retirement, K₀, and the capital path.
 
 ## 6. Scope & honesty
 
-- **Single capital-region scope** — the closed/gov SAM and the open economy, both carrying one
-  aggregate capital stock (region-level capital, matching 5d.3's granularity). The open economy
-  needs a savings-investment account to be dynamic-capable (`toy_cge_open_gov`). Multi-region
-  capital accumulation (a per-region capital path) is a documented follow-up.
+- **All three CGE variants** — the closed/gov SAM and the open economy carry one aggregate capital
+  stock; the multi-region CGE carries a **per-region capital path**, each region's stock stepping by
+  its own investment (`K_{t+1,r}=(1−δ)(1−r)K_{t,r}+INV_{t,r}`, region-level capital matching 5d.3's
+  granularity). Any variant needs a savings-investment account to be dynamic-capable: `toy_cge_gov`,
+  `toy_cge_open_gov`, `toy_cge_multi_gov`.
+- **Labour/productivity trends are applied uniformly across regions** — region-specific demographic
+  and TFP trajectories are a documented follow-up (7b.2).
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
 - Productivity is Hicks-neutral on primary factors (not sector-specific TFP yet).
 - Magnitudes are illustrative (toy calibration); the value is the **mechanism** — a static CGE turned

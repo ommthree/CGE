@@ -2,8 +2,8 @@
 
 Covers the capital-carry loop, the accumulation identity across the path, exogenous labour/TFP
 trends, premature retirement (stranded assets), the result path + manifest provenance, and the
-guard rails (needs a capital + savings-investment SAM). Single capital-region scope — the closed/gov
-SAM and the open economy; the multi-region capital gate is a documented follow-up.
+guard rails (needs a capital + savings-investment SAM). All three CGE variants: the closed/gov SAM
+and the open economy (one aggregate stock), and the multi-region CGE (a per-region capital path).
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ def test_capital_accumulation_identity_holds_across_the_path():
     """Each step must satisfy K_{t+1} = (1−δ)·K_t + INV_t exactly (Phase 5d.3 identity)."""
     cfg = DynamicConfig(depreciation=0.05)
     path = run_recursive(_scenario([2025, 2030, 2035]), config=cfg, data_source="toy_cge_gov")
-    k0 = path.result.manifest.assumptions["recursive_dynamics"]["benchmark_capital_stock"]
-    k_prev = k0
+    # benchmark_capital_stock is a per-region list (one entry for the single aggregate stock here).
+    k_prev = path.result.manifest.assumptions["recursive_dynamics"]["benchmark_capital_stock"][0]
     for year in (2025, 2030, 2035):
         expected = float(capital_next(k_prev, path.investment[year], depreciation=0.05))
         assert path.capital_stock[year] == pytest.approx(expected, rel=1e-12)
@@ -91,8 +91,7 @@ def test_zero_trend_growth_matches_the_pure_capital_step():
     """With flat trends the only between-year change is capital; the growth rows equal the implied
     K path (a self-consistency check that the endowment scale and the identity agree)."""
     path = run_recursive(_scenario([2025, 2030, 2035]), data_source="toy_cge_gov")
-    k0 = path.result.manifest.assumptions["recursive_dynamics"]["benchmark_capital_stock"]
-    k_prev = k0
+    k_prev = path.result.manifest.assumptions["recursive_dynamics"]["benchmark_capital_stock"][0]
     for year in (2025, 2030, 2035):
         assert path.growth[year] == pytest.approx(
             path.capital_stock[year] / k_prev - 1.0, rel=1e-12
@@ -153,8 +152,7 @@ def test_open_capital_accumulation_identity_holds():
     """Each step satisfies K_{t+1} = (1−δ)·K_t + INV_t exactly on the open variant too."""
     cfg = DynamicConfig(depreciation=0.05)
     path = run_recursive(_scenario([2025, 2030, 2035]), config=cfg, data_source="toy_cge_open_gov")
-    k0 = path.result.manifest.assumptions["recursive_dynamics"]["benchmark_capital_stock"]
-    k_prev = k0
+    k_prev = path.result.manifest.assumptions["recursive_dynamics"]["benchmark_capital_stock"][0]
     for year in (2025, 2030, 2035):
         expected = float(capital_next(k_prev, path.investment[year], depreciation=0.05))
         assert path.capital_stock[year] == pytest.approx(expected, rel=1e-12)
@@ -186,22 +184,62 @@ def test_open_result_has_capital_path_rows_and_manifest():
     assert rd["horizon_years"] == [2025, 2030]
 
 
-def test_multi_region_capital_gate_is_a_documented_follow_up():
-    """A model reporting more than one capital region is rejected with a clear "follow-up" error,
-    rather than the scalar carry silently mis-stepping a per-region stock. Tested against the gate
-    directly (via a synthetic manifest), because no multi-region SAM with a savings-investment
-    account exists yet — building one is part of that same deferred follow-up (roadmap 7.1)."""
-    from types import SimpleNamespace
+# --- Multi-region variant (Phase 7.1 follow-up: a per-region capital path) -----------------------
+# The multi-region CGE carries one capital stock per region; each steps by its own investment. These
+# run on the dynamic-capable ``toy_cge_multi_gov`` SAM (per-region SAVINV accounts).
 
-    from cge.dynamics.recursive import _manifest_capital_stock
 
-    two_region = SimpleNamespace(
-        assumptions={
-            "capital_dynamics": {
-                "available": True,
-                "benchmark_capital_stock": [5.0, 4.0],  # two capital regions
-            }
-        }
+def test_multi_first_year_is_the_benchmark_per_region():
+    """Year 0 solves at the benchmark stock in every region, so with no shock each region's real GDP
+    change is 0 — the multi recursive path starts from the benchmark."""
+    path = run_recursive(_scenario([2025, 2030]), data_source="toy_cge_multi_gov")
+    d = path.result.data
+    regions = path.result.manifest.assumptions["recursive_dynamics"]["capital_regions"]
+    assert set(regions) == {"N", "S"}
+    for region in regions:
+        g = d[
+            (d["variable"] == "gdp_change_real")
+            & (d["scenario"] == "central")
+            & (d["year"] == 2025)
+            & (d["region"] == region)
+        ]
+        assert float(g["value"].iloc[0]) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_multi_capital_path_is_per_region():
+    """The path dicts carry one capital entry per region, and the accumulation identity
+    K_{t+1,r}=(1−δ)K_{t,r}+INV_{t,r} holds independently for each region."""
+    cfg = DynamicConfig(depreciation=0.05)
+    path = run_recursive(_scenario([2025, 2030, 2035]), config=cfg, data_source="toy_cge_multi_gov")
+    rd = path.result.manifest.assumptions["recursive_dynamics"]
+    k0 = np.asarray(rd["benchmark_capital_stock"], dtype=float)
+    assert k0.shape == (2,)  # two regions
+    k_prev = k0
+    for year in (2025, 2030, 2035):
+        inv = np.asarray(path.investment[year], dtype=float)
+        expected = capital_next(k_prev, inv, depreciation=0.05)
+        assert np.allclose(np.asarray(path.capital_stock[year]), expected, rtol=1e-12)
+        k_prev = np.asarray(path.capital_stock[year])
+
+
+def test_multi_result_has_per_region_capital_rows():
+    """The result carries a capital_stock / capital_growth row for EACH region per year."""
+    path = run_recursive(_scenario([2025, 2030]), data_source="toy_cge_multi_gov")
+    path.result.validate_schema()
+    d = path.result.data
+    cap = d[(d["variable"] == "capital_stock") & (d["year"] == 2030)]
+    assert set(cap["region"]) == {"N", "S"}
+
+
+def test_multi_region_specific_capital_scaling_diverges():
+    """Because each region carries its own stock, regions with different benchmark growth diverge:
+    the capital path is genuinely per-region, not a shared aggregate applied everywhere."""
+    path = run_recursive(_scenario([2025, 2035]), data_source="toy_cge_multi_gov")
+    # N and S have different implied benchmark growth, so their year-2035 stock RATIOS to benchmark
+    # differ — a shared scalar carry would move them identically.
+    k0 = np.asarray(
+        path.result.manifest.assumptions["recursive_dynamics"]["benchmark_capital_stock"]
     )
-    with pytest.raises(ValueError, match="capital region|Multi-region|follow-up"):
-        _manifest_capital_stock(two_region)
+    k_end = np.asarray(path.capital_stock[2035])
+    ratios = k_end / k0
+    assert not np.isclose(ratios[0], ratios[1])

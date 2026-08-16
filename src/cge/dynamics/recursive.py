@@ -23,11 +23,15 @@ simplification; a genuine sector-level TFP term is a follow-up).
 
 Results are reported per year **relative to the original benchmark**, so capital accumulation and
 the trends are VISIBLE in the level path (a growing stock raises output vs the benchmark). The
-wrapper adds ``capital_stock`` and ``capital_growth`` result rows. Scope: any **single
-capital-region** variant — the closed/gov SAM and the **open** economy (Armington/CET + rest of
-world), both of which carry one aggregate capital stock (matching 5d.3). A dynamic-capable open SAM
-needs a savings-investment account (``toy_cge_open_gov``). Multi-region capital accumulation (a
-per-region capital path) is the remaining follow-up (roadmap 7.1).
+wrapper adds ``capital_stock`` and ``capital_growth`` result rows (one per region).
+
+**Scope: all three CGE variants.** The closed/gov SAM and the open economy (Armington/CET + rest of
+world) carry one aggregate capital stock; the multi-region CGE carries a **per-region capital path**
+— each region's stock steps by its own investment, ``K_{t+1,r}=(1−δ)(1−r)K_{t,r}+INV_{t,r}``, and
+the ``factor_endowment_scale`` hook moves each region's capital independently. Any variant needs a
+savings-investment account to be dynamic-capable: ``toy_cge_gov`` (closed), ``toy_cge_open_gov``
+(open), ``toy_cge_multi_gov`` (multi). Labour and productivity trends are exogenous and applied
+uniformly across regions (a documented simplification; region-specific trends are a follow-up).
 """
 
 from __future__ import annotations
@@ -69,39 +73,59 @@ class DynamicConfig:
 
 @dataclass
 class DynamicPath:
-    """The result of a recursive-dynamic run: the per-year ``ResultSet`` plus the capital path."""
+    """The result of a recursive-dynamic run: the per-year ``ResultSet`` plus the capital path.
+
+    The path dicts are keyed by year. For the single-region variants (closed/gov/open — one
+    aggregate capital stock) the values are **floats** (back-compatible). For the multi-region CGE
+    they are 1-D ``numpy`` arrays, one entry per region (ordered as ``recursive_dynamics
+    ['capital_regions']`` in the result manifest)."""
 
     result: ResultSet
-    capital_stock: dict[int, float]  # end-of-year stock K by year
-    investment: dict[int, float]  # nominal investment (share of benchmark GDP) by year
-    growth: dict[int, float]  # capital growth rate K_{t+1}/K_t − 1 by year
+    capital_stock: dict[int, float | np.ndarray]  # end-of-year stock K by year
+    investment: dict[int, float | np.ndarray]  # nominal investment (share of benchmark GDP) by year
+    growth: dict[int, float | np.ndarray]  # capital growth rate K_{t+1}/K_t − 1 by year
 
 
-def _manifest_capital_stock(manifest) -> float:
+def _manifest_capital(manifest) -> tuple[np.ndarray, list[str]]:
+    """The benchmark capital stock and the region labels it is ordered by, from the CGE manifest's
+    stock–flow bridge. Returns ``(K0, regions)`` where ``K0`` is a 1-D array (one entry per capital
+    region) and ``regions`` are the matching labels — ``["R"]`` for the single-region variants
+    (closed/gov/open, one aggregate stock), or the model's regions for the multi-region CGE."""
     cd = manifest.assumptions.get("capital_dynamics", {})
     if not cd.get("available"):
         raise ValueError(
             "recursive dynamics need a CGE with a capital factor AND a savings-investment account "
             f"(the benchmark stock–flow bridge is unavailable: {cd.get('reason', 'unknown')}). "
-            "Use a SAM with a SAVINV account, e.g. toy_cge_gov."
+            "Use a SAM with a SAVINV account, e.g. toy_cge_gov (or toy_cge_multi_gov)."
         )
-    k0 = cd["benchmark_capital_stock"]
-    if len(k0) != 1:
+    k0 = np.asarray(cd["benchmark_capital_stock"], dtype=float)
+    # The multi-region CGE stamps a 'regions' list ordered the same as the capital vector; the
+    # single-region variants (one aggregate stock) don't, and use the canonical "R" region label.
+    regions = list(manifest.assumptions.get("regions") or ["R"])
+    if len(regions) != len(k0):
         raise ValueError(
-            "recursive dynamics currently support the single capital-region CGE (closed/gov and "
-            f"open — one aggregate capital stock); this model has {len(k0)} capital regions. "
-            "Multi-region capital accumulation is a documented follow-up (roadmap 7.1)."
+            f"capital regions ({len(k0)}) do not match manifest regions {regions}; cannot map the "
+            "capital path to regions."
         )
-    return float(k0[0])
+    return k0, regions
 
 
-def _year_investment(res: ResultSet, year: int) -> float:
-    """That year's nominal investment (share of benchmark GDP) from a single-year ResultSet."""
+def _year_investment(res: ResultSet, year: int, regions: list[str]) -> np.ndarray:
+    """That year's nominal investment (share of benchmark GDP) per region, ordered by ``regions``.
+
+    The single-region variants report one ``investment`` row with region label ``R``; the multi CGE
+    reports one per region. Returns a 1-D array aligned to ``regions``."""
     d = res.data
     inv = d[(d["variable"] == "investment") & (d["scenario"] == "central") & (d["year"] == year)]
     if inv.empty:
         raise ValueError(f"no investment result for year {year}; the CGE reported none.")
-    return float(inv["value"].iloc[0])
+    by_region = dict(zip(inv["region"], inv["value"], strict=False))
+    missing = [r for r in regions if r not in by_region]
+    if missing:
+        raise ValueError(
+            f"no investment result for year {year} region(s) {missing}; got {sorted(by_region)}."
+        )
+    return np.array([float(by_region[r]) for r in regions], dtype=float)
 
 
 def run_recursive(
@@ -119,28 +143,32 @@ def run_recursive(
     config = config or DynamicConfig()
     years = sorted(scenario.years)
 
-    # K0 from the benchmark stock–flow bridge (a cheap no-shock probe run at the first year).
+    # K0 (per capital region) from the benchmark stock–flow bridge (a cheap no-shock probe run at
+    # the first year), plus the region labels the vector is ordered by.
     probe = run_scenario(
         scenario.model_copy(update={"shocks": [], "years": [years[0]]}),
         data_source=data_source,
         store=store,
     )
-    k0 = _manifest_capital_stock(probe.manifest)
+    k0, regions = _manifest_capital(probe.manifest)
+    multi = regions != ["R"]  # per-region capital path vs one aggregate stock
 
     frames: list[pd.DataFrame] = []
-    capital_stock: dict[int, float] = {}
-    investment: dict[int, float] = {}
-    growth: dict[int, float] = {}
+    capital_stock: dict[int, np.ndarray] = {}  # end-of-year stock K per region, by year
+    investment: dict[int, np.ndarray] = {}  # nominal investment (share of benchmark GDP) per region
+    growth: dict[int, np.ndarray] = {}  # capital growth rate K_{t+1}/K_t − 1 per region
 
-    k_t = k0
+    k_t = k0.copy()  # 1-D array, one entry per capital region
     for i, year in enumerate(years):
         labour_scale = (1.0 + config.labour_growth) ** i
         tfp_scale = (1.0 + config.productivity_growth) ** i
         # Capital and labour endowments scale to this year's stock/force; TFP is applied Hicks-
         # neutrally as an equivalent scale on both primary factors (documented simplification).
-        cap_scale = (k_t / k0) * tfp_scale
-        lab_scale = labour_scale * tfp_scale
-        overrides = {"factor_endowment_scale": {"CAP": cap_scale, "LAB": lab_scale}}
+        # Capital scale is PER REGION (each region carries its own stock); labour/TFP trends are
+        # exogenous and uniform across regions.
+        cap_scale = (k_t / k0) * tfp_scale  # 1-D array per region
+        lab_scale = labour_scale * tfp_scale  # scalar (uniform trend)
+        overrides = {"factor_endowment_scale": _factor_scale(cap_scale, lab_scale, regions, multi)}
 
         res = run_scenario(
             scenario.model_copy(update={"years": [year]}),
@@ -150,27 +178,27 @@ def run_recursive(
         )
         frames.append(res.data)
 
-        inv_share = _year_investment(res, year)  # nominal investment / benchmark GDP
+        inv_share = _year_investment(res, year, regions)  # per-region nominal investment / GDP0
         # Investment is a GDP-share flow; convert to the same units as K (the user-cost stock is in
         # capital-income units = GDP-normalised too, since gdp0 = benchmark income). INV in stock
         # units = inv_share · gdp0 / gdp0-scale — but K0 is already in those units, so inv_share is
-        # directly comparable to K0 (both GDP-normalised). Step the stock:
+        # directly comparable to K0 (both GDP-normalised). Step each region's stock:
         r_t = float(config.retirement.get(year, 0.0))
-        k_next = float(
-            capital_next(k_t, inv_share, depreciation=config.depreciation, retirement=r_t)
-        )
+        k_next = capital_next(k_t, inv_share, depreciation=config.depreciation, retirement=r_t)
 
         investment[year] = inv_share
         capital_stock[year] = k_next
         growth[year] = k_next / k_t - 1.0
         k_t = k_next
 
-    # Append the capital path as result rows so it flows through the ResultSet like any variable.
+    # Append the capital path as result rows (one per region) so it flows through the ResultSet like
+    # any variable.
     data = pd.concat(frames, ignore_index=True)
     extra = []
     for year in years:
-        extra.append(_rec("capital_stock", year, capital_stock[year]))
-        extra.append(_rec("capital_growth", year, growth[year]))
+        for ri, region in enumerate(regions):
+            extra.append(_rec("capital_stock", year, float(capital_stock[year][ri]), region))
+            extra.append(_rec("capital_growth", year, float(growth[year][ri]), region))
     data = pd.concat([data, pd.DataFrame(extra)], ignore_index=True)
 
     # Reuse the last year's manifest; stamp the dynamic configuration onto it.
@@ -178,30 +206,59 @@ def run_recursive(
     manifest.assumptions["recursive_dynamics"] = {
         "mode": "recursive_dynamic (bookkeeping between static solves; no perfect foresight)",
         "horizon_years": years,
+        "capital_regions": regions,
         "depreciation_rate": config.depreciation,
         "labour_growth": config.labour_growth,
         "productivity_growth": config.productivity_growth,
         "retirement": {int(k): float(v) for k, v in config.retirement.items()},
-        "benchmark_capital_stock": k0,
-        "capital_stock_path": {int(k): round(v, 12) for k, v in capital_stock.items()},
+        "benchmark_capital_stock": [round(float(x), 12) for x in k0],
+        "capital_stock_path": {
+            int(y): [round(float(x), 12) for x in capital_stock[y]] for y in years
+        },
         "note": (
             "Capital carried forward via K_{t+1}=(1−δ)(1−r)K_t+INV_t (Phase 5d.3); labour and TFP "
-            "are exogenous trends applied as endowment scales. Single capital-region scope "
-            "(closed/gov and open); multi-region capital accumulation is a follow-up."
+            "are exogenous trends applied as endowment scales. Single aggregate capital stock for "
+            "the closed/gov/open variants; a per-region capital path for the multi-region CGE."
         ),
     }
     result = ResultSet(data=data, manifest=manifest)
     result.validate_schema()
+    # For the single-region variants, expose the path dicts as scalars (back-compatible with the
+    # closed/open callers and tests); for multi, expose the per-region arrays.
     return DynamicPath(
-        result=result, capital_stock=capital_stock, investment=investment, growth=growth
+        result=result,
+        capital_stock=_unwrap(capital_stock, multi),
+        investment=_unwrap(investment, multi),
+        growth=_unwrap(growth, multi),
     )
 
 
-def _rec(variable: str, year: int, value: float) -> dict:
+def _factor_scale(cap_scale: np.ndarray, lab_scale: float, regions: list[str], multi: bool) -> dict:
+    """Build the ``factor_endowment_scale`` override for one year. Single-region: scalar factor
+    scales (``{"CAP": s, "LAB": s}``). Multi-region: per-region capital scales
+    (``{"CAP": {region: s}, "LAB": {region: s}}``) so each region's stock moves independently; the
+    labour/TFP trend is uniform, applied per region as the same value."""
+    if not multi:
+        return {"CAP": float(cap_scale[0]), "LAB": float(lab_scale)}
+    return {
+        "CAP": {r: float(cap_scale[ri]) for ri, r in enumerate(regions)},
+        "LAB": {r: float(lab_scale) for r in regions},
+    }
+
+
+def _unwrap(path: dict[int, np.ndarray], multi: bool) -> dict[int, float | np.ndarray]:
+    """Scalarise a single-region path (one capital region) for back-compatible float dict values;
+    leave the multi-region per-region arrays as-is."""
+    if multi:
+        return dict(path)
+    return {year: float(v[0]) for year, v in path.items()}
+
+
+def _rec(variable: str, year: int, value: float, region: str) -> dict:
     return {
         "variable": variable,
         "sector": "__economy__",
-        "region": "R",
+        "region": region,
         "year": int(year),
         "scenario": "central",
         "value": float(value),
