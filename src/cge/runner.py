@@ -64,6 +64,17 @@ def _toy_cge_multi() -> dict:
     }
 
 
+def _toy_cge_multi_gov() -> dict:
+    from cge.data.sam import toy_multi_gov_sam
+
+    # The multi SAM plus per-region government + savings-investment accounts, so the multi CGE has a
+    # per-region benchmark stock-flow bridge for the recursive-dynamic wrapper (Phase 7.1).
+    return {
+        "SAM": toy_multi_gov_sam(),
+        "carbon_cost_share": {"N": {"BRD": _TOY_DIRTY_SHARE}, "S": {"BRD": 0.0}},
+    }
+
+
 def _toy_cge_gov() -> dict:
     from cge.data.sam.toy_5d import toy_gov_sam
 
@@ -96,6 +107,7 @@ _CGE_TOY_SAMS = {
     "toy_cge_open": _toy_cge_open,
     "toy_cge_open_gov": _toy_cge_open_gov,
     "toy_cge_multi": _toy_cge_multi,
+    "toy_cge_multi_gov": _toy_cge_multi_gov,
     "toy_cge_gov": _toy_cge_gov,
     "toy_cge_energy": _toy_cge_energy,
 }
