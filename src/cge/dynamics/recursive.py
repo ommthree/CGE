@@ -23,8 +23,11 @@ simplification; a genuine sector-level TFP term is a follow-up).
 
 Results are reported per year **relative to the original benchmark**, so capital accumulation and
 the trends are VISIBLE in the level path (a growing stock raises output vs the benchmark). The
-wrapper adds ``capital_stock`` and ``capital_growth`` result rows. Scope for now: the **closed /
-gov** single-region variant (region-level capital, matching 5d.3); open/multi are a follow-up.
+wrapper adds ``capital_stock`` and ``capital_growth`` result rows. Scope: any **single
+capital-region** variant — the closed/gov SAM and the **open** economy (Armington/CET + rest of
+world), both of which carry one aggregate capital stock (matching 5d.3). A dynamic-capable open SAM
+needs a savings-investment account (``toy_cge_open_gov``). Multi-region capital accumulation (a
+per-region capital path) is the remaining follow-up (roadmap 7.1).
 """
 
 from __future__ import annotations
@@ -85,8 +88,9 @@ def _manifest_capital_stock(manifest) -> float:
     k0 = cd["benchmark_capital_stock"]
     if len(k0) != 1:
         raise ValueError(
-            "recursive dynamics currently support the single-region (closed/gov) CGE only; this "
-            f"model has {len(k0)} capital regions (open/multi is a documented follow-up)."
+            "recursive dynamics currently support the single capital-region CGE (closed/gov and "
+            f"open — one aggregate capital stock); this model has {len(k0)} capital regions. "
+            "Multi-region capital accumulation is a documented follow-up (roadmap 7.1)."
         )
     return float(k0[0])
 
@@ -182,7 +186,8 @@ def run_recursive(
         "capital_stock_path": {int(k): round(v, 12) for k, v in capital_stock.items()},
         "note": (
             "Capital carried forward via K_{t+1}=(1−δ)(1−r)K_t+INV_t (Phase 5d.3); labour and TFP "
-            "are exogenous trends applied as endowment scales. Single-region (closed/gov) scope."
+            "are exogenous trends applied as endowment scales. Single capital-region scope "
+            "(closed/gov and open); multi-region capital accumulation is a follow-up."
         ),
     }
     result = ResultSet(data=data, manifest=manifest)

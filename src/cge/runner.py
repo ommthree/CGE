@@ -43,6 +43,17 @@ def _toy_cge_open() -> dict:
     }
 
 
+def _toy_cge_open_gov() -> dict:
+    from cge.data.sam import toy_open_gov_sam
+
+    # The open SAM plus a government + savings-investment account, so the open CGE has the benchmark
+    # stock-flow bridge the recursive-dynamic wrapper (Phase 7.1) steps forward.
+    return {
+        "SAM": toy_open_gov_sam(),
+        "carbon_cost_share": {"BRD": _TOY_DIRTY_SHARE, "MIL": _TOY_CLEAN_SHARE},
+    }
+
+
 def _toy_cge_multi() -> dict:
     from cge.data.sam import toy_multi_sam
 
@@ -83,6 +94,7 @@ def _toy_cge_energy() -> dict:
 _CGE_TOY_SAMS = {
     "toy_cge": _toy_cge_closed,
     "toy_cge_open": _toy_cge_open,
+    "toy_cge_open_gov": _toy_cge_open_gov,
     "toy_cge_multi": _toy_cge_multi,
     "toy_cge_gov": _toy_cge_gov,
     "toy_cge_energy": _toy_cge_energy,

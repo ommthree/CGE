@@ -2097,6 +2097,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         energy_sectors=data.get("energy_sectors"),  # Phase 5d.5 (opt-in KL-E-M nest)
         energy_elasticities=data.get("energy_elasticities"),
     )
+    cal_benchmark = cal  # pristine, for the replication gate (Phase 7.1)
     cal = _apply_factor_scale(cal, data.get("factor_endowment_scale"))  # Phase 7.1 recursive hook
     if inv_closure != "savings_driven" and not cal.has_investment:
         raise ValueError(
@@ -2134,10 +2135,13 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         lo[-1] = -1.0  # Sf signed, well-scaled floor (a surplus is Sf<0)
         return lo
 
-    def _solve_year(cc, theta=None):
+    def _solve_year(cc, theta=None, cal_override=None):
+        # cal_override lets the benchmark solve + replication gate run on the PRISTINE cal_benchmark
+        # while the scaled cal drives the shock years (Phase 7.1 recursive dynamics).
+        c = cal_override if cal_override is not None else cal
         sol = solve(
             lambda z: MO.residuals(
-                cal,
+                c,
                 z,
                 carbon_cost=cc,
                 recycling=recycling,
@@ -2156,7 +2160,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         er = 1.0 if flexible else float(sol.x[-1])
         fs = float(sol.x[-1]) if flexible else None
         st = MO.derive_open_state(
-            cal,
+            c,
             sol.x[:ns],
             sol.x[ns : 2 * ns],
             sol.x[2 * ns : 2 * ns + len(factors)],
@@ -2180,10 +2184,13 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         else None
     )
 
-    _bsol, base = _solve_year(np.zeros(ns))  # benchmark: θ=None by construction
+    # Benchmark solve + reported base run on the PRISTINE benchmark, so % changes (and the
+    # replication gate) are measured against the true SAM and a scaled year's capital shows as
+    # growth vs the benchmark (Phase 7.1).
+    _bsol, base = _solve_year(np.zeros(ns), cal_override=cal_benchmark)
     # Universal post-calibration replication gate (review P1): refuse a balanced-but-unsupported SAM
     # whose benchmark does not reproduce the calibrated quantities (see _assert_open_replicates).
-    _assert_open_replicates(cal, base, _bsol.x, trade_closure=trade_closure)
+    _assert_open_replicates(cal_benchmark, base, _bsol.x, trade_closure=trade_closure)
     records: list[dict] = []
     resid_max = _bsol.residual_norm
     backends: set[str] = {_bsol.backend}
@@ -2267,6 +2274,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             "benchmark_savings_rate_of_disposable_income": (
                 round(float(cal.sav_rate0), 12) if cal.has_investment else 0.0
             ),
+            "capital_dynamics": _capital_dynamics_manifest(cal_benchmark),  # Phase 5d.3/7.1
             "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
             # SAM credibility surface when the open SAM was built from an IOSystem (None when a SAM
@@ -2696,24 +2704,28 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         energy_sectors=data.get("energy_sectors"),  # Phase 5d.5 (opt-in KL-E-M nest per region)
         energy_elasticities=data.get("energy_elasticities"),
     )
+    cal_benchmark = cal  # pristine, for the replication gate (Phase 7.1)
     cal = _apply_factor_scale(cal, data.get("factor_endowment_scale"))  # Phase 7.1 recursive hook
 
-    def _solve_year(cc, theta=None):
+    def _solve_year(cc, theta=None, cal_override=None):
+        # cal_override runs the benchmark solve + replication gate on the pristine cal_benchmark
+        # while the scaled cal drives the shock years (Phase 7.1 recursive dynamics).
+        c = cal_override if cal_override is not None else cal
         sol = solve(
             lambda z: MM.residuals(
-                cal,
+                c,
                 z,
                 carbon_cost=cc,
                 recycling=recycling,
                 inv_closure=inv_closure,
                 productivity=theta,
             ),
-            MM.initial_guess(cal),
+            MM.initial_guess(c),
             prefer="scipy",
         )
         # strict=True enforces the recycling k<1 feasibility guard on the ACCEPTED equilibrium.
         st = MM.unpack_state(
-            cal,
+            c,
             sol.x,
             carbon_cost=cc,
             recycling=recycling,
@@ -2732,10 +2744,12 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         else None
     )
 
-    _bsol, base = _solve_year(np.zeros((nr, ns)))  # benchmark: θ=None
+    # Benchmark solve + reported base run on the PRISTINE benchmark (Phase 7.1), so a scaled year's
+    # capital shows as growth vs the benchmark and the gate checks the true SAM.
+    _bsol, base = _solve_year(np.zeros((nr, ns)), cal_override=cal_benchmark)
     # Universal post-calibration replication gate (review P1): refuse a balanced-but-unsupported SAM
     # whose benchmark does not reproduce the calibrated quantities.
-    _assert_multi_replicates(cal, base, _bsol.x)
+    _assert_multi_replicates(cal_benchmark, base, _bsol.x)
     records: list[dict] = []
     resid_max = _bsol.residual_norm
     backends, statuses = {_bsol.backend}, {_bsol.status}
@@ -2824,6 +2838,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             "benchmark_savings_rate_of_disposable_income_by_region": (
                 [round(float(v), 12) for v in cal.sav_rate0.tolist()] if cal.has_investment else []
             ),
+            "capital_dynamics": _capital_dynamics_manifest(cal_benchmark),  # Phase 5d.3/7.1
             "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
             # SAM credibility surface when the multi SAM was built from an IOSystem (Phase 5.1b);

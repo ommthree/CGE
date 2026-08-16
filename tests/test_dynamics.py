@@ -2,7 +2,8 @@
 
 Covers the capital-carry loop, the accumulation identity across the path, exogenous labour/TFP
 trends, premature retirement (stranded assets), the result path + manifest provenance, and the
-guard rails (needs a capital + savings-investment SAM; single-region only).
+guard rails (needs a capital + savings-investment SAM). Single capital-region scope — the closed/gov
+SAM and the open economy; the multi-region capital gate is a documented follow-up.
 """
 
 from __future__ import annotations
@@ -129,3 +130,78 @@ def test_config_validation():
     with pytest.raises(ValueError, match="retirement"):
         DynamicConfig(retirement={2030: 1.5})
     assert np.isfinite(DynamicConfig().depreciation)
+
+
+# --- Open-economy variant (Phase 7.1 follow-up: recursive dynamics on the open CGE) ---------------
+# The open CGE has one aggregate capital stock (like closed/gov), so the same scalar capital carry
+# applies; these mirror the closed tests on the dynamic-capable ``toy_cge_open_gov`` SAM and confirm
+# the open engine (Armington/CET + rest-of-world) really ran.
+
+
+def test_open_first_year_is_the_benchmark():
+    """Year 0 solves at the benchmark stock, so with no shock the open economy's real GDP change is
+    0 — the open recursive path starts from the benchmark, exactly like the closed one."""
+    path = run_recursive(_scenario([2025, 2030]), data_source="toy_cge_open_gov")
+    d = path.result.data
+    g = d[(d["variable"] == "gdp_change_real") & (d["scenario"] == "central") & (d["year"] == 2025)]
+    assert float(g["value"].iloc[0]) == pytest.approx(0.0, abs=1e-9)
+    # The open engine really ran: exchange-rate / trade variables are present.
+    assert {"exchange_rate_change", "export_change"} <= set(d["variable"].unique())
+
+
+def test_open_capital_accumulation_identity_holds():
+    """Each step satisfies K_{t+1} = (1−δ)·K_t + INV_t exactly on the open variant too."""
+    cfg = DynamicConfig(depreciation=0.05)
+    path = run_recursive(_scenario([2025, 2030, 2035]), config=cfg, data_source="toy_cge_open_gov")
+    k0 = path.result.manifest.assumptions["recursive_dynamics"]["benchmark_capital_stock"]
+    k_prev = k0
+    for year in (2025, 2030, 2035):
+        expected = float(capital_next(k_prev, path.investment[year], depreciation=0.05))
+        assert path.capital_stock[year] == pytest.approx(expected, rel=1e-12)
+        k_prev = path.capital_stock[year]
+
+
+def test_open_carbon_shock_runs_through_the_dynamic_path():
+    """A carbon price composes with the open recursive path (shocks + dynamics + trade)."""
+    from cge.contracts.shocks import CarbonPrice
+
+    sc = Scenario(
+        name="dyn-open-carbon",
+        engine="cge_static",
+        years=[2025, 2030],
+        shocks=[CarbonPrice(price=50.0)],
+    )
+    path = run_recursive(sc, data_source="toy_cge_open_gov")
+    d = path.result.data
+    vol = d[(d["variable"] == "volume_change") & (d["scenario"] == "central")]
+    assert (vol["value"] < 0.0).any()
+
+
+def test_open_result_has_capital_path_rows_and_manifest():
+    path = run_recursive(_scenario([2025, 2030]), data_source="toy_cge_open_gov")
+    assert isinstance(path, DynamicPath)
+    path.result.validate_schema()
+    assert {"capital_stock", "capital_growth"} <= set(path.result.data["variable"].unique())
+    rd = path.result.manifest.assumptions["recursive_dynamics"]
+    assert rd["horizon_years"] == [2025, 2030]
+
+
+def test_multi_region_capital_gate_is_a_documented_follow_up():
+    """A model reporting more than one capital region is rejected with a clear "follow-up" error,
+    rather than the scalar carry silently mis-stepping a per-region stock. Tested against the gate
+    directly (via a synthetic manifest), because no multi-region SAM with a savings-investment
+    account exists yet — building one is part of that same deferred follow-up (roadmap 7.1)."""
+    from types import SimpleNamespace
+
+    from cge.dynamics.recursive import _manifest_capital_stock
+
+    two_region = SimpleNamespace(
+        assumptions={
+            "capital_dynamics": {
+                "available": True,
+                "benchmark_capital_stock": [5.0, 4.0],  # two capital regions
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="capital region|Multi-region|follow-up"):
+        _manifest_capital_stock(two_region)

@@ -3,9 +3,11 @@
 - **Implements:** `cge.dynamics` (`recursive.py`), building on `cge.engines.cge_static.capital`
   (Phase 5d.3) and the engine's `factor_endowment_scale` hook.
 - **Roadmap phase:** 7.1 (needs 5d.3's capital-accumulation identity).
-- **Status: BUILT, single-region scope.** Runs end-to-end on the closed/gov CGE; open/multi-region
-  are a documented follow-up. Magnitudes remain **illustrative** (toy calibration), like the rest of
-  the CGE tier.
+- **Status: BUILT, single capital-region scope.** Runs end-to-end on the closed/gov CGE **and the
+  open economy** (Armington/CET + rest-of-world), both of which carry one aggregate capital stock; a
+  dynamic-capable open SAM (`toy_cge_open_gov`) ships. Multi-region capital accumulation (a
+  per-region capital path) is a documented follow-up. Magnitudes remain **illustrative** (toy
+  calibration), like the rest of the CGE tier.
 
 ## 1. What it is (and is not)
 
@@ -76,8 +78,10 @@ horizon, δ, trends, retirement, K₀, and the capital path.
 
 ## 6. Scope & honesty
 
-- **Single-region (closed/gov) only** for now — region-level capital, matching 5d.3's granularity.
-  Open and multi-region capital accumulation are a documented follow-up.
+- **Single capital-region scope** — the closed/gov SAM and the open economy, both carrying one
+  aggregate capital stock (region-level capital, matching 5d.3's granularity). The open economy
+  needs a savings-investment account to be dynamic-capable (`toy_cge_open_gov`). Multi-region
+  capital accumulation (a per-region capital path) is a documented follow-up.
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
 - Productivity is Hicks-neutral on primary factors (not sector-specific TFP yet).
 - Magnitudes are illustrative (toy calibration); the value is the **mechanism** — a static CGE turned
