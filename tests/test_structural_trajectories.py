@@ -51,7 +51,7 @@ def test_all_region_fallback_and_explicit_override():
 
 
 def test_unknown_driver_rejected():
-    with pytest.raises(ValueError, match="unknown structural driver"):
+    with pytest.raises(ValueError, match="unknown region structural driver"):
         _traj({"gdp_share": {"N": {2025: 0.01}}})
 
 
@@ -75,6 +75,57 @@ def test_missing_source_or_confidence_rejected():
 def test_empty_path_rejected():
     with pytest.raises(ValueError, match="no dated rates"):
         _traj({"productivity": {"N": {}}})
+
+
+def test_sector_rate_lookup_and_all_fallback():
+    t = _traj(
+        {"productivity": {"N": {2025: 0.01}}},
+    )
+    # Rebuild with sector_rates too (the _traj helper only fills region-axis keys).
+    t = StructuralTrajectory(
+        provenance=_prov(),
+        rates={"productivity": {"N": {2025: 0.01}}},
+        sector_rates={
+            "sector_productivity": {"BRD": {2025: 0.03}, "__all__": {2025: 0.005}},
+            "emissions_intensity": {"BRD": {2025: -0.05}},
+        },
+        sources={
+            "productivity:N": "c",
+            "sector_productivity:BRD": "c",
+            "sector_productivity:__all__": "c",
+            "emissions_intensity:BRD": "c",
+        },
+        confidence={
+            "productivity:N": "high",
+            "sector_productivity:BRD": "medium",
+            "sector_productivity:__all__": "low",
+            "emissions_intensity:BRD": "medium",
+        },
+    )
+    assert t.sector_rate("sector_productivity", "BRD", 2030) == pytest.approx(0.03)
+    assert t.sector_rate("sector_productivity", "MIL", 2030) == pytest.approx(0.005)  # __all__
+    assert t.sector_rate("emissions_intensity", "BRD", 2025) == pytest.approx(-0.05)
+    assert t.sector_rate("emissions_intensity", "MIL", 2025) == 0.0  # absent → 0
+
+
+def test_sector_driver_on_region_axis_rejected():
+    with pytest.raises(ValueError, match="unknown region structural driver"):
+        StructuralTrajectory(
+            provenance=_prov(),
+            rates={"emissions_intensity": {"N": {2025: -0.05}}},
+            sources={"emissions_intensity:N": "c"},
+            confidence={"emissions_intensity:N": "low"},
+        )
+
+
+def test_region_driver_on_sector_axis_rejected():
+    with pytest.raises(ValueError, match="unknown sector structural driver"):
+        StructuralTrajectory(
+            provenance=_prov(),
+            sector_rates={"population": {"BRD": {2025: 0.01}}},
+            sources={"population:BRD": "c"},
+            confidence={"population:BRD": "high"},
+        )
 
 
 def test_vendored_artifact_loads_with_full_provenance():

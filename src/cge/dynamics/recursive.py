@@ -170,6 +170,12 @@ def run_recursive(
     growth: dict[int, np.ndarray] = {}  # capital growth rate K_{t+1}/K_t − 1 per region
 
     base_year = years[0]
+    # Benchmark carbon_cost_share (if any) — read once so the emissions-intensity driver can scale
+    # it per year (the engine is strict about override keys, so we pass a pre-scaled share, not a
+    # new key). None when the data source has no carbon_cost_share.
+    base_share = _base_carbon_share(data_source, store) if _has_emissions_traj(config) else None
+
+    emissions_reference: float | None = None  # base-year absolute covered emissions (7b.2)
     k_t = k0.copy()  # 1-D array, one entry per capital region
     for year in years:
         # Cumulative labour-supply and productivity scales from the base year to this year, PER
@@ -184,14 +190,33 @@ def run_recursive(
         cap_scale = (k_t / k0) * tfp_scale  # 1-D array per region
         lab_scale = labour_scale * tfp_scale  # 1-D array per region
         overrides = {"factor_endowment_scale": _factor_scale(cap_scale, lab_scale, regions, multi)}
+        # Emissions-intensity driver (7b.2, per sector): scale the benchmark carbon_cost_share by
+        # cumulative decarbonisation factor, so a decarbonising sector faces a smaller priced wedge.
+        # The base-year absolute covered-emissions reference is fed back so the reported
+        # covered_emissions_change is measured against the BASE YEAR — a within-year uniform
+        # scale otherwise cancels in the same-year ratio, hiding the physical decarbonisation.
+        if base_share is not None:
+            overrides["carbon_cost_share"] = _scaled_carbon_share(
+                config, base_share, base_year, year
+            )
+            if emissions_reference is not None:
+                overrides["covered_emissions_reference"] = emissions_reference
+
+        # Sectoral-productivity drift (7b.2, structural change): synthesize per-sector
+        # ProductivityShocks whose cumulative level rides the engine's existing θ multiplier, so
+        # sector-biased TFP shifts the output mix endogenously. Composed with the scenario's shocks.
+        year_shocks = list(scenario.shocks) + _sector_productivity_shocks(config, base_year, year)
 
         res = run_scenario(
-            scenario.model_copy(update={"years": [year]}),
+            scenario.model_copy(update={"years": [year], "shocks": year_shocks}),
             data_source=data_source,
             store=store,
             data_overrides=overrides,
         )
         frames.append(res.data)
+        # Capture the base-year absolute covered emissions as the reference for later years (7b.2).
+        if base_share is not None and year == base_year:
+            emissions_reference = _year_covered_emissions_absolute(res, year)
 
         inv_share = _year_investment(res, year, regions)  # per-region nominal investment / GDP0
         # Investment is a GDP-share flow; convert to the same units as K (the user-cost stock is in
@@ -297,6 +322,92 @@ def _trend_scale(
     return out
 
 
+def _has_emissions_traj(config: DynamicConfig) -> bool:
+    """Whether the config carries an emissions-intensity sector driver (7b.2)."""
+    return bool(config.structural and config.structural.sector_rates.get("emissions_intensity"))
+
+
+def _cumulative_sector_level(traj, driver: str, sector: str, base_year: int, year: int) -> float:
+    """Cumulative multiplier level from ``base_year`` to ``year`` for a per-sector driver, minus 1
+    (so 0.0 = no change) — the sourced annual sector rates compounded over the actual gap, the same
+    piecewise-constant compounding as the per-region trends. Returns the *fractional* cumulative
+    change, i.e. ∏(1+rate) − 1."""
+    acc = 1.0
+    for y in range(base_year, year):
+        acc *= 1.0 + traj.sector_rate(driver, sector, y)
+    return acc - 1.0
+
+
+def _sector_productivity_shocks(config: DynamicConfig, base_year: int, year: int) -> list:
+    """Synthesize per-sector ProductivityShocks for the sectoral-drift driver (7b.2 structural
+    change). Each shock carries the cumulative sector-productivity level (∏(1+rate)−1) for ``year``
+    on ``coverage_sectors=[sector]``, so the engine's existing per-sector θ multiplier shifts the
+    output mix endogenously (sector-biased TFP → composition change). Empty when the config has no
+    ``sector_productivity`` driver, so a run without it is byte-identical to Phase 7.1."""
+    traj = config.structural
+    if not (traj and traj.sector_rates.get("sector_productivity")):
+        return []
+    from cge.contracts.shocks import ProductivityShock
+
+    shocks = []
+    for sector in traj.sector_rates["sector_productivity"]:
+        if sector == "__all__":
+            continue  # a global path is applied via the per-sector lookup fallback, not a shock
+        level = _cumulative_sector_level(traj, "sector_productivity", sector, base_year, year)
+        # A zero-level year (e.g. the base year) still emits the shock so the path is explicit; the
+        # engine treats delta=0 as θ=1 (no effect). ProductivityShock requires delta ≥ −1.
+        shocks.append(ProductivityShock(delta=max(level, -1.0), coverage_sectors=[sector]))
+    return shocks
+
+
+def _scaled_carbon_share(config: DynamicConfig, base_share, base_year: int, year: int):
+    """The benchmark ``carbon_cost_share`` scaled by the per-sector emissions-intensity driver
+    for ``year``: each sector's share × its cumulative intensity multiplier ∏(1+rate). A negative
+    rate (decarbonisation) shrinks the share, so the sector faces a smaller priced carbon wedge and
+    its covered emissions fall vs benchmark. Handles both share shapes: a flat ``{sector: v}``
+    (single-region) and a nested ``{region: {sector: v}}`` (multi)."""
+    traj = config.structural
+
+    def factor(sector: str) -> float:
+        acc = 1.0
+        for y in range(base_year, year):
+            acc *= 1.0 + traj.sector_rate("emissions_intensity", sector, y)
+        return acc
+
+    scaled: dict = {}
+    for key, val in base_share.items():
+        if isinstance(val, dict):  # nested {region: {sector: v}}
+            scaled[key] = {sec: float(v) * factor(sec) for sec, v in val.items()}
+        else:  # flat {sector: v}
+            scaled[key] = float(val) * factor(key)
+    return scaled
+
+
+def _base_carbon_share(data_source: str, store):
+    """The data source's benchmark ``carbon_cost_share`` (None if it has none), read once so the
+    emissions-intensity driver can pre-scale it per year (the engine rejects unknown override keys,
+    so the wrapper supplies the real share key with scaled values)."""
+    from cge.runner import load_data
+
+    data = load_data(data_source, store=store)
+    return data.get("carbon_cost_share")
+
+
+def _year_covered_emissions_absolute(res: ResultSet, year: int) -> float | None:
+    """The absolute covered-emissions total the engine emitted for ``year`` (economy-wide sum across
+    regions), used as the base-year reference the intensity driver measures later years against
+    (Phase 7b.2). None if the engine emitted none (no priced/covered sector)."""
+    d = res.data
+    ce = d[
+        (d["variable"] == "covered_emissions_benchmark")
+        & (d["scenario"] == "central")
+        & (d["year"] == year)
+    ]
+    if ce.empty:
+        return None
+    return float(ce["value"].sum())
+
+
 def _trend_provenance(config: DynamicConfig) -> dict:
     """Record how the labour/productivity trends were set — the flat fallback scalars (Phase 7.1) or
     a sourced :class:`StructuralTrajectory` (Phase 7b.2), with its provenance and per-entry cites —
@@ -317,12 +428,16 @@ def _trend_provenance(config: DynamicConfig) -> dict:
             "licence": traj.provenance.licence,
             "retrieved": traj.provenance.retrieved,
         },
-        "drivers": sorted(traj.rates),
+        "region_drivers": sorted(traj.rates),
+        "sector_drivers": sorted(traj.sector_rates),
+        "drivers": sorted(traj.rates) + sorted(traj.sector_rates),
         "sources": dict(traj.sources),
         "confidence": dict(traj.confidence),
         "note": (
-            "Phase 7b.2 sourced trajectories: labour-supply growth = population × participation, "
-            "and productivity growth, compounded per region from the cited annual rates."
+            "Phase 7b.2 sourced trajectories: per-region labour-supply (population×participation) "
+            "and productivity growth as endowment scales; per-sector productivity drift via the θ "
+            "multiplier (structural change) and emissions-intensity decarbonisation scaling the "
+            "carbon-cost share, all compounded from the cited annual rates."
         ),
     }
 

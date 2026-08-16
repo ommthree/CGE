@@ -112,13 +112,20 @@ _SAVINV_ACCOUNT = "SAVINV"
 #   multi_region           — multi IO build dispatch flag — multi IO only.
 #   closure controls       — per variant (gov/inv/labour/adaptation/trade/elasticities), both
 #                            entries of that variant.
-# ``factor_endowment_scale`` is the Phase-7.1 recursive-dynamic hook: the wrapper re-solves each
-# year
-# with the CAP/LAB endowments scaled to carry capital (and exogenous labour) forward. Allowed on
-# every
-# variant; a single static run never sets it.
+# ``factor_endowment_scale`` is the Phase-7.1 recursive-dynamic hook: the wrapper re-solves per year
+# with the CAP/LAB endowments scaled to carry capital (and exogenous labour) forward.
+# ``covered_emissions_reference`` is the Phase-7b.2 hook: the absolute base-year covered-emissions
+# total the wrapper feeds back so a declining emissions-intensity trajectory shows as falling
+# emissions measured against the base year. Both are allowed on every variant; a single static run
+# never sets either.
 _MODEL_CONTROLS = frozenset(
-    {"va_elast", "energy_sectors", "energy_elasticities", "factor_endowment_scale"}
+    {
+        "va_elast",
+        "energy_sectors",
+        "energy_elasticities",
+        "factor_endowment_scale",
+        "covered_emissions_reference",
+    }
 )
 _CLOSURE_KEYS = {
     "closed": frozenset(
@@ -927,6 +934,10 @@ class CGEStaticEngine:
         # Price-FREE emission intensity (review P1 round 14) — computed once, year-independent, so
         # covered emissions are emitted for EVERY year including a zero-price year.
         emission_intensity = _carbon_intensity_by_sector(inp, carbon_shocks)
+        # Phase 7b.2 recursive hook: an absolute base-year covered-emissions reference the wrapper
+        # feeds back so a declining emissions-intensity trajectory shows as falling covered
+        # measured against the base year (None on a plain run → within-year benchmark, unchanged).
+        emissions_reference = data.get("covered_emissions_reference")
 
         # A closed CGE cannot destroy carbon revenue (it breaks Walras' law). When a positive
         # carbon price would raise revenue but the scenario left recycling at the default `none`,
@@ -1020,7 +1031,16 @@ class CGEStaticEngine:
                 adapt_gamma=adapt_gamma,
                 productivity=theta,
             )
-            _emit(records, cal, base, st, year, cc=cc, intensity=emission_intensity)
+            _emit(
+                records,
+                cal,
+                base,
+                st,
+                year,
+                cc=cc,
+                intensity=emission_intensity,
+                emissions_reference=emissions_reference,
+            )
 
         # Emissions provenance: the effective aligned cost-share vector per year + the satellite
         # identity, so a changed satellite / gas selection / doubled emissions moves the manifest
@@ -1486,10 +1506,15 @@ def _solve(
     return floor_sol, labour_floor
 
 
-def _emit(records, cal, base, st, year: int, cc=None, intensity=None) -> None:
+def _emit(
+    records, cal, base, st, year: int, cc=None, intensity=None, emissions_reference=None
+) -> None:
     """Append price/volume changes and GE outputs (relative to the benchmark) for one year. ``cc``
     is the year's per-sector carbon cost; ``intensity`` is the PRICE-FREE per-sector emission
-    intensity (the supplied carbon_cost_share) for the physical covered-emissions output."""
+    intensity (the supplied carbon_cost_share) for the physical covered-emissions output.
+    ``emissions_reference`` (Phase 7b.2) is the absolute base-year covered-emissions total; when
+    supplied, covered_emissions_change is measured against the base year (see
+    :func:`_covered_emissions_change`)."""
     for i, sector in enumerate(cal.sectors):
         records.append(_rec("price_change", sector, year, st.p[i] / base.p[i] - 1.0))
         records.append(_rec("volume_change", sector, year, st.X[i] / base.X[i] - 1.0))
@@ -1545,7 +1570,7 @@ def _emit(records, cal, base, st, year: int, cc=None, intensity=None) -> None:
     cons_vol = float(np.dot(base.p, st.FD))
     cons_vol_base = float(np.dot(base.p, base.FD))
     records.append(_rec("consumption_change", "__economy__", year, cons_vol / cons_vol_base - 1.0))
-    _emit_covered_emissions(records, intensity, base.X, st.X, year)
+    _emit_covered_emissions(records, intensity, base.X, st.X, year, reference=emissions_reference)
     # Energy-sector output volume (only with the energy nest): total real output of the energy
     # sectors. Renamed from energy_use_change (review P2 round 13): it is energy-sector PRODUCTION
     # volume, not physical energy USE (it excludes imported energy and includes exported energy).
@@ -1637,7 +1662,7 @@ def _gdp_measures(p, base_p, final_demand, base_final_demand):
     return vol_ratio - 1.0, cur_ratio - 1.0, deflator_change
 
 
-def _covered_emissions_change(intensity, base_X, st_X) -> float | None:
+def _covered_emissions_change(intensity, base_X, st_X, *, reference=None) -> float | None:
     """Change in **covered physical emissions** ``Σ e_i·X_i`` between benchmark and shocked output,
     where ``intensity`` is the PRICE-FREE per-sector emission intensity — the supplied
     ``carbon_cost_share`` (cost per €1 of carbon price = e_i × scaling), NOT the priced cost
@@ -1650,29 +1675,62 @@ def _covered_emissions_change(intensity, base_X, st_X) -> float | None:
     It is **covered** emissions, not territorial: only sectors with a nonzero intensity (the priced
     subset) are counted, and it is value-weighted (the cost share), not measured in joules/tCO2 — a
     true physical inventory needs a satellite emission-intensity vector (documented follow-up).
-    Returns None only when NO sector has a nonzero intensity (nothing to measure)."""
-    denom = float(np.dot(intensity, base_X))
+    Returns None only when NO sector has a nonzero intensity (nothing to measure).
+
+    ``reference`` (Phase 7b.2) — an ABSOLUTE base-year covered-emissions total ``Σ intensity_base·
+    X_base``. When supplied, it is the denominator, so the change is measured against the **base
+    year** rather than this run's own benchmark; this is what makes a declining emissions-intensity
+    trajectory (a decarbonising sector) show up as falling covered emissions across the recursive
+    path, even though a within-year uniform intensity scale cancels in the same-year ratio. When
+    None (every non-recursive run), the denominator is this run's own ``Σ intensity·base_X`` — the
+    original within-year behaviour, byte-identical."""
+    denom = float(np.dot(intensity, base_X)) if reference is None else float(reference)
     if denom <= 1e-15:
         return None
     return float(np.dot(intensity, st_X)) / denom - 1.0
 
 
-def _emit_covered_emissions(records, intensity, base_out, st_out, year, *, region=None) -> None:
-    """Emit ``covered_emissions_change`` = the change in Σ intensity·output, where ``intensity`` is
-    the PRICE-FREE per-sector emission intensity (the supplied ``carbon_cost_share``), so the
-    physical quantity is well-defined **every year, including zero-price years** (review P1 round
-    13). ``base_out``/``st_out`` are the benchmark/shocked output (X closed, Z open/multi)."""
+def _covered_emissions_absolute(intensity, X) -> float | None:
+    """Absolute covered physical emissions ``Σ intensity·X`` (None if no sector has a nonzero
+    intensity). Emitted as ``covered_emissions_benchmark`` (with ``X`` = benchmark output), so the
+    recursive wrapper can read the base YEAR's value as the reference later years measure against
+    against (Phase 7b.2)."""
+    if intensity is None:
+        return None
+    total = float(np.dot(np.asarray(intensity, dtype=float), X))
+    return total if abs(total) > 1e-15 else None
+
+
+def _emit_covered_emissions(
+    records, intensity, base_out, st_out, year, *, region=None, reference=None
+) -> None:
+    """Emit ``covered_emissions_change`` and the absolute ``covered_emissions`` for the year, where
+    ``intensity`` is the PRICE-FREE per-sector emission intensity (the ``carbon_cost_share``
+    — possibly a trajectory-scaled intensity in a recursive run, Phase 7b.2), so the physical
+    quantity is well-defined **every year, including zero-price years** (review P1 round 13).
+    ``base_out``/``st_out`` are the benchmark/shocked output (X closed, Z open/multi). ``reference``
+    (Phase 7b.2) is the absolute base-year covered-emissions total; when supplied the change is
+    measured against it (see :func:`_covered_emissions_change`)."""
     if intensity is None:
         return
-    ch = _covered_emissions_change(np.asarray(intensity, dtype=float), base_out, st_out)
+    intensity = np.asarray(intensity, dtype=float)
+    ch = _covered_emissions_change(intensity, base_out, st_out, reference=reference)
     if ch is None:
         return
-    rec = (
-        _rec("covered_emissions_change", "__economy__", year, ch)
-        if region is None
-        else _rec_r("covered_emissions_change", "__economy__", region, year, ch)
-    )
-    records.append(rec)
+    # Absolute BENCHMARK covered emissions Σ intensity·base_X — shock-independent, so the recursive
+    # wrapper can capture the base YEAR's value as a stable reference for later years (Phase 7b.2).
+    absolute = _covered_emissions_absolute(intensity, base_out)
+
+    def _r(variable, value):
+        return (
+            _rec(variable, "__economy__", year, value)
+            if region is None
+            else _rec_r(variable, "__economy__", region, year, value)
+        )
+
+    records.append(_r("covered_emissions_change", ch))
+    if absolute is not None:
+        records.append(_r("covered_emissions_benchmark", absolute))
 
 
 def _sam_fingerprint(sam: SAM) -> dict:

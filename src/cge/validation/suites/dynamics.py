@@ -9,7 +9,9 @@ invariants of the capital-carry loop, so a regression re-surfaces in the battery
 - the multi-region CGE carries a genuinely PER-REGION capital path (each region's identity holds
   independently), on the hand-checkable ``toy_cge_multi_gov`` SAM;
 - a documented, sourced StructuralTrajectory (Phase 7b.2) makes regions diverge by their own
-  sourced demographic/productivity drivers (emerging region outgrows the developed one).
+  sourced demographic/productivity drivers (emerging region outgrows the developed one);
+- a declining per-sector emissions-intensity trajectory (7b.2) shows as falling covered emissions
+  measured against the base year.
 
 The single-region checks run on the hand-checkable ``toy_cge_gov`` SAM, exactly like a user's
 recursive run.
@@ -119,3 +121,39 @@ def _structural_trajectory():
 
     gap = gdp("S") - gdp("N")
     return gap > 0.1, "sourced trajectory: emerging region S outgrows developed region N", gap, 0.1
+
+
+@check(SUITE, "emissions_intensity_trajectory_decarbonises")
+def _emissions_intensity():
+    """A declining per-sector emissions-intensity trajectory (7b.2) shows as falling covered
+    emissions measured against the base year — the base-year reference makes the physical decline
+    visible where a within-year uniform intensity scale would cancel in the same-year ratio."""
+    from cge.contracts.data_objects import Provenance, StructuralTrajectory
+    from cge.contracts.shocks import CarbonPrice
+    from cge.dynamics import DynamicConfig, run_recursive
+    from cge.scenarios.loader import Scenario
+
+    traj = StructuralTrajectory(
+        provenance=Provenance(
+            source="v",
+            source_version="v",
+            licence="n/a",
+            reference_year=2024,
+            retrieved="2026-08-16",
+        ),
+        sector_rates={"emissions_intensity": {"BRD": {2025: -0.05}, "MIL": {2025: -0.05}}},
+        sources={"emissions_intensity:BRD": "c", "emissions_intensity:MIL": "c"},
+        confidence={"emissions_intensity:BRD": "low", "emissions_intensity:MIL": "low"},
+    )
+    sc = Scenario(
+        name="v", engine="cge_static", years=[2025, 2045], shocks=[CarbonPrice(price=50.0)]
+    )
+    path = run_recursive(sc, config=DynamicConfig(structural=traj), data_source="toy_cge_gov")
+    d = path.result.data
+    ce = d[
+        (d["variable"] == "covered_emissions_change")
+        & (d["scenario"] == "central")
+        & (d["year"] == 2045)
+    ]
+    val = float(ce["value"].iloc[0])
+    return val < -0.3, "5%/yr decarbonisation → covered emissions well below base year by 2045", val

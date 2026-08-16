@@ -35,17 +35,22 @@ def load_structural_trajectories(path: str | Path | None = None) -> StructuralTr
             "data/structural/trajectories_v1.json (see data/structural/NOTICE.md)."
         )
     raw = json.loads(artifact.read_text())
-    # JSON object keys are strings; the contract keys years by int. Coerce per (driver, region).
-    rates = {
-        driver: {
-            region: {int(year): float(rate) for year, rate in path.items()}
-            for region, path in by_region.items()
+
+    # JSON object keys are strings; the contract keys years by int. Coerce every path (both the
+    # per-region ``rates`` and the per-sector ``sector_rates`` tables have the same nested shape).
+    def _coerce(table: dict) -> dict:
+        return {
+            driver: {
+                key: {int(year): float(rate) for year, rate in path.items()}
+                for key, path in by_key.items()
+            }
+            for driver, by_key in table.items()
         }
-        for driver, by_region in raw.get("rates", {}).items()
-    }
+
     return StructuralTrajectory(
         provenance=Provenance(**raw["provenance"]),
-        rates=rates,
+        rates=_coerce(raw.get("rates", {})),
+        sector_rates=_coerce(raw.get("sector_rates", {})),
         sources=raw.get("sources", {}),
         confidence=raw.get("confidence", {}),
     )

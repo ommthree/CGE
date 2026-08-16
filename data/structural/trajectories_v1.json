@@ -24,6 +24,17 @@
       "__all__": {"2025": 0.017}
     }
   },
+  "sector_rates": {
+    "sector_productivity": {
+      "BRD": {"2025": 0.015},
+      "MIL": {"2025": 0.008},
+      "__all__": {"2025": 0.010}
+    },
+    "emissions_intensity": {
+      "BRD": {"2025": -0.03, "2040": -0.05},
+      "__all__": {"2025": -0.02, "2040": -0.035}
+    }
+  },
   "sources": {
     "population:N": "UN World Population Prospects 2024, Medium variant — annual population growth rate for high-income regions (approx +0.3%/yr 2025 declining to negative by 2050). https://population.un.org/wpp/",
     "population:S": "UN World Population Prospects 2024, Medium variant — annual population growth rate for less-developed regions (approx +1.2%/yr 2025 declining toward +0.5%/yr 2050). https://population.un.org/wpp/",
@@ -33,7 +44,12 @@
     "labour_participation:__all__": "ILOSTAT / World Bank global labour-force participation — approximately flat/mild rise. https://ilostat.ilo.org/",
     "productivity:N": "Penn World Table 10.01, TFP growth at constant national prices (rtfpna) — advanced economies ~1.0-1.2%/yr trend. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/",
     "productivity:S": "Penn World Table 10.01, TFP/labour-productivity growth — emerging economies convergence ~2.2-3.0%/yr trend. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/",
-    "productivity:__all__": "Penn World Table 10.01, world-average productivity growth ~1.7%/yr. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/"
+    "productivity:__all__": "Penn World Table 10.01, world-average productivity growth ~1.7%/yr. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/",
+    "sector_productivity:BRD": "EU KLEMS 2023 release — sectoral labour-productivity growth; goods-producing/manufacturing sectors run above the economy average (~1.5%/yr). https://euklems-intanprod-llee.luiss.it/",
+    "sector_productivity:MIL": "EU KLEMS 2023 release — services/mixed sectors run below the goods average (~0.8%/yr). https://euklems-intanprod-llee.luiss.it/",
+    "sector_productivity:__all__": "EU KLEMS 2023 release — economy-average sectoral labour-productivity growth ~1.0%/yr. https://euklems-intanprod-llee.luiss.it/",
+    "emissions_intensity:BRD": "IEA World Energy Outlook 2024 / NGFS Net Zero 2050 — carbon-intensive sectors decarbonise ~3%/yr near-term accelerating to ~5%/yr toward mid-century. https://www.iea.org/reports/world-energy-outlook-2024 ; https://www.ngfs.net/ngfs-scenarios-portal/",
+    "emissions_intensity:__all__": "IEA WEO 2024 / NGFS Net Zero 2050 — economy-wide CO2 intensity of GDP declines ~2%/yr near-term to ~3.5%/yr mid-century. https://www.iea.org/reports/world-energy-outlook-2024 ; https://www.ngfs.net/ngfs-scenarios-portal/"
   },
   "confidence": {
     "population:N": "high",
@@ -44,6 +60,11 @@
     "labour_participation:__all__": "low",
     "productivity:N": "medium",
     "productivity:S": "low",
-    "productivity:__all__": "low"
+    "productivity:__all__": "low",
+    "sector_productivity:BRD": "low",
+    "sector_productivity:MIL": "low",
+    "sector_productivity:__all__": "low",
+    "emissions_intensity:BRD": "medium",
+    "emissions_intensity:__all__": "medium"
   }
 }

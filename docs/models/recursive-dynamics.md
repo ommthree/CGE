@@ -88,17 +88,25 @@ horizon, δ, trends, retirement, K₀, and the capital path.
   its own investment (`K_{t+1,r}=(1−δ)(1−r)K_{t,r}+INV_{t,r}`, region-level capital matching 5d.3's
   granularity). Any variant needs a savings-investment account to be dynamic-capable: `toy_cge_gov`,
   `toy_cge_open_gov`, `toy_cge_multi_gov`.
-- **Structural trajectories (Phase 7b.2, demographic + productivity drivers).** Supplying a sourced
-  `StructuralTrajectory` on the `DynamicConfig` replaces the flat trend scalars with **documented,
-  per-region, per-year** paths: labour-supply growth = population × labour-force participation, and
-  labour productivity (TFP). Each `(driver, region)` path carries its own citation and confidence
-  (validated on load, like `ElasticitySet`), and the wrapper compounds the sourced annual rates over
-  the actual solve-year gaps. The vendored artifact (`data/structural/trajectories_v1.json`, UN WPP
-  2024 + ILO/World Bank + Penn World Table 10.01; see `data/structural/NOTICE.md`) is real sourced
-  data. Without a trajectory the flat scalars remain the fallback. **Still uniform-across-regions:**
-  sectoral GDP-share drift and emissions-intensity trajectories are later 7b.2 passes.
+- **Structural trajectories (Phase 7b.2).** Supplying a sourced `StructuralTrajectory` on the
+  `DynamicConfig` replaces the flat trend scalars with **documented, sourced, per-year** paths on
+  two axes, each entry carrying its own citation and confidence (validated on load, like
+  `ElasticitySet`); the wrapper compounds the sourced annual rates over the actual solve-year gaps.
+  The vendored artifact `data/structural/trajectories_v1.json` (see `data/structural/NOTICE.md`) is
+  real sourced data. Without a trajectory the flat scalars remain the fallback. The four drivers:
+    - **Per-region** — labour-supply growth = population × labour-force participation, and labour
+      productivity (TFP), applied as endowment scales. *(UN WPP 2024, ILO/World Bank, PWT 10.01.)*
+    - **Per-sector `sector_productivity`** (structural change / GDP-share drift) — sector-biased TFP
+      fed through the engine's existing per-sector θ multiplier, so the output mix shifts
+      **endogenously** (a sector with faster productivity gains share); shares are a model result,
+      not an imposed target. *(EU KLEMS.)*
+    - **Per-sector `emissions_intensity`** (decarbonisation) — scales `carbon_cost_share`, so a
+      decarbonising sector faces a smaller priced carbon wedge in the solve AND, via a base-year
+      covered-emissions reference the wrapper feeds the engine, shows falling covered emissions
+      measured against the base year. *(IEA WEO 2024 / NGFS Net Zero 2050.)*
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
-- Productivity is Hicks-neutral on primary factors (not sector-specific TFP yet).
+- Productivity is Hicks-neutral on primary factors (economy-wide and per-sector θ; no factor-biased
+  or vintage-specific TFP).
 - Magnitudes are illustrative (toy calibration); the value is the **mechanism** — a static CGE turned
   into a capital-carrying dynamic path, the backbone Phase 7.2 (NGFS) and 7.3 (climate) build on.
 

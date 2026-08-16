@@ -331,3 +331,94 @@ def test_trajectory_provenance_is_stamped_on_the_manifest():
     assert "productivity" in ts["drivers"]
     assert ts["sources"]  # per-entry citations carried through
     assert ts["provenance"]["source_version"]
+
+
+# --- Per-sector structural drivers (Phase 7b.2 pass 2: sectoral drift + emissions intensity) ------
+
+
+def _traj_sector(sector_rates):
+    from cge.contracts.data_objects import Provenance, StructuralTrajectory
+
+    keys = [f"{d}:{s}" for d, by in sector_rates.items() for s in by]
+    return StructuralTrajectory(
+        provenance=Provenance(
+            source="t",
+            source_version="v",
+            licence="n/a",
+            reference_year=2024,
+            retrieved="2026-08-16",
+        ),
+        sector_rates=sector_rates,
+        sources={k: "cite" for k in keys},
+        confidence={k: "medium" for k in keys},
+    )
+
+
+def _sector_vol(path, sector, year):
+    d = path.result.data
+    r = d[
+        (d["variable"] == "volume_change")
+        & (d["scenario"] == "central")
+        & (d["sector"] == sector)
+        & (d["year"] == year)
+    ]
+    return float(r["value"].iloc[0])
+
+
+def test_sector_productivity_drift_shifts_output_mix():
+    """A sector with positive productivity drift gains output vs a no-drift run — the structural
+    change rides the engine's existing per-sector theta multiplier."""
+    from cge.contracts.shocks import CarbonPrice
+
+    traj = _traj_sector({"sector_productivity": {"BRD": {2025: 0.03}}})
+    sc = Scenario(
+        name="drift", engine="cge_static", years=[2025, 2045], shocks=[CarbonPrice(price=50.0)]
+    )
+    drift = run_recursive(sc, config=DynamicConfig(structural=traj), data_source="toy_cge_gov")
+    flat = run_recursive(sc, config=DynamicConfig(), data_source="toy_cge_gov")
+    assert _sector_vol(drift, "BRD", 2045) > _sector_vol(flat, "BRD", 2045) + 0.1
+
+
+def _covered(path, year):
+    d = path.result.data
+    r = d[
+        (d["variable"] == "covered_emissions_change")
+        & (d["scenario"] == "central")
+        & (d["year"] == year)
+    ]
+    return float(r["value"].iloc[0])
+
+
+def test_emissions_intensity_drives_covered_emissions_down():
+    """A declining emissions-intensity trajectory shows as falling covered emissions measured
+    against the base year (the engine's base-year reference makes the physical decline visible even
+    though a within-year uniform scale would cancel in the same-year ratio)."""
+    from cge.contracts.shocks import CarbonPrice
+
+    traj = _traj_sector({"emissions_intensity": {"BRD": {2025: -0.05}, "MIL": {2025: -0.05}}})
+    sc = Scenario(
+        name="decarb",
+        engine="cge_static",
+        years=[2025, 2035, 2045],
+        shocks=[CarbonPrice(price=50.0)],
+    )
+    decarb = run_recursive(sc, config=DynamicConfig(structural=traj), data_source="toy_cge_gov")
+    flat = run_recursive(sc, config=DynamicConfig(), data_source="toy_cge_gov")
+    # Year 0 identical (factor 1); later years far more negative than the no-decarb path.
+    assert _covered(decarb, 2025) == pytest.approx(_covered(flat, 2025), abs=1e-9)
+    assert _covered(decarb, 2045) < _covered(flat, 2045) - 0.3
+
+
+def test_sector_drivers_absent_is_byte_identical_to_phase_7_1():
+    """With no sector drivers, a run is unchanged from the Phase 7.1 behaviour (no synthesized
+    productivity shocks, benchmark carbon share)."""
+    from cge.contracts.shocks import CarbonPrice
+
+    sc = Scenario(
+        name="plain", engine="cge_static", years=[2025, 2030], shocks=[CarbonPrice(price=50.0)]
+    )
+    a = run_recursive(sc, config=DynamicConfig(), data_source="toy_cge_gov")
+    b = run_recursive(sc, data_source="toy_cge_gov")
+    for year in (2025, 2030):
+        assert _covered(a, year) == pytest.approx(_covered(b, year), abs=1e-12)
+        assert _sector_vol(a, "BRD", year) == pytest.approx(_sector_vol(b, "BRD", year), abs=1e-12)
