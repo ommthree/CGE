@@ -243,3 +243,91 @@ def test_multi_region_specific_capital_scaling_diverges():
     k_end = np.asarray(path.capital_stock[2035])
     ratios = k_end / k0
     assert not np.isclose(ratios[0], ratios[1])
+
+
+# --- Structural trajectories (Phase 7b.2: sourced per-region labour/productivity drivers) ---------
+
+
+def _real_gdp(path, region, year):
+    d = path.result.data
+    x = d[
+        (d["variable"] == "gdp_change_real")
+        & (d["scenario"] == "central")
+        & (d["region"] == region)
+        & (d["year"] == year)
+    ]
+    return float(x["value"].iloc[0])
+
+
+def test_structural_trajectory_drives_per_region_divergence():
+    """With a sourced StructuralTrajectory the two regions grow differently (S has faster sourced
+    population + productivity than N), unlike a flat uniform trend which moves them together."""
+    from cge.data.structural import load_structural_trajectories
+
+    sc = Scenario(name="dyn", engine="cge_static", years=[2025, 2035, 2045], shocks=[])
+    sourced = run_recursive(
+        sc,
+        config=DynamicConfig(structural=load_structural_trajectories()),
+        data_source="toy_cge_multi_gov",
+    )
+    flat = run_recursive(
+        sc, config=DynamicConfig(productivity_growth=0.02), data_source="toy_cge_multi_gov"
+    )
+    # Sourced: S clearly outgrows N. Flat: N and S grow near-identically (only tiny trade spill).
+    assert _real_gdp(sourced, "S", 2045) > _real_gdp(sourced, "N", 2045) + 0.1
+    assert abs(_real_gdp(flat, "S", 2045) - _real_gdp(flat, "N", 2045)) < 0.05
+
+
+def test_flat_trend_still_works_without_trajectory():
+    """Back-compat: with no structural trajectory the flat DynamicConfig scalars drive the trend."""
+    sc = Scenario(name="dyn", engine="cge_static", years=[2025, 2035], shocks=[])
+    grown = run_recursive(
+        sc, config=DynamicConfig(productivity_growth=0.03), data_source="toy_cge_gov"
+    )
+    flat = run_recursive(sc, data_source="toy_cge_gov")
+    assert _real_gdp(grown, "R", 2035) > _real_gdp(flat, "R", 2035)
+    ts = grown.result.manifest.assumptions["recursive_dynamics"]["trend_source"]
+    assert ts["kind"] == "flat"
+
+
+def test_trajectory_compounds_across_year_gaps():
+    """A 10-year solve gap compounds ~10 annual rates, not one: the labour-supply scale over
+    [2025, 2035] equals the product of population×participation annual growth for each year."""
+    from cge.contracts.data_objects import Provenance, StructuralTrajectory
+    from cge.dynamics.recursive import _trend_scale
+
+    traj = StructuralTrajectory(
+        provenance=Provenance(
+            source="t",
+            source_version="v",
+            licence="n/a",
+            reference_year=2024,
+            retrieved="2026-08-16",
+        ),
+        rates={
+            "population": {"R": {2025: 0.01}},
+            "labour_participation": {"R": {2025: 0.005}},
+        },
+        sources={"population:R": "c", "labour_participation:R": "c"},
+        confidence={"population:R": "high", "labour_participation:R": "high"},
+    )
+    cfg = DynamicConfig(structural=traj)
+    scale = _trend_scale(cfg, 2025, 2035, ["R"], "labour")[0]
+    assert scale == pytest.approx((1.0 + 0.01 + 0.005) ** 10, rel=1e-12)
+
+
+def test_trajectory_provenance_is_stamped_on_the_manifest():
+    """A sourced run records the trajectory's provenance + per-entry sources in its manifest."""
+    from cge.data.structural import load_structural_trajectories
+
+    sc = Scenario(name="dyn", engine="cge_static", years=[2025, 2030], shocks=[])
+    path = run_recursive(
+        sc,
+        config=DynamicConfig(structural=load_structural_trajectories()),
+        data_source="toy_cge_gov",
+    )
+    ts = path.result.manifest.assumptions["recursive_dynamics"]["trend_source"]
+    assert ts["kind"] == "structural_trajectory"
+    assert "productivity" in ts["drivers"]
+    assert ts["sources"]  # per-entry citations carried through
+    assert ts["provenance"]["source_version"]

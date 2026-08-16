@@ -70,8 +70,11 @@ its return fell below a threshold — is a documented future extension, exactly 
 ## 5. Configuration & outputs
 
 `DynamicConfig`: `depreciation` (δ, default 5%), `labour_growth` (n), `productivity_growth`,
-`retirement` (per-year fractions). All trends default to **flat** — a zero-trend run is transparent
-bookkeeping over the static solves, adding nothing implicit.
+`retirement` (per-year fractions), and `structural` (an optional sourced `StructuralTrajectory`,
+Phase 7b.2). The flat scalars default to **flat** — a zero-trend run is transparent bookkeeping over
+the static solves, adding nothing implicit. When `structural` is set it supersedes the flat scalars
+with per-region sourced paths (§6); the flat scalars are the fallback for a run that names no
+trajectory. Load the vendored trajectories with `cge.data.structural.load_structural_trajectories()`.
 
 `run_recursive(scenario, config=…, data_source="toy_cge_gov")` returns a `DynamicPath`: the
 concatenated per-year `ResultSet` (with the capital-path rows) plus `capital_stock` / `investment` /
@@ -85,8 +88,15 @@ horizon, δ, trends, retirement, K₀, and the capital path.
   its own investment (`K_{t+1,r}=(1−δ)(1−r)K_{t,r}+INV_{t,r}`, region-level capital matching 5d.3's
   granularity). Any variant needs a savings-investment account to be dynamic-capable: `toy_cge_gov`,
   `toy_cge_open_gov`, `toy_cge_multi_gov`.
-- **Labour/productivity trends are applied uniformly across regions** — region-specific demographic
-  and TFP trajectories are a documented follow-up (7b.2).
+- **Structural trajectories (Phase 7b.2, demographic + productivity drivers).** Supplying a sourced
+  `StructuralTrajectory` on the `DynamicConfig` replaces the flat trend scalars with **documented,
+  per-region, per-year** paths: labour-supply growth = population × labour-force participation, and
+  labour productivity (TFP). Each `(driver, region)` path carries its own citation and confidence
+  (validated on load, like `ElasticitySet`), and the wrapper compounds the sourced annual rates over
+  the actual solve-year gaps. The vendored artifact (`data/structural/trajectories_v1.json`, UN WPP
+  2024 + ILO/World Bank + Penn World Table 10.01; see `data/structural/NOTICE.md`) is real sourced
+  data. Without a trajectory the flat scalars remain the fallback. **Still uniform-across-regions:**
+  sectoral GDP-share drift and emissions-intensity trajectories are later 7b.2 passes.
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
 - Productivity is Hicks-neutral on primary factors (not sector-specific TFP yet).
 - Magnitudes are illustrative (toy calibration); the value is the **mechanism** — a static CGE turned

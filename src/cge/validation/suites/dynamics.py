@@ -7,7 +7,9 @@ invariants of the capital-carry loop, so a regression re-surfaces in the battery
 - the recursive path STARTS from the benchmark (year 0, no shock ⇒ real GDP change 0);
 - premature retirement (stranded assets) lowers the closing stock;
 - the multi-region CGE carries a genuinely PER-REGION capital path (each region's identity holds
-  independently), on the hand-checkable ``toy_cge_multi_gov`` SAM.
+  independently), on the hand-checkable ``toy_cge_multi_gov`` SAM;
+- a documented, sourced StructuralTrajectory (Phase 7b.2) makes regions diverge by their own
+  sourced demographic/productivity drivers (emerging region outgrows the developed one).
 
 The single-region checks run on the hand-checkable ``toy_cge_gov`` SAM, exactly like a user's
 recursive run.
@@ -87,3 +89,33 @@ def _multi_region():
         worst = max(worst, float(np.max(np.abs(expected - np.asarray(path.capital_stock[year])))))
         k_prev = np.asarray(path.capital_stock[year])
     return worst < 1e-10, "per-region K_{t+1}=(1−δ)K_t+INV_t at every step", worst, 1e-10
+
+
+@check(SUITE, "structural_trajectory_drives_per_region_divergence")
+def _structural_trajectory():
+    """A documented, sourced StructuralTrajectory (Phase 7b.2) makes the regions diverge by their
+    own sourced drivers — the emerging-proxy region (S: faster population + productivity) must
+    outgrow the developed-proxy region (N), which a flat uniform trend cannot produce."""
+    from cge.data.structural import load_structural_trajectories
+    from cge.dynamics import DynamicConfig, run_recursive
+    from cge.scenarios.loader import Scenario
+
+    sc = Scenario(name="v", engine="cge_static", years=[2025, 2035, 2045], shocks=[])
+    path = run_recursive(
+        sc,
+        config=DynamicConfig(structural=load_structural_trajectories()),
+        data_source="toy_cge_multi_gov",
+    )
+    d = path.result.data
+
+    def gdp(region):
+        x = d[
+            (d["variable"] == "gdp_change_real")
+            & (d["scenario"] == "central")
+            & (d["region"] == region)
+            & (d["year"] == 2045)
+        ]
+        return float(x["value"].iloc[0])
+
+    gap = gdp("S") - gdp("N")
+    return gap > 0.1, "sourced trajectory: emerging region S outgrows developed region N", gap, 0.1

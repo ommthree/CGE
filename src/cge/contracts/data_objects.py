@@ -442,3 +442,88 @@ class ConcordanceMap(_DataObject):
             if abs(total - 1.0) > 1e-6:
                 raise ValueError(f"Concordance weights for {src!r} sum to {total}, expected 1.0")
         return self
+
+
+# The exogenous structural drivers the recursive-dynamic wrapper (Phase 7.1) steps between static
+# solves. Phase 7b.2 replaces ad-hoc flat trends with documented, sourced, per-region trajectories.
+# This pass covers the demographic + productivity drivers (population, labour-force participation,
+# labour productivity); sectoral GDP-share drift and emissions intensity are later 7b.2 passes.
+StructuralDriver = Literal["population", "labour_participation", "productivity"]
+
+
+class StructuralTrajectory(_DataObject):
+    """Documented, sourced exogenous driver paths for the recursive-dynamic wrapper (Phase 7b.2).
+
+    Each entry is an **annual growth rate** for one (driver, region) pair, given per year, with a
+    per-entry citation and confidence — the same "value + source + confidence, validated for
+    sanity" discipline as :class:`ElasticitySet`, so a trajectory can never enter a run without
+    provenance. The wrapper reads the effective per-year **labour-supply** growth (population ×
+    participation) and **productivity** growth per region and applies them as endowment scales,
+    replacing the flat ``labour_growth`` / ``productivity_growth`` scalars.
+
+    - ``rates`` — ``{driver: {region: {year: annual_growth_rate}}}``. A rate is a decimal fraction
+      (0.012 = +1.2 %/yr). Years present are the *knots*; the wrapper holds the most recent knot's
+      rate for years between/after knots (piecewise-constant, documented), so a sparse path (a few
+      dated rates) is enough. ``"__all__"`` is an allowed region key meaning "every region" (a
+      single global path); an explicit region overrides it.
+    - ``sources`` / ``confidence`` — one entry per path, keyed ``"{driver}:{region}"``.
+    """
+
+    # driver -> region -> {year: annual growth rate (decimal fraction)}
+    rates: dict[str, dict[str, dict[int, float]]] = Field(default_factory=dict)
+    sources: dict[str, str] = Field(default_factory=dict, description="'driver:region' -> citation")
+    confidence: dict[str, Literal["high", "medium", "low", "default"]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _rates_valid(self) -> StructuralTrajectory:
+        """Reject malformed or implausible trajectories: every rate finite and in a sane band, every
+        driver a known one, and every (driver, region) path carrying a source + confidence."""
+        import math
+
+        drivers = {"population", "labour_participation", "productivity"}
+        for driver, by_region in self.rates.items():
+            if driver not in drivers:
+                raise ValueError(
+                    f"unknown structural driver {driver!r}; use one of {sorted(drivers)}"
+                )
+            for region, path in by_region.items():
+                if not path:
+                    raise ValueError(f"trajectory {driver!r}/{region!r} has no dated rates")
+                for year, rate in path.items():
+                    if not isinstance(year, int):
+                        raise ValueError(
+                            f"trajectory {driver!r}/{region!r} year {year!r} not an int"
+                        )
+                    if not math.isfinite(rate):
+                        raise ValueError(f"trajectory {driver!r}/{region!r}[{year}] is not finite")
+                    # A growth rate below −100 %/yr would drive the endowment negative; and a rate
+                    # above +100 %/yr is implausible for any of these drivers over a year — reject
+                    # rather than silently produce a nonsensical stock/supply.
+                    if not (-1.0 < rate < 1.0):
+                        raise ValueError(
+                            f"trajectory {driver!r}/{region!r}[{year}] rate {rate} out of the "
+                            "plausible band (−1, 1); a demographic/productivity annual growth rate "
+                            "outside ±100%/yr is rejected"
+                        )
+                key = f"{driver}:{region}"
+                if key not in self.sources or key not in self.confidence:
+                    raise ValueError(
+                        f"structural trajectory {key!r} is missing source or confidence metadata"
+                    )
+        return self
+
+    def rate(self, driver: StructuralDriver, region: str, year: int) -> float:
+        """The effective annual growth rate for ``(driver, region)`` at ``year`` (0.0 if the driver
+        is absent). Piecewise-constant between dated knots: the most recent knot at or before
+        ``year`` (or the earliest knot if ``year`` predates all of them). An explicit region path
+        overrides the ``"__all__"`` global path."""
+        by_region = self.rates.get(driver)
+        if not by_region:
+            return 0.0
+        path = by_region.get(region) or by_region.get("__all__")
+        if not path:
+            return 0.0
+        knots = sorted(path)
+        applicable = [y for y in knots if y <= year]
+        chosen = applicable[-1] if applicable else knots[0]
+        return float(path[chosen])

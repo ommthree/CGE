@@ -1,0 +1,49 @@
+{
+  "provenance": {
+    "source": "UN WPP 2024 (population) + ILO/World Bank (participation) + Penn World Table 10.01 (productivity)",
+    "source_version": "structural-trajectories-v1",
+    "licence": "see per-entry sources; UN WPP: CC BY 3.0 IGO, PWT 10.01: CC BY 4.0, ILOSTAT/WB: CC BY 4.0",
+    "reference_year": 2024,
+    "retrieved": "2026-08-16",
+    "notes": "Documented, sourced per-region annual growth trajectories for the Phase 7b.2 structural drivers (demographic + productivity). Rates are decimal fractions per year, entered as dated knots from the cited published figures; the wrapper holds the most recent knot piecewise-constant. Regions are the model's illustrative multi-region labels N (North, a developed-economy proxy) and S (South, an emerging-economy proxy) plus a global __all__ default; on a real EXIOBASE build these map to actual country/region trajectories via the same loader."
+  },
+  "rates": {
+    "population": {
+      "N": {"2025": 0.003, "2035": 0.001, "2050": -0.001},
+      "S": {"2025": 0.012, "2035": 0.009, "2050": 0.005},
+      "__all__": {"2025": 0.008, "2050": 0.003}
+    },
+    "labour_participation": {
+      "N": {"2025": 0.000, "2040": -0.002},
+      "S": {"2025": 0.003, "2040": 0.001},
+      "__all__": {"2025": 0.001}
+    },
+    "productivity": {
+      "N": {"2025": 0.012, "2040": 0.010},
+      "S": {"2025": 0.030, "2040": 0.022},
+      "__all__": {"2025": 0.017}
+    }
+  },
+  "sources": {
+    "population:N": "UN World Population Prospects 2024, Medium variant — annual population growth rate for high-income regions (approx +0.3%/yr 2025 declining to negative by 2050). https://population.un.org/wpp/",
+    "population:S": "UN World Population Prospects 2024, Medium variant — annual population growth rate for less-developed regions (approx +1.2%/yr 2025 declining toward +0.5%/yr 2050). https://population.un.org/wpp/",
+    "population:__all__": "UN World Population Prospects 2024, Medium variant — world annual population growth (approx +0.8%/yr 2025 to +0.3%/yr 2050). https://population.un.org/wpp/",
+    "labour_participation:N": "ILOSTAT / World Bank labour-force participation modelled estimates — high-income economies: broadly flat, mild decline with ageing. https://ilostat.ilo.org/",
+    "labour_participation:S": "ILOSTAT / World Bank labour-force participation modelled estimates — emerging economies: mild rise from rising female participation, tapering. https://ilostat.ilo.org/",
+    "labour_participation:__all__": "ILOSTAT / World Bank global labour-force participation — approximately flat/mild rise. https://ilostat.ilo.org/",
+    "productivity:N": "Penn World Table 10.01, TFP growth at constant national prices (rtfpna) — advanced economies ~1.0-1.2%/yr trend. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/",
+    "productivity:S": "Penn World Table 10.01, TFP/labour-productivity growth — emerging economies convergence ~2.2-3.0%/yr trend. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/",
+    "productivity:__all__": "Penn World Table 10.01, world-average productivity growth ~1.7%/yr. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/"
+  },
+  "confidence": {
+    "population:N": "high",
+    "population:S": "high",
+    "population:__all__": "high",
+    "labour_participation:N": "medium",
+    "labour_participation:S": "medium",
+    "labour_participation:__all__": "low",
+    "productivity:N": "medium",
+    "productivity:S": "low",
+    "productivity:__all__": "low"
+  }
+}

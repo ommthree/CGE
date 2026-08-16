@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from cge.contracts.data_objects import StructuralTrajectory
 from cge.contracts.results import ResultSet
 from cge.engines.cge_static.capital import DEFAULT_DEPRECIATION_RATE, capital_next
 from cge.runner import run_scenario
@@ -49,15 +50,25 @@ from cge.scenarios.loader import Scenario
 
 @dataclass
 class DynamicConfig:
-    """Configuration for a recursive-dynamic run (Phase 7.1). All trends default to **flat** (no
-    growth), so a zero-trend run is transparent bookkeeping over the static solves."""
+    """Configuration for a recursive-dynamic run (Phase 7.1 / 7b.2).
 
+    Trends default to **flat** (no growth), so a zero-trend run is transparent bookkeeping over the
+    static solves. Supplying ``structural`` (a documented, sourced :class:`StructuralTrajectory`,
+    Phase 7b.2) replaces the flat ``labour_growth``/``productivity_growth`` scalars with per-region,
+    per-year sourced trajectories: labour-supply growth = population × participation, and TFP
+    growth, each compounded from the sourced annual rates. The flat scalars remain the fallback when
+    no trajectory is given."""
+
+    # Flat fallback trends (used when ``structural`` is None): applied uniformly across regions.
     depreciation: float = DEFAULT_DEPRECIATION_RATE  # δ per year (5d.3 default 5%)
-    labour_growth: float = 0.0  # exogenous labour-force growth per year (demographics)
-    productivity_growth: float = 0.0  # exogenous Hicks-neutral TFP trend per year
+    labour_growth: float = 0.0  # labour-force growth per year
+    productivity_growth: float = 0.0  # Hicks-neutral TFP trend per year
     # Per-year premature capital retirement fraction (5d.3 stranded assets), e.g. {2030: 0.1}. A
     # year absent → 0. Applied to the OPENING stock in that year's accumulation step.
     retirement: dict[int, float] = field(default_factory=dict)
+    # Documented, sourced per-region structural trajectories (Phase 7b.2). When set, it drives the
+    # labour and productivity trends per region instead of the flat scalars above.
+    structural: StructuralTrajectory | None = None
 
     def __post_init__(self) -> None:
         for name in ("depreciation", "labour_growth", "productivity_growth"):
@@ -158,16 +169,20 @@ def run_recursive(
     investment: dict[int, np.ndarray] = {}  # nominal investment (share of benchmark GDP) per region
     growth: dict[int, np.ndarray] = {}  # capital growth rate K_{t+1}/K_t − 1 per region
 
+    base_year = years[0]
     k_t = k0.copy()  # 1-D array, one entry per capital region
-    for i, year in enumerate(years):
-        labour_scale = (1.0 + config.labour_growth) ** i
-        tfp_scale = (1.0 + config.productivity_growth) ** i
+    for year in years:
+        # Cumulative labour-supply and productivity scales from the base year to this year, PER
+        # REGION. With a StructuralTrajectory (7b.2) these compound the sourced per-year rates over
+        # the actual year gaps (solve years may be spaced apart); without one they fall back to the
+        # flat DynamicConfig scalars, uniform across regions (Phase 7.1 back-compat).
+        labour_scale = _trend_scale(config, base_year, year, regions, "labour")
+        tfp_scale = _trend_scale(config, base_year, year, regions, "productivity")
         # Capital and labour endowments scale to this year's stock/force; TFP is applied Hicks-
         # neutrally as an equivalent scale on both primary factors (documented simplification).
-        # Capital scale is PER REGION (each region carries its own stock); labour/TFP trends are
-        # exogenous and uniform across regions.
+        # Capital scale is PER REGION (each region carries its own stock).
         cap_scale = (k_t / k0) * tfp_scale  # 1-D array per region
-        lab_scale = labour_scale * tfp_scale  # scalar (uniform trend)
+        lab_scale = labour_scale * tfp_scale  # 1-D array per region
         overrides = {"factor_endowment_scale": _factor_scale(cap_scale, lab_scale, regions, multi)}
 
         res = run_scenario(
@@ -208,13 +223,14 @@ def run_recursive(
         "horizon_years": years,
         "capital_regions": regions,
         "depreciation_rate": config.depreciation,
-        "labour_growth": config.labour_growth,
-        "productivity_growth": config.productivity_growth,
         "retirement": {int(k): float(v) for k, v in config.retirement.items()},
         "benchmark_capital_stock": [round(float(x), 12) for x in k0],
         "capital_stock_path": {
             int(y): [round(float(x), 12) for x in capital_stock[y]] for y in years
         },
+        # Trend provenance: either the flat fallback scalars (Phase 7.1) or the sourced structural
+        # trajectory (Phase 7b.2), so a run records exactly which drove its trends.
+        "trend_source": _trend_provenance(config),
         "note": (
             "Capital carried forward via K_{t+1}=(1−δ)(1−r)K_t+INV_t (Phase 5d.3); labour and TFP "
             "are exogenous trends applied as endowment scales. Single aggregate capital stock for "
@@ -233,16 +249,81 @@ def run_recursive(
     )
 
 
-def _factor_scale(cap_scale: np.ndarray, lab_scale: float, regions: list[str], multi: bool) -> dict:
-    """Build the ``factor_endowment_scale`` override for one year. Single-region: scalar factor
-    scales (``{"CAP": s, "LAB": s}``). Multi-region: per-region capital scales
-    (``{"CAP": {region: s}, "LAB": {region: s}}``) so each region's stock moves independently; the
-    labour/TFP trend is uniform, applied per region as the same value."""
+def _factor_scale(
+    cap_scale: np.ndarray, lab_scale: np.ndarray, regions: list[str], multi: bool
+) -> dict:
+    """Build the ``factor_endowment_scale`` override for one year. Both scales are per-region 1-D
+    arrays aligned to ``regions``. Single-region: scalar factor scales (``{"CAP": s, "LAB": s}``).
+    Multi-region: per-region scales (``{"CAP": {region: s}, "LAB": {region: s}}``) so each region's
+    capital and labour supply move independently."""
     if not multi:
-        return {"CAP": float(cap_scale[0]), "LAB": float(lab_scale)}
+        return {"CAP": float(cap_scale[0]), "LAB": float(lab_scale[0])}
     return {
         "CAP": {r: float(cap_scale[ri]) for ri, r in enumerate(regions)},
-        "LAB": {r: float(lab_scale) for r in regions},
+        "LAB": {r: float(lab_scale[ri]) for ri, r in enumerate(regions)},
+    }
+
+
+def _trend_scale(
+    config: DynamicConfig, base_year: int, year: int, regions: list[str], kind: str
+) -> np.ndarray:
+    """Cumulative endowment scale from ``base_year`` to ``year`` for a per-region trend, as a 1-D
+    array aligned to ``regions``.
+
+    ``kind`` is ``"labour"`` (labour-supply growth = population × participation) or
+    ``"productivity"`` (TFP growth). With a :class:`StructuralTrajectory` the sourced per-year rates
+    are **compounded year by year** over the actual gap (solve years may be spaced apart), so a 5-yr
+    step compounds 5 annual rates; the rate for each intervening year is the trajectory's
+    piecewise-constant value. Without a trajectory it falls back to the flat ``DynamicConfig``
+    scalar, applied uniformly across regions (Phase 7.1 behaviour)."""
+    traj = config.structural
+    if traj is None:
+        flat = config.labour_growth if kind == "labour" else config.productivity_growth
+        scale = (1.0 + flat) ** (year - base_year)
+        return np.full(len(regions), scale, dtype=float)
+
+    out = np.ones(len(regions), dtype=float)
+    for ri, region in enumerate(regions):
+        acc = 1.0
+        for y in range(base_year, year):  # compound each annual step up to (not incl.) target year
+            if kind == "labour":
+                rate = traj.rate("population", region, y) + traj.rate(
+                    "labour_participation", region, y
+                )
+            else:
+                rate = traj.rate("productivity", region, y)
+            acc *= 1.0 + rate
+        out[ri] = acc
+    return out
+
+
+def _trend_provenance(config: DynamicConfig) -> dict:
+    """Record how the labour/productivity trends were set — the flat fallback scalars (Phase 7.1) or
+    a sourced :class:`StructuralTrajectory` (Phase 7b.2), with its provenance and per-entry cites —
+    so a run's manifest is self-documenting about which drove it."""
+    traj = config.structural
+    if traj is None:
+        return {
+            "kind": "flat",
+            "labour_growth": config.labour_growth,
+            "productivity_growth": config.productivity_growth,
+            "note": "flat uniform trends (Phase 7.1 fallback); no sourced structural trajectory.",
+        }
+    return {
+        "kind": "structural_trajectory",
+        "provenance": {
+            "source": traj.provenance.source,
+            "source_version": traj.provenance.source_version,
+            "licence": traj.provenance.licence,
+            "retrieved": traj.provenance.retrieved,
+        },
+        "drivers": sorted(traj.rates),
+        "sources": dict(traj.sources),
+        "confidence": dict(traj.confidence),
+        "note": (
+            "Phase 7b.2 sourced trajectories: labour-supply growth = population × participation, "
+            "and productivity growth, compounded per region from the cited annual rates."
+        ),
     }
 
 
