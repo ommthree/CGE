@@ -4,9 +4,9 @@ A ``StatePathway`` says how one channel's physical state index evolves over the 
 *physical* trajectory a scenario specifies instead of a bare productivity-shock number. Two forms:
 
 * an explicit per-year **state index** path (``states={2030: 80, 2040: 65}``), or
-* a **rate** form: a per-year degradation (or restoration, if negative) as a fraction of baseline,
-  optionally from a start year (``degradation_rate=0.02`` → the index falls 2 points/yr from
-  baseline).
+* a **rate** form: a per-year degradation (or restoration, if negative) in **index points** of the
+  baseline, optionally from a start year (``degradation_rate=2.0`` → the index falls 2 points/yr
+  from baseline; with the default baseline of 100 that is 2% of baseline per year).
 
 **Recovery hysteresis (6b.4).** Restoration of a *physical* state does not instantly restore the
 *service* — soils, aquifers and populations recover slowly. When ``recovery_rate`` is set (< 1), the
@@ -42,8 +42,9 @@ class StatePathway(BaseModel):
     degradation_rate: float | None = Field(
         default=None,
         description=(
-            "index points of baseline lost per year from ``start_year`` (negative = restoration). "
-            "Mutually exclusive with ``states``."
+            "index POINTS lost per year from ``start_year`` (negative = restoration); e.g. 2.0 = 2 "
+            "points/yr, which is 2% of the default baseline of 100. Mutually exclusive with "
+            "``states``."
         ),
     )
     start_year: int | None = Field(

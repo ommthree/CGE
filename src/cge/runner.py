@@ -43,12 +43,34 @@ def _toy_cge_open() -> dict:
     }
 
 
+def _toy_cge_open_gov() -> dict:
+    from cge.data.sam import toy_open_gov_sam
+
+    # The open SAM plus a government + savings-investment account, so the open CGE has the benchmark
+    # stock-flow bridge the recursive-dynamic wrapper (Phase 7.1) steps forward.
+    return {
+        "SAM": toy_open_gov_sam(),
+        "carbon_cost_share": {"BRD": _TOY_DIRTY_SHARE, "MIL": _TOY_CLEAN_SHARE},
+    }
+
+
 def _toy_cge_multi() -> dict:
     from cge.data.sam import toy_multi_sam
 
     # Carbon cost on the North region's dirty sector (so a price shows cross-region leakage).
     return {
         "SAM": toy_multi_sam(),
+        "carbon_cost_share": {"N": {"BRD": _TOY_DIRTY_SHARE}, "S": {"BRD": 0.0}},
+    }
+
+
+def _toy_cge_multi_gov() -> dict:
+    from cge.data.sam import toy_multi_gov_sam
+
+    # The multi SAM plus per-region government + savings-investment accounts, so the multi CGE has a
+    # per-region benchmark stock-flow bridge for the recursive-dynamic wrapper (Phase 7.1).
+    return {
+        "SAM": toy_multi_gov_sam(),
         "carbon_cost_share": {"N": {"BRD": _TOY_DIRTY_SHARE}, "S": {"BRD": 0.0}},
     }
 
@@ -83,7 +105,9 @@ def _toy_cge_energy() -> dict:
 _CGE_TOY_SAMS = {
     "toy_cge": _toy_cge_closed,
     "toy_cge_open": _toy_cge_open,
+    "toy_cge_open_gov": _toy_cge_open_gov,
     "toy_cge_multi": _toy_cge_multi,
+    "toy_cge_multi_gov": _toy_cge_multi_gov,
     "toy_cge_gov": _toy_cge_gov,
     "toy_cge_energy": _toy_cge_energy,
 }
@@ -142,6 +166,59 @@ _NATURE_CONTROL_KEYS = (
     "EncoreDependencies",
     "ConcordanceMap",
 )
+
+
+def _nature_state_manifest(scenario: Scenario) -> dict:
+    """A manifest block describing the Phase-6b physical-STATE pathways a scenario carried, so a
+    physical-state run is distinguishable from an equivalent hand-written NatureStress and
+    reconstructible from its manifest (review P2 2026-08-23). Records, per pathway: the channel id,
+    its physical state variable/unit/mechanism, the response parameters (baseline, sensitivity,
+    threshold) and the pathway (states or degradation_rate + start/recovery + baseline + coverage).
+    Also carries a content hash of the pathway specs so a changed endpoint moves the manifest."""
+    from cge.contracts.provenance import content_hash
+    from cge.nature.state import get_channel
+    from cge.scenarios.loader import NatureStatePathwaySpec
+
+    pathways = []
+    for raw in scenario.nature_state:
+        # model_copy(update=...) can bypass validation, leaving a raw dict — coerce defensively.
+        spec = raw if isinstance(raw, NatureStatePathwaySpec) else NatureStatePathwaySpec(**raw)
+        ch = get_channel(spec.channel)
+        pathways.append(
+            {
+                "channel": spec.channel,
+                "mechanism": ch.mechanism,
+                "state_variable": ch.state_variable,
+                "unit": ch.unit,
+                "services": list(ch.services),
+                "default_sectors": list(ch.default_sectors),
+                "response": {
+                    "baseline": ch.response.baseline,
+                    "sensitivity": ch.response.sensitivity,
+                    "threshold": ch.response.threshold,
+                    "threshold_exponent": ch.response.threshold_exponent,
+                },
+                "pathway": {
+                    "states": spec.states,
+                    "degradation_rate": spec.degradation_rate,
+                    "start_year": spec.start_year,
+                    "recovery_rate": spec.recovery_rate,
+                    "coverage_sectors": list(spec.coverage_sectors),
+                    "coverage_regions": list(spec.coverage_regions),
+                },
+                "channel_provenance": {
+                    "source": ch.provenance.source,
+                    "source_version": ch.provenance.source_version,
+                    "licence": ch.provenance.licence,
+                },
+                "source_note": ch.source_note,
+            }
+        )
+    return {
+        "kind": "physical_state (Phase 6b): pathways expanded into NatureStress",
+        "pathways": pathways,
+        "pathways_hash": content_hash([p["pathway"] for p in pathways]),
+    }
 
 
 def _preprocess_nature(
@@ -331,7 +408,13 @@ def run_scenario(
     # Expand any Phase-6b physical state pathways (scenario.nature_state) into NatureStress shocks,
     # so a scenario file can express a physical degradation trajectory rather than a bare severity
     # number (Phase 6b.3). The runner then treats them exactly like hand-written NatureStress.
+    # Keep the ORIGINAL scenario (with nature_state intact) so its provenance can be recorded and it
+    # can be hashed — clearing nature_state before hashing would make a physical-state scenario and
+    # an equivalent hand-written NatureStress collide (review P2 2026-08-23).
+    original_scenario = scenario
+    nature_state_stamp: dict | None = None
     if scenario.nature_state:
+        nature_state_stamp = _nature_state_manifest(scenario)
         scenario = scenario.model_copy(
             update={"shocks": scenario.expanded_shocks(scenario.years), "nature_state": []}
         )
@@ -382,13 +465,27 @@ def run_scenario(
     # OVERWRITE the scenario_hash with the ORIGINAL scenario's hash (the engine hashed only the
     # derived shocks, so two nature scenarios differing only in a path endpoint would otherwise
     # collide — review P1 2026-08-07).
-    if nature_stamp is not None:
+    if nature_stamp is not None or nature_state_stamp is not None:
         from cge.contracts.provenance import content_hash
+
+        extra_assumptions = dict(result.manifest.assumptions)
+        if nature_stamp is not None:
+            extra_assumptions["nature"] = nature_stamp
+        # Physical-state (6b) provenance block (review P2 2026-08-23): the derived NatureStress that
+        # the engine and the ``nature`` stamp saw is the SAME whether it came from a physical-state
+        # pathway or a hand-written NatureStress, so without this block (and the original-scenario
+        # hash below) a physical water-state scenario and an equivalent hand-written NatureStress
+        # produce identical manifests. Record the channel, physical variable, response parameters,
+        # pathway and baseline so the physical run is distinguishable and reconstructible.
+        if nature_state_stamp is not None:
+            extra_assumptions["nature_state"] = nature_state_stamp
 
         manifest = result.manifest.model_copy(
             update={
-                "assumptions": {**result.manifest.assumptions, "nature": nature_stamp},
-                "scenario_hash": content_hash(scenario.model_dump(mode="json")),
+                "assumptions": extra_assumptions,
+                # Hash the ORIGINAL scenario, which still carries nature_state — so a physical-state
+                # scenario hashes differently from an equivalent bare-NatureStress one (review P2).
+                "scenario_hash": content_hash(original_scenario.model_dump(mode="json")),
             }
         )
         result = ResultSet(data=result.data, manifest=manifest).validate_schema()

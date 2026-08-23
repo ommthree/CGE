@@ -81,3 +81,44 @@ def toy_open_sam() -> SAM:
         notes="Exactly-balanced open-economy 2-sector SAM (Armington/CET) for the CGE.",
     )
     return SAM(provenance=prov, accounts=ACCOUNTS, matrix=m)
+
+
+def toy_open_gov_sam() -> SAM:
+    """The open-economy toy SAM extended with a **government** (``GOV``) and a **savings-
+    investment** (``SAVINV``) account, exactly balanced — the dynamic-capable open variant (7.1).
+
+    Same structure as :func:`toy_open_sam` plus, mirroring the closed ``toy_gov_sam``: an imputed
+    direct tax from the household spent by the government on commodities, and household savings
+    spent by the savings-investment account on gross capital formation. Government and investment
+    demand go to the **commodity** accounts (``c_BRD``/``c_MIL``, the Armington composites), as with
+    all final demand here. Household consumption falls by exactly (tax + savings) so every account
+    still balances. This gives the open CGE a savings-investment account, so it has the benchmark
+    stock-flow bridge (``capital_dynamics.available``) the recursive-dynamic wrapper steps forward.
+    """
+    base = toy_open_sam()
+    acc = list(base.accounts) + ["GOV", "SAVINV"]
+    m = pd.DataFrame(0.0, index=acc, columns=acc)
+    m.loc[base.accounts, base.accounts] = base.matrix
+    # Government: an imputed direct tax from the household, spent on commodities.
+    m.loc["GOV", HOUSEHOLD] = 18.1
+    m.loc["c_BRD", "GOV"] = 10.0
+    m.loc["c_MIL", "GOV"] = 8.1
+    # Savings-investment: household savings spent on gross capital formation (commodities).
+    m.loc["SAVINV", HOUSEHOLD] = 16.29
+    m.loc["c_BRD", "SAVINV"] = 9.0
+    m.loc["c_MIL", "SAVINV"] = 7.29
+    # The household consumes less by exactly (tax + savings) so every account still balances.
+    m.loc["c_BRD", HOUSEHOLD] -= 19.0
+    m.loc["c_MIL", HOUSEHOLD] -= 15.39
+    prov = Provenance(
+        source="toy (hand-built)",
+        source_version="open-gov-savinv-v1",
+        licence="n/a",
+        reference_year=0,
+        retrieved=date.today().isoformat(),
+        notes=(
+            "Exactly-balanced open-economy 2-sector SAM with a government (GOV) and savings-"
+            "investment (SAVINV) account — the dynamic-capable open variant for Phase 7.1."
+        ),
+    )
+    return SAM(provenance=prov, accounts=acc, matrix=m)

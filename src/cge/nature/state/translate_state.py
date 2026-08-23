@@ -58,9 +58,32 @@ def state_to_nature_stresses(
             f"pathway is for channel {pathway.channel_id!r} but the channel is "
             f"{channel.channel_id!r}; pass the matching pair."
         )
+    # The pathway's baseline (the index the physical trajectory departs from) must AGREE with the
+    # channel's response baseline (the index at which severity = 0) — otherwise a pathway anchored
+    # at
+    # 200 fed through a channel whose response baseline is 100 silently starts at 50% shortfall, a
+    # nonsensical severity at the reference condition (review P2 2026-08-23). Both default to 100,
+    # so
+    # the common case is unaffected; a deliberate custom baseline must be set consistently on BOTH.
+    if abs(pathway.baseline - channel.response.baseline) > 1e-9:
+        raise ValueError(
+            f"pathway baseline {pathway.baseline} disagrees with channel {channel.channel_id!r} "
+            f"response baseline {channel.response.baseline}: the physical trajectory's reference "
+            "level and the state→severity response's zero-severity level must be the same index "
+            "(both default to 100). Set them consistently."
+        )
     sev_path = state_severity_path(channel, pathway, years)
     if not sev_path or max(sev_path.values()) <= 1e-12:
         return []  # never degrades → no shock (identical to an unstressed run)
+
+    # Resource-specific sector restriction (review P1, 2026-08-23): an EXPLICIT scenario
+    # coverage_sectors always wins; otherwise fall back to the channel's default_sectors, so a
+    # forestry- or fisheries-stock shock is confined to the forestry/fishing sectors rather than
+    # leaking through the shared "Biomass provisioning" service into every dependent sector (crops,
+    # the other resource, …). An economy-wide channel (empty default_sectors) is unchanged.
+    effective_sectors = (
+        list(coverage_sectors) if coverage_sectors else list(channel.default_sectors)
+    )
 
     # The scalar `severity` is the peak of the path (NatureStress requires a scalar; the path drives
     # the per-year values). Round-trip-safe: a flat path reduces to that scalar.
@@ -72,7 +95,7 @@ def state_to_nature_stresses(
                 service=service,
                 severity=peak,
                 path=dict(sev_path),
-                coverage_sectors=list(coverage_sectors or []),
+                coverage_sectors=effective_sectors,
                 coverage_regions=list(coverage_regions or []),
             )
         )

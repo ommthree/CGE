@@ -192,6 +192,77 @@ def test_build_state_scenario_composes_channels():
     assert "Water flow regulation" in services
 
 
+def test_translation_rejects_baseline_disagreement():
+    """A pathway baseline that disagrees with the channel's response baseline is rejected (review
+    P2): a pathway anchored at 200 through a channel whose response zeroes at 100 would silently
+    start at 50% shortfall."""
+    ch = ServiceStateChannel(
+        channel_id="c",
+        mechanism="water_availability",
+        services=("Water purification",),
+        state_variable="s",
+        unit="index (baseline = 100)",
+        response=StateResponse(baseline=100.0, sensitivity=1.0),
+        provenance=_prov(),
+        source_note="doc",
+    )
+    p = StatePathway(channel_id="c", baseline=200.0, states={2030: 150.0})
+    with pytest.raises(ValueError, match="baseline"):
+        state_to_nature_stresses(ch, p, [2030])
+
+
+def test_forestry_and_fisheries_restrict_to_their_own_sectors():
+    """Forestry and fisheries both drive the shared 'Biomass provisioning' service, but each is
+    restricted by default to its OWN resource sector (review P1): a forestry-stock shock must not
+    leak into the fishing sector and vice versa. Their default sectors are disjoint."""
+    forestry = get_channel("forestry_stock")
+    fisheries = get_channel("fisheries_stock")
+    assert forestry.default_sectors and fisheries.default_sectors
+    assert set(forestry.default_sectors).isdisjoint(fisheries.default_sectors)
+
+    fs = state_to_nature_stresses(
+        forestry, StatePathway(channel_id="forestry_stock", degradation_rate=5.0), [2025, 2030]
+    )
+    for s in fs:
+        assert s.coverage_sectors == list(forestry.default_sectors)
+        assert not set(s.coverage_sectors) & set(fisheries.default_sectors)
+
+
+def test_explicit_coverage_overrides_channel_default_sectors():
+    """An explicit scenario coverage_sectors always wins over a channel's resource default."""
+    forestry = get_channel("forestry_stock")
+    fs = state_to_nature_stresses(
+        forestry,
+        StatePathway(channel_id="forestry_stock", degradation_rate=5.0),
+        [2025, 2030],
+        coverage_sectors=["Some other sector"],
+    )
+    for s in fs:
+        assert s.coverage_sectors == ["Some other sector"]
+
+
+def test_forestry_and_fisheries_combine_without_overlap():
+    """Because the two channels are restricted to disjoint sectors, combining them emits Biomass-
+    provisioning stresses that do NOT overlap on any sector — they can be run together (review P1:
+    previously both hit every Biomass-provisioning-dependent sector, so they collided)."""
+    items = [
+        (
+            get_channel("forestry_stock"),
+            StatePathway(channel_id="forestry_stock", degradation_rate=5.0),
+        ),
+        (
+            get_channel("fisheries_stock"),
+            StatePathway(channel_id="fisheries_stock", degradation_rate=5.0),
+        ),
+    ]
+    stresses = build_state_scenario(items, [2025, 2030])
+    # Every emitted stress is on Biomass provisioning, but their sector coverages are disjoint.
+    covers = [set(s.coverage_sectors) for s in stresses]
+    for i in range(len(covers)):
+        for j in range(i + 1, len(covers)):
+            assert covers[i].isdisjoint(covers[j])
+
+
 # --- 6b.5: double-counting reconciliation -----------------------------------------------------
 
 
@@ -205,6 +276,16 @@ def test_double_counting_flags_shared_mechanism():
 def test_double_counting_allows_disjoint_mechanisms():
     report = check_double_counting(["pollination"], ["water_availability"])
     assert report.ok
+    report.raise_if_conflict()  # does not raise
+
+
+def test_double_counting_nature_owned_is_not_a_conflict():
+    """A nature-owned mechanism (pollination/forestry/fisheries) claimed by BOTH sides is NOT a
+    conflict — 7c has no such channel (review P3): it is surfaced as a misclaim, not raised. The old
+    code flagged it as a conflict, contradicting the documented ownership rule."""
+    report = check_double_counting(["forestry_stock"], ["forestry_stock"])
+    assert report.ok  # not a conflict
+    assert "forestry_stock" in report.misclaims
     report.raise_if_conflict()  # does not raise
 
 
@@ -339,6 +420,58 @@ def test_example_nature_state_scenario_runs_on_toy():
     vol = d[(d["variable"] == "volume_change") & (d["scenario"] == "central")]
     assert (vol["value"] < 0.0).any()  # the modelled physical degradation hit output
     assert "nature" in res.manifest.assumptions  # full nature provenance recorded
+
+
+def test_physical_state_manifest_and_hash_distinct_from_bare_nature_stress():
+    """A physical-state (6b) scenario and an equivalent hand-written NatureStress must NOT produce
+    identical manifests (review P2): the runner records a ``nature_state`` provenance block and
+    hashes the ORIGINAL scenario (nature_state intact), so the physical run is distinguishable and
+    reconstructible. Also: two physical pathways differing only in an endpoint hash differently."""
+    from cge.contracts.shocks import NatureStress
+    from cge.runner import run_scenario
+    from cge.scenarios.loader import Scenario
+
+    # Physical-state scenario driving the toy water channel.
+    phys = Scenario(
+        name="phys",
+        engine="partial_eq",
+        years=[2030, 2040],
+        nature_state=[{"channel": "toy_water", "states": {2030: 90, 2040: 70}}],
+    )
+    # The severity path the physical pathway expands to, expressed as a bare NatureStress.
+    expanded = phys.expanded_shocks([2030, 2040])
+    bare = Scenario(
+        name="phys",  # same name, so only the state-vs-shock provenance differs
+        engine="partial_eq",
+        years=[2030, 2040],
+        shocks=[
+            NatureStress(service=s.service, severity=s.severity, path=s.path) for s in expanded
+        ],
+    )
+    r_phys = run_scenario(phys, data_source="toy")
+    r_bare = run_scenario(bare, data_source="toy")
+
+    assert "nature_state" in r_phys.manifest.assumptions
+    assert "nature_state" not in r_bare.manifest.assumptions
+    ns = r_phys.manifest.assumptions["nature_state"]
+    assert ns["pathways"][0]["channel"] == "toy_water"
+    assert ns["pathways"][0]["response"]["baseline"] == 100.0
+    # The scenario hashes differ (the original physical scenario carries nature_state).
+    assert r_phys.manifest.scenario_hash != r_bare.manifest.scenario_hash
+
+    # Two physical scenarios differing only in an endpoint must hash differently.
+    phys2 = Scenario(
+        name="phys",
+        engine="partial_eq",
+        years=[2030, 2040],
+        nature_state=[{"channel": "toy_water", "states": {2030: 90, 2040: 50}}],
+    )
+    r_phys2 = run_scenario(phys2, data_source="toy")
+    assert r_phys.manifest.scenario_hash != r_phys2.manifest.scenario_hash
+    assert (
+        r_phys.manifest.assumptions["nature_state"]["pathways_hash"]
+        != r_phys2.manifest.assumptions["nature_state"]["pathways_hash"]
+    )
 
 
 def test_custom_channel_can_be_defined():

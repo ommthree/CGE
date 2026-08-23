@@ -1285,6 +1285,13 @@ def test_zero_shock_replicates_on_real_build(small_build_io):
     # Every CHANGE variable is ~0 at a zero carbon price (benchmark replication). LEVEL outputs
     # (gov_spending / investment / savings — GDP shares that exist now the IO build carries GOV /
     # SAVINV, review P1 round 13) are non-zero benchmark levels, not changes — exclude them.
-    levels = {"gov_spending", "investment", "savings", "fiscal_balance", "carbon_revenue"}
+    levels = {
+        "gov_spending",
+        "investment",
+        "investment_volume",
+        "savings",
+        "fiscal_balance",
+        "carbon_revenue",
+    }
     changes = d[~d["variable"].isin(levels)]
     assert changes["value"].abs().max() < 1e-7

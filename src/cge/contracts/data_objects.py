@@ -442,3 +442,116 @@ class ConcordanceMap(_DataObject):
             if abs(total - 1.0) > 1e-6:
                 raise ValueError(f"Concordance weights for {src!r} sum to {total}, expected 1.0")
         return self
+
+
+# The exogenous structural drivers the recursive-dynamic wrapper (Phase 7.1) steps between static
+# solves. Phase 7b.2 replaces ad-hoc flat trends with documented, sourced trajectories.
+# PER-REGION drivers (demographic + economy-wide productivity): population, labour-force
+# participation, labour productivity. PER-SECTOR drivers: sectoral productivity drift (structural
+# change — sector-biased TFP shifts the output mix endogenously) and emissions intensity (per-sector
+# decarbonisation of the carbon-cost intensity).
+StructuralDriver = Literal["population", "labour_participation", "productivity"]
+StructuralSectorDriver = Literal["sector_productivity", "emissions_intensity"]
+
+
+class StructuralTrajectory(_DataObject):
+    """Documented, sourced exogenous driver paths for the recursive-dynamic wrapper (Phase 7b.2).
+
+    Each entry is an **annual growth rate** for one driver × axis-key pair, given per year, with a
+    per-entry citation and confidence — the same "value + source + confidence, validated for
+    sanity" discipline as :class:`ElasticitySet`, so a trajectory can never enter a run without
+    provenance. Two axes:
+
+    - ``rates`` — PER-REGION drivers ``{driver: {region: {year: rate}}}`` for ``population``,
+      ``labour_participation``, ``productivity``. The wrapper reads per-year labour-supply growth
+      (population × participation) and productivity growth per region and applies them as endowment
+      scales, replacing the flat ``labour_growth`` / ``productivity_growth`` scalars.
+    - ``sector_rates`` — PER-SECTOR drivers ``{driver: {sector: {year: rate}}}`` for
+      ``sector_productivity`` (structural change: sector-biased TFP that shifts the output mix
+      endogenously, fed through the engine's per-sector θ multiplier) and ``emissions_intensity``
+      (per-sector decarbonisation of the carbon-cost intensity, scaling ``carbon_cost_share``).
+
+    ``sector_productivity`` rates are **absolute** sector productivity-growth estimates (the same
+    kind of number as the aggregate ``productivity`` driver), NOT increments on top of the aggregate
+    trend. The recursive wrapper already applies the aggregate TFP trend Hicks-neutrally to every
+    sector via the endowment scale, so it converts each sector's absolute rate into a θ DEVIATION
+    from the aggregate before applying it — a sector at the aggregate rate gets θ=1 (no bias). This
+    is what keeps the two from being double-counted (see ``dynamics.recursive``).
+
+    A rate is a decimal fraction (0.012 = +1.2 %/yr). Years present are the *knots*; the effective
+    rate holds the most recent knot for years between/after knots (piecewise-constant, documented),
+    so a sparse path (a few dated rates) is enough. ``"__all__"`` is an allowed region/sector key
+    meaning "every one"; an explicit key overrides it. ``sources`` / ``confidence`` carry one entry
+    per path, keyed ``"{driver}:{key}"`` (region for ``rates``, sector for ``sector_rates``).
+    """
+
+    # per-region driver -> region -> {year: annual growth rate (decimal fraction)}
+    rates: dict[str, dict[str, dict[int, float]]] = Field(default_factory=dict)
+    # per-sector driver -> sector -> {year: annual growth rate (decimal fraction)}
+    sector_rates: dict[str, dict[str, dict[int, float]]] = Field(default_factory=dict)
+    sources: dict[str, str] = Field(default_factory=dict, description="'driver:key' -> citation")
+    confidence: dict[str, Literal["high", "medium", "low", "default"]] = Field(default_factory=dict)
+
+    _REGION_DRIVERS: ClassVar[set[str]] = {"population", "labour_participation", "productivity"}
+    _SECTOR_DRIVERS: ClassVar[set[str]] = {"sector_productivity", "emissions_intensity"}
+
+    @model_validator(mode="after")
+    def _rates_valid(self) -> StructuralTrajectory:
+        """Reject malformed or implausible trajectories: every rate finite and in a sane band, every
+        driver a known one on the right axis, and every path carrying a source + confidence."""
+        self._validate_axis(self.rates, self._REGION_DRIVERS, "region")
+        self._validate_axis(self.sector_rates, self._SECTOR_DRIVERS, "sector")
+        return self
+
+    def _validate_axis(self, table: dict, allowed: set[str], axis: str) -> None:
+        import math
+
+        for driver, by_key in table.items():
+            if driver not in allowed:
+                raise ValueError(
+                    f"unknown {axis} structural driver {driver!r}; use one of {sorted(allowed)}"
+                )
+            for key, path in by_key.items():
+                if not path:
+                    raise ValueError(f"trajectory {driver!r}/{key!r} has no dated rates")
+                for year, rate in path.items():
+                    if not isinstance(year, int):
+                        raise ValueError(f"trajectory {driver!r}/{key!r} year {year!r} not an int")
+                    if not math.isfinite(rate):
+                        raise ValueError(f"trajectory {driver!r}/{key!r}[{year}] is not finite")
+                    # A rate below −100 %/yr would drive the driven quantity negative; above +100
+                    # %/yr is implausible for any of these drivers over a year — reject rather than
+                    # silently produce a nonsensical value.
+                    if not (-1.0 < rate < 1.0):
+                        raise ValueError(
+                            f"trajectory {driver!r}/{key!r}[{year}] rate {rate} out of the "
+                            "plausible band (−1, 1); an annual growth rate outside ±100%/yr "
+                            "is rejected"
+                        )
+                mkey = f"{driver}:{key}"
+                if mkey not in self.sources or mkey not in self.confidence:
+                    raise ValueError(
+                        f"structural trajectory {mkey!r} is missing source or confidence metadata"
+                    )
+
+    @staticmethod
+    def _lookup(by_key: dict | None, key: str, year: int) -> float:
+        if not by_key:
+            return 0.0
+        path = by_key.get(key) or by_key.get("__all__")
+        if not path:
+            return 0.0
+        knots = sorted(path)
+        applicable = [y for y in knots if y <= year]
+        chosen = applicable[-1] if applicable else knots[0]
+        return float(path[chosen])
+
+    def rate(self, driver: StructuralDriver, region: str, year: int) -> float:
+        """The effective per-region annual growth rate for ``(driver, region)`` at ``year`` (0.0 if
+        absent). Piecewise-constant between knots; an explicit region overrides ``"__all__"``."""
+        return self._lookup(self.rates.get(driver), region, year)
+
+    def sector_rate(self, driver: StructuralSectorDriver, sector: str, year: int) -> float:
+        """The effective per-sector annual growth rate for ``(driver, sector)`` at ``year`` (0.0 if
+        absent). Piecewise-constant between knots; an explicit sector overrides ``"__all__"``."""
+        return self._lookup(self.sector_rates.get(driver), sector, year)

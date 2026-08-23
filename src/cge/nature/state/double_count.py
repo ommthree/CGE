@@ -56,9 +56,17 @@ class DoubleCountError(ValueError):
 
 @dataclass
 class DoubleCountReport:
-    """Result of the reconciliation check."""
+    """Result of the reconciliation check.
 
-    conflicts: dict[str, list[str]] = field(default_factory=dict)  # mechanism -> [claimants]
+    ``conflicts`` are SHARED mechanisms (``water_availability`` / ``soil_quality``) driven by both
+    sides — genuine double-counts. ``misclaims`` are NATURE-OWNED mechanisms a climate channel also
+    claims: never a conflict (7c has no such channel), but surfaced because 7c should not own them
+    (review P3 2026-08-23 — the earlier code flagged these as conflicts, contradicting the docs)."""
+
+    conflicts: dict[str, list[str]] = field(default_factory=dict)  # shared mechanism -> [claimants]
+    misclaims: list[str] = field(
+        default_factory=list
+    )  # nature-owned mechanisms a 7c channel claims
     ok: bool = True
 
     def raise_if_conflict(self) -> None:
@@ -67,9 +75,9 @@ class DoubleCountReport:
                 f"{mech}: claimed by {sorted(who)}" for mech, who in sorted(self.conflicts.items())
             )
             raise DoubleCountError(
-                "nature and climate-damage channels double-count the same physical mechanism(s): "
-                f"{detail}. Run one channel as the mechanism's owner, or give them disjoint "
-                "coverage. See docs/models/nature-state.md §double-counting."
+                "nature and climate-damage channels double-count the same SHARED physical "
+                f"mechanism(s): {detail}. Run one channel as the mechanism's owner. See "
+                "docs/models/nature-state.md §double-counting."
             )
 
 
@@ -82,13 +90,19 @@ def check_double_counting(
     ``nature_mechanisms`` are the ``ServiceStateChannel.mechanism`` values a scenario's nature-state
     pathways drive; ``climate_mechanisms`` are the physical mechanisms its Phase-7c climate-damage
     channels drive (an empty set until 7c exists). A mechanism in the intersection that is a SHARED
-    mechanism is a conflict; a nature-owned mechanism is never a conflict even if a (mis-configured)
-    climate channel claims it — but such a claim is surfaced too, since 7c should not own it."""
+    mechanism (``water_availability`` / ``soil_quality``) is a CONFLICT; a nature-owned mechanism
+    (``pollination`` / ``forestry_stock`` / ``fisheries_stock``) is NEVER a conflict even if a
+    (mis-configured) climate channel claims it — that is recorded in ``misclaims``, not
+    ``conflicts``, matching the documented ownership rule (review P3 2026-08-23: the earlier code
+    flagged nature-owned mechanisms as conflicts, contradicting its own docstring)."""
     nat = set(nature_mechanisms)
     clim = set(climate_mechanisms)
     report = DoubleCountReport()
     for mech in nat & clim:
-        report.conflicts[mech] = ["nature-state", "climate-damage"]
+        if mech in NATURE_OWNED_MECHANISMS:
+            report.misclaims.append(mech)  # surfaced, but not a conflict — 7c has no such channel
+        else:  # a SHARED mechanism driven by both sides → genuine double-count
+            report.conflicts[mech] = ["nature-state", "climate-damage"]
     if report.conflicts:
         report.ok = False
     return report

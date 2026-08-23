@@ -3,9 +3,27 @@
 - **Implements:** `cge.dynamics` (`recursive.py`), building on `cge.engines.cge_static.capital`
   (Phase 5d.3) and the engine's `factor_endowment_scale` hook.
 - **Roadmap phase:** 7.1 (needs 5d.3's capital-accumulation identity).
-- **Status: BUILT, single-region scope.** Runs end-to-end on the closed/gov CGE; open/multi-region
-  are a documented follow-up. Magnitudes remain **illustrative** (toy calibration), like the rest of
-  the CGE tier.
+- **Status: BUILT, all three CGE variants.** Runs end-to-end on the closed/gov CGE, the open
+  economy (Armington/CET + rest-of-world) — both carrying one aggregate capital stock — **and the
+  multi-region CGE, which carries a per-region capital path** (each region's stock steps by its own
+  investment). Dynamic-capable SAMs ship for each: `toy_cge_gov`, `toy_cge_open_gov`,
+  `toy_cge_multi_gov`. Labour/productivity trends are exogenous. With the **flat** `DynamicConfig`
+  scalars they are applied uniformly across regions; with a sourced **`StructuralTrajectory`**
+  (Phase 7b.2) they are **per-region** (and per-sector for the sectoral-productivity and
+  emissions-intensity drivers) — so region-specific trends now exist. Magnitudes remain
+  **illustrative** (toy calibration), like the rest of the CGE tier.
+
+  **Capital is stepped every calendar year** between the first and last requested year, not only on
+  the (possibly sparse) requested years: the requested `years` are the *reporting* years, and the
+  wrapper solves every intervening year internally so investment and depreciation accumulate
+  annually. A sparse `[2025, 2030]` horizon therefore reports the SAME 2030 stock as the full
+  `[2025, …, 2030]` horizon (review P1 2026-08-23).
+
+  **Investment→capital is a REAL flow.** The wrapper steps the (real) capital stock with the engine's
+  `investment_volume` output — investment demand valued at **benchmark prices** — not the nominal
+  `investment` share, so investment-price movements do not masquerade as capital formation. For the
+  multi CGE `investment_volume` is normalised by **global** GDP, matching the globally-normalised
+  capital stock (review P1 2026-08-23).
 
 ## 1. What it is (and is not)
 
@@ -66,8 +84,11 @@ its return fell below a threshold — is a documented future extension, exactly 
 ## 5. Configuration & outputs
 
 `DynamicConfig`: `depreciation` (δ, default 5%), `labour_growth` (n), `productivity_growth`,
-`retirement` (per-year fractions). All trends default to **flat** — a zero-trend run is transparent
-bookkeeping over the static solves, adding nothing implicit.
+`retirement` (per-year fractions), and `structural` (an optional sourced `StructuralTrajectory`,
+Phase 7b.2). The flat scalars default to **flat** — a zero-trend run is transparent bookkeeping over
+the static solves, adding nothing implicit. When `structural` is set it supersedes the flat scalars
+with per-region sourced paths (§6); the flat scalars are the fallback for a run that names no
+trajectory. Load the vendored trajectories with `cge.data.structural.load_structural_trajectories()`.
 
 `run_recursive(scenario, config=…, data_source="toy_cge_gov")` returns a `DynamicPath`: the
 concatenated per-year `ResultSet` (with the capital-path rows) plus `capital_stock` / `investment` /
@@ -76,10 +97,42 @@ horizon, δ, trends, retirement, K₀, and the capital path.
 
 ## 6. Scope & honesty
 
-- **Single-region (closed/gov) only** for now — region-level capital, matching 5d.3's granularity.
-  Open and multi-region capital accumulation are a documented follow-up.
+- **All three CGE variants** — the closed/gov SAM and the open economy carry one aggregate capital
+  stock; the multi-region CGE carries a **per-region capital path**, each region's stock stepping by
+  its own investment (`K_{t+1,r}=(1−δ)(1−r)K_{t,r}+INV_{t,r}`, region-level capital matching 5d.3's
+  granularity). Any variant needs a savings-investment account to be dynamic-capable: `toy_cge_gov`,
+  `toy_cge_open_gov`, `toy_cge_multi_gov`.
+- **Structural trajectories (Phase 7b.2).** Supplying a sourced `StructuralTrajectory` on the
+  `DynamicConfig` replaces the flat trend scalars with **documented, sourced, per-year** paths on
+  two axes, each entry carrying its own citation and confidence (validated on load, like
+  `ElasticitySet`); the wrapper compounds the sourced annual rates over the actual solve-year gaps.
+  The vendored artifact `data/structural/trajectories_v1.json` (see `data/structural/NOTICE.md`) is
+  real sourced data. Without a trajectory the flat scalars remain the fallback. The four drivers:
+    - **Per-region** — labour-supply growth = population growth compounded with labour-force
+      participation growth, i.e. the exact multiplicative step (1+pop)(1+part) each year (both are
+      *proportional* annual growth rates, not percentage-point changes), and labour productivity
+      (TFP), applied as endowment scales. *(UN WPP 2024, ILO/World Bank, PWT 10.01.)*
+    - **Per-sector `sector_productivity`** (structural change / GDP-share drift) — sector-biased TFP
+      fed through the engine's existing per-sector θ multiplier, so the output mix shifts
+      **endogenously** (a sector with faster productivity gains share); shares are a model result,
+      not an imposed target. *(EU KLEMS.)*
+    - **Per-sector `emissions_intensity`** (decarbonisation) — scales `carbon_cost_share`, so a
+      decarbonising sector faces a smaller priced carbon wedge in the solve AND, via a base-year
+      covered-emissions reference the wrapper feeds the engine (now for **all three** variants, with
+      a **per-region** reference for the multi CGE), shows falling covered emissions measured against
+      the base year. *(IEA WEO 2024 / NGFS Net Zero 2050.)*
+      **Two limitations to state plainly.** (i) `carbon_cost_share` is dual-purpose — it is both the
+      priced wedge and the covered-emissions intensity — so decarbonising it simultaneously shrinks
+      the emissions weight and weakens the carbon signal (letting output rise); the net covered-
+      emissions change is therefore model-dependent and, in small heavily-substituting SAMs, the
+      decarbonising path need not dominate the flat path monotonically. A physically-decoupled
+      intensity (separate from the priced wedge) is a documented follow-up. (ii) With **no
+      `CarbonPrice`** in the scenario there is no priced carbon and no covered-emissions output at
+      all, so an `emissions_intensity` trajectory has **no observable effect** — pair it with a
+      `CarbonPrice`.
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
-- Productivity is Hicks-neutral on primary factors (not sector-specific TFP yet).
+- Productivity is Hicks-neutral on primary factors (economy-wide and per-sector θ; no factor-biased
+  or vintage-specific TFP).
 - Magnitudes are illustrative (toy calibration); the value is the **mechanism** — a static CGE turned
   into a capital-carrying dynamic path, the backbone Phase 7.2 (NGFS) and 7.3 (climate) build on.
 

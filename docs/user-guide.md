@@ -12,9 +12,12 @@ KL-E-M energy nest) — plus **macro aggregates** (GVA/GDP/deflators, real vs no
 data layer (build, store, quality), and a web GUI. The **nature (ENCORE) extension** — ecosystem-
 service exposure (Phase 6) and a physical nature-state layer (Phase 6b) — is built and has its own
 walkthrough in **Step 9**; it runs end-to-end but is **explicitly experimental** (magnitudes
-illustrative of the method, not calibrated risk — see [`roadmap.md`](../roadmap.md) Phase 6/6b). The
-pathway stack (recursive dynamics, NGFS, climate) is planned. This guide covers everything that runs
-now, engines and nature alike.
+illustrative of the method, not calibrated risk — see [`roadmap.md`](../roadmap.md) Phase 6/6b).
+**Recursive dynamics** (Phase 7.1) — solving the CGE year-by-year and carrying the capital stock
+forward, with optional sourced demographic/productivity/emissions-intensity trajectories (Phase
+7b.2) — is now **built** across all three CGE variants (see
+[`docs/models/recursive-dynamics.md`](models/recursive-dynamics.md)); the rest of the pathway stack
+(NGFS, climate) is planned. This guide covers everything that runs now, engines and nature alike.
 
 This guide **teaches the economics as it goes** — each idea (a Leontief inverse, a numéraire,
 revenue recycling, carbon leakage, factor substitution) is explained from first principles the first

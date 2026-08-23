@@ -23,8 +23,24 @@ simplification; a genuine sector-level TFP term is a follow-up).
 
 Results are reported per year **relative to the original benchmark**, so capital accumulation and
 the trends are VISIBLE in the level path (a growing stock raises output vs the benchmark). The
-wrapper adds ``capital_stock`` and ``capital_growth`` result rows. Scope for now: the **closed /
-gov** single-region variant (region-level capital, matching 5d.3); open/multi are a follow-up.
+wrapper adds ``capital_stock`` and ``capital_growth`` result rows (one per region).
+
+**Scope: all three CGE variants.** The closed/gov SAM and the open economy (Armington/CET + rest of
+world) carry one aggregate capital stock; the multi-region CGE carries a **per-region capital path**
+— each region's stock steps by its own investment, ``K_{t+1,r}=(1−δ)(1−r)K_{t,r}+INV_{t,r}``, and
+the ``factor_endowment_scale`` hook moves each region's capital independently. Any variant needs a
+savings-investment account to be dynamic-capable: ``toy_cge_gov`` (closed), ``toy_cge_open_gov``
+(open), ``toy_cge_multi_gov`` (multi). Labour and productivity trends are exogenous. With the flat
+``DynamicConfig`` scalars they are applied uniformly across regions; with a sourced
+:class:`StructuralTrajectory` (Phase 7b.2) they are **per-region** (and per-sector for the
+sectoral-productivity and emissions-intensity drivers), so region-specific trends exist.
+
+**Capital is stepped every calendar year** between the first and last requested year, not only on
+the (possibly sparse) requested years: the requested ``years`` are the *reporting* years and the
+wrapper solves every intervening year internally so investment and depreciation accumulate annually
+(a sparse ``[2025, 2030]`` reports the same 2030 stock as the full annual horizon). The stock is
+stepped with the engine's ``investment_volume`` (a benchmark-price REAL flow in the same
+GDP-normalised units as the stock), not the nominal ``investment`` share.
 """
 
 from __future__ import annotations
@@ -34,6 +50,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from cge.contracts.data_objects import StructuralTrajectory
 from cge.contracts.results import ResultSet
 from cge.engines.cge_static.capital import DEFAULT_DEPRECIATION_RATE, capital_next
 from cge.runner import run_scenario
@@ -42,15 +59,25 @@ from cge.scenarios.loader import Scenario
 
 @dataclass
 class DynamicConfig:
-    """Configuration for a recursive-dynamic run (Phase 7.1). All trends default to **flat** (no
-    growth), so a zero-trend run is transparent bookkeeping over the static solves."""
+    """Configuration for a recursive-dynamic run (Phase 7.1 / 7b.2).
 
+    Trends default to **flat** (no growth), so a zero-trend run is transparent bookkeeping over the
+    static solves. Supplying ``structural`` (a documented, sourced :class:`StructuralTrajectory`,
+    Phase 7b.2) replaces the flat ``labour_growth``/``productivity_growth`` scalars with per-region,
+    per-year sourced trajectories: labour-supply growth = population × participation, and TFP
+    growth, each compounded from the sourced annual rates. The flat scalars remain the fallback when
+    no trajectory is given."""
+
+    # Flat fallback trends (used when ``structural`` is None): applied uniformly across regions.
     depreciation: float = DEFAULT_DEPRECIATION_RATE  # δ per year (5d.3 default 5%)
-    labour_growth: float = 0.0  # exogenous labour-force growth per year (demographics)
-    productivity_growth: float = 0.0  # exogenous Hicks-neutral TFP trend per year
+    labour_growth: float = 0.0  # labour-force growth per year
+    productivity_growth: float = 0.0  # Hicks-neutral TFP trend per year
     # Per-year premature capital retirement fraction (5d.3 stranded assets), e.g. {2030: 0.1}. A
     # year absent → 0. Applied to the OPENING stock in that year's accumulation step.
     retirement: dict[int, float] = field(default_factory=dict)
+    # Documented, sourced per-region structural trajectories (Phase 7b.2). When set, it drives the
+    # labour and productivity trends per region instead of the flat scalars above.
+    structural: StructuralTrajectory | None = None
 
     def __post_init__(self) -> None:
         for name in ("depreciation", "labour_growth", "productivity_growth"):
@@ -66,38 +93,85 @@ class DynamicConfig:
 
 @dataclass
 class DynamicPath:
-    """The result of a recursive-dynamic run: the per-year ``ResultSet`` plus the capital path."""
+    """The result of a recursive-dynamic run: the per-year ``ResultSet`` plus the capital path.
+
+    The path dicts are keyed by year. For the single-region variants (closed/gov/open — one
+    aggregate capital stock) the values are **floats** (back-compatible). For the multi-region CGE
+    they are 1-D ``numpy`` arrays, one entry per region (ordered as ``recursive_dynamics
+    ['capital_regions']`` in the result manifest)."""
 
     result: ResultSet
-    capital_stock: dict[int, float]  # end-of-year stock K by year
-    investment: dict[int, float]  # nominal investment (share of benchmark GDP) by year
-    growth: dict[int, float]  # capital growth rate K_{t+1}/K_t − 1 by year
+    capital_stock: dict[int, float | np.ndarray]  # end-of-year stock K by year
+    investment: dict[int, float | np.ndarray]  # real investment VOLUME (share of benchmark GDP) /yr
+    growth: dict[int, float | np.ndarray]  # capital growth rate K_{t+1}/K_t − 1 by year
 
 
-def _manifest_capital_stock(manifest) -> float:
+def _manifest_capital(manifest) -> tuple[np.ndarray, list[str]]:
+    """The benchmark capital stock and the region labels it is ordered by, from the CGE manifest's
+    stock–flow bridge. Returns ``(K0, regions)`` where ``K0`` is a 1-D array (one entry per capital
+    region) and ``regions`` are the matching labels — ``["R"]`` for the single-region variants
+    (closed/gov/open, one aggregate stock), or the model's regions for the multi-region CGE."""
     cd = manifest.assumptions.get("capital_dynamics", {})
     if not cd.get("available"):
         raise ValueError(
             "recursive dynamics need a CGE with a capital factor AND a savings-investment account "
             f"(the benchmark stock–flow bridge is unavailable: {cd.get('reason', 'unknown')}). "
-            "Use a SAM with a SAVINV account, e.g. toy_cge_gov."
+            "Use a SAM with a SAVINV account, e.g. toy_cge_gov (or toy_cge_multi_gov)."
         )
-    k0 = cd["benchmark_capital_stock"]
-    if len(k0) != 1:
+    k0 = np.asarray(cd["benchmark_capital_stock"], dtype=float)
+    # The multi-region CGE stamps a 'regions' list ordered the same as the capital vector; the
+    # single-region variants (one aggregate stock) don't, and use the canonical "R" region label.
+    regions = list(manifest.assumptions.get("regions") or ["R"])
+    if len(regions) != len(k0):
         raise ValueError(
-            "recursive dynamics currently support the single-region (closed/gov) CGE only; this "
-            f"model has {len(k0)} capital regions (open/multi is a documented follow-up)."
+            f"capital regions ({len(k0)}) do not match manifest regions {regions}; cannot map the "
+            "capital path to regions."
         )
-    return float(k0[0])
+    return k0, regions
 
 
-def _year_investment(res: ResultSet, year: int) -> float:
-    """That year's nominal investment (share of benchmark GDP) from a single-year ResultSet."""
+def _probe_sectors(probe: ResultSet) -> list[str]:
+    """The model's sectors, read off the probe run's per-sector ``volume_change`` rows (the sector
+    labels the engine actually solved on) — the authoritative sector list the sectoral-productivity
+    driver enumerates so every model sector is driven, even by an ``__all__``-only trajectory or one
+    whose keys do not match real sector names (review P1)."""
+    d = probe.data
+    vc = d[d["variable"] == "volume_change"]
+    # Preserve first-seen order; drop the economy-wide placeholder used by non-sector rows.
+    seen: list[str] = []
+    for s in vc["sector"]:
+        if s != "__economy__" and s not in seen:
+            seen.append(str(s))
+    return seen
+
+
+def _year_investment(res: ResultSet, year: int, regions: list[str]) -> np.ndarray:
+    """That year's REAL investment VOLUME (share of benchmark GDP) per region, ordered by regions.
+
+    Reads ``investment_volume`` — the investment demand valued at BENCHMARK prices — NOT the nominal
+    ``investment`` share (review P1): the capital stock K is a real quantity, so its accumulation
+    flow must be a real volume, else investment-price movements masquerade as capital formation. For
+    the multi CGE ``investment_volume`` is normalised by GLOBAL GDP, matching the global-normalised
+    K (the nominal ``investment`` share uses each region's OWN GDP, which does NOT match K).
+
+    The single-region variants report one ``investment_volume`` row with region label ``R``; the
+    multi CGE reports one per region. Returns a 1-D array aligned to ``regions``."""
     d = res.data
-    inv = d[(d["variable"] == "investment") & (d["scenario"] == "central") & (d["year"] == year)]
+    inv = d[
+        (d["variable"] == "investment_volume") & (d["scenario"] == "central") & (d["year"] == year)
+    ]
     if inv.empty:
-        raise ValueError(f"no investment result for year {year}; the CGE reported none.")
-    return float(inv["value"].iloc[0])
+        raise ValueError(
+            f"no investment_volume result for year {year}; the CGE reported none (a dynamic run "
+            "needs a savings-investment account)."
+        )
+    by_region = dict(zip(inv["region"], inv["value"], strict=False))
+    missing = [r for r in regions if r not in by_region]
+    if missing:
+        raise ValueError(
+            f"no investment result for year {year} region(s) {missing}; got {sorted(by_region)}."
+        )
+    return np.array([float(by_region[r]) for r in regions], dtype=float)
 
 
 def run_recursive(
@@ -109,64 +183,138 @@ def run_recursive(
 ) -> DynamicPath:
     """Run ``scenario`` recursively-dynamically over its ``years``, carrying capital forward.
 
-    The scenario's ``years`` are the solve years (sorted); its shocks apply per year exactly as in a
-    static run. Returns a ``DynamicPath`` whose ``result`` is the concatenated per-year ResultSet
-    (with added ``capital_stock``/``capital_growth`` rows) and whose dicts give the capital path."""
-    config = config or DynamicConfig()
-    years = sorted(scenario.years)
+    **The capital path is stepped every calendar year** between the first and last requested year,
+    NOT only on the (possibly sparse) requested years (review P1): investment and depreciation are
+    annual flows, so skipping 2026–2029 in a ``[2025, 2030]`` scenario would omit four years of
+    accumulation and report the wrong 2030 stock. The wrapper therefore solves the FULL consecutive
+    annual horizon internally and reports only the requested years — the requested ``years`` are the
+    REPORTING years, the internal solve years are every year in ``[min, max]``.
 
-    # K0 from the benchmark stock–flow bridge (a cheap no-shock probe run at the first year).
+    Returns a ``DynamicPath`` whose ``result`` is the concatenated per-REPORTING-year ResultSet
+    (with added ``capital_stock``/``capital_growth`` rows) and whose dicts give the capital path at
+    the reporting years."""
+    config = config or DynamicConfig()
+    report_years = sorted(scenario.years)
+    base_year = report_years[0]
+    # Solve EVERY calendar year from the first to the last requested year, so investment and
+    # depreciation accumulate annually; report only the requested years (review P1 — sparse-year
+    # path).
+    solve_years = list(range(base_year, report_years[-1] + 1))
+    report_set = set(report_years)
+
+    # K0 (per capital region) from the benchmark stock–flow bridge (a cheap no-shock probe run at
+    # the first year), plus the region labels the vector is ordered by.
     probe = run_scenario(
-        scenario.model_copy(update={"shocks": [], "years": [years[0]]}),
+        scenario.model_copy(update={"shocks": [], "years": [base_year], "nature_state": []}),
         data_source=data_source,
         store=store,
     )
-    k0 = _manifest_capital_stock(probe.manifest)
+    k0, regions = _manifest_capital(probe.manifest)
+    multi = regions != ["R"]  # per-region capital path vs one aggregate stock
+    # The model's sectors, read off the probe's per-sector output rows — needed so the sectoral-
+    # productivity driver can emit a shock for EVERY sector (review P1: enumerating the model's
+    # sectors, not just the trajectory's keys, so an ``__all__``-only trajectory or one whose keys
+    # do
+    # not match real sector names still drives every sector).
+    sectors = _probe_sectors(probe)
+
+    # Expand any Phase-6b nature_state pathways ONCE over the FULL annual horizon (review P1): the
+    # rate-form start year and recovery hysteresis depend on the complete year sequence, so slicing
+    # the pathway one year at a time (as a per-year runner call would) resets the start year and
+    # erases the preceding states. Expanding here yields NatureStress shocks carrying the full
+    # multi-year severity `path`; each internal solve then reads its own year off that path. The
+    # per-year scenario copies clear `nature_state` so the runner never re-expands (and re-slices)
+    # it.
+    base_nature_shocks = scenario.expanded_shocks(solve_years) if scenario.nature_state else None
 
     frames: list[pd.DataFrame] = []
-    capital_stock: dict[int, float] = {}
-    investment: dict[int, float] = {}
-    growth: dict[int, float] = {}
+    capital_stock: dict[int, np.ndarray] = {}  # end-of-year stock K per region, by year
+    investment: dict[
+        int, np.ndarray
+    ] = {}  # real investment volume (share of benchmark GDP) /region
+    growth: dict[int, np.ndarray] = {}  # capital growth rate K_{t+1}/K_t − 1 per region
 
-    k_t = k0
-    for i, year in enumerate(years):
-        labour_scale = (1.0 + config.labour_growth) ** i
-        tfp_scale = (1.0 + config.productivity_growth) ** i
+    # Benchmark carbon_cost_share (if any) — read once so the emissions-intensity driver can scale
+    # it per year (the engine is strict about override keys, so we pass a pre-scaled share, not a
+    # new key). None when the data source has no carbon_cost_share.
+    base_share = _base_carbon_share(data_source, store) if _has_emissions_traj(config) else None
+
+    emissions_reference: np.ndarray | None = None  # base-year covered emissions per region (7b.2)
+    k_t = k0.copy()  # 1-D array, one entry per capital region
+    for year in solve_years:
+        # Cumulative labour-supply and productivity scales from the base year to this year, PER
+        # REGION. With a StructuralTrajectory (7b.2) these compound the sourced per-year rates over
+        # the actual year gaps; without one they fall back to the flat DynamicConfig scalars,
+        # uniform
+        # across regions (Phase 7.1 back-compat).
+        labour_scale = _trend_scale(config, base_year, year, regions, "labour")
+        tfp_scale = _trend_scale(config, base_year, year, regions, "productivity")
         # Capital and labour endowments scale to this year's stock/force; TFP is applied Hicks-
         # neutrally as an equivalent scale on both primary factors (documented simplification).
-        cap_scale = (k_t / k0) * tfp_scale
-        lab_scale = labour_scale * tfp_scale
-        overrides = {"factor_endowment_scale": {"CAP": cap_scale, "LAB": lab_scale}}
+        # Capital scale is PER REGION (each region carries its own stock).
+        cap_scale = (k_t / k0) * tfp_scale  # 1-D array per region
+        lab_scale = labour_scale * tfp_scale  # 1-D array per region
+        overrides = {"factor_endowment_scale": _factor_scale(cap_scale, lab_scale, regions, multi)}
+        # Emissions-intensity driver (7b.2, per sector): scale the benchmark carbon_cost_share by
+        # cumulative decarbonisation factor, so a decarbonising sector faces a smaller priced wedge.
+        # The base-year covered-emissions reference is fed back so the reported
+        # covered_emissions_change is measured against the BASE YEAR — a within-year uniform
+        # scale otherwise cancels in the same-year ratio, hiding the physical decarbonisation. It is
+        # a PER-REGION reference vector (multi needs a reference per region, not a summed scalar).
+        if base_share is not None:
+            overrides["carbon_cost_share"] = _scaled_carbon_share(
+                config, base_share, base_year, year
+            )
+            if emissions_reference is not None:
+                overrides["covered_emissions_reference"] = _emissions_reference_override(
+                    emissions_reference, regions, multi
+                )
+
+        # Sectoral-productivity drift (7b.2, structural change): synthesize per-sector
+        # ProductivityShocks whose cumulative level rides the engine's existing θ multiplier, so
+        # sector-biased TFP shifts the output mix endogenously. Composed with the scenario's shocks
+        # (and any pre-expanded nature shocks). nature_state is cleared — already expanded above.
+        year_shocks = list(base_nature_shocks or scenario.shocks) + _sector_productivity_shocks(
+            config, base_year, year, sectors
+        )
 
         res = run_scenario(
-            scenario.model_copy(update={"years": [year]}),
+            scenario.model_copy(
+                update={"years": [year], "shocks": year_shocks, "nature_state": []}
+            ),
             data_source=data_source,
             store=store,
             data_overrides=overrides,
         )
-        frames.append(res.data)
+        # Capture the base-year covered emissions PER REGION as the reference for later years
+        # (7b.2).
+        if base_share is not None and year == base_year:
+            emissions_reference = _year_covered_emissions_by_region(res, year, regions)
 
-        inv_share = _year_investment(res, year)  # nominal investment / benchmark GDP
-        # Investment is a GDP-share flow; convert to the same units as K (the user-cost stock is in
-        # capital-income units = GDP-normalised too, since gdp0 = benchmark income). INV in stock
-        # units = inv_share · gdp0 / gdp0-scale — but K0 is already in those units, so inv_share is
-        # directly comparable to K0 (both GDP-normalised). Step the stock:
+        inv_share = _year_investment(res, year, regions)  # per-region real investment volume / GDP0
+        # investment_volume is a benchmark-price real flow in the SAME GDP-normalised units as K0
+        # (review P1): both are shares of benchmark GDP, so the flow steps the stock directly.
         r_t = float(config.retirement.get(year, 0.0))
-        k_next = float(
-            capital_next(k_t, inv_share, depreciation=config.depreciation, retirement=r_t)
-        )
+        k_next = capital_next(k_t, inv_share, depreciation=config.depreciation, retirement=r_t)
 
-        investment[year] = inv_share
-        capital_stock[year] = k_next
-        growth[year] = k_next / k_t - 1.0
+        # Only the REQUESTED reporting years contribute result rows and path entries; the
+        # intervening years exist purely to accumulate capital (review P1 — sparse vs annual).
+        if year in report_set:
+            frames.append(res.data)
+            investment[year] = inv_share
+            capital_stock[year] = k_next
+            growth[year] = k_next / k_t - 1.0
         k_t = k_next
 
-    # Append the capital path as result rows so it flows through the ResultSet like any variable.
+    years = report_years  # the reported horizon (kept name for the manifest/row-building below)
+    # Append the capital path as result rows (one per region) so it flows through the ResultSet like
+    # any variable.
     data = pd.concat(frames, ignore_index=True)
     extra = []
     for year in years:
-        extra.append(_rec("capital_stock", year, capital_stock[year]))
-        extra.append(_rec("capital_growth", year, growth[year]))
+        for ri, region in enumerate(regions):
+            extra.append(_rec("capital_stock", year, float(capital_stock[year][ri]), region))
+            extra.append(_rec("capital_growth", year, float(growth[year][ri]), region))
     data = pd.concat([data, pd.DataFrame(extra)], ignore_index=True)
 
     # Reuse the last year's manifest; stamp the dynamic configuration onto it.
@@ -174,29 +322,297 @@ def run_recursive(
     manifest.assumptions["recursive_dynamics"] = {
         "mode": "recursive_dynamic (bookkeeping between static solves; no perfect foresight)",
         "horizon_years": years,
+        "capital_regions": regions,
         "depreciation_rate": config.depreciation,
-        "labour_growth": config.labour_growth,
-        "productivity_growth": config.productivity_growth,
         "retirement": {int(k): float(v) for k, v in config.retirement.items()},
-        "benchmark_capital_stock": k0,
-        "capital_stock_path": {int(k): round(v, 12) for k, v in capital_stock.items()},
+        "benchmark_capital_stock": [round(float(x), 12) for x in k0],
+        "capital_stock_path": {
+            int(y): [round(float(x), 12) for x in capital_stock[y]] for y in years
+        },
+        # Trend provenance: either the flat fallback scalars (Phase 7.1) or the sourced structural
+        # trajectory (Phase 7b.2), so a run records exactly which drove its trends.
+        "trend_source": _trend_provenance(config),
         "note": (
             "Capital carried forward via K_{t+1}=(1−δ)(1−r)K_t+INV_t (Phase 5d.3); labour and TFP "
-            "are exogenous trends applied as endowment scales. Single-region (closed/gov) scope."
+            "are exogenous trends applied as endowment scales. Single aggregate capital stock for "
+            "the closed/gov/open variants; a per-region capital path for the multi-region CGE."
         ),
     }
     result = ResultSet(data=data, manifest=manifest)
     result.validate_schema()
+    # For the single-region variants, expose the path dicts as scalars (back-compatible with the
+    # closed/open callers and tests); for multi, expose the per-region arrays.
     return DynamicPath(
-        result=result, capital_stock=capital_stock, investment=investment, growth=growth
+        result=result,
+        capital_stock=_unwrap(capital_stock, multi),
+        investment=_unwrap(investment, multi),
+        growth=_unwrap(growth, multi),
     )
 
 
-def _rec(variable: str, year: int, value: float) -> dict:
+def _factor_scale(
+    cap_scale: np.ndarray, lab_scale: np.ndarray, regions: list[str], multi: bool
+) -> dict:
+    """Build the ``factor_endowment_scale`` override for one year. Both scales are per-region 1-D
+    arrays aligned to ``regions``. Single-region: scalar factor scales (``{"CAP": s, "LAB": s}``).
+    Multi-region: per-region scales (``{"CAP": {region: s}, "LAB": {region: s}}``) so each region's
+    capital and labour supply move independently."""
+    if not multi:
+        return {"CAP": float(cap_scale[0]), "LAB": float(lab_scale[0])}
+    return {
+        "CAP": {r: float(cap_scale[ri]) for ri, r in enumerate(regions)},
+        "LAB": {r: float(lab_scale[ri]) for ri, r in enumerate(regions)},
+    }
+
+
+def _trend_scale(
+    config: DynamicConfig, base_year: int, year: int, regions: list[str], kind: str
+) -> np.ndarray:
+    """Cumulative endowment scale from ``base_year`` to ``year`` for a per-region trend, as a 1-D
+    array aligned to ``regions``.
+
+    ``kind`` is ``"labour"`` (labour-supply growth = population × participation) or
+    ``"productivity"`` (TFP growth). With a :class:`StructuralTrajectory` the sourced per-year rates
+    are **compounded year by year** over the actual gap (solve years may be spaced apart), so a 5-yr
+    step compounds 5 annual rates; the rate for each intervening year is the trajectory's
+    piecewise-constant value. Without a trajectory it falls back to the flat ``DynamicConfig``
+    scalar, applied uniformly across regions (Phase 7.1 behaviour)."""
+    traj = config.structural
+    if traj is None:
+        flat = config.labour_growth if kind == "labour" else config.productivity_growth
+        scale = (1.0 + flat) ** (year - base_year)
+        return np.full(len(regions), scale, dtype=float)
+
+    out = np.ones(len(regions), dtype=float)
+    for ri, region in enumerate(regions):
+        acc = 1.0
+        for y in range(base_year, year):  # compound each annual step up to (not incl.) target year
+            if kind == "labour":
+                # Labour-SUPPLY growth = population growth compounded WITH participation growth
+                # (both
+                # proportional annual rates): (1+pop)(1+part), the exact multiplicative step, NOT
+                # the
+                # additive pop+part approximation (review P2 2026-08-23). The two are proportional
+                # growth rates (fractions/yr), so this multiplies the whole labour-supply index.
+                step = (1.0 + traj.rate("population", region, y)) * (
+                    1.0 + traj.rate("labour_participation", region, y)
+                )
+            else:
+                step = 1.0 + traj.rate("productivity", region, y)
+            acc *= step
+        out[ri] = acc
+    return out
+
+
+def _has_emissions_traj(config: DynamicConfig) -> bool:
+    """Whether the config carries an emissions-intensity sector driver (7b.2)."""
+    return bool(config.structural and config.structural.sector_rates.get("emissions_intensity"))
+
+
+def _cumulative_sector_level(traj, driver: str, sector: str, base_year: int, year: int) -> float:
+    """Cumulative multiplier level from ``base_year`` to ``year`` for a per-sector driver, minus 1
+    (so 0.0 = no change) — the sourced annual sector rates compounded over the actual gap, the same
+    piecewise-constant compounding as the per-region trends. Returns the *fractional* cumulative
+    change, i.e. ∏(1+rate) − 1."""
+    acc = 1.0
+    for y in range(base_year, year):
+        acc *= 1.0 + traj.sector_rate(driver, sector, y)
+    return acc - 1.0
+
+
+def _aggregate_productivity_level(traj, base_year: int, year: int) -> float:
+    """The cumulative ECONOMY-WIDE productivity level ∏(1+rate) from ``base_year`` to ``year``, read
+    off the ``productivity`` region driver's ``__all__`` path (the aggregate TFP trend the wrapper
+    already applies Hicks-neutrally to every sector via the endowment scale). Used to convert the
+    ABSOLUTE per-sector productivity rates into θ DEVIATIONS from the aggregate, so the two are not
+    double-counted (review P1). Falls back to 1.0 (no aggregate trend) when no ``productivity``
+    driver / ``__all__`` path is present."""
+    acc = 1.0
+    for y in range(base_year, year):
+        acc *= 1.0 + traj.rate("productivity", "__all__", y)
+    return acc
+
+
+def _sector_productivity_shocks(
+    config: DynamicConfig, base_year: int, year: int, sectors: list[str]
+) -> list:
+    """Synthesize per-sector ProductivityShocks for the sectoral-drift driver (7b.2 structural
+    change), for EVERY model sector in ``sectors`` (review P1 — the old code skipped ``__all__``
+    without enumerating the model's sectors, so a trajectory whose only path was ``__all__``, or one
+    whose sector keys did not match real EXIOBASE names, silently produced ZERO shocks).
+
+    **Absolute-rate semantics, applied as a deviation (review P1).** The shipped artifact gives each
+    sector-productivity rate as an ABSOLUTE productivity-growth estimate (e.g. BRD 1.5%/yr), NOT an
+    increment on top of the economy-wide TFP trend. But the wrapper ALREADY applies the aggregate
+    TFP trend Hicks-neutrally to every sector via the endowment scale. Emitting the absolute
+    cumulative level as the θ shock would therefore double-count (aggregate × sector ≈ 2.7%, not the
+    intended 1.5%). So the θ level carried here is the sector's absolute cumulative level DIVIDED by
+    the aggregate cumulative level — the DEVIATION from the aggregate — so that
+    ``aggregate_trend × θ_deviation = sector_absolute_trend`` and each sector nets to exactly its
+    stated absolute rate. A sector at the aggregate rate gets θ=1 (no bias); a faster sector gets
+    θ>1; a slower one θ<1. Composition still shifts endogenously, without the aggregate being
+    applied twice.
+
+    Empty when the config has no ``sector_productivity`` driver, so a run without it is
+    byte-identical to Phase 7.1."""
+    traj = config.structural
+    if not (traj and traj.sector_rates.get("sector_productivity")):
+        return []
+    from cge.contracts.shocks import ProductivityShock
+
+    agg_level = _aggregate_productivity_level(traj, base_year, year)
+    shocks = []
+    for sector in sectors:
+        # Absolute cumulative sector-productivity level ∏(1+sector_rate); the sector_rate lookup
+        # falls back to the ``__all__`` sector path, so a global-only trajectory drives every
+        # sector.
+        sector_level = _cumulative_sector_level(
+            traj, "sector_productivity", sector, base_year, year
+        )
+        sector_level += 1.0  # _cumulative_sector_level returns the fractional change (∏−1)
+        # θ DEVIATION from the aggregate: dividing by the aggregate level removes the Hicks-neutral
+        # aggregate TFP that is already applied via the endowment scale, so the net is the sector's
+        # stated ABSOLUTE rate (review P1 — no double count).
+        theta_level = sector_level / agg_level if agg_level > 0 else sector_level
+        delta = theta_level - 1.0
+        # A zero-deviation year (base year, or a sector at the aggregate rate) still emits the shock
+        # so the path is explicit; the engine treats delta=0 as θ=1 (no effect). delta ≥ −1
+        # required.
+        shocks.append(ProductivityShock(delta=max(delta, -1.0), coverage_sectors=[sector]))
+    return shocks
+
+
+def _scaled_carbon_share(config: DynamicConfig, base_share, base_year: int, year: int):
+    """The benchmark ``carbon_cost_share`` scaled by the per-sector emissions-intensity driver
+    for ``year``: each sector's share × its cumulative intensity multiplier ∏(1+rate). A negative
+    rate (decarbonisation) shrinks the share, so the sector faces a smaller priced carbon wedge and
+    its covered emissions fall vs benchmark. Handles both share shapes: a flat ``{sector: v}``
+    (single-region) and a nested ``{region: {sector: v}}`` (multi)."""
+    traj = config.structural
+
+    def factor(sector: str) -> float:
+        acc = 1.0
+        for y in range(base_year, year):
+            acc *= 1.0 + traj.sector_rate("emissions_intensity", sector, y)
+        return acc
+
+    scaled: dict = {}
+    for key, val in base_share.items():
+        if isinstance(val, dict):  # nested {region: {sector: v}}
+            scaled[key] = {sec: float(v) * factor(sec) for sec, v in val.items()}
+        else:  # flat {sector: v}
+            scaled[key] = float(val) * factor(key)
+    return scaled
+
+
+def _base_carbon_share(data_source: str, store):
+    """The data source's benchmark ``carbon_cost_share`` (None if it has none), read once so the
+    emissions-intensity driver can pre-scale it per year (the engine rejects unknown override keys,
+    so the wrapper supplies the real share key with scaled values)."""
+    from cge.runner import load_data
+
+    data = load_data(data_source, store=store)
+    return data.get("carbon_cost_share")
+
+
+def _year_covered_emissions_by_region(
+    res: ResultSet, year: int, regions: list[str]
+) -> np.ndarray | None:
+    """The base-year absolute covered emissions PER REGION the engine emitted for ``year`` (Phase
+    7b.2), aligned to ``regions``, used as the reference the intensity driver measures later years
+    against. Per REGION (not a summed scalar) because the multi variant reports and needs a per-
+    region reference; the single-region variants report one row on region ``R`` and this returns a
+    length-1 array. None if the engine emitted none (no priced/covered sector)."""
+    d = res.data
+    ce = d[
+        (d["variable"] == "covered_emissions_benchmark")
+        & (d["scenario"] == "central")
+        & (d["year"] == year)
+    ]
+    if ce.empty:
+        return None
+    by_region = dict(zip(ce["region"], ce["value"], strict=False))
+    # The single-region engines emit the row on the economy region label the engine uses; the multi
+    # engine emits one row per region. Map onto `regions` (fall back to the sole value when a
+    # single-region engine used a different economy label than "R").
+    if len(by_region) == 1 and len(regions) == 1:
+        return np.array([float(next(iter(by_region.values())))], dtype=float)
+    missing = [r for r in regions if r not in by_region]
+    if missing:
+        return (
+            None  # incomplete per-region coverage → no reliable reference; fall back to within-year
+        )
+    return np.array([float(by_region[r]) for r in regions], dtype=float)
+
+
+def _emissions_reference_override(
+    reference: np.ndarray, regions: list[str], multi: bool
+) -> float | dict:
+    """Build the ``covered_emissions_reference`` override from the per-region base-year vector. The
+    single-region engines take a scalar (the sole region's reference); the multi engine takes a
+    ``{region: reference}`` map so each region's covered-emissions change is measured against its
+    OWN base year (review P1 — a summed scalar reference under-weights per-region decarb)."""
+    if not multi:
+        return float(reference[0])
+    return {r: float(reference[ri]) for ri, r in enumerate(regions)}
+
+
+def _trend_provenance(config: DynamicConfig) -> dict:
+    """Record how the labour/productivity trends were set — the flat fallback scalars (Phase 7.1) or
+    a sourced :class:`StructuralTrajectory` (Phase 7b.2), with its provenance and per-entry cites —
+    so a run's manifest is self-documenting about which drove it."""
+    traj = config.structural
+    if traj is None:
+        return {
+            "kind": "flat",
+            "labour_growth": config.labour_growth,
+            "productivity_growth": config.productivity_growth,
+            "note": "flat uniform trends (Phase 7.1 fallback); no sourced structural trajectory.",
+        }
+    from cge.contracts.provenance import content_hash
+
+    # Content hash of the ACTUAL numeric rate tables (review P2 2026-08-23): the citations and
+    # confidence alone do not pin the numbers, so a changed rate would leave an identical manifest.
+    # Hashing the rate tables makes any edit to a rate move the manifest; the full tables are also
+    # stamped so a run is reconstructible without the source file.
+    rate_tables = {"rates": traj.rates, "sector_rates": traj.sector_rates}
+    return {
+        "kind": "structural_trajectory",
+        "provenance": {
+            "source": traj.provenance.source,
+            "source_version": traj.provenance.source_version,
+            "licence": traj.provenance.licence,
+            "retrieved": traj.provenance.retrieved,
+        },
+        "region_drivers": sorted(traj.rates),
+        "sector_drivers": sorted(traj.sector_rates),
+        "drivers": sorted(traj.rates) + sorted(traj.sector_rates),
+        "sources": dict(traj.sources),
+        "confidence": dict(traj.confidence),
+        "rate_tables": rate_tables,
+        "rate_tables_hash": content_hash(rate_tables),
+        "note": (
+            "Phase 7b.2 sourced trajectories: per-region labour-supply (population×participation) "
+            "and productivity growth as endowment scales; per-sector productivity drift via the θ "
+            "multiplier (structural change) and emissions-intensity decarbonisation scaling the "
+            "carbon-cost share, all compounded from the cited annual rates."
+        ),
+    }
+
+
+def _unwrap(path: dict[int, np.ndarray], multi: bool) -> dict[int, float | np.ndarray]:
+    """Scalarise a single-region path (one capital region) for back-compatible float dict values;
+    leave the multi-region per-region arrays as-is."""
+    if multi:
+        return dict(path)
+    return {year: float(v[0]) for year, v in path.items()}
+
+
+def _rec(variable: str, year: int, value: float, region: str) -> dict:
     return {
         "variable": variable,
         "sector": "__economy__",
-        "region": "R",
+        "region": region,
         "year": int(year),
         "scenario": "central",
         "value": float(value),
