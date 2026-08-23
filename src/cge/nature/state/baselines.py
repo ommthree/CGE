@@ -68,7 +68,11 @@ _WATER = ServiceStateChannel(
     source_note=(
         "Baseline = reference-year total renewable water resources (AQUASTAT / SEEA-Water). "
         "Proportional sensitivity: a fractional stock shortfall degrades water-provisioning and "
-        "-regulation services proportionally before exposure weighting."
+        "-regulation services proportionally before exposure weighting. CAVEAT (review "
+        "2026-08-23): SEEA distinguishes water ASSET STOCKS from the purification/flow-regulation "
+        "SERVICES, which are ideally measured independently; using the stock as a proportional "
+        "PROXY for those services is a documented simplification, not a service-specific "
+        "biophysical model."
     ),
 )
 
@@ -94,7 +98,9 @@ _POLLINATION = ServiceStateChannel(
         "Baseline = reference wild-pollinator abundance. IPBES: ~75% of crop types are pollinator-"
         "dependent but the production-volume at risk is far smaller; sensitivity 0.6 is a "
         "documented sub-proportional central estimate (the exposure layer then targets "
-        "pollinator-dependent crops)."
+        "pollinator-dependent crops). CAVEAT (review 2026-08-23): IPBES supports the 5–8% "
+        "production-linkage magnitude but does NOT derive the specific 0.6 response coefficient — "
+        "it is a transparent central assumption within that range, not a sourced calibration."
     ),
 )
 
@@ -120,10 +126,24 @@ _SOIL = ServiceStateChannel(
 )
 
 # --- Forestry stock (renewable resource) ------------------------------------------------------
+# The real EXIOBASE product/industry labels the shipped ENCORE concordance uses for the forestry and
+# fishing resource sectors (review P1, 2026-08-23): forestry- and fisheries-stock shocks are
+# restricted to these by default so a timber-stock depletion does not leak into fishing/crops via
+# the
+# shared "Biomass provisioning" service (and vice versa). A scenario may still override with
+# explicit
+# coverage_sectors. These match ``real_encore_concordance`` (EXIOBASE → ENCORE ISIC).
+_EXIO_FORESTRY_SECTORS = ("Forestry, logging and related service activities (02)",)
+_EXIO_FISHING_SECTORS = (
+    "Fishing, operating of fish hatcheries and fish farms; service activities incidental to "
+    "fishing (05)",
+)
+
 _FORESTRY = ServiceStateChannel(
     channel_id="forestry_stock",
     mechanism="forestry_stock",
     services=("Biomass provisioning",),
+    default_sectors=_EXIO_FORESTRY_SECTORS,
     state_variable="standing timber / forest growing-stock volume",
     unit=_INDEX_UNIT,
     response=StateResponse(baseline=100.0, sensitivity=1.0),
@@ -145,6 +165,7 @@ _FISHERIES = ServiceStateChannel(
     channel_id="fisheries_stock",
     mechanism="fisheries_stock",
     services=("Biomass provisioning",),
+    default_sectors=_EXIO_FISHING_SECTORS,
     state_variable="fish biomass relative to that supporting maximum sustainable yield",
     unit=_INDEX_UNIT,
     response=StateResponse(baseline=100.0, sensitivity=1.0),
@@ -157,7 +178,10 @@ _FISHERIES = ServiceStateChannel(
     source_note=(
         "Baseline = reference exploitable fish biomass (FAO SOFIA). Proportional sensitivity: a "
         "biomass shortfall constrains sustainable catch proportionally (fishing-sector input "
-        "availability)."
+        "availability). CAVEAT (review 2026-08-23): FAO's MSY stock-status classification does NOT "
+        "imply a one-for-one stock→catch response; proportional sensitivity is a documented "
+        "central simplification, not a sourced stock-recruitment relationship. Restricted by "
+        "default to the fishing sector so it does not leak through 'Biomass provisioning'."
     ),
 )
 

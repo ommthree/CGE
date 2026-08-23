@@ -130,6 +130,25 @@ class ServiceStateChannel(BaseModel):
     services: tuple[str, ...] = Field(
         description="ENCORE service label(s) this channel degrades (must be non-empty)"
     )
+    # Resource-specific DEFAULT sector restriction (review P1, 2026-08-23). Several channels map to
+    # the SAME broad ENCORE service — forestry and fisheries both drive "Biomass provisioning",
+    # which
+    # in the real ENCORE concordance has positive dependency for ~39/162 sectors (Fishing 1.00, Crop
+    # 0.91, Forestry 0.90). Without a restriction a fish-stock shock would leak into forestry and
+    # crops (and vice versa), contradicting the declared resource-specific mechanism. A channel with
+    # a non-empty ``default_sectors`` restricts its stress to those sectors UNLESS the scenario
+    # gives
+    # explicit ``coverage_sectors`` (which always wins). Empty (the default) = economy-wide, i.e.
+    # the
+    # service's full dependency footprint — appropriate for a genuinely economy-wide service like
+    # water or pollination.
+    default_sectors: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "resource-specific sectors this channel restricts to when the scenario gives no "
+            "coverage_sectors; empty = economy-wide (the service's full dependency footprint)"
+        ),
+    )
     state_variable: str = Field(
         description="what the physical state is, e.g. 'renewable water stock'"
     )

@@ -1,8 +1,9 @@
 # Structural trajectories — sources & licences
 
-`trajectories_v1.json` holds **documented, sourced per-region annual growth trajectories** for the
-Phase 7b.2 structural drivers (population, labour-force participation, labour productivity). Each
-`(driver, region)` path carries its own citation and confidence in the artifact itself; this file
+`trajectories_v1.json` holds **documented, sourced annual growth trajectories** for the Phase 7b.2
+structural drivers: per-region **population**, **labour-force participation** and **labour
+productivity**, plus per-sector **sectoral productivity** and **emissions intensity**. Each
+`(driver, key)` path carries its own citation and confidence in the artifact itself; this file
 records the underlying sources and their licences. The figures are **headline trend rates** taken
 from the published sources below — a compact, review-friendly artifact, not a re-distribution of the
 full source databases. On a real EXIOBASE build these region labels map to actual country/region
@@ -30,6 +31,41 @@ trajectories through the same loader (`cge.data.structural.load_structural_traje
   <https://www.rug.nl/ggdc/productivity/pwt/>
 - **Retrieved:** 2026-08-16.
 - **Licence:** CC BY 4.0.
+
+## Sectoral productivity — EU KLEMS 2023 release
+
+- **Source:** EU KLEMS & INTANProd 2023 release — sectoral labour-productivity growth by industry.
+  <https://euklems-intanprod-llee.luiss.it/>
+- **Retrieved:** 2026-08-16.
+- **Licence:** CC BY 4.0 (EU KLEMS/INTANProd public release).
+- **Note:** the shipped `BRD`/`MIL` sector keys are the toy model's illustrative sectors; the rates
+  are headline goods-vs-services productivity-growth central estimates, **absolute** per-sector rates
+  (see the artifact `sector_productivity`). On a real EXIOBASE build these map to actual industries.
+
+## Emissions intensity — IEA WEO 2024 / NGFS Net Zero 2050
+
+- **Source:** IEA *World Energy Outlook 2024* and NGFS *Net Zero 2050* scenario — CO₂-intensity of
+  output decline. <https://www.iea.org/reports/world-energy-outlook-2024> ;
+  <https://www.ngfs.net/ngfs-scenarios-portal/>
+- **Retrieved:** 2026-08-16.
+- **Licence:** IEA terms of use (WEO figures cited, not redistributed); NGFS scenario data resources
+  (open, cited).
+- **Caveat (review 2026-08-23):** the shipped rates are a **single headline decarbonisation path**
+  synthesised from these sources. WEO contains **multiple scenarios** (STEPS, APS, NZE) and NGFS
+  spans multiple models/regions/variables; this artifact does **not** yet pin a specific IEA
+  scenario / NGFS model / region / variable / aggregation. It is an illustrative-of-method central
+  path, `confidence = medium`; a reproducible transform selecting one scenario+model+variable is a
+  documented follow-up.
+
+## Reproducibility caveat (review 2026-08-23)
+
+These figures are **headline trend rates transcribed from the cited sources**, not the output of a
+committed extraction/aggregation pipeline. In particular PWT 10.01 covers **1950–2019**, so the
+2025/2040 productivity knots rest on an (unstated) extrapolation of the historical trend rather than
+a direct source value. WPP 2024, ILOSTAT and NGFS do publish explicit forward-looking versioned
+datasets that could support a fully reproducible transform (region aggregation → sector mapping →
+rate calculation). Treat the shipped `v1` artifact as a **documented, review-friendly illustrative
+central path**, not a reproducibly-derived projection; the per-entry `confidence` reflects this.
 
 ## Reproducing / updating
 

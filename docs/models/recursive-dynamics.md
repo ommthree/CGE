@@ -7,9 +7,23 @@
   economy (Armington/CET + rest-of-world) — both carrying one aggregate capital stock — **and the
   multi-region CGE, which carries a per-region capital path** (each region's stock steps by its own
   investment). Dynamic-capable SAMs ship for each: `toy_cge_gov`, `toy_cge_open_gov`,
-  `toy_cge_multi_gov`. Labour/productivity trends are exogenous and applied uniformly across regions
-  (region-specific trends are a follow-up). Magnitudes remain **illustrative** (toy calibration),
-  like the rest of the CGE tier.
+  `toy_cge_multi_gov`. Labour/productivity trends are exogenous. With the **flat** `DynamicConfig`
+  scalars they are applied uniformly across regions; with a sourced **`StructuralTrajectory`**
+  (Phase 7b.2) they are **per-region** (and per-sector for the sectoral-productivity and
+  emissions-intensity drivers) — so region-specific trends now exist. Magnitudes remain
+  **illustrative** (toy calibration), like the rest of the CGE tier.
+
+  **Capital is stepped every calendar year** between the first and last requested year, not only on
+  the (possibly sparse) requested years: the requested `years` are the *reporting* years, and the
+  wrapper solves every intervening year internally so investment and depreciation accumulate
+  annually. A sparse `[2025, 2030]` horizon therefore reports the SAME 2030 stock as the full
+  `[2025, …, 2030]` horizon (review P1 2026-08-23).
+
+  **Investment→capital is a REAL flow.** The wrapper steps the (real) capital stock with the engine's
+  `investment_volume` output — investment demand valued at **benchmark prices** — not the nominal
+  `investment` share, so investment-price movements do not masquerade as capital formation. For the
+  multi CGE `investment_volume` is normalised by **global** GDP, matching the globally-normalised
+  capital stock (review P1 2026-08-23).
 
 ## 1. What it is (and is not)
 
@@ -94,16 +108,28 @@ horizon, δ, trends, retirement, K₀, and the capital path.
   `ElasticitySet`); the wrapper compounds the sourced annual rates over the actual solve-year gaps.
   The vendored artifact `data/structural/trajectories_v1.json` (see `data/structural/NOTICE.md`) is
   real sourced data. Without a trajectory the flat scalars remain the fallback. The four drivers:
-    - **Per-region** — labour-supply growth = population × labour-force participation, and labour
-      productivity (TFP), applied as endowment scales. *(UN WPP 2024, ILO/World Bank, PWT 10.01.)*
+    - **Per-region** — labour-supply growth = population growth compounded with labour-force
+      participation growth, i.e. the exact multiplicative step (1+pop)(1+part) each year (both are
+      *proportional* annual growth rates, not percentage-point changes), and labour productivity
+      (TFP), applied as endowment scales. *(UN WPP 2024, ILO/World Bank, PWT 10.01.)*
     - **Per-sector `sector_productivity`** (structural change / GDP-share drift) — sector-biased TFP
       fed through the engine's existing per-sector θ multiplier, so the output mix shifts
       **endogenously** (a sector with faster productivity gains share); shares are a model result,
       not an imposed target. *(EU KLEMS.)*
     - **Per-sector `emissions_intensity`** (decarbonisation) — scales `carbon_cost_share`, so a
       decarbonising sector faces a smaller priced carbon wedge in the solve AND, via a base-year
-      covered-emissions reference the wrapper feeds the engine, shows falling covered emissions
-      measured against the base year. *(IEA WEO 2024 / NGFS Net Zero 2050.)*
+      covered-emissions reference the wrapper feeds the engine (now for **all three** variants, with
+      a **per-region** reference for the multi CGE), shows falling covered emissions measured against
+      the base year. *(IEA WEO 2024 / NGFS Net Zero 2050.)*
+      **Two limitations to state plainly.** (i) `carbon_cost_share` is dual-purpose — it is both the
+      priced wedge and the covered-emissions intensity — so decarbonising it simultaneously shrinks
+      the emissions weight and weakens the carbon signal (letting output rise); the net covered-
+      emissions change is therefore model-dependent and, in small heavily-substituting SAMs, the
+      decarbonising path need not dominate the flat path monotonically. A physically-decoupled
+      intensity (separate from the priced wedge) is a documented follow-up. (ii) With **no
+      `CarbonPrice`** in the scenario there is no priced carbon and no covered-emissions output at
+      all, so an `emissions_intensity` trajectory has **no observable effect** — pair it with a
+      `CarbonPrice`.
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
 - Productivity is Hicks-neutral on primary factors (economy-wide and per-sector θ; no factor-biased
   or vintage-specific TFP).

@@ -579,6 +579,16 @@ reconciliation rule + automated check vs Phase-7c climate channels. Magnitudes s
 the method** (baselines cited, but sensitivities/response shapes are scenario assumptions), exactly
 like 6.4 and 7.4.
 
+**Honesty caveat (review 2026-08-23).** The delivered 6b.3 translation is a **single generic
+state→severity→`NatureStress` (Hicks-neutral productivity) bridge shared by all channels**, plus a
+resource-specific *sector restriction* for the forestry/fisheries channels (so a timber shock does
+not leak into fishing/crops via the shared "Biomass provisioning" service). It is **not** yet the
+richer per-channel target the 6b.3 wording implies (water→yield, pollinator→crop-specific output as
+distinct functional forms) nor an explicit resource/input **quantity constraint** — those, and the
+6b.2 **spatial** resolution (pathways are aggregated to model regions, not spatially resolved), remain
+**experimental follow-ups**. Treat 6b as a working method scaffold, not a calibrated per-channel
+model.
+
 Phase 6 gives **exposure**: which sectors depend on which ecosystem services, and by how much.
 Phase 6b adds the missing **state** layer: a physical model of the ecosystem services themselves,
 so a "30% pollination decline" scenario is a modelled physical trajectory, not an assumed number

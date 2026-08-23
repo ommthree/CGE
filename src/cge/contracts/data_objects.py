@@ -471,6 +471,13 @@ class StructuralTrajectory(_DataObject):
       endogenously, fed through the engine's per-sector θ multiplier) and ``emissions_intensity``
       (per-sector decarbonisation of the carbon-cost intensity, scaling ``carbon_cost_share``).
 
+    ``sector_productivity`` rates are **absolute** sector productivity-growth estimates (the same
+    kind of number as the aggregate ``productivity`` driver), NOT increments on top of the aggregate
+    trend. The recursive wrapper already applies the aggregate TFP trend Hicks-neutrally to every
+    sector via the endowment scale, so it converts each sector's absolute rate into a θ DEVIATION
+    from the aggregate before applying it — a sector at the aggregate rate gets θ=1 (no bias). This
+    is what keeps the two from being double-counted (see ``dynamics.recursive``).
+
     A rate is a decimal fraction (0.012 = +1.2 %/yr). Years present are the *knots*; the effective
     rate holds the most recent knot for years between/after knots (piecewise-constant, documented),
     so a sparse path (a few dated rates) is enough. ``"__all__"`` is an allowed region/sector key
