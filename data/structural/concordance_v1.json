@@ -1,0 +1,49 @@
+{
+  "provenance": {
+    "source": "Structural-trajectory region/sector concordance: EXIOBASE coarse-v3 build labels → the trajectory's development/composition archetypes (World Bank income groupings for regions; ISIC/EU KLEMS goods-vs-services split for sectors)",
+    "source_version": "structural-concordance-v1",
+    "licence": "derived mapping (CC BY 4.0); underlying groupings: World Bank income classification (CC BY 4.0), EU KLEMS/ISIC industry taxonomy",
+    "reference_year": 2024,
+    "retrieved": "2026-08-28",
+    "notes": "Maps each real EXIOBASE coarse-v3 build label onto one of the structural trajectory's archetype keys, so a real build's actual regions/sectors carry a documented, differentiated trajectory instead of every label falling through to the global __all__ default (review P1c 2026-08-28). Regions map to N (advanced/high-income proxy) or S (emerging/developing proxy) by World Bank income grouping. Sectors map to BRD (goods-producing: the trajectory's above-average productivity-growth, carbon-intensive archetype) or MIL (services/mixed: below-average productivity, lighter carbon intensity) by the standard goods-vs-services ISIC split. The archetype trajectories themselves live in trajectories_v1.json; this file is the reviewable bridge (like the Phase-6 ENCORE concordance). A label not listed here is reported by the loader's validation as an unmapped fallthrough rather than silently taking __all__."
+  },
+  "region_archetype": {
+    "US": "N",
+    "DE": "N",
+    "GB": "N",
+    "JP": "N",
+    "FR": "N",
+    "IT": "N",
+    "RoW_Europe": "N",
+    "CN": "S",
+    "IN": "S",
+    "BR": "S",
+    "RU": "S",
+    "RoW_Asia": "S",
+    "RoW_America": "S",
+    "RoW_Africa": "S",
+    "RoW_MiddleEast": "S",
+    "RoW_Other": "S"
+  },
+  "sector_archetype": {
+    "agriculture": "BRD",
+    "mining": "BRD",
+    "energy_coal": "BRD",
+    "energy_oil_gas": "BRD",
+    "electricity": "BRD",
+    "chemicals": "BRD",
+    "metals": "BRD",
+    "minerals": "BRD",
+    "manufacturing": "BRD",
+    "construction": "BRD",
+    "trade": "MIL",
+    "transport": "MIL",
+    "services": "MIL",
+    "water_waste": "MIL",
+    "other": "MIL"
+  },
+  "sources": {
+    "region_archetype": "World Bank country and lending groups (income classification) — high-income economies → N (advanced proxy), low/middle-income → S (emerging proxy). https://datahelpdesk.worldbank.org/knowledgebase/articles/906519",
+    "sector_archetype": "ISIC Rev.4 goods-vs-services split / EU KLEMS industry taxonomy — goods-producing industries (agriculture, extraction, energy, manufacturing, construction) → BRD; distribution, transport and services → MIL. https://unstats.un.org/unsd/classifications/Econ/isic"
+  }
+}

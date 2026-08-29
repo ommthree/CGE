@@ -7,8 +7,17 @@ review-friendly derived object the code consumes; see ``data/structural/NOTICE.m
 """
 
 from cge.data.structural.library import (
+    UnmappedStructuralLabels,
     default_structural_trajectories,
+    load_structural_concordance,
     load_structural_trajectories,
+    structural_trajectories_for_build,
 )
 
-__all__ = ["load_structural_trajectories", "default_structural_trajectories"]
+__all__ = [
+    "load_structural_trajectories",
+    "default_structural_trajectories",
+    "load_structural_concordance",
+    "structural_trajectories_for_build",
+    "UnmappedStructuralLabels",
+]

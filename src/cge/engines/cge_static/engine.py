@@ -125,6 +125,10 @@ _MODEL_CONTROLS = frozenset(
         "energy_elasticities",
         "factor_endowment_scale",
         "covered_emissions_reference",
+        # Phase-7b.2 review 2026-08-28: the price-INDEPENDENT per-sector emissions-intensity
+        # decarbonisation multiplier. Applies to both the physical intensity (covered emissions) and
+        # the priced wedge, and works on real IO/satellite builds (not just supplied-share builds).
+        "emissions_intensity_scale",
     }
 )
 _CLOSURE_KEYS = {
@@ -386,8 +390,9 @@ ASSUMPTIONS = {
         "degradation, translated by the exposure engine into ProductivityShocks, divides sector "
         "i's "
         "zero-profit unit cost by θ[i] (θ<1 raises its price and reallocates production in the GE "
-        "solve). θ=1 (no shock) is byte-identical to a pure carbon run. Closed variant; the open/"
-        "multi variants are a follow-up."
+        "solve). θ=1 (no shock) is byte-identical to a pure carbon run. Implemented on ALL three "
+        "variants: the closed and open variants match by sector (single region); the multi-region "
+        "variant honours a shock's coverage_regions per (region, sector)."
     ),
     "revenue_recycling": (
         "carbon revenue R = Σ τ·e[i]·X[i] is returned to the household (lump_sum/labour_tax_cut). "
@@ -504,6 +509,46 @@ def _capital_dynamics_manifest(cal) -> dict:
             "K0 from capital income via the Jorgensonian user cost u = net_return + δ; implied "
             "growth g = INV0/K0 − δ (negative ⇒ benchmark investment below replacement)."
         ),
+    }
+
+
+def _labour_va_shares_manifest(cal) -> dict:
+    """Per-sector benchmark **labour share of value added** s_L[i] = F0[LAB,i] / Σ_f F0[f,i], for
+    the recursive-dynamic wrapper's labour-augmenting sector-productivity transform (review P2
+    2026-08-28).
+
+    The sourced sectoral productivity series (EU KLEMS) is *labour-productivity* growth, which
+    includes capital deepening. The recursive model accumulates capital separately, so applying the
+    labour-productivity rate as Hicks-neutral TFP would double-count the capital-deepening part. The
+    standard growth-accounting identity is that a labour-augmenting improvement a contributes s_L·a
+    to Hicks-neutral TFP (for a Cobb-Douglas / CES value-added nest). Stamping s_L here lets the
+    wrapper convert the labour-augmenting rate into its Hicks-neutral-equivalent θ deviation.
+
+    Single-region: ``{sector: s_L}``. Multi-region: ``{region: {sector: s_L}}`` (F0 is [f, r, s]).
+    Returns ``{"available": False, ...}`` when the model has no LAB factor."""
+    factors = list(cal.factors)
+    # The base factor label is "LAB" in the single-region variants and "LAB_<r>" in multi; detect
+    # the labour factor by its base name so both shapes work.
+    if not any(f == "LAB" or f.startswith("LAB") for f in factors):
+        return {"available": False, "reason": "no labour factor"}
+    F0 = np.asarray(cal.F0, dtype=float)
+    sectors = list(cal.sectors)
+    if F0.ndim == 3:  # multi: [f, r, s]
+        regions = list(cal.regions)
+        lab = factors.index("LAB")
+        out: dict = {}
+        for ri, r in enumerate(regions):
+            va = F0[:, ri, :].sum(axis=0)  # [s] total VA per sector in region r
+            sl = np.divide(F0[lab, ri, :], va, out=np.zeros_like(va), where=va > 0)
+            out[r] = {s: round(float(sl[si]), 12) for si, s in enumerate(sectors)}
+        return {"available": True, "labour_va_share": out}
+    # Single-region: [f, s]
+    lab = factors.index("LAB")
+    va = F0.sum(axis=0)  # [s] total VA per sector
+    sl = np.divide(F0[lab, :], va, out=np.zeros_like(va), where=va > 0)
+    return {
+        "available": True,
+        "labour_va_share": {s: round(float(sl[si]), 12) for si, s in enumerate(sectors)},
     }
 
 
@@ -695,6 +740,84 @@ def _carbon_cost_share(data: dict, sectors: list[str]) -> np.ndarray | None:
             "not a price; it would lower the dirty-sector price and generate negative revenue)"
         )
     return arr
+
+
+def _emissions_intensity_scale(
+    data: dict, sectors: list[str], regions: list[str] | None = None
+) -> np.ndarray | None:
+    """Per-sector (or per-(region,sector)) **price-free emissions-intensity multiplier** (Phase 7b.2
+    review 2026-08-28) — the engine-level, PRICE-INDEPENDENT decarbonisation hook.
+
+    Reads ``data['emissions_intensity_scale']``. A value of 1.0 leaves a sector's emission intensity
+    unchanged; a value < 1.0 decarbonises it (e.g. 0.9 = 10 % less CO₂ per unit output). The engine
+    multiplies BOTH the physical price-free intensity (so covered emissions fall) AND the priced
+    carbon wedge (so the sector faces a smaller cost) by this factor.
+
+    Unlike the wrapper's earlier approach of pre-scaling ``carbon_cost_share``, this works on ANY
+    build — including a real IO/satellite build whose intensity is derived INSIDE the engine and
+    where no ``carbon_cost_share`` is supplied (review P1a 2026-08-28: the wrapper silently skipped
+    the trajectory on those builds because it saw ``carbon_cost_share = None``).
+
+    Shape: single-region ``{sector: factor}`` → a length-``len(sectors)`` vector; multi-region
+    ``{region: {sector: factor}}`` → an ``[nr, ns]`` matrix. Missing sectors/regions default to 1.0
+    (no scaling). Returns None when the key is absent, so a plain run is byte-identical."""
+    scale = data.get("emissions_intensity_scale")
+    if scale is None:
+        return None
+    if regions is not None:  # multi: {region: {sector: factor}}
+        if not isinstance(scale, dict) or any(not isinstance(v, dict) for v in scale.values()):
+            raise ValueError(
+                "emissions_intensity_scale for the multi-region CGE must be a nested "
+                "{region: {sector: factor}} mapping."
+            )
+        unknown_r = [r for r in scale if r not in regions]
+        if unknown_r:
+            raise ValueError(
+                f"emissions_intensity_scale regions not in the model {regions}: {unknown_r}"
+            )
+        mat = np.ones((len(regions), len(sectors)), dtype=float)
+        for ri, r in enumerate(regions):
+            by_sector = scale.get(r, {})
+            unknown_s = [s for s in by_sector if s not in sectors]
+            if unknown_s:
+                raise ValueError(
+                    f"emissions_intensity_scale[{r!r}] sectors not in the model {sectors}: "
+                    f"{unknown_s}"
+                )
+            for si, s in enumerate(sectors):
+                mat[ri, si] = float(by_sector.get(s, 1.0))
+        _validate_emissions_scale(mat)
+        return mat
+    # Single-region: {sector: factor} (or a raw vector).
+    if isinstance(scale, dict):
+        unknown_s = [s for s in scale if s not in sectors]
+        if unknown_s:
+            raise ValueError(
+                f"emissions_intensity_scale sectors not in the model {sectors}: {unknown_s}"
+            )
+        vec = np.array([float(scale.get(s, 1.0)) for s in sectors], dtype=float)
+    else:
+        vec = np.asarray(scale, dtype=float)
+        if vec.shape != (len(sectors),):
+            raise ValueError(
+                f"emissions_intensity_scale must have one value per sector ({len(sectors)}), "
+                f"got shape {vec.shape}"
+            )
+    _validate_emissions_scale(vec)
+    return vec
+
+
+def _validate_emissions_scale(arr: np.ndarray) -> None:
+    """A decarbonisation multiplier must be finite and non-negative (a negative intensity is
+    meaningless; a zero fully decarbonises). No upper bound — a factor > 1 is a legitimate
+    carbon-intensity INCREASE."""
+    if not np.isfinite(arr).all():
+        raise ValueError("emissions_intensity_scale values must be finite")
+    if float(np.min(arr)) < 0.0:
+        raise ValueError(
+            "emissions_intensity_scale values must be non-negative (an emission intensity cannot "
+            "be negative; use a factor in [0, 1] to decarbonise or > 1 to increase intensity)."
+        )
 
 
 class CGEStaticEngine:
@@ -920,6 +1043,13 @@ class CGEStaticEngine:
 
         # Per-year carbon cost share (dimensionless, gas/coverage/units handled like Engine 1).
         cc_by_year = {y: _carbon_cost_by_sector(inp, carbon_shocks, y) for y in years}
+        # Price-independent per-sector emissions-intensity decarbonisation scale (Phase 7b.2 review
+        # 2026-08-28): multiplies BOTH the priced wedge (so a decarbonising sector faces a smaller
+        # cost) AND the physical intensity below (so covered emissions fall) — works on real IO
+        # builds where no carbon_cost_share is supplied. None on a plain run → byte-identical.
+        emis_scale = _emissions_intensity_scale(data, inp.sectors)
+        if emis_scale is not None:
+            cc_by_year = {y: (cc * emis_scale, prov) for y, (cc, prov) in cc_by_year.items()}
         # Per-year per-sector productivity multiplier θ (Phase 6.4 GE tier). A nature degradation,
         # translated by the exposure engine into ProductivityShocks, enters the CGE here as a
         # supply-side technology hit that the general-equilibrium solve responds to (relative-price
@@ -934,6 +1064,8 @@ class CGEStaticEngine:
         # Price-FREE emission intensity (review P1 round 14) — computed once, year-independent, so
         # covered emissions are emitted for EVERY year including a zero-price year.
         emission_intensity = _carbon_intensity_by_sector(inp, carbon_shocks)
+        if emission_intensity is not None and emis_scale is not None:
+            emission_intensity = emission_intensity * emis_scale
         # Phase 7b.2 recursive hook: an absolute base-year covered-emissions reference the wrapper
         # feeds back so a declining emissions-intensity trajectory shows as falling covered
         # measured against the base year (None on a plain run → within-year benchmark, unchanged).
@@ -1100,6 +1232,12 @@ class CGEStaticEngine:
                 # SEE the stock the accumulation identity steps from and whether the benchmark
                 # investment is above/below replacement. Reported on the PRISTINE benchmark.
                 "capital_dynamics": _capital_dynamics_manifest(cal_benchmark),
+                # Per-sector benchmark labour share of value added (Phase 7b.2 review 2026-08-28):
+                # the recursive wrapper reads it to convert the labour-augmenting sectoral-
+                # productivity series into its Hicks-neutral-equivalent θ deviation (s_L·a), so
+                # capital deepening in the labour-productivity source is not double-counted against
+                # the model's own capital accumulation.
+                "labour_va_shares": _labour_va_shares_manifest(cal_benchmark),
                 # Labour-market closure (Phase 5d.4): the default flexible-wage/full-employment, or
                 # a wage floor. ``labour_floor_bound`` records whether the floor actually bound in
                 # any year (a configured-but-slack floor leaves the full-employment result and is
@@ -2265,6 +2403,10 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     resid_max = _bsol.residual_norm
     backends: set[str] = {_bsol.backend}
     statuses: set[str] = {_bsol.status}
+    # Price-independent per-sector emissions-intensity decarbonisation scale (Phase 7b.2 review
+    # 2026-08-28): applies to both the priced wedge and the physical intensity, and works on the
+    # IO-backed path (where io_intensity is engine-derived and no carbon_cost_share is supplied).
+    emis_scale = _emissions_intensity_scale(data, sectors)
     cc_by_year: dict[int, np.ndarray] = {}
     for year in years:
         if eff_by_year is not None:
@@ -2272,6 +2414,8 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         else:
             tau = sum(s.price_at(year) for s in carbon_shocks)
             cc = tau * share
+        if emis_scale is not None:
+            cc = cc * emis_scale
         cc_by_year[year] = cc
         theta = theta_by_year[year] if theta_by_year is not None else None
         sol, st = _solve_year(cc, theta)
@@ -2282,6 +2426,8 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         # intensity, else the supplied share (toy path). Both are price-independent, so covered
         # emissions are emitted every year including a zero-price year.
         emission_intensity = io_intensity if io_backed else share
+        if emission_intensity is not None and emis_scale is not None:
+            emission_intensity = np.asarray(emission_intensity, dtype=float) * emis_scale
         _emit_open(
             records,
             cal,
@@ -2354,6 +2500,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
                 round(float(cal.sav_rate0), 12) if cal.has_investment else 0.0
             ),
             "capital_dynamics": _capital_dynamics_manifest(cal_benchmark),  # Phase 5d.3/7.1
+            "labour_va_shares": _labour_va_shares_manifest(cal_benchmark),  # 7b.2 review 2026-08-28
             "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
             # SAM credibility surface when the open SAM was built from an IOSystem (None when a SAM
@@ -2748,6 +2895,12 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     # the fallback is not lost (the earlier code replaced a None share with zeros first, so the
     # IO-path fallback never fired and covered emissions never emitted).
     emission_intensity = data.get("_emission_intensity") if io_backed else share
+    # Price-independent per-(region,sector) emissions-intensity decarbonisation scale (Phase 7b.2
+    # review 2026-08-28): multiplies both the priced wedge and the physical intensity, and works on
+    # the IO-backed path where the intensity is engine-derived. None on a plain run → identical.
+    emis_scale = _emissions_intensity_scale(data, sectors, regions)  # [nr, ns] or None
+    if emission_intensity is not None and emis_scale is not None:
+        emission_intensity = np.asarray(emission_intensity, dtype=float) * emis_scale
     share = share if share is not None else np.zeros((nr, ns))
     # Phase 7b.2 recursive hook (review P1 — multi now honours it too): the base-year covered-
     # emissions reference PER REGION the wrapper feeds back, as ``{region: absolute}`` (each
@@ -2859,6 +3012,8 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         else:
             tau = sum(s.price_at(year) for s in carbon_shocks)
             cc = tau * share
+        if emis_scale is not None:
+            cc = cc * emis_scale  # decarbonise the priced wedge per (region, sector)
         cc_by_year[year] = cc
         theta = theta_by_year[year] if theta_by_year is not None else None
         sol, st = _solve_year(cc, theta)
@@ -2945,6 +3100,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
                 [round(float(v), 12) for v in cal.sav_rate0.tolist()] if cal.has_investment else []
             ),
             "capital_dynamics": _capital_dynamics_manifest(cal_benchmark),  # Phase 5d.3/7.1
+            "labour_va_shares": _labour_va_shares_manifest(cal_benchmark),  # 7b.2 review 2026-08-28
             "emissions_priced": emissions_priced,
             "benchmark_gdp_normalised": cal.gdp0,
             # SAM credibility surface when the multi SAM was built from an IOSystem (Phase 5.1b);

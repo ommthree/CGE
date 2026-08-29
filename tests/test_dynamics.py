@@ -360,6 +360,64 @@ def test_trajectory_provenance_is_stamped_on_the_manifest():
     assert ts["provenance"]["source_version"]
 
 
+def test_dynamic_manifest_hash_reflects_config_not_just_last_static_solve():
+    """Review P2a 2026-08-28: the dynamic manifest's scenario_hash must reflect the ORIGINAL
+    scenario PLUS the DynamicConfig — not just the final year's static solve. Changing the dynamic
+    depreciation (or retirement, or the trajectory) must move the hash; before the fix the manifest
+    reused the last static solve, so its hash was that of the 2030 scenario and unchanged by any
+    dynamic parameter."""
+    from cge.contracts.shocks import CarbonPrice
+
+    sc = Scenario(
+        name="h", engine="cge_static", years=[2025, 2030], shocks=[CarbonPrice(price=50.0)]
+    )
+    a = run_recursive(sc, config=DynamicConfig(depreciation=0.01), data_source="toy_cge_gov")
+    b = run_recursive(sc, config=DynamicConfig(depreciation=0.20), data_source="toy_cge_gov")
+    assert a.result.manifest.scenario_hash != b.result.manifest.scenario_hash
+    # Retirement schedule also moves the hash.
+    c = run_recursive(sc, config=DynamicConfig(retirement={2030: 0.1}), data_source="toy_cge_gov")
+    assert c.result.manifest.scenario_hash != a.result.manifest.scenario_hash
+    # Per-solve-year child hashes are recorded (the full provenance chain).
+    rd = a.result.manifest.assumptions["recursive_dynamics"]
+    assert set(rd["child_run_hashes"]) == set(range(2025, 2031))
+
+
+def test_dynamic_scenario_hash_distinguishes_nature_state_from_bare_shocks():
+    """Review P2a: a dynamic physical-nature-state run must hash differently from an equivalent
+    hand-written NatureStress dynamic run, and its physical-state provenance must survive. Tested at
+    the hash-helper level (the full physical→CGE pipeline needs ENCORE fixtures the toy CGE source
+    does not ship); the wrapper stamps assumptions['nature_state'] whenever scenario.nature_state is
+    set, and hashes the ORIGINAL scenario (with nature_state) plus the config."""
+    from cge.contracts.shocks import NatureStress
+    from cge.dynamics.recursive import _dynamic_scenario_hash
+
+    phys = Scenario(
+        name="p",
+        engine="cge_static",
+        years=[2030, 2040],
+        nature_state=[{"channel": "toy_water", "states": {2030: 90, 2040: 70}}],
+    )
+    expanded = phys.expanded_shocks([2030, 2040])
+    bare = Scenario(
+        name="p",
+        engine="cge_static",
+        years=[2030, 2040],
+        shocks=[
+            NatureStress(service=s.service, severity=s.severity, path=s.path) for s in expanded
+        ],
+    )
+    cfg = DynamicConfig()
+    assert _dynamic_scenario_hash(phys, cfg) != _dynamic_scenario_hash(bare, cfg)
+    # Two physical scenarios differing only in an endpoint hash differently too.
+    phys2 = Scenario(
+        name="p",
+        engine="cge_static",
+        years=[2030, 2040],
+        nature_state=[{"channel": "toy_water", "states": {2030: 90, 2040: 50}}],
+    )
+    assert _dynamic_scenario_hash(phys, cfg) != _dynamic_scenario_hash(phys2, cfg)
+
+
 # --- Per-sector structural drivers (Phase 7b.2 pass 2: sectoral drift + emissions intensity) ------
 
 
@@ -406,6 +464,45 @@ def test_sector_productivity_drift_shifts_output_mix():
     assert _sector_vol(drift, "BRD", 2045) > _sector_vol(flat, "BRD", 2045) + 0.1
 
 
+def test_multi_sector_productivity_uses_region_specific_denominator():
+    """In multi mode each region's sector-productivity θ deviation must use THAT region's aggregate
+    TFP denominator (review P1b 2026-08-28): region N (aggregate 1.2%/yr) and region S (3.0%/yr)
+    have different aggregates, so an identical sector labour-productivity rate nets to a DIFFERENT
+    Hicks-neutral deviation in each region. The shocks are emitted per (region, sector) with the
+    region's own denominator and labour share; here we assert the emitted deltas differ by
+    region."""
+    from cge.contracts.data_objects import Provenance, StructuralTrajectory
+    from cge.dynamics.recursive import DynamicConfig as _DC
+    from cge.dynamics.recursive import _sector_productivity_shocks
+
+    traj = StructuralTrajectory(
+        provenance=Provenance(
+            source="t", source_version="v", licence="n", reference_year=2024, retrieved="2026-08-16"
+        ),
+        rates={"productivity": {"N": {2025: 0.012}, "S": {2025: 0.030}}},
+        sector_rates={"sector_productivity": {"BRD": {2025: 0.020}}},
+        sources={
+            "productivity:N": "c",
+            "productivity:S": "c",
+            "sector_productivity:BRD": "c",
+        },
+        confidence={
+            "productivity:N": "low",
+            "productivity:S": "low",
+            "sector_productivity:BRD": "low",
+        },
+    )
+    shares = {"N": {"BRD": 0.6}, "S": {"BRD": 0.6}}
+    shocks = _sector_productivity_shocks(
+        _DC(structural=traj), 2025, 2027, ["BRD"], ["N", "S"], True, shares
+    )
+    by_region = {s.coverage_regions[0]: s.delta for s in shocks}
+    assert set(by_region) == {"N", "S"}
+    # BRD grows 2%/yr in both regions, but N's aggregate (1.2%) is slower than S's (3.0%), so BRD's
+    # deviation-from-aggregate is POSITIVE in N and NEGATIVE in S — a region-specific denominator.
+    assert by_region["N"] > 0.0 > by_region["S"]
+
+
 def test_sector_productivity_all_default_drives_every_model_sector():
     """An ``__all__``-only sector-productivity trajectory (or one whose keys do not match real
     sector names) must drive EVERY model sector, not silently do nothing (review P1: the old code
@@ -415,16 +512,19 @@ def test_sector_productivity_all_default_drives_every_model_sector():
     from cge.dynamics.recursive import _sector_productivity_shocks
 
     traj = _traj_sector({"sector_productivity": {"__all__": {2025: 0.02}}})
-    shocks = _sector_productivity_shocks(_DC(structural=traj), 2025, 2027, ["BRD", "MIL"])
+    # Single-region call: regions=["R"], multi=False, labour shares = 1 (Hicks-neutral equivalent).
+    shocks = _sector_productivity_shocks(
+        _DC(structural=traj), 2025, 2027, ["BRD", "MIL"], ["R"], False, {}
+    )
     assert {tuple(s.coverage_sectors) for s in shocks} == {("BRD",), ("MIL",)}
     assert all(s.delta > 0 for s in shocks)  # a positive global rate drives every sector up
 
 
 def test_sector_productivity_absolute_not_double_counted():
     """The absolute sector rate must NOT be double-counted against the aggregate TFP the endowment
-    scale already applies (review P1): the θ deviation × aggregate level nets to the sector's stated
-    absolute rate. Aggregate 1.7%/yr + sector-BRD absolute 1.5%/yr → net BRD level 1.015 over one
-    year, NOT 1.017 × 1.015."""
+    scale already applies (review P1): with labour share s_L=1 (pure labour-augmenting = Hicks-
+    neutral) the θ deviation × aggregate level nets to the sector's stated absolute rate. Aggregate
+    1.7%/yr + sector-BRD absolute 1.5%/yr → net BRD level 1.015 over one year, NOT 1.017 × 1.015."""
     from cge.contracts.data_objects import Provenance, StructuralTrajectory
     from cge.dynamics.recursive import DynamicConfig as _DC
     from cge.dynamics.recursive import _aggregate_productivity_level, _sector_productivity_shocks
@@ -438,10 +538,42 @@ def test_sector_productivity_absolute_not_double_counted():
         sources={"productivity:__all__": "c", "sector_productivity:BRD": "c"},
         confidence={"productivity:__all__": "low", "sector_productivity:BRD": "low"},
     )
-    agg = _aggregate_productivity_level(traj, 2025, 2026)
-    shocks = _sector_productivity_shocks(_DC(structural=traj), 2025, 2026, ["BRD"])
+    # "R" falls back to the __all__ aggregate path — the per-region denominator (review P1b).
+    agg = _aggregate_productivity_level(traj, "R", 2025, 2026)
+    shocks = _sector_productivity_shocks(
+        _DC(structural=traj), 2025, 2026, ["BRD"], ["R"], False, {}
+    )
     brd = next(s for s in shocks if s.coverage_sectors == ["BRD"])
     assert agg * (1.0 + brd.delta) == pytest.approx(1.015, rel=1e-12)
+
+
+def test_sector_productivity_labour_augmenting_scales_by_labour_share():
+    """The sourced sector series is labour-productivity; the wrapper converts it to a Hicks-neutral-
+    equivalent θ deviation by the labour share s_L (review P2c) so capital deepening is not
+    double-counted. With s_L=0.6 the θ deviation from the aggregate is (sector/agg)**0.6, strictly
+    milder than the s_L=1 (pure labour-augmenting) case."""
+    from cge.contracts.data_objects import Provenance, StructuralTrajectory
+    from cge.dynamics.recursive import DynamicConfig as _DC
+    from cge.dynamics.recursive import _aggregate_productivity_level, _sector_productivity_shocks
+
+    traj = StructuralTrajectory(
+        provenance=Provenance(
+            source="t", source_version="v", licence="n", reference_year=2024, retrieved="2026-08-16"
+        ),
+        rates={"productivity": {"__all__": {2025: 0.010}}},
+        sector_rates={"sector_productivity": {"BRD": {2025: 0.030}}},
+        sources={"productivity:__all__": "c", "sector_productivity:BRD": "c"},
+        confidence={"productivity:__all__": "low", "sector_productivity:BRD": "low"},
+    )
+    agg = _aggregate_productivity_level(traj, "R", 2025, 2027)
+    lp_dev = ((1.03**2) / agg) - 1.0  # pure labour-augmenting deviation over two years
+    # s_L = 0.6 for BRD → θ deviation is (1+lp_dev)**0.6 − 1, milder than lp_dev itself.
+    shocks = _sector_productivity_shocks(
+        _DC(structural=traj), 2025, 2027, ["BRD"], ["R"], False, {"BRD": 0.6}
+    )
+    brd = next(s for s in shocks if s.coverage_sectors == ["BRD"])
+    assert brd.delta == pytest.approx((1.0 + lp_dev) ** 0.6 - 1.0, rel=1e-12)
+    assert 0.0 < brd.delta < lp_dev  # labour share dampens the double-counted deepening
 
 
 def _covered(path, year):
@@ -520,6 +652,54 @@ def test_emissions_intensity_reference_is_per_region_in_multi():
     ch = d[(d["variable"] == "covered_emissions_change") & (d["year"] == 2025)]
     assert set(ch["region"]) == {"N", "S"}
     assert (ch["value"] < -0.9).all()  # both regions measured against their (huge) own reference
+
+
+def test_multi_uncovered_region_does_not_wipe_out_covered_regions_decarb():
+    """Review P1a (2026-08-28): in a multi run where one region is UNCOVERED (no covered-emissions
+    row — the shipped multi SAM prices only some sectors), the base-year reference for the COVERED
+    region must survive. The old wrapper discarded the WHOLE per-region reference if any region was
+    uncovered, so the decarbonising run reported LESS reduction than flat (only the weakened price
+    wedge remained observable). Now the covered region shows a strictly deeper cut than the flat
+    path, and the uncovered region simply emits no row."""
+    from cge.contracts.shocks import CarbonPrice
+
+    traj = _traj_sector(
+        {
+            "emissions_intensity": {
+                "BRD": {2025: -0.05},
+                "MIL": {2025: -0.05},
+                "__all__": {2025: -0.05},
+            }
+        }
+    )
+    sc = Scenario(
+        name="decarb-multi",
+        engine="cge_static",
+        years=[2025, 2035],
+        shocks=[CarbonPrice(price=50.0)],
+    )
+    decarb = run_recursive(
+        sc, config=DynamicConfig(structural=traj), data_source="toy_cge_multi_gov"
+    )
+    flat = run_recursive(sc, config=DynamicConfig(), data_source="toy_cge_multi_gov")
+
+    def covered(path, region):
+        d = path.result.data
+        r = d[
+            (d["variable"] == "covered_emissions_change")
+            & (d["year"] == 2035)
+            & (d["region"] == region)
+        ]
+        return None if r.empty else float(r["value"].iloc[0])
+
+    # Region N is covered: its decarbonising path is a strictly DEEPER cut than the flat path (the
+    # reviewer saw the opposite — decarb −20.5% vs flat −23.4% — because S wiped out N's reference).
+    n_decarb, n_flat = covered(decarb, "N"), covered(flat, "N")
+    assert n_decarb is not None and n_flat is not None
+    assert n_decarb < n_flat - 0.1
+    # Region S is uncovered on this SAM: it emits no covered-emissions row (a zero reference), which
+    # is correct — an uncovered region has nothing to measure — and does not corrupt N.
+    assert covered(decarb, "S") is None
 
 
 def test_sector_drivers_absent_is_byte_identical_to_phase_7_1():
