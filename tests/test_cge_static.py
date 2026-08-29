@@ -759,6 +759,44 @@ def test_io_covered_emissions_emitted_for_every_year_incl_zero_price():
     assert y2030 < 0.0  # the priced year cuts covered emissions
 
 
+def test_emissions_intensity_scale_decarbonises_io_build():
+    """Review P1a (2026-08-28): the PRICE-INDEPENDENT ``emissions_intensity_scale`` hook must work
+    on a real IO/satellite build — where the intensity is derived INSIDE the engine and NO
+    ``carbon_cost_share`` is supplied. Halving the energy sector's intensity (factor 0.5) must cut
+    its covered emissions and shrink its priced wedge, measured against the same-build unscaled run.
+    This is the case the wrapper's old carbon_cost_share pre-scaling silently skipped (it saw
+    carbon_cost_share=None on an IO build and did nothing)."""
+    io, sat = _eur_io_sat()
+    ref_abs = registry.get("cge_static").run(
+        data={"IOSystem": io, "SatelliteAccount": sat},
+        shocks=[CarbonPrice(price=100.0)],
+        years=[2020],
+        # Feed the unscaled build's base-year covered emissions as the reference, so the
+        # decarbonised run's fall is measured against the SAME base (like the wrapper's feedback).
+    )
+    base_ref = float(
+        ref_abs.data[
+            (ref_abs.data["variable"] == "covered_emissions_benchmark")
+            & (ref_abs.data["sector"] == "__economy__")
+        ]["value"].iloc[0]
+    )
+    scaled = registry.get("cge_static").run(
+        data={
+            "IOSystem": io,
+            "SatelliteAccount": sat,
+            "emissions_intensity_scale": {"energy": 0.5},
+            "covered_emissions_reference": base_ref,
+        },
+        shocks=[CarbonPrice(price=100.0)],
+        years=[2020],
+    )
+    ce = scaled.data[scaled.data["variable"] == "covered_emissions_change"]
+    change = float(ce["value"].iloc[0])
+    # Decarbonising the (dominant-intensity) energy sector by 50% cuts covered emissions vs the
+    # unscaled base-year reference — a strictly negative change, not exactly 0 (the reviewer's bug).
+    assert change < -0.05
+
+
 def test_carbon_wedge_is_not_a_million_times_too_large():
     """Review P0: the €100/t carbon cost must be finite (the recycling fixed point does not
     diverge), not ~1e6 too large. A realistic-intensity EUR build solves and moves output."""

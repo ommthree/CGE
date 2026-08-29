@@ -86,9 +86,41 @@ class DynamicConfig:
                 raise ValueError(f"DynamicConfig.{name} must be finite; got {v!r}")
         if not (0.0 <= self.depreciation <= 1.0):
             raise ValueError(f"depreciation δ must be in [0, 1]; got {self.depreciation}")
+        # Flat growth rates below −100 %/yr (≤ −1) drive the endowment to zero-or-negative and only
+        # fail LATER inside the solve with an opaque zero-factor error; above +100 %/yr is
+        # implausible for an annual labour/TFP trend. Reject at construction so the config is honest
+        # (review P2 2026-08-28): a −1 growth previously passed here and blew up mid-run.
+        for name in ("labour_growth", "productivity_growth"):
+            v = getattr(self, name)
+            if not (-1.0 < v < 1.0):
+                raise ValueError(
+                    f"DynamicConfig.{name} must be a per-year growth rate in (−1, 1); got {v} "
+                    "(a rate ≤ −100%/yr zeroes the endowment; > +100%/yr is implausible)."
+                )
+        # Coerce and validate the retirement keys ONCE here, so the numerical loop (which looks up
+        # integer years) and the manifest agree on exactly which years carry a retirement (review P2
+        # 2026-08-28): a string "2025" or float 2025.5 key was silently ignored by the int-keyed
+        # loop yet coerced to {2025: …} in the manifest, FALSELY reporting a retirement that never
+        # ran. We accept only keys that are exactly integer-valued and rebind the dict to int keys.
+        coerced: dict[int, float] = {}
         for y, r in self.retirement.items():
+            if isinstance(y, bool) or not isinstance(y, (int, float)):
+                raise ValueError(
+                    f"retirement year key {y!r} must be an integer calendar year; "
+                    f"got {type(y).__name__}."
+                )
+            if isinstance(y, float) and not y.is_integer():
+                raise ValueError(
+                    f"retirement year key {y!r} is not an integer calendar year; the accumulation "
+                    "loop steps whole years, so a fractional year would be silently ignored."
+                )
+            yi = int(y)
+            if yi in coerced:
+                raise ValueError(f"retirement has duplicate year key {yi} after int coercion")
             if not np.isfinite(r) or not (0.0 <= r <= 1.0):
                 raise ValueError(f"retirement[{y}] must be a fraction in [0, 1]; got {r!r}")
+            coerced[yi] = float(r)
+        self.retirement = coerced
 
 
 @dataclass
@@ -143,6 +175,21 @@ def _probe_sectors(probe: ResultSet) -> list[str]:
         if s != "__economy__" and s not in seen:
             seen.append(str(s))
     return seen
+
+
+def _probe_labour_shares(manifest, regions: list[str], sectors: list[str]) -> dict:
+    """The per-sector benchmark labour share of value added the engine stamped (7b.2 review
+    2026-08-28), used to convert the labour-augmenting sectoral-productivity series into its
+    Hicks-neutral-equivalent θ deviation.
+
+    Returns the flat ``{sector: s_L}`` map for the single-region variants and the nested
+    ``{region: {sector: s_L}}`` map for multi. When the engine exposed no labour share (e.g. a model
+    with no LAB factor), returns an empty map — the caller then treats s_L as 1 (pure labour-
+    augmenting = Hicks-neutral), preserving the prior behaviour rather than failing."""
+    lvs = manifest.assumptions.get("labour_va_shares", {})
+    if not lvs.get("available"):
+        return {}
+    return lvs.get("labour_va_share", {})
 
 
 def _year_investment(res: ResultSet, year: int, regions: list[str]) -> np.ndarray:
@@ -217,6 +264,11 @@ def run_recursive(
     # do
     # not match real sector names still drives every sector).
     sectors = _probe_sectors(probe)
+    # Per-region per-sector benchmark labour share of value added (7b.2 review 2026-08-28), read off
+    # the probe manifest — used to convert the labour-augmenting sectoral-productivity series into
+    # its Hicks-neutral-equivalent θ deviation (s_L·a), so capital deepening in the labour-
+    # productivity source is not double-counted against the model's own capital accumulation.
+    labour_shares = _probe_labour_shares(probe.manifest, regions, sectors)
 
     # Expand any Phase-6b nature_state pathways ONCE over the FULL annual horizon (review P1): the
     # rate-form start year and recovery hysteresis depend on the complete year sequence, so slicing
@@ -233,11 +285,14 @@ def run_recursive(
         int, np.ndarray
     ] = {}  # real investment volume (share of benchmark GDP) /region
     growth: dict[int, np.ndarray] = {}  # capital growth rate K_{t+1}/K_t − 1 per region
+    child_hashes: dict[int, str] = {}  # per solve-year child scenario_hash (review P2a 2026-08-28)
 
-    # Benchmark carbon_cost_share (if any) — read once so the emissions-intensity driver can scale
-    # it per year (the engine is strict about override keys, so we pass a pre-scaled share, not a
-    # new key). None when the data source has no carbon_cost_share.
-    base_share = _base_carbon_share(data_source, store) if _has_emissions_traj(config) else None
+    # Whether an emissions-intensity trajectory is active (7b.2). We no longer read the benchmark
+    # carbon_cost_share (review P1a 2026-08-28): a real IO/satellite build has NONE — its intensity
+    # is derived inside the engine — so pre-scaling a supplied share silently skipped the
+    # trajectory. Instead we build a PRICE-INDEPENDENT per-sector emissions_intensity_scale the
+    # engine applies to whatever intensity it computed (supplied OR IO-derived).
+    has_emissions = _has_emissions_traj(config)
 
     emissions_reference: np.ndarray | None = None  # base-year covered emissions per region (7b.2)
     k_t = k0.copy()  # 1-D array, one entry per capital region
@@ -255,15 +310,18 @@ def run_recursive(
         cap_scale = (k_t / k0) * tfp_scale  # 1-D array per region
         lab_scale = labour_scale * tfp_scale  # 1-D array per region
         overrides = {"factor_endowment_scale": _factor_scale(cap_scale, lab_scale, regions, multi)}
-        # Emissions-intensity driver (7b.2, per sector): scale the benchmark carbon_cost_share by
-        # cumulative decarbonisation factor, so a decarbonising sector faces a smaller priced wedge.
-        # The base-year covered-emissions reference is fed back so the reported
-        # covered_emissions_change is measured against the BASE YEAR — a within-year uniform
-        # scale otherwise cancels in the same-year ratio, hiding the physical decarbonisation. It is
-        # a PER-REGION reference vector (multi needs a reference per region, not a summed scalar).
-        if base_share is not None:
-            overrides["carbon_cost_share"] = _scaled_carbon_share(
-                config, base_share, base_year, year
+        # Emissions-intensity driver (7b.2, per sector): a PRICE-INDEPENDENT decarbonisation scale
+        # the engine multiplies into BOTH the physical intensity (so covered emissions fall) and the
+        # priced wedge (so a decarbonising sector faces a smaller cost). Built from the trajectory's
+        # cumulative ∏(1+rate) factor per (region,) sector — works on real IO builds where no
+        # carbon_cost_share exists (review P1a 2026-08-28). The base-year covered-emissions
+        # reference is fed back so covered_emissions_change is measured against the BASE YEAR (a
+        # within-year uniform scale otherwise cancels in the same-year ratio, hiding the physical
+        # decarbonisation) — a PER-REGION reference vector (multi needs a reference per region, not
+        # a summed scalar).
+        if has_emissions:
+            overrides["emissions_intensity_scale"] = _emissions_intensity_scale_override(
+                config, base_year, year, sectors, regions, multi
             )
             if emissions_reference is not None:
                 overrides["covered_emissions_reference"] = _emissions_reference_override(
@@ -272,10 +330,12 @@ def run_recursive(
 
         # Sectoral-productivity drift (7b.2, structural change): synthesize per-sector
         # ProductivityShocks whose cumulative level rides the engine's existing θ multiplier, so
-        # sector-biased TFP shifts the output mix endogenously. Composed with the scenario's shocks
-        # (and any pre-expanded nature shocks). nature_state is cleared — already expanded above.
+        # sector-biased productivity shifts the output mix endogenously. Composed with the
+        # scenario's shocks (and any pre-expanded nature shocks). nature_state is cleared — expanded
+        # above. In multi mode the shocks are PER (region, sector) so each region uses its OWN
+        # aggregate-TFP denominator and its OWN labour share (review P1b/P2c 2026-08-28).
         year_shocks = list(base_nature_shocks or scenario.shocks) + _sector_productivity_shocks(
-            config, base_year, year, sectors
+            config, base_year, year, sectors, regions, multi, labour_shares
         )
 
         res = run_scenario(
@@ -286,9 +346,12 @@ def run_recursive(
             store=store,
             data_overrides=overrides,
         )
+        # Record each solve-year's child scenario hash so the dynamic manifest can carry the full
+        # per-year provenance chain, not just the last static solve (review P2a 2026-08-28).
+        child_hashes[year] = res.manifest.scenario_hash
         # Capture the base-year covered emissions PER REGION as the reference for later years
         # (7b.2).
-        if base_share is not None and year == base_year:
+        if has_emissions and year == base_year:
             emissions_reference = _year_covered_emissions_by_region(res, year, regions)
 
         inv_share = _year_investment(res, year, regions)  # per-region real investment volume / GDP0
@@ -317,7 +380,13 @@ def run_recursive(
             extra.append(_rec("capital_growth", year, float(growth[year][ri]), region))
     data = pd.concat([data, pd.DataFrame(extra)], ignore_index=True)
 
-    # Reuse the last year's manifest; stamp the dynamic configuration onto it.
+    # Reuse the last year's manifest as the base, then stamp the dynamic configuration AND fix its
+    # identity (review P2a 2026-08-28): a dynamic run's manifest previously reported only the LAST
+    # static solve, so its scenario_hash was that of the final year's scenario — unchanged when the
+    # dynamic depreciation/retirement/trends changed, and missing the original scenario's physical
+    # nature_state block. We overwrite the scenario_hash with a hash of the ORIGINAL scenario plus
+    # the normalized DynamicConfig, re-stamp the physical nature_state block, and record each solve
+    # year's child hash.
     manifest = res.manifest
     manifest.assumptions["recursive_dynamics"] = {
         "mode": "recursive_dynamic (bookkeeping between static solves; no perfect foresight)",
@@ -331,13 +400,28 @@ def run_recursive(
         },
         # Trend provenance: either the flat fallback scalars (Phase 7.1) or the sourced structural
         # trajectory (Phase 7b.2), so a run records exactly which drove its trends.
-        "trend_source": _trend_provenance(config),
+        "trend_source": _trend_provenance(config, regions, sectors),
+        # Per-solve-year child scenario hashes (review P2a): the full provenance chain of the
+        # internal static solves the dynamic result is composed of.
+        "child_run_hashes": {int(y): h for y, h in child_hashes.items()},
         "note": (
             "Capital carried forward via K_{t+1}=(1−δ)(1−r)K_t+INV_t (Phase 5d.3); labour and TFP "
             "are exogenous trends applied as endowment scales. Single aggregate capital stock for "
             "the closed/gov/open variants; a per-region capital path for the multi-region CGE."
         ),
     }
+    # Re-stamp the ORIGINAL scenario's physical nature_state provenance (review P2a): the per-year
+    # scenario copies cleared nature_state (it was pre-expanded once above), so the reused per-year
+    # manifest lost the physical-state block — a dynamic physical-state run and an equivalent
+    # hand-written NatureStress dynamic run would otherwise be indistinguishable.
+    if scenario.nature_state:
+        from cge.runner import _nature_state_manifest
+
+        manifest.assumptions["nature_state"] = _nature_state_manifest(scenario)
+    # Overwrite the scenario identity so it reflects the DYNAMIC run: the original scenario (with
+    # its nature_state intact) PLUS the normalized dynamic configuration. A changed depreciation,
+    # retirement schedule, or trajectory now moves the manifest's scenario_hash (review P2a).
+    manifest.scenario_hash = _dynamic_scenario_hash(scenario, config)
     result = ResultSet(data=data, manifest=manifest)
     result.validate_schema()
     # For the single-region variants, expose the path dicts as scalars (back-compatible with the
@@ -420,38 +504,54 @@ def _cumulative_sector_level(traj, driver: str, sector: str, base_year: int, yea
     return acc - 1.0
 
 
-def _aggregate_productivity_level(traj, base_year: int, year: int) -> float:
-    """The cumulative ECONOMY-WIDE productivity level ∏(1+rate) from ``base_year`` to ``year``, read
-    off the ``productivity`` region driver's ``__all__`` path (the aggregate TFP trend the wrapper
-    already applies Hicks-neutrally to every sector via the endowment scale). Used to convert the
-    ABSOLUTE per-sector productivity rates into θ DEVIATIONS from the aggregate, so the two are not
-    double-counted (review P1). Falls back to 1.0 (no aggregate trend) when no ``productivity``
-    driver / ``__all__`` path is present."""
+def _aggregate_productivity_level(traj, region: str, base_year: int, year: int) -> float:
+    """The cumulative aggregate productivity level ∏(1+rate) from ``base_year`` to ``year`` for
+    ``region``, read off the ``productivity`` region driver (an explicit region path overriding
+    ``__all__``) — the SAME per-region aggregate TFP trend the wrapper applies Hicks-neutrally to
+    that region via the endowment scale.
+
+    Used as the denominator that converts the ABSOLUTE per-sector productivity rates into θ
+    DEVIATIONS from the aggregate, so the two are not double-counted (review P1). In multi mode the
+    aggregate is REGION-SPECIFIC (region N and region S grow TFP at different rates), so the
+    denominator must be the region's own aggregate level, NOT the global ``__all__`` level (review
+    P1b 2026-08-28: the old code used ``__all__`` for every region while the endowment scale applied
+    the region's own rate, so ``aggregate × deviation`` did not equal the sector's absolute rate in
+    either region). Falls back to 1.0 when no ``productivity`` path is present for the region."""
     acc = 1.0
     for y in range(base_year, year):
-        acc *= 1.0 + traj.rate("productivity", "__all__", y)
+        acc *= 1.0 + traj.rate("productivity", region, y)
     return acc
 
 
 def _sector_productivity_shocks(
-    config: DynamicConfig, base_year: int, year: int, sectors: list[str]
+    config: DynamicConfig,
+    base_year: int,
+    year: int,
+    sectors: list[str],
+    regions: list[str],
+    multi: bool,
+    labour_shares: dict,
 ) -> list:
-    """Synthesize per-sector ProductivityShocks for the sectoral-drift driver (7b.2 structural
-    change), for EVERY model sector in ``sectors`` (review P1 — the old code skipped ``__all__``
-    without enumerating the model's sectors, so a trajectory whose only path was ``__all__``, or one
-    whose sector keys did not match real EXIOBASE names, silently produced ZERO shocks).
+    """Synthesize ProductivityShocks for the sectoral-drift driver (7b.2 structural change), for
+    EVERY model sector in ``sectors`` (review P1 — the old code skipped ``__all__`` without
+    enumerating the model's sectors, so a trajectory whose only path was ``__all__``, or one whose
+    sector keys did not match real EXIOBASE names, silently produced ZERO shocks).
 
-    **Absolute-rate semantics, applied as a deviation (review P1).** The shipped artifact gives each
-    sector-productivity rate as an ABSOLUTE productivity-growth estimate (e.g. BRD 1.5%/yr), NOT an
-    increment on top of the economy-wide TFP trend. But the wrapper ALREADY applies the aggregate
-    TFP trend Hicks-neutrally to every sector via the endowment scale. Emitting the absolute
-    cumulative level as the θ shock would therefore double-count (aggregate × sector ≈ 2.7%, not the
-    intended 1.5%). So the θ level carried here is the sector's absolute cumulative level DIVIDED by
-    the aggregate cumulative level — the DEVIATION from the aggregate — so that
-    ``aggregate_trend × θ_deviation = sector_absolute_trend`` and each sector nets to exactly its
-    stated absolute rate. A sector at the aggregate rate gets θ=1 (no bias); a faster sector gets
-    θ>1; a slower one θ<1. Composition still shifts endogenously, without the aggregate being
-    applied twice.
+    **Labour-augmenting semantics (review P2c 2026-08-28).** The sourced sectoral-productivity
+    series (EU KLEMS) is *labour-productivity* growth, which embeds capital deepening. The recursive
+    model accumulates capital separately, so applying the labour-productivity rate as Hicks-neutral
+    TFP would double-count capital deepening. By the standard growth-accounting identity a labour-
+    augmenting improvement a raises Hicks-neutral TFP by s_L·a (Cobb-Douglas/CES value added). So
+    the θ carried here is the sector's DEVIATION-from-aggregate labour-productivity level raised to
+    the benchmark labour share s_L — the Hicks-neutral equivalent of the labour-augmenting change.
+
+    **Deviation from the aggregate (review P1).** The wrapper ALREADY applies the aggregate TFP
+    trend Hicks-neutrally to every sector via the endowment scale, so emitting the absolute sector
+    level would double-count the aggregate. The θ level is therefore the sector's cumulative level
+    DIVIDED by the aggregate cumulative level (the deviation); a sector at the aggregate rate gets
+    θ=1. In MULTI mode the aggregate denominator and the labour share are BOTH region-specific, so a
+    per-(region,sector) shock is emitted with the region's own denominator/share (review P1b) — the
+    engine honours the shock's ``coverage_regions``.
 
     Empty when the config has no ``sector_productivity`` driver, so a run without it is
     byte-identical to Phase 7.1."""
@@ -460,34 +560,59 @@ def _sector_productivity_shocks(
         return []
     from cge.contracts.shocks import ProductivityShock
 
-    agg_level = _aggregate_productivity_level(traj, base_year, year)
     shocks = []
-    for sector in sectors:
-        # Absolute cumulative sector-productivity level ∏(1+sector_rate); the sector_rate lookup
-        # falls back to the ``__all__`` sector path, so a global-only trajectory drives every
-        # sector.
-        sector_level = _cumulative_sector_level(
-            traj, "sector_productivity", sector, base_year, year
-        )
-        sector_level += 1.0  # _cumulative_sector_level returns the fractional change (∏−1)
-        # θ DEVIATION from the aggregate: dividing by the aggregate level removes the Hicks-neutral
-        # aggregate TFP that is already applied via the endowment scale, so the net is the sector's
-        # stated ABSOLUTE rate (review P1 — no double count).
-        theta_level = sector_level / agg_level if agg_level > 0 else sector_level
-        delta = theta_level - 1.0
-        # A zero-deviation year (base year, or a sector at the aggregate rate) still emits the shock
-        # so the path is explicit; the engine treats delta=0 as θ=1 (no effect). delta ≥ −1
-        # required.
-        shocks.append(ProductivityShock(delta=max(delta, -1.0), coverage_sectors=[sector]))
+    for region in regions:
+        # Region-specific aggregate TFP level (the exact per-region trend the endowment scale
+        # applies) — the honest denominator for THIS region's sector deviations (review P1b).
+        agg_level = _aggregate_productivity_level(traj, region, base_year, year)
+        share_by_sector = labour_shares.get(region, {}) if multi else labour_shares
+        for sector in sectors:
+            # Absolute cumulative sector labour-productivity level ∏(1+sector_rate); the sector_rate
+            # lookup falls back to the ``__all__`` sector path, so a global-only trajectory drives
+            # every sector.
+            sector_level = _cumulative_sector_level(
+                traj, "sector_productivity", sector, base_year, year
+            )
+            sector_level += 1.0  # fractional change (∏−1) → level
+            # Deviation-from-aggregate labour-productivity level, then convert labour-augmenting →
+            # Hicks-neutral equivalent by raising to the benchmark labour share s_L (review P2c):
+            # θ_hicks = (sector_LP / aggregate) ** s_L. s_L defaults to 1 (pure labour-augmenting =
+            # Hicks-neutral) if the model exposed no labour share for this (region, sector).
+            lp_deviation = sector_level / agg_level if agg_level > 0 else sector_level
+            s_l = float(share_by_sector.get(sector, 1.0))
+            theta_level = lp_deviation**s_l if lp_deviation > 0 else lp_deviation
+            delta = theta_level - 1.0
+            # A zero-deviation year (base year, or a sector at the aggregate rate) still emits the
+            # shock so the path is explicit; the engine treats delta=0 as θ=1 (no effect). delta ≥
+            # −1 required. Multi carries the region so each region uses its own denominator/share.
+            kwargs = {"delta": max(delta, -1.0), "coverage_sectors": [sector]}
+            if multi:
+                kwargs["coverage_regions"] = [region]
+            shocks.append(ProductivityShock(**kwargs))
+        if not multi:
+            break  # single-region: one pass over the sole "R" region is enough
     return shocks
 
 
-def _scaled_carbon_share(config: DynamicConfig, base_share, base_year: int, year: int):
-    """The benchmark ``carbon_cost_share`` scaled by the per-sector emissions-intensity driver
-    for ``year``: each sector's share × its cumulative intensity multiplier ∏(1+rate). A negative
-    rate (decarbonisation) shrinks the share, so the sector faces a smaller priced carbon wedge and
-    its covered emissions fall vs benchmark. Handles both share shapes: a flat ``{sector: v}``
-    (single-region) and a nested ``{region: {sector: v}}`` (multi)."""
+def _emissions_intensity_scale_override(
+    config: DynamicConfig,
+    base_year: int,
+    year: int,
+    sectors: list[str],
+    regions: list[str],
+    multi: bool,
+) -> dict:
+    """The per-(region,)sector PRICE-INDEPENDENT emissions-intensity decarbonisation scale for
+    ``year`` (Phase 7b.2, review P1a 2026-08-28), fed to the engine's ``emissions_intensity_scale``
+    hook. Each sector's factor is the cumulative intensity multiplier ∏(1+rate) from ``base_year``:
+    a negative (decarbonising) rate gives a factor < 1, so the engine shrinks BOTH the sector's
+    physical emission intensity (covered emissions fall) AND its priced carbon wedge.
+
+    Enumerates every MODEL sector (the ``sector_rate`` lookup falls back to ``__all__``), so an
+    ``__all__``-only trajectory decarbonises every sector — the same completeness fix as the
+    sectoral-productivity driver. Single-region: ``{sector: factor}``. Multi: ``{region: {sector:
+    factor}}`` (each region gets the same sector rates unless a region-keyed sector rate is added
+    later; the shape lets the engine apply it per (region, sector))."""
     traj = config.structural
 
     def factor(sector: str) -> float:
@@ -496,23 +621,10 @@ def _scaled_carbon_share(config: DynamicConfig, base_share, base_year: int, year
             acc *= 1.0 + traj.sector_rate("emissions_intensity", sector, y)
         return acc
 
-    scaled: dict = {}
-    for key, val in base_share.items():
-        if isinstance(val, dict):  # nested {region: {sector: v}}
-            scaled[key] = {sec: float(v) * factor(sec) for sec, v in val.items()}
-        else:  # flat {sector: v}
-            scaled[key] = float(val) * factor(key)
-    return scaled
-
-
-def _base_carbon_share(data_source: str, store):
-    """The data source's benchmark ``carbon_cost_share`` (None if it has none), read once so the
-    emissions-intensity driver can pre-scale it per year (the engine rejects unknown override keys,
-    so the wrapper supplies the real share key with scaled values)."""
-    from cge.runner import load_data
-
-    data = load_data(data_source, store=store)
-    return data.get("carbon_cost_share")
+    flat = {s: factor(s) for s in sectors}
+    if not multi:
+        return flat
+    return {r: dict(flat) for r in regions}
 
 
 def _year_covered_emissions_by_region(
@@ -537,12 +649,16 @@ def _year_covered_emissions_by_region(
     # single-region engine used a different economy label than "R").
     if len(by_region) == 1 and len(regions) == 1:
         return np.array([float(next(iter(by_region.values())))], dtype=float)
-    missing = [r for r in regions if r not in by_region]
-    if missing:
-        return (
-            None  # incomplete per-region coverage → no reliable reference; fall back to within-year
-        )
-    return np.array([float(by_region[r]) for r in regions], dtype=float)
+    # A region with NO covered-emissions row (its sectors carry zero intensity / no coverage) gets a
+    # ZERO reference — the engine then emits no covered-emissions change for it (a zero reference
+    # yields None in _covered_emissions_change), leaving the COVERED regions' references intact
+    # (review P1a 2026-08-28: the old code discarded the WHOLE reference if any region was
+    # uncovered, so a shipped multi SAM with one uncovered region wiped out the decarbonisation
+    # signal for the covered region too — the decarbonising run then reported HIGHER emissions).
+    ref = np.array([float(by_region.get(r, 0.0)) for r in regions], dtype=float)
+    if not np.any(ref > 0.0):
+        return None  # no region has any covered emissions → no reference at all (within-year)
+    return ref
 
 
 def _emissions_reference_override(
@@ -557,10 +673,78 @@ def _emissions_reference_override(
     return {r: float(reference[ri]) for ri, r in enumerate(regions)}
 
 
-def _trend_provenance(config: DynamicConfig) -> dict:
+def _dynamic_scenario_hash(scenario: Scenario, config: DynamicConfig) -> str:
+    """A content hash of the DYNAMIC run's identity: the ORIGINAL scenario (still carrying its
+    nature_state) plus the NORMALIZED DynamicConfig (review P2a 2026-08-28).
+
+    A recursive run's identity is the scenario AND the dynamic configuration (depreciation, trends,
+    retirement, trajectory) — not just the last year's static solve. Hashing both means a changed
+    depreciation, retirement schedule, or structural trajectory moves the manifest's scenario_hash,
+    and a physical-state dynamic run hashes differently from an equivalent bare-NatureStress one."""
+    from cge.contracts.provenance import content_hash
+
+    traj = config.structural
+    normalized_config = {
+        "depreciation": config.depreciation,
+        "labour_growth": config.labour_growth,
+        "productivity_growth": config.productivity_growth,
+        # Retirement is already int-keyed and validated in __post_init__; sort for a stable hash.
+        "retirement": {int(y): float(r) for y, r in sorted(config.retirement.items())},
+        # The structural trajectory's numeric rate tables (not just its provenance) — a changed rate
+        # must move the hash, the same discipline as _trend_provenance's rate_tables_hash.
+        "structural": (
+            None if traj is None else {"rates": traj.rates, "sector_rates": traj.sector_rates}
+        ),
+    }
+    return content_hash(
+        {"scenario": scenario.model_dump(mode="json"), "dynamic_config": normalized_config}
+    )
+
+
+def _structural_coverage(traj, regions: list[str], sectors: list[str]) -> dict:
+    """Diagnose whether the trajectory actually DIFFERENTIATES the model's labels or every one falls
+    through to the global ``__all__`` default (review P1c 2026-08-28).
+
+    For each driver, count how many model regions/sectors have an EXPLICIT keyed path vs how many
+    fall through to ``__all__``. ``all_fallthrough`` is True when NO model label matched an explicit
+    key on ANY driver — i.e. the run claims sourced structural detail but every region/sector got
+    the same uniform trajectory (no country differentiation, no sectoral composition drift). The
+    manifest stamps this so a supposedly-real run with no differentiation is visible, rather than
+    silently overclaiming (the concordance-mapped trajectory binds real labels explicitly, so a
+    genuine real build reports ``all_fallthrough = False``)."""
+    region_hits = 0
+    sector_hits = 0
+    per_driver: dict = {}
+    for driver, by_key in traj.rates.items():
+        keyed = [r for r in regions if r in by_key]
+        region_hits += len(keyed)
+        per_driver[driver] = {
+            "explicit": sorted(keyed),
+            "fell_through_to_all": sorted(r for r in regions if r not in by_key),
+        }
+    for driver, by_key in traj.sector_rates.items():
+        keyed = [s for s in sectors if s in by_key]
+        sector_hits += len(keyed)
+        per_driver[driver] = {
+            "explicit": sorted(keyed),
+            "fell_through_to_all": sorted(s for s in sectors if s not in by_key),
+        }
+    return {
+        "model_regions": sorted(regions),
+        "model_sectors": sorted(sectors),
+        "explicit_region_matches": region_hits,
+        "explicit_sector_matches": sector_hits,
+        "all_fallthrough": region_hits == 0 and sector_hits == 0,
+        "per_driver": per_driver,
+    }
+
+
+def _trend_provenance(config: DynamicConfig, regions: list[str], sectors: list[str]) -> dict:
     """Record how the labour/productivity trends were set — the flat fallback scalars (Phase 7.1) or
     a sourced :class:`StructuralTrajectory` (Phase 7b.2), with its provenance and per-entry cites —
-    so a run's manifest is self-documenting about which drove it."""
+    so a run's manifest is self-documenting about which drove it. Also records a structural-coverage
+    diagnostic (review P1c) so a run that claims sourced detail but sees every model label fall
+    through to ``__all__`` (no differentiation) is visible in the manifest."""
     traj = config.structural
     if traj is None:
         return {
@@ -591,11 +775,16 @@ def _trend_provenance(config: DynamicConfig) -> dict:
         "confidence": dict(traj.confidence),
         "rate_tables": rate_tables,
         "rate_tables_hash": content_hash(rate_tables),
+        # Review P1c 2026-08-28: prove the trajectory differentiates the model's OWN labels (via the
+        # concordance) rather than every label collapsing to __all__.
+        "coverage": _structural_coverage(traj, regions, sectors),
         "note": (
             "Phase 7b.2 sourced trajectories: per-region labour-supply (population×participation) "
             "and productivity growth as endowment scales; per-sector productivity drift via the θ "
             "multiplier (structural change) and emissions-intensity decarbonisation scaling the "
-            "carbon-cost share, all compounded from the cited annual rates."
+            "per-sector intensity, all compounded from the cited annual rates. 'coverage' reports "
+            "whether the model's labels are explicitly keyed (differentiated) or fall through to "
+            "__all__ (see the structural concordance)."
         ),
     }
 

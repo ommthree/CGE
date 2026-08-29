@@ -471,12 +471,19 @@ class StructuralTrajectory(_DataObject):
       endogenously, fed through the engine's per-sector θ multiplier) and ``emissions_intensity``
       (per-sector decarbonisation of the carbon-cost intensity, scaling ``carbon_cost_share``).
 
-    ``sector_productivity`` rates are **absolute** sector productivity-growth estimates (the same
-    kind of number as the aggregate ``productivity`` driver), NOT increments on top of the aggregate
-    trend. The recursive wrapper already applies the aggregate TFP trend Hicks-neutrally to every
-    sector via the endowment scale, so it converts each sector's absolute rate into a θ DEVIATION
-    from the aggregate before applying it — a sector at the aggregate rate gets θ=1 (no bias). This
-    is what keeps the two from being double-counted (see ``dynamics.recursive``).
+    ``sector_productivity`` rates are **absolute** sector **labour-productivity** growth estimates
+    (EU KLEMS-style: output per hour), NOT total-factor productivity and NOT increments on top of
+    the aggregate trend. Because labour-productivity growth embeds capital deepening — which the
+    recursive model accumulates SEPARATELY — the wrapper does not apply the sector rate as
+    Hicks-neutral TFP directly (that would double-count deepening). Instead it (1) takes the
+    sector's DEVIATION from the region's aggregate productivity trend, and (2) converts that
+    labour-augmenting deviation into its Hicks-neutral-equivalent θ by the growth-accounting
+    identity — raising it to the benchmark labour share s_L of the sector (a labour-augmenting
+    improvement a contributes s_L·a to Hicks-neutral TFP). A sector at the aggregate rate gets θ=1
+    (no bias). This keeps the sector
+    series from (a) double-counting the aggregate trend already applied via the endowment scale and
+    (b) double-counting capital deepening against the model's own capital accumulation (see
+    ``dynamics.recursive``; review P2c 2026-08-28).
 
     A rate is a decimal fraction (0.012 = +1.2 %/yr). Years present are the *knots*; the effective
     rate holds the most recent knot for years between/after knots (piecewise-constant, documented),

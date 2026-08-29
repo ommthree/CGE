@@ -52,9 +52,13 @@ Starting from the benchmark capital stock **K₀** (from the stock–flow bridge
 
 The capital endowment in the CGE is the capital-**services** flow, proportional to the stock, so
 scaling the stock by Kₜ/K₀ scales the services endowment by the same factor (the engine's
-`factor_endowment_scale` hook). Labour scales the same way. **Productivity** enters as a Hicks-neutral
-endowment-equivalent scale on both primary factors — a documented simplification; a genuine
-sector-level TFP term is a follow-up.
+`factor_endowment_scale` hook). Labour scales the same way. **Aggregate productivity** enters as a
+Hicks-neutral endowment-equivalent scale on both primary factors. **Sector-level** productivity is
+implemented (Phase 7b.2): a sourced per-sector trajectory rides the engine's per-sector θ multiplier
+so the output mix shifts endogenously — see §6. The sector series is treated as *labour-augmenting*
+(converted to a Hicks-neutral-equivalent θ via the benchmark labour share) so that labour
+productivity's capital-deepening component is not double-counted against the model's own capital
+accumulation (review P2c 2026-08-28).
 
 Results are reported per year **relative to the original benchmark**, so capital accumulation and the
 trends are **visible in the level path** (a growing stock raises output vs the benchmark). Two result
@@ -67,12 +71,24 @@ The bridge (Phase 5d.3, `benchmark_capital`) converts one to the other via the J
 
 $$ \text{capital income} = u \cdot K_0, \quad u = \text{net\_return} + \delta \;\Rightarrow\; K_0 = \frac{\text{capital income}}{\text{net\_return}+\delta} $$
 
-with documented defaults (net return 4%/yr, δ 5%/yr). The CGE manifest reports **K₀** and the
-benchmark's **implied growth** g = INV₀/K₀ − δ under `capital_dynamics`. A **negative g** means the
-benchmark's investment is *below* replacement (δ·K), so the stock would contract if stepped forward
-unchanged — this is not hidden. On the toy SAM g ≈ −3.4%, so a zero-trend recursive run shows a gently
-contracting capital path; a caller wanting a stationary or growing baseline re-anchors via the labour
-and productivity trends (or, in a real build, a benchmark investment at replacement level).
+with documented defaults (net return 4%/yr, **calibration** δ 5%/yr). The CGE manifest reports **K₀**
+and the benchmark's **implied growth** g = INV₀/K₀ − δ under `capital_dynamics`.
+
+**Two distinct depreciation concepts (review P4 2026-08-28).** The δ in the user-cost bridge above is
+a *calibration* rate — a historical, benchmark-consistent user-cost parameter used **only** to back
+out the level of K₀ from the observed capital-income flow. It is fixed at the engine's documented 5%
+and is deliberately **independent** of `DynamicConfig.depreciation`, which is the *forward*
+accumulation rate applied in step 3's perpetual-inventory identity K_{t+1}=(1−δ)(1−r)K_t+INV_t. So a
+run with `DynamicConfig.depreciation=0.20` still bootstraps K₀ off the 5% calibration bridge (the
+benchmark's own historical user cost) and then depreciates the *forward* path at 20%. The manifest
+labels the bridge's rate under `capital_dynamics.depreciation_rate` and the forward rate under
+`recursive_dynamics.depreciation_rate` so the two are never conflated.
+
+A **negative g** means the benchmark's investment is *below* replacement (δ·K), so the stock would
+contract if stepped forward unchanged — this is not hidden. On the toy SAM g ≈ −3.4%, so a zero-trend
+recursive run shows a gently contracting capital path; a caller wanting a stationary or growing
+baseline re-anchors via the labour and productivity trends (or, in a real build, a benchmark
+investment at replacement level).
 
 ## 4. Premature retirement (stranded assets)
 
@@ -112,27 +128,37 @@ horizon, δ, trends, retirement, K₀, and the capital path.
       participation growth, i.e. the exact multiplicative step (1+pop)(1+part) each year (both are
       *proportional* annual growth rates, not percentage-point changes), and labour productivity
       (TFP), applied as endowment scales. *(UN WPP 2024, ILO/World Bank, PWT 10.01.)*
-    - **Per-sector `sector_productivity`** (structural change / GDP-share drift) — sector-biased TFP
-      fed through the engine's existing per-sector θ multiplier, so the output mix shifts
-      **endogenously** (a sector with faster productivity gains share); shares are a model result,
-      not an imposed target. *(EU KLEMS.)*
-    - **Per-sector `emissions_intensity`** (decarbonisation) — scales `carbon_cost_share`, so a
-      decarbonising sector faces a smaller priced carbon wedge in the solve AND, via a base-year
-      covered-emissions reference the wrapper feeds the engine (now for **all three** variants, with
-      a **per-region** reference for the multi CGE), shows falling covered emissions measured against
-      the base year. *(IEA WEO 2024 / NGFS Net Zero 2050.)*
-      **Two limitations to state plainly.** (i) `carbon_cost_share` is dual-purpose — it is both the
-      priced wedge and the covered-emissions intensity — so decarbonising it simultaneously shrinks
-      the emissions weight and weakens the carbon signal (letting output rise); the net covered-
-      emissions change is therefore model-dependent and, in small heavily-substituting SAMs, the
-      decarbonising path need not dominate the flat path monotonically. A physically-decoupled
-      intensity (separate from the priced wedge) is a documented follow-up. (ii) With **no
-      `CarbonPrice`** in the scenario there is no priced carbon and no covered-emissions output at
-      all, so an `emissions_intensity` trajectory has **no observable effect** — pair it with a
-      `CarbonPrice`.
+    - **Per-sector `sector_productivity`** (structural change / GDP-share drift) — a sourced
+      **labour-productivity** series fed through the engine's per-sector θ multiplier, so the output
+      mix shifts **endogenously** (a sector with faster productivity gains share); shares are a model
+      result, not an imposed target. Because labour-productivity growth embeds capital deepening —
+      which this model accumulates separately — the wrapper converts each sector's deviation from its
+      region's aggregate trend into a *Hicks-neutral-equivalent* θ by the growth-accounting identity
+      `θ_dev = (labour-productivity deviation) ** s_L`, where `s_L` is the sector's benchmark labour
+      share of value added; this avoids double-counting deepening (review P2c). In **multi** mode the
+      aggregate denominator and the labour share are both **region-specific**, so an identical sector
+      rate nets to a different deviation in each region (review P1b). *(EU KLEMS.)*
+    - **Per-sector `emissions_intensity`** (decarbonisation) — a **price-independent** engine hook
+      (`emissions_intensity_scale`) that multiplies the sector's physical emission intensity (so
+      covered emissions fall) AND its priced carbon wedge. Because it acts on the intensity the engine
+      computed, it works on **real IO/satellite builds** where no `carbon_cost_share` is supplied
+      (review P1a) — not only supplied-share toy builds. Via a base-year covered-emissions reference
+      the wrapper feeds the engine (all three variants; a **per-region** reference for the multi CGE,
+      where an **uncovered** region carries a zero reference without invalidating the covered
+      regions), a decarbonising sector shows falling covered emissions measured against the base year.
+      *(IEA WEO 2024 / NGFS Net Zero 2050.)*
+      **One limitation to state plainly.** With **no `CarbonPrice`** in the scenario there is no
+      priced carbon and no covered-emissions output at all, so an `emissions_intensity` trajectory has
+      **no observable effect** — pair it with a `CarbonPrice`.
+  On a **real EXIOBASE build** the trajectory's archetype keys (N/S, BRD/MIL) are bound to the
+  build's actual coarse-v3 region/sector labels by the provenance-carrying concordance
+  `data/structural/concordance_v1.json` (via `structural_trajectories_for_build`), so a real run has
+  genuine country differentiation and sectoral composition drift rather than every label falling
+  through to `__all__`; an unmapped label fails loudly and the manifest stamps a `coverage`
+  diagnostic (review P1c).
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
-- Productivity is Hicks-neutral on primary factors (economy-wide and per-sector θ; no factor-biased
-  or vintage-specific TFP).
+- Aggregate productivity is Hicks-neutral on primary factors; the per-sector series is modelled as
+  labour-augmenting (via the labour-share transform above). No factor-biased or vintage-specific TFP.
 - Magnitudes are illustrative (toy calibration); the value is the **mechanism** — a static CGE turned
   into a capital-carrying dynamic path, the backbone Phase 7.2 (NGFS) and 7.3 (climate) build on.
 

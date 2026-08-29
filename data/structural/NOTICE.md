@@ -6,8 +6,24 @@ productivity**, plus per-sector **sectoral productivity** and **emissions intens
 `(driver, key)` path carries its own citation and confidence in the artifact itself; this file
 records the underlying sources and their licences. The figures are **headline trend rates** taken
 from the published sources below — a compact, review-friendly artifact, not a re-distribution of the
-full source databases. On a real EXIOBASE build these region labels map to actual country/region
-trajectories through the same loader (`cge.data.structural.load_structural_trajectories`).
+full source databases. The shipped `N`/`S` region and `BRD`/`MIL` sector keys are development/
+composition **archetypes**. On a real EXIOBASE build, the provenance-carrying concordance
+`concordance_v1.json` (see below) binds each real coarse-v3 build label to its archetype, and
+`cge.data.structural.structural_trajectories_for_build(regions, sectors)` emits a trajectory keyed by
+the build's OWN labels — so a real build has genuine country differentiation and sectoral composition
+drift, not every label collapsing to the global `__all__` default. An unmapped build label fails
+loudly rather than silently taking `__all__` (review P1c 2026-08-28).
+
+## Region/sector concordance — `concordance_v1.json`
+
+- **Regions → archetype (N/S):** World Bank country and lending groups (income classification) —
+  high-income economies map to `N` (advanced proxy), low/middle-income to `S` (emerging proxy).
+  <https://datahelpdesk.worldbank.org/knowledgebase/articles/906519>
+- **Sectors → archetype (BRD/MIL):** ISIC Rev.4 / EU KLEMS goods-vs-services split — goods-producing
+  industries (agriculture, extraction, energy, manufacturing, construction) map to `BRD`;
+  distribution, transport and services to `MIL`.
+  <https://unstats.un.org/unsd/classifications/Econ/isic>
+- **Licence:** derived mapping (CC BY 4.0); underlying groupings CC BY 4.0.
 
 ## Population — UN World Population Prospects 2024
 
@@ -39,8 +55,16 @@ trajectories through the same loader (`cge.data.structural.load_structural_traje
 - **Retrieved:** 2026-08-16.
 - **Licence:** CC BY 4.0 (EU KLEMS/INTANProd public release).
 - **Note:** the shipped `BRD`/`MIL` sector keys are the toy model's illustrative sectors; the rates
-  are headline goods-vs-services productivity-growth central estimates, **absolute** per-sector rates
-  (see the artifact `sector_productivity`). On a real EXIOBASE build these map to actual industries.
+  are headline goods-vs-services **labour-productivity** growth central estimates (output per hour),
+  **absolute** per-sector rates (see the artifact `sector_productivity`). Because labour-
+  productivity growth embeds capital deepening — which the recursive model accumulates separately —
+  the wrapper does **not** apply these as Hicks-neutral TFP directly. It converts each sector's
+  deviation from the region's aggregate trend into a Hicks-neutral-equivalent θ by the growth-
+  accounting identity `θ_dev = (labour-productivity deviation) ** s_L`, where `s_L` is the sector's
+  benchmark labour share of value added (a labour-augmenting improvement `a` contributes `s_L·a` to
+  TFP). This avoids double-counting capital deepening (review P2c 2026-08-28). On a real EXIOBASE
+  build these sector keys map to actual industries via the structural concordance
+  (`data/structural/concordance_v1.json`).
 
 ## Emissions intensity — IEA WEO 2024 / NGFS Net Zero 2050
 

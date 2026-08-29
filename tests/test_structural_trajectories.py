@@ -141,3 +141,62 @@ def test_vendored_artifact_loads_with_full_provenance():
     # Sanity on the sourced figures: emerging-proxy S has faster population + productivity than N.
     assert t.rate("population", "S", 2025) > t.rate("population", "N", 2025)
     assert t.rate("productivity", "S", 2025) > t.rate("productivity", "N", 2025)
+
+
+def test_concordance_maps_real_build_labels_to_differentiated_trajectories():
+    """Review P1c 2026-08-28: the concordance binds a REAL EXIOBASE build's coarse-v3 labels to the
+    trajectory's archetypes, so a real build carries DIFFERENTIATED country/sector trajectories —
+    advanced regions (US/DE) grow TFP slower than emerging (CN/IN), goods sectors (manufacturing)
+    have a different productivity drift than services — instead of every label collapsing to
+    __all__."""
+    from cge.data.structural import structural_trajectories_for_build
+
+    regions = ["US", "DE", "CN", "IN", "RoW_Africa"]
+    sectors = ["manufacturing", "metals", "services", "transport", "electricity"]
+    t = structural_trajectories_for_build(regions, sectors)
+    # Every real label is now an explicit key (not __all__), and provenance carries through.
+    for r in regions:
+        assert r in t.rates["productivity"]
+        assert t.sources.get(f"productivity:{r}")
+    # Advanced vs emerging differentiation exists at the REAL labels.
+    assert t.rate("productivity", "US", 2025) < t.rate("productivity", "CN", 2025)
+    # Goods vs services sectoral differentiation exists at the REAL labels.
+    assert t.sector_rate("sector_productivity", "manufacturing", 2025) != t.sector_rate(
+        "sector_productivity", "services", 2025
+    )
+
+
+def test_concordance_rejects_unmapped_build_labels():
+    """An unmapped build label must fail loudly (review P1c): otherwise every real label would
+    silently take the global __all__ trajectory and the run would falsely claim country/sector
+    differentiation. The gate is the check the reviewer asked for."""
+    from cge.data.structural import structural_trajectories_for_build
+    from cge.data.structural.library import UnmappedStructuralLabels
+
+    with pytest.raises(UnmappedStructuralLabels):
+        structural_trajectories_for_build(["US", "ZZ_not_a_region"], ["manufacturing"])
+    with pytest.raises(UnmappedStructuralLabels):
+        structural_trajectories_for_build(["US"], ["not_a_sector"])
+    # Opting out of the gate is allowed and explicit (the label then takes __all__).
+    t = structural_trajectories_for_build(["US"], ["not_a_sector"], require_full_coverage=False)
+    assert t.sector_rate("sector_productivity", "not_a_sector", 2025) == t.sector_rate(
+        "sector_productivity", "__all__", 2025
+    )
+
+
+def test_concordance_coverage_diagnostic_flags_all_fallthrough():
+    """The recursive manifest's structural coverage diagnostic must distinguish a differentiated run
+    (real labels explicitly keyed) from an all-__all__ fallthrough (review P1c)."""
+    from cge.data.structural import structural_trajectories_for_build
+    from cge.dynamics.recursive import _structural_coverage
+
+    # A concordance-mapped trajectory on real labels → differentiated (not all-fallthrough).
+    mapped = structural_trajectories_for_build(["US", "CN"], ["manufacturing", "services"])
+    cov = _structural_coverage(mapped, ["US", "CN"], ["manufacturing", "services"])
+    assert cov["all_fallthrough"] is False
+    assert cov["explicit_region_matches"] > 0 and cov["explicit_sector_matches"] > 0
+
+    # The bare archetype trajectory on real labels → every label falls through to __all__.
+    archetype = load_structural_trajectories()
+    cov2 = _structural_coverage(archetype, ["US", "CN"], ["manufacturing", "services"])
+    assert cov2["all_fallthrough"] is True
