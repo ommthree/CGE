@@ -200,3 +200,93 @@ def test_concordance_coverage_diagnostic_flags_all_fallthrough():
     archetype = load_structural_trajectories()
     cov2 = _structural_coverage(archetype, ["US", "CN"], ["manufacturing", "services"])
     assert cov2["all_fallthrough"] is True
+
+
+def test_concordance_v2_blends_mixed_blocks_with_gdp_weights():
+    """Review P1 2026-08-29: a MIXED coarse block (RoW_Asia contains advanced AU/KR/TW and emerging
+    ID/WA) must get a GDP-WEIGHTED BLEND of its members' archetype paths, NOT one archetype. So its
+    productivity rate lies strictly between the N and S archetype rates, while a pure-N block (US)
+    equals N and a pure-S block (RoW_Africa) equals S."""
+    from cge.data.structural import load_structural_trajectories, structural_trajectories_for_build
+
+    arch = load_structural_trajectories()
+    n_rate = arch.rate("productivity", "N", 2025)
+    s_rate = arch.rate("productivity", "S", 2025)
+    t = structural_trajectories_for_build(
+        ["US", "RoW_Asia", "RoW_Europe", "RoW_Africa"], ["manufacturing"]
+    )
+    assert t.rate("productivity", "US", 2025) == pytest.approx(n_rate)
+    assert t.rate("productivity", "RoW_Africa", 2025) == pytest.approx(s_rate)
+    # Mixed blocks are genuine blends strictly between the two archetypes.
+    assert n_rate < t.rate("productivity", "RoW_Asia", 2025) < s_rate
+    # RoW_Europe is mostly advanced (+ some emerging TR/Eastern EU) → closer to N than RoW_Asia is.
+    assert t.rate("productivity", "RoW_Europe", 2025) < t.rate("productivity", "RoW_Asia", 2025)
+
+
+def test_concordance_v2_carries_composite_provenance():
+    """Review P2 2026-08-29: the mapped trajectory must record BOTH the concordance and archetype
+    identities, not just the bare structural-trajectories-v1 provenance."""
+    from cge.data.structural import structural_trajectories_for_build
+
+    t = structural_trajectories_for_build(["US", "CN"], ["manufacturing", "services"])
+    assert "concordance" in t.provenance.source.lower()
+    assert "structural-concordance-v2" in t.provenance.source_version
+    assert "structural-trajectories-v1" in t.provenance.source_version
+
+
+def test_concordance_validation_rejects_bad_archetype_and_weights(tmp_path):
+    """Review P2 2026-08-29: load_structural_concordance validates through the Provenance contract,
+    rejects a country archetype that isn't a known trajectory path (the reviewer's US→TYPO), and
+    rejects block weights that don't sum to 1."""
+    import json
+    from pathlib import Path
+
+    from cge.data.structural.library import load_structural_concordance
+
+    raw = json.loads(Path("data/structural/concordance_v2.json").read_text())
+
+    bad_arch = json.loads(json.dumps(raw))
+    bad_arch["country_archetype"]["US"] = "TYPO"
+    p1 = tmp_path / "bad_arch.json"
+    p1.write_text(json.dumps(bad_arch))
+    with pytest.raises(ValueError, match="not among the trajectory"):
+        load_structural_concordance(p1)
+
+    bad_w = json.loads(json.dumps(raw))
+    bad_w["block_membership"]["RoW_Asia"] = {"AU": 0.5, "KR": 0.4}  # sums to 0.9
+    p2 = tmp_path / "bad_w.json"
+    p2.write_text(json.dumps(bad_w))
+    with pytest.raises(ValueError, match="sum to"):
+        load_structural_concordance(p2)
+
+
+def test_run_recursive_rejects_all_fallthrough_structural_run():
+    """Review P2 2026-08-29: 'unmapped label fails loudly' must hold at the RUN boundary — an
+    all-__all__ structural trajectory on a real build is rejected unless the caller opts into the
+    uniform fallback."""
+    from cge.contracts.data_objects import Provenance, StructuralTrajectory
+    from cge.contracts.shocks import CarbonPrice
+    from cge.dynamics import DynamicConfig, run_recursive
+    from cge.scenarios.loader import Scenario
+
+    allonly = StructuralTrajectory(
+        provenance=Provenance(
+            source="t", source_version="v", licence="n", reference_year=2024, retrieved="2026-08-16"
+        ),
+        rates={"productivity": {"__all__": {2025: 0.02}}},
+        sector_rates={"sector_productivity": {"__all__": {2025: 0.01}}},
+        sources={"productivity:__all__": "c", "sector_productivity:__all__": "c"},
+        confidence={"productivity:__all__": "low", "sector_productivity:__all__": "low"},
+    )
+    sc = Scenario(
+        name="x", engine="cge_static", years=[2025, 2030], shocks=[CarbonPrice(price=50.0)]
+    )
+    with pytest.raises(ValueError, match="does not differentiate"):
+        run_recursive(sc, config=DynamicConfig(structural=allonly), data_source="toy_cge_gov")
+    # Opt-in runs it deliberately.
+    path = run_recursive(
+        sc,
+        config=DynamicConfig(structural=allonly, allow_uniform_fallback=True),
+        data_source="toy_cge_gov",
+    )
+    assert path.result is not None

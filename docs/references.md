@@ -76,6 +76,30 @@ reports are citable for applied choices.
 - **[IPCC_AR6_WG3]** IPCC (2022). *Climate Change 2022: Mitigation of Climate Change* (AR6
   WG3). — Reference for carbon-budget / temperature-target framings and the scenario families.
 
+## Structural trajectories (Phase 7b.2)
+
+Sources for the vendored per-region / per-sector growth trajectories and the region/sector
+concordance (see `data/structural/NOTICE.md` for licences and the reproducibility caveat).
+
+- **[Solow1957]** Solow, R. M. (1957). Technical change and the aggregate production function.
+  *Review of Economics and Statistics*, 39(3), 312–320. — The factor-augmenting technical-change
+  formalism; a labour-augmenting factor φ on labour input reduces value-added unit cost by φ^{−s_L}
+  under a CES/Cobb–Douglas VA nest (the `sector_productivity` mechanism, §6).
+- **[FeenstraPWT]** Feenstra, R. C., Inklaar, R. & Timmer, M. P. (2015). The next generation of the
+  Penn World Table. *American Economic Review*, 105(10), 3150–3182. — *Penn World Table 10.01*
+  (`rtfpna`), the per-region aggregate-TFP growth series.
+- **[EUKLEMS2023]** EU KLEMS & INTANProd (2023 release). — Sectoral labour-productivity (output per
+  hour) growth by industry; the per-sector `sector_productivity` series.
+- **[UNWPP2024]** United Nations DESA, Population Division (2024). *World Population Prospects 2024*,
+  Medium variant. — Per-region population growth.
+- **[ILOSTAT]** International Labour Organization, *ILOSTAT* modelled estimates, and World Bank
+  *World Development Indicators*. — Labour-force participation rates.
+- **[WorldBankIncome]** World Bank country and lending groups (income classification, FY2025). —
+  The country → N/S archetype rule underpinning `concordance_v2.json`.
+- **[IEA_WEO2024]** International Energy Agency (2024). *World Energy Outlook 2024*, and NGFS
+  *Net Zero 2050* (see [NGFS]). — The illustrative CO₂-intensity-of-output decline path
+  (`emissions_intensity`).
+
 ## Energy prices & pass-through
 
 - **[Kilian2008]** Kilian, L. (2008). The economic effects of energy price shocks. *Journal of

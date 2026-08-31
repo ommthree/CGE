@@ -18,8 +18,12 @@ bridge, `benchmark_capital`):
 **Why the endowment scale.** The CGE's capital endowment is the capital-services flow, proportional
 to the stock, so scaling the stock by ``K_{t+1}/K0`` scales the services endowment by the same
 factor — the `factor_endowment_scale` hook the engine exposes. Labour scales the same way.
-Productivity enters as a Hicks-neutral endowment-equivalent scale on both factors (a documented
-simplification; a genuine sector-level TFP term is a follow-up).
+Aggregate productivity enters as a Hicks-neutral endowment-equivalent scale on both factors (a
+documented simplification). Per-SECTOR structural change enters separately as a genuine
+LABOUR-augmenting term on each sector's labour input (a ``ProductivityShock(mechanism=
+"labour_augmenting")`` driven by the StructuralTrajectory's ``sector_productivity`` rates), so
+capital deepening in the sector labour-productivity source is not double-counted against the model's
+own capital accumulation (7b.2 review 2026-08-29).
 
 Results are reported per year **relative to the original benchmark**, so capital accumulation and
 the trends are VISIBLE in the level path (a growing stock raises output vs the benchmark). The
@@ -78,6 +82,14 @@ class DynamicConfig:
     # Documented, sourced per-region structural trajectories (Phase 7b.2). When set, it drives the
     # labour and productivity trends per region instead of the flat scalars above.
     structural: StructuralTrajectory | None = None
+    # Whether to accept a structural run in which EVERY model region/sector falls through to the
+    # global ``__all__`` path (no country/sector differentiation). Default False: such a run is
+    # REJECTED (review P2 2026-08-29 — "unmapped label fails loudly" must hold at the RUN boundary,
+    # not just be recorded after the fact). A caller that deliberately wants the uniform ``__all__``
+    # trajectory on a real build opts in explicitly by setting this True. When the trajectory DOES
+    # differentiate the model's labels (e.g. a concordance-mapped build trajectory), the gate is a
+    # no-op.
+    allow_uniform_fallback: bool = False
 
     def __post_init__(self) -> None:
         for name in ("depreciation", "labour_growth", "productivity_growth"):
@@ -179,13 +191,14 @@ def _probe_sectors(probe: ResultSet) -> list[str]:
 
 def _probe_labour_shares(manifest, regions: list[str], sectors: list[str]) -> dict:
     """The per-sector benchmark labour share of value added the engine stamped (7b.2 review
-    2026-08-28), used to convert the labour-augmenting sectoral-productivity series into its
-    Hicks-neutral-equivalent θ deviation.
+    2026-08-28), used as the **VA weights** for the geometric-mean denominator the labour-augmenting
+    sectoral-productivity drift is measured against (``_sector_productivity_shocks``), so the biases
+    net out per region and no aggregate level is re-imposed (review P1 2026-08-29).
 
     Returns the flat ``{sector: s_L}`` map for the single-region variants and the nested
     ``{region: {sector: s_L}}`` map for multi. When the engine exposed no labour share (e.g. a model
-    with no LAB factor), returns an empty map — the caller then treats s_L as 1 (pure labour-
-    augmenting = Hicks-neutral), preserving the prior behaviour rather than failing."""
+    with no LAB factor), returns an empty map — the caller then falls back to equal weighting,
+    preserving the prior behaviour rather than failing."""
     lvs = manifest.assumptions.get("labour_va_shares", {})
     if not lvs.get("available"):
         return {}
@@ -227,6 +240,7 @@ def run_recursive(
     config: DynamicConfig | None = None,
     data_source: str = "toy_cge_gov",
     store=None,
+    data_overrides: dict | None = None,
 ) -> DynamicPath:
     """Run ``scenario`` recursively-dynamically over its ``years``, carrying capital forward.
 
@@ -237,10 +251,19 @@ def run_recursive(
     annual horizon internally and reports only the requested years — the requested ``years`` are the
     REPORTING years, the internal solve years are every year in ``[min, max]``.
 
+    ``data_overrides`` are static override entries merged into EVERY per-year solve (on top of the
+    per-year capital/labour/emissions/productivity overrides the wrapper builds). This is how a
+    physical ``nature_state`` scenario runs end-to-end on a SAM-only dynamic source: the exposure
+    triple — ``nature_iosystem`` (the exposure IOSystem), ``EncoreDependencies`` and
+    ``ConcordanceMap`` — is injected here so NatureStress translates into per-sector
+    ProductivityShocks each year, while the toy CGE SAM supplies the capital-carrying economic core
+    (review 7b.2 2026-08-30). These are nature CONTROL keys, stripped before the strict CGE engine.
+
     Returns a ``DynamicPath`` whose ``result`` is the concatenated per-REPORTING-year ResultSet
     (with added ``capital_stock``/``capital_growth`` rows) and whose dicts give the capital path at
     the reporting years."""
     config = config or DynamicConfig()
+    data_overrides = dict(data_overrides or {})
     report_years = sorted(scenario.years)
     base_year = report_years[0]
     # Solve EVERY calendar year from the first to the last requested year, so investment and
@@ -265,10 +288,31 @@ def run_recursive(
     # not match real sector names still drives every sector).
     sectors = _probe_sectors(probe)
     # Per-region per-sector benchmark labour share of value added (7b.2 review 2026-08-28), read off
-    # the probe manifest — used to convert the labour-augmenting sectoral-productivity series into
-    # its Hicks-neutral-equivalent θ deviation (s_L·a), so capital deepening in the labour-
-    # productivity source is not double-counted against the model's own capital accumulation.
+    # the probe manifest — the VA weights for the geometric-mean denominator the labour-augmenting
+    # sectoral-productivity DRIFT is measured against, so the per-region biases net out (review P1
+    # 2026-08-29). Capital deepening is not double-counted because the shock augments labour only,
+    # while the model accumulates capital separately.
     labour_shares = _probe_labour_shares(probe.manifest, regions, sectors)
+
+    # "Unmapped label fails loudly" at the RUN boundary (review P2 2026-08-29): if a structural
+    # trajectory is supplied but EVERY model region/sector falls through to the global ``__all__``
+    # path — i.e. the trajectory does not differentiate THIS build's labels at all — reject the run
+    # unless the caller explicitly opted into the uniform fallback. This is what forces a real
+    # coarse-v3 build to be run with a concordance-mapped trajectory
+    # (``structural_trajectories_for_build``) rather than the bare archetype trajectory silently
+    # collapsing to ``__all__``.
+    if config.structural is not None and not config.allow_uniform_fallback:
+        cov = _structural_coverage(config.structural, regions, sectors)
+        if cov["all_fallthrough"]:
+            raise ValueError(
+                "structural trajectory does not differentiate any of this build's labels — every "
+                f"model region {cov['model_regions']} and sector {cov['model_sectors']} falls "
+                "through to the global '__all__' path (no country/sector differentiation). On a "
+                "real EXIOBASE build, map the trajectory to the build's labels first with "
+                "cge.data.structural.structural_trajectories_for_build(regions, sectors); or set "
+                "DynamicConfig(allow_uniform_fallback=True) to run the uniform __all__ trajectory "
+                "deliberately."
+            )
 
     # Expand any Phase-6b nature_state pathways ONCE over the FULL annual horizon (review P1): the
     # rate-form start year and recovery hysteresis depend on the complete year sequence, so slicing
@@ -309,7 +353,10 @@ def run_recursive(
         # Capital scale is PER REGION (each region carries its own stock).
         cap_scale = (k_t / k0) * tfp_scale  # 1-D array per region
         lab_scale = labour_scale * tfp_scale  # 1-D array per region
-        overrides = {"factor_endowment_scale": _factor_scale(cap_scale, lab_scale, regions, multi)}
+        overrides = {
+            **data_overrides,
+            "factor_endowment_scale": _factor_scale(cap_scale, lab_scale, regions, multi),
+        }
         # Emissions-intensity driver (7b.2, per sector): a PRICE-INDEPENDENT decarbonisation scale
         # the engine multiplies into BOTH the physical intensity (so covered emissions fall) and the
         # priced wedge (so a decarbonising sector faces a smaller cost). Built from the trajectory's
@@ -504,25 +551,6 @@ def _cumulative_sector_level(traj, driver: str, sector: str, base_year: int, yea
     return acc - 1.0
 
 
-def _aggregate_productivity_level(traj, region: str, base_year: int, year: int) -> float:
-    """The cumulative aggregate productivity level ∏(1+rate) from ``base_year`` to ``year`` for
-    ``region``, read off the ``productivity`` region driver (an explicit region path overriding
-    ``__all__``) — the SAME per-region aggregate TFP trend the wrapper applies Hicks-neutrally to
-    that region via the endowment scale.
-
-    Used as the denominator that converts the ABSOLUTE per-sector productivity rates into θ
-    DEVIATIONS from the aggregate, so the two are not double-counted (review P1). In multi mode the
-    aggregate is REGION-SPECIFIC (region N and region S grow TFP at different rates), so the
-    denominator must be the region's own aggregate level, NOT the global ``__all__`` level (review
-    P1b 2026-08-28: the old code used ``__all__`` for every region while the endowment scale applied
-    the region's own rate, so ``aggregate × deviation`` did not equal the sector's absolute rate in
-    either region). Falls back to 1.0 when no ``productivity`` path is present for the region."""
-    acc = 1.0
-    for y in range(base_year, year):
-        acc *= 1.0 + traj.rate("productivity", region, y)
-    return acc
-
-
 def _sector_productivity_shocks(
     config: DynamicConfig,
     base_year: int,
@@ -532,26 +560,28 @@ def _sector_productivity_shocks(
     multi: bool,
     labour_shares: dict,
 ) -> list:
-    """Synthesize ProductivityShocks for the sectoral-drift driver (7b.2 structural change), for
-    EVERY model sector in ``sectors`` (review P1 — the old code skipped ``__all__`` without
-    enumerating the model's sectors, so a trajectory whose only path was ``__all__``, or one whose
-    sector keys did not match real EXIOBASE names, silently produced ZERO shocks).
+    """Synthesize LABOUR-AUGMENTING ProductivityShocks for the sectoral-drift driver (7b.2
+    structural change), for EVERY model sector in ``sectors`` (an ``__all__``-only trajectory, or
+    one whose keys do not match real EXIOBASE names, still drives every sector).
 
-    **Labour-augmenting semantics (review P2c 2026-08-28).** The sourced sectoral-productivity
-    series (EU KLEMS) is *labour-productivity* growth, which embeds capital deepening. The recursive
-    model accumulates capital separately, so applying the labour-productivity rate as Hicks-neutral
-    TFP would double-count capital deepening. By the standard growth-accounting identity a labour-
-    augmenting improvement a raises Hicks-neutral TFP by s_L·a (Cobb-Douglas/CES value added). So
-    the θ carried here is the sector's DEVIATION-from-aggregate labour-productivity level raised to
-    the benchmark labour share s_L — the Hicks-neutral equivalent of the labour-augmenting change.
+    **Labour-augmenting, economically identified (review P1 2026-08-29).** The sourced sector series
+    is *labour-productivity* growth. It is applied as a genuine LABOUR-AUGMENTING shock on the
+    sector's labour input (``mechanism="labour_augmenting"``), NOT a Hicks-neutral θ: the engine's
+    value-added cost then falls by φ^{−s_L} through the labour channel by construction, so the
+    labour-share weighting is STRUCTURAL — there is no ad-hoc ``^s_L`` exponent (the earlier
+    ``(sector_LP/TFP)^s_L`` mixed labour-productivity with TFP and was not growth-accounting
+    identified). Capital deepening is not double-counted because the shock augments labour only,
+    while the model accumulates capital separately.
 
-    **Deviation from the aggregate (review P1).** The wrapper ALREADY applies the aggregate TFP
-    trend Hicks-neutrally to every sector via the endowment scale, so emitting the absolute sector
-    level would double-count the aggregate. The θ level is therefore the sector's cumulative level
-    DIVIDED by the aggregate cumulative level (the deviation); a sector at the aggregate rate gets
-    θ=1. In MULTI mode the aggregate denominator and the labour share are BOTH region-specific, so a
-    per-(region,sector) shock is emitted with the region's own denominator/share (review P1b) — the
-    engine honours the shock's ``coverage_regions``.
+    **Structural DRIFT, not a level (review P1 2026-08-29).** The aggregate productivity level is
+    ALREADY carried by the TFP endowment scale, so this driver must contribute only the sector
+    COMPOSITION drift, not an implied aggregate. Each sector's cumulative labour-productivity level
+    is therefore expressed RELATIVE to the benchmark-VA-weighted geometric mean of all sectors'
+    levels, so the drift is a pure redistribution: a faster sector gets φ>1, a slower one φ<1,
+    and the VA-weighted mean of the biases is neutral (this removes the earlier artifact where, in a
+    high-TFP region, EVERY sector received a negative bias because all sector rates sat below the
+    region's TFP rate). The relative mean is a within-region quantity, computed per region —
+    the shocks are per (region, sector) in multi mode (the engine honours ``coverage_regions``).
 
     Empty when the config has no ``sector_productivity`` driver, so a run without it is
     byte-identical to Phase 7.1."""
@@ -562,30 +592,32 @@ def _sector_productivity_shocks(
 
     shocks = []
     for region in regions:
-        # Region-specific aggregate TFP level (the exact per-region trend the endowment scale
-        # applies) — the honest denominator for THIS region's sector deviations (review P1b).
-        agg_level = _aggregate_productivity_level(traj, region, base_year, year)
         share_by_sector = labour_shares.get(region, {}) if multi else labour_shares
+        # Cumulative labour-productivity LEVEL per sector (∏(1+rate)); the sector_rate lookup falls
+        # back to the ``__all__`` sector path so a global-only trajectory drives every sector.
+        levels = {
+            s: _cumulative_sector_level(traj, "sector_productivity", s, base_year, year) + 1.0
+            for s in sectors
+        }
+        # Benchmark-VA-weighted GEOMETRIC mean of the sector levels — the "average" the drift is
+        # measured against, so the biases net out and no aggregate level is re-imposed (review P1).
+        # Weights are the sectors' benchmark VALUE-ADDED shares (labour + capital), approximated
+        # by the labour VA share the engine stamped (a positive per-sector weight); a sector with no
+        # weight falls back to equal weighting.
+        weights = np.array([max(float(share_by_sector.get(s, 1.0)), 1e-9) for s in sectors])
+        weights = weights / weights.sum()
+        log_mean = float(np.sum(weights * np.log([levels[s] for s in sectors])))
+        mean_level = float(np.exp(log_mean))
         for sector in sectors:
-            # Absolute cumulative sector labour-productivity level ∏(1+sector_rate); the sector_rate
-            # lookup falls back to the ``__all__`` sector path, so a global-only trajectory drives
-            # every sector.
-            sector_level = _cumulative_sector_level(
-                traj, "sector_productivity", sector, base_year, year
-            )
-            sector_level += 1.0  # fractional change (∏−1) → level
-            # Deviation-from-aggregate labour-productivity level, then convert labour-augmenting →
-            # Hicks-neutral equivalent by raising to the benchmark labour share s_L (review P2c):
-            # θ_hicks = (sector_LP / aggregate) ** s_L. s_L defaults to 1 (pure labour-augmenting =
-            # Hicks-neutral) if the model exposed no labour share for this (region, sector).
-            lp_deviation = sector_level / agg_level if agg_level > 0 else sector_level
-            s_l = float(share_by_sector.get(sector, 1.0))
-            theta_level = lp_deviation**s_l if lp_deviation > 0 else lp_deviation
-            delta = theta_level - 1.0
-            # A zero-deviation year (base year, or a sector at the aggregate rate) still emits the
-            # shock so the path is explicit; the engine treats delta=0 as θ=1 (no effect). delta ≥
-            # −1 required. Multi carries the region so each region uses its own denominator/share.
-            kwargs = {"delta": max(delta, -1.0), "coverage_sectors": [sector]}
+            # RELATIVE labour-productivity deviation from the weighted mean → the labour-augmenting
+            # factor φ. A sector at the mean gets φ=1 (no drift). delta = φ − 1, floored at −1.
+            phi = levels[sector] / mean_level if mean_level > 0 else levels[sector]
+            delta = max(phi - 1.0, -1.0)
+            kwargs = {
+                "delta": delta,
+                "coverage_sectors": [sector],
+                "mechanism": "labour_augmenting",
+            }
             if multi:
                 kwargs["coverage_regions"] = [region]
             shocks.append(ProductivityShock(**kwargs))

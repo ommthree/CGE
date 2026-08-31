@@ -467,23 +467,24 @@ class StructuralTrajectory(_DataObject):
       (population × participation) and productivity growth per region and applies them as endowment
       scales, replacing the flat ``labour_growth`` / ``productivity_growth`` scalars.
     - ``sector_rates`` — PER-SECTOR drivers ``{driver: {sector: {year: rate}}}`` for
-      ``sector_productivity`` (structural change: sector-biased TFP that shifts the output mix
-      endogenously, fed through the engine's per-sector θ multiplier) and ``emissions_intensity``
-      (per-sector decarbonisation of the carbon-cost intensity, scaling ``carbon_cost_share``).
+      ``sector_productivity`` (structural change: a sector-biased LABOUR-augmenting term that shifts
+      the output mix endogenously) and ``emissions_intensity`` (per-sector decarbonisation, applied
+      through the engine's price-independent ``emissions_intensity_scale`` hook).
 
-    ``sector_productivity`` rates are **absolute** sector **labour-productivity** growth estimates
-    (EU KLEMS-style: output per hour), NOT total-factor productivity and NOT increments on top of
-    the aggregate trend. Because labour-productivity growth embeds capital deepening — which the
-    recursive model accumulates SEPARATELY — the wrapper does not apply the sector rate as
-    Hicks-neutral TFP directly (that would double-count deepening). Instead it (1) takes the
-    sector's DEVIATION from the region's aggregate productivity trend, and (2) converts that
-    labour-augmenting deviation into its Hicks-neutral-equivalent θ by the growth-accounting
-    identity — raising it to the benchmark labour share s_L of the sector (a labour-augmenting
-    improvement a contributes s_L·a to Hicks-neutral TFP). A sector at the aggregate rate gets θ=1
-    (no bias). This keeps the sector
-    series from (a) double-counting the aggregate trend already applied via the endowment scale and
-    (b) double-counting capital deepening against the model's own capital accumulation (see
-    ``dynamics.recursive``; review P2c 2026-08-28).
+    ``sector_productivity`` rates are **sector labour-productivity** growth estimates (EU KLEMS-
+    style: output per hour), NOT total-factor productivity. They are applied as a genuine LABOUR-
+    AUGMENTING shock on the sector's labour input (``mechanism="labour_augmenting"``), NOT a
+    Hicks-neutral θ (review P1 2026-08-29). This matters because labour-productivity growth embeds
+    capital deepening, which the recursive model accumulates SEPARATELY — applying it as Hicks-
+    neutral TFP would double-count deepening. Under a labour-augmenting factor φ the sector's value-
+    added cost falls by φ^{−s_L} *by construction* (s_L = the sector's labour share of value added),
+    so the labour-share weighting is STRUCTURAL, with no ad-hoc exponent. The wrapper expresses each
+    sector's cumulative level RELATIVE to the benchmark-VA-weighted geometric mean of all sectors'
+    levels, so the driver contributes only sector COMPOSITION drift (zero-mean redistribution), NOT
+    re-impose an aggregate productivity level — that is carried separately by the per-region TFP
+    endowment scale. (The earlier ``(sector_LP/aggregate_TFP)^{s_L}`` mixed labour productivity with
+    TFP and gave every sector in a high-TFP region a negative bias; that is retracted — see
+    ``dynamics.recursive``.)
 
     A rate is a decimal fraction (0.012 = +1.2 %/yr). Years present are the *knots*; the effective
     rate holds the most recent knot for years between/after knots (piecewise-constant, documented),

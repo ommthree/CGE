@@ -165,6 +165,14 @@ _NATURE_CONTROL_KEYS = (
     "nature_allow_water_overlap",
     "EncoreDependencies",
     "ConcordanceMap",
+    # The exposure IOSystem, supplied ONLY for nature translation and stripped before the engine
+    # (review 7b.2 2026-08-30). A supplied-SAM CGE (e.g. toy_cge_gov) has no IOSystem of its own,
+    # and the CGE engine is strict — it rejects an ``IOSystem`` key on a supplied-SAM entry. So a
+    # NatureStress/nature_state run on a SAM-only source injects the exposure IO here (a nature
+    # CONTROL, consumed by _preprocess_nature and never seen by the engine), rather than as an
+    # ``IOSystem`` data key the engine would reject. This is what lets the recursive-dynamic wrapper
+    # thread a physical nature_state pathway end-to-end on the dynamic-capable toy CGE SAMs.
+    "nature_iosystem",
 )
 
 
@@ -251,7 +259,11 @@ def _preprocess_nature(
     from cge.nature.encore import MATERIALITY_SCALE
     from cge.nature.translate import NATURE_TRANSLATION_VERSION, build_nature_shocks
 
-    io = overrides.get("IOSystem", data.get("IOSystem"))
+    # Exposure IO: a dedicated ``nature_iosystem`` override (stripped before the engine) takes
+    # precedence, then an ``IOSystem`` override, then the source's own IOSystem. The dedicated key
+    # lets a SAM-only source (which the strict CGE engine forbids an ``IOSystem`` data key on) still
+    # supply an exposure IO for nature translation (review 7b.2 2026-08-30).
+    io = overrides.get("nature_iosystem") or overrides.get("IOSystem", data.get("IOSystem"))
     missing = [
         name
         for name, obj in (

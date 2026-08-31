@@ -514,15 +514,17 @@ def _capital_dynamics_manifest(cal) -> dict:
 
 def _labour_va_shares_manifest(cal) -> dict:
     """Per-sector benchmark **labour share of value added** s_L[i] = F0[LAB,i] / Σ_f F0[f,i], for
-    the recursive-dynamic wrapper's labour-augmenting sector-productivity transform (review P2
-    2026-08-28).
+    the recursive-dynamic wrapper's labour-augmenting sector-productivity driver (review P2
+    2026-08-28, updated P1 2026-08-29).
 
     The sourced sectoral productivity series (EU KLEMS) is *labour-productivity* growth, which
-    includes capital deepening. The recursive model accumulates capital separately, so applying the
-    labour-productivity rate as Hicks-neutral TFP would double-count the capital-deepening part. The
-    standard growth-accounting identity is that a labour-augmenting improvement a contributes s_L·a
-    to Hicks-neutral TFP (for a Cobb-Douglas / CES value-added nest). Stamping s_L here lets the
-    wrapper convert the labour-augmenting rate into its Hicks-neutral-equivalent θ deviation.
+    includes capital deepening. The recursive model accumulates capital separately, so the wrapper
+    applies the series as a genuine LABOUR-AUGMENTING shock on the sector's labour input
+    (``mechanism="labour_augmenting"``) rather than as Hicks-neutral TFP — the VA unit cost falls
+    by φ^{−s_L} by construction, so capital deepening is not double-counted. Stamping s_L here gives
+    the wrapper the benchmark VA weights it uses (a) to form the geometric-mean denominator the
+    per-sector drift is measured against (so the biases net out per region) and (b) as the labour
+    share the engine's own labour-augmenting channel weights each shock by.
 
     Single-region: ``{sector: s_L}``. Multi-region: ``{region: {sector: s_L}}`` (F0 is [f, r, s]).
     Returns ``{"available": False, ...}`` when the model has no LAB factor."""
@@ -1055,9 +1057,22 @@ class CGEStaticEngine:
         # supply-side technology hit that the general-equilibrium solve responds to (relative-price
         # and factor reallocation) — not just a first-round quantity change like Engine 2. None when
         # no productivity shock is present, so the run is byte-identical to a pure carbon run.
+        hicks_shocks = [s for s in prod_shocks if s.mechanism == "hicks_neutral"]
+        labour_shocks = [s for s in prod_shocks if s.mechanism == "labour_augmenting"]
         theta_by_year = (
-            {y: _productivity_by_sector(prod_shocks, inp.sectors, y) for y in years}
-            if prod_shocks
+            {y: _productivity_by_sector(hicks_shocks, inp.sectors, y) for y in years}
+            if hicks_shocks
+            else None
+        )
+        # Per-year per-sector LABOUR-augmenting factor φ (Phase 7b.2 review 2026-08-29): augments
+        # the sector's labour input, the economically identified channel for a sourced sector
+        # labour-productivity series. None when no labour-augmenting shock → byte-identical.
+        lprod_by_year = (
+            {
+                y: _productivity_by_sector(labour_shocks, inp.sectors, y, "labour_augmenting")
+                for y in years
+            }
+            if labour_shocks
             else None
         )
         emissions_priced = any(np.any(cc != 0.0) for cc, _ in cc_by_year.values())
@@ -1130,6 +1145,7 @@ class CGEStaticEngine:
         for year in years:
             cc, _prov = cc_by_year[year]
             theta = theta_by_year[year] if theta_by_year is not None else None
+            lprod = lprod_by_year[year] if lprod_by_year is not None else None
             sol, floor_applied = _solve(
                 cal,
                 carbon_cost=cc,
@@ -1141,6 +1157,7 @@ class CGEStaticEngine:
                 adapt_amount=adapt_amount,
                 adapt_gamma=adapt_gamma,
                 productivity=theta,
+                labour_productivity=lprod,
             )
             floor_ever_bound = floor_ever_bound or floor_applied is not None
             backends.add(sol.backend)
@@ -1162,6 +1179,7 @@ class CGEStaticEngine:
                 adapt_amount=adapt_amount,
                 adapt_gamma=adapt_gamma,
                 productivity=theta,
+                labour_productivity=lprod,
             )
             _emit(
                 records,
@@ -1232,11 +1250,12 @@ class CGEStaticEngine:
                 # SEE the stock the accumulation identity steps from and whether the benchmark
                 # investment is above/below replacement. Reported on the PRISTINE benchmark.
                 "capital_dynamics": _capital_dynamics_manifest(cal_benchmark),
-                # Per-sector benchmark labour share of value added (Phase 7b.2 review 2026-08-28):
-                # the recursive wrapper reads it to convert the labour-augmenting sectoral-
-                # productivity series into its Hicks-neutral-equivalent θ deviation (s_L·a), so
-                # capital deepening in the labour-productivity source is not double-counted against
-                # the model's own capital accumulation.
+                # Per-sector benchmark labour share of value added (Phase 7b.2 review 2026-08-28,
+                # updated P1 2026-08-29): the recursive wrapper reads it as the VA weights for the
+                # geometric-mean denominator its labour-augmenting sectoral-productivity DRIFT is
+                # measured against (so the per-region biases net out), and as the labour share the
+                # engine's own labour-augmenting channel weights each shock by. Capital deepening is
+                # not double-counted because the shock augments labour only.
                 "labour_va_shares": _labour_va_shares_manifest(cal_benchmark),
                 # Labour-market closure (Phase 5d.4): the default flexible-wage/full-employment, or
                 # a wage floor. ``labour_floor_bound`` records whether the floor actually bound in
@@ -1543,19 +1562,27 @@ def _assert_no_region_scoped_productivity(
 
 
 def _productivity_by_sector(
-    prod_shocks: list[ProductivityShock], sectors: list[str], year: int
+    prod_shocks: list[ProductivityShock],
+    sectors: list[str],
+    year: int,
+    mechanism: str = "hicks_neutral",
 ) -> np.ndarray:
-    """Per-sector Hicks-neutral productivity multiplier θ[i] for ``year`` (Phase 6.4 GE tier).
+    """Per-sector productivity multiplier for ``year`` of a given ``mechanism`` (Phase 6.4 GE tier /
+    7b.2). ``mechanism="hicks_neutral"`` returns the θ[i] that scales the whole technology bundle;
+    ``mechanism="labour_augmenting"`` returns the φ[i] that augments only the sector's labour input
+    (Phase 7b.2 review 2026-08-29). Only shocks whose ``mechanism`` matches contribute.
 
     Assumes ``prod_shocks`` are **economy-wide** (region coverage already rejected by
     ``_assert_no_region_scoped_productivity`` — the collapsed single-region model has no region
     dimension). Multiple shocks on one sector compose multiplicatively (independent hits): two −10%
-    shocks give 0.81. A sector with no shock has θ = 1 (byte-identical to a pure carbon run). θ is
-    floored at a small positive value so a fully-degraded sector cannot drive the unit cost
-    non-finite."""
+    shocks give 0.81. A sector with no matching shock has multiplier = 1 (byte-identical to a pure
+    carbon run). Floored at a small positive value so a fully-degraded sector cannot drive the unit
+    cost non-finite."""
     theta = np.ones(len(sectors))
     for i, sec in enumerate(sectors):
         for s in prod_shocks:
+            if getattr(s, "mechanism", "hicks_neutral") != mechanism:
+                continue
             if s.coverage_sectors and sec not in s.coverage_sectors:
                 continue
             theta[i] *= 1.0 + s._path_level_at(year, s.delta)
@@ -1563,17 +1590,24 @@ def _productivity_by_sector(
 
 
 def _productivity_by_region_sector(
-    prod_shocks: list[ProductivityShock], regions: list[str], sectors: list[str], year: int
+    prod_shocks: list[ProductivityShock],
+    regions: list[str],
+    sectors: list[str],
+    year: int,
+    mechanism: str = "hicks_neutral",
 ) -> np.ndarray:
-    """Per-(region,sector) productivity multiplier θ[r,i] for ``year`` (Phase 6.4 GE tier, multi
-    variant). Unlike the single-region closed/open variants, the multi CGE HAS a region dimension,
-    so a shock's region coverage IS honoured via ``applies_to(sector, region)`` — a nature
-    degradation built for one region hits only that region's sectors. Composes multiplicatively;
-    θ=1 where no shock covers (r, i); floored positive."""
+    """Per-(region,sector) productivity multiplier for ``year`` of a given ``mechanism`` (Phase 6.4
+    GE tier / 7b.2, multi variant). ``hicks_neutral`` → θ[r,i] scaling the technology bundle;
+    ``labour_augmenting`` → φ[r,i] augmenting only the sector's labour input. Only shocks whose
+    ``mechanism`` matches contribute. The multi CGE HAS a region dimension, so a shock's region
+    coverage IS honoured via ``applies_to(sector, region)``. Composes multiplicatively; 1 where no
+    matching shock covers (r, i); floored positive."""
     theta = np.ones((len(regions), len(sectors)))
     for ri, reg in enumerate(regions):
         for si, sec in enumerate(sectors):
             for s in prod_shocks:
+                if getattr(s, "mechanism", "hicks_neutral") != mechanism:
+                    continue
                 if s.applies_to(sec, reg):
                     theta[ri, si] *= 1.0 + s._path_level_at(year, s.delta)
     return np.clip(theta, 1e-6, None)
@@ -1604,6 +1638,7 @@ def _solve(
     adapt_amount=0.0,
     adapt_gamma=None,
     productivity=None,
+    labour_productivity=None,
 ):
     # prefer='scipy' explicitly: the CGE model residual is numeric-only (it evaluates the Leontief
     # inverse and Cobb-Douglas cost functions with numpy), so it cannot build a symbolic Pyomo
@@ -1631,6 +1666,7 @@ def _solve(
             adapt_amount=adapt_amount,
             adapt_gamma=adapt_gamma,
             productivity=productivity,
+            labour_productivity=labour_productivity,
         )
 
     sol = solve(lambda z: _resid(z, None), M.initial_guess(cal), prefer="scipy")
@@ -2343,7 +2379,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         lo[-1] = -1.0  # Sf signed, well-scaled floor (a surplus is Sf<0)
         return lo
 
-    def _solve_year(cc, theta=None, cal_override=None):
+    def _solve_year(cc, theta=None, cal_override=None, lprod=None):
         # cal_override lets the benchmark solve + replication gate run on the PRISTINE cal_benchmark
         # while the scaled cal drives the shock years (Phase 7.1 recursive dynamics).
         c = cal_override if cal_override is not None else cal
@@ -2357,6 +2393,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
                 gov_closure=gov_closure,
                 trade_closure=trade_closure,
                 productivity=theta,
+                labour_productivity=lprod,
             ),
             _guess(),
             lower=_lower(),
@@ -2380,15 +2417,25 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             gov_closure=gov_closure,
             foreign_savings=fs,
             productivity=theta,
+            labour_productivity=lprod,
         )
         return sol, st
 
     # Per-year per-sector productivity multiplier θ (Phase 6.4 GE tier). The open economy is
     # single-region (home + ROW), so a ProductivityShock is matched by SECTOR — same as the closed
     # variant. None when no productivity shock, so the run is byte-identical to a pure carbon run.
+    # Hicks-neutral and labour-augmenting shocks are split by mechanism (Phase 7b.2 review
+    # 2026-08-29).
+    hicks_shocks = [s for s in prod_shocks if s.mechanism == "hicks_neutral"]
+    labour_shocks = [s for s in prod_shocks if s.mechanism == "labour_augmenting"]
     theta_by_year = (
-        {y: _productivity_by_sector(prod_shocks, sectors, y) for y in years}
-        if prod_shocks
+        {y: _productivity_by_sector(hicks_shocks, sectors, y) for y in years}
+        if hicks_shocks
+        else None
+    )
+    lprod_by_year = (
+        {y: _productivity_by_sector(labour_shocks, sectors, y, "labour_augmenting") for y in years}
+        if labour_shocks
         else None
     )
 
@@ -2418,7 +2465,8 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             cc = cc * emis_scale
         cc_by_year[year] = cc
         theta = theta_by_year[year] if theta_by_year is not None else None
-        sol, st = _solve_year(cc, theta)
+        lprod = lprod_by_year[year] if lprod_by_year is not None else None
+        sol, st = _solve_year(cc, theta, lprod=lprod)
         resid_max = max(resid_max, sol.residual_norm)
         backends.add(sol.backend)
         statuses.add(sol.status)
@@ -2957,7 +3005,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     cal_benchmark = cal  # pristine, for the replication gate (Phase 7.1)
     cal = _apply_factor_scale(cal, data.get("factor_endowment_scale"))  # Phase 7.1 recursive hook
 
-    def _solve_year(cc, theta=None, cal_override=None):
+    def _solve_year(cc, theta=None, cal_override=None, lprod=None):
         # cal_override runs the benchmark solve + replication gate on the pristine cal_benchmark
         # while the scaled cal drives the shock years (Phase 7.1 recursive dynamics).
         c = cal_override if cal_override is not None else cal
@@ -2969,6 +3017,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
                 recycling=recycling,
                 inv_closure=inv_closure,
                 productivity=theta,
+                labour_productivity=lprod,
             ),
             MM.initial_guess(c),
             prefer="scipy",
@@ -2982,15 +3031,29 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             strict=True,
             inv_closure=inv_closure,
             productivity=theta,
+            labour_productivity=lprod,
         )
         return sol, st
 
     # Per-year per-(region,sector) productivity multiplier θ (Phase 6.4 GE tier). The multi CGE has
     # a region dimension, so a ProductivityShock's region coverage IS honoured (a nature
     # degradation built for one region hits only its sectors). None ⇒ byte-identical to a pure run.
+    # Hicks-neutral and labour-augmenting shocks split by mechanism (Phase 7b.2 review 2026-08-29).
+    hicks_shocks = [s for s in prod_shocks if s.mechanism == "hicks_neutral"]
+    labour_shocks = [s for s in prod_shocks if s.mechanism == "labour_augmenting"]
     theta_by_year = (
-        {y: _productivity_by_region_sector(prod_shocks, regions, sectors, y) for y in years}
-        if prod_shocks
+        {y: _productivity_by_region_sector(hicks_shocks, regions, sectors, y) for y in years}
+        if hicks_shocks
+        else None
+    )
+    lprod_by_year = (
+        {
+            y: _productivity_by_region_sector(
+                labour_shocks, regions, sectors, y, "labour_augmenting"
+            )
+            for y in years
+        }
+        if labour_shocks
         else None
     )
 
@@ -3016,7 +3079,8 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             cc = cc * emis_scale  # decarbonise the priced wedge per (region, sector)
         cc_by_year[year] = cc
         theta = theta_by_year[year] if theta_by_year is not None else None
-        sol, st = _solve_year(cc, theta)
+        lprod = lprod_by_year[year] if lprod_by_year is not None else None
+        sol, st = _solve_year(cc, theta, lprod=lprod)
         resid_max = max(resid_max, sol.residual_norm)
         backends.add(sol.backend)
         statuses.add(sol.status)

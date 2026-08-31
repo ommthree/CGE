@@ -1,0 +1,58 @@
+{
+  "provenance": {
+    "source": "Structural-trajectory region concordance v2: country-level development archetypes (World Bank income classification, FY2025 release) aggregated to EXIOBASE coarse-v3 blocks with documented GDP weights (IMF WEO Oct-2024 nominal GDP, current USD)",
+    "source_version": "structural-concordance-v2",
+    "licence": "derived mapping (CC BY 4.0); World Bank income classification (CC BY 4.0), IMF WEO (public, cited not redistributed)",
+    "reference_year": 2024,
+    "world_bank_vintage": "FY2025 (July 2024 release; Russia = high-income in this vintage)",
+    "retrieved": "2026-08-29",
+    "notes": "Fixes review P1 (2026-08-29): the coarse-v3 blocks RoW_Asia / RoW_America / RoW_Europe mix income levels, so a SINGLE archetype cannot be derived from an income rule. This artifact instead assigns each MEMBER COUNTRY an archetype (N=high-income proxy, S=low/middle-income proxy) by the World Bank FY2025 income classification, and aggregates each block's trajectory as the GDP-WEIGHTED blend of its members' archetype paths — so a mixed block (e.g. RoW_Asia, which contains high-income AU/KR/TW and emerging ID plus the WA rest-of-Asia aggregate) gets a blended, not a wholly-emerging, path. The World Bank vintage is pinned explicitly (FY2025), which places Russia in the HIGH-income group — resolving the earlier RU ambiguity. GDP weights are IMF WEO Oct-2024 nominal GDP shares (current USD), documented and reviewable; the W* rest-of-region aggregates carry the block's residual weight tagged as an emerging-economy proxy. The archetype rate paths themselves live in trajectories_v1.json (N/S). This file is the reviewable bridge; the loader aggregates with these weights.",
+    "gdp_weight_note": "Weights are approximate 2024 nominal-GDP shares within each block (IMF WEO Oct-2024), rounded to 3 dp and renormalised to sum to 1 per block. They are documented illustrative weights, not a committed extraction pipeline (a reproducible IMF/WB extraction is a follow-up, consistent with the trajectories_v1 reproducibility caveat)."
+  },
+  "country_archetype": {
+    "US": "N", "DE": "N", "GB": "N", "JP": "N", "FR": "N", "IT": "N",
+    "CN": "S", "IN": "S", "BR": "S", "RU": "N",
+    "AU": "N", "KR": "N", "TW": "N", "ID": "S",
+    "CA": "N", "MX": "S",
+    "AT": "N", "BE": "N", "BG": "S", "CH": "N", "CY": "N", "CZ": "N", "DK": "N",
+    "EE": "N", "ES": "N", "FI": "N", "GR": "N", "HR": "N", "HU": "N", "IE": "N",
+    "LT": "N", "LU": "N", "LV": "N", "MT": "N", "NL": "N", "NO": "N", "PL": "N",
+    "PT": "N", "RO": "S", "SE": "N", "SI": "N", "SK": "N", "TR": "S",
+    "ZA": "S",
+    "WA": "S", "WL": "S", "WE": "S", "WF": "S", "WM": "S"
+  },
+  "block_membership": {
+    "US": {"US": 1.0},
+    "DE": {"DE": 1.0},
+    "GB": {"GB": 1.0},
+    "JP": {"JP": 1.0},
+    "FR": {"FR": 1.0},
+    "IT": {"IT": 1.0},
+    "CN": {"CN": 1.0},
+    "IN": {"IN": 1.0},
+    "BR": {"BR": 1.0},
+    "RU": {"RU": 1.0},
+    "RoW_Asia": {"AU": 0.24, "KR": 0.22, "TW": 0.10, "ID": 0.24, "WA": 0.20},
+    "RoW_America": {"CA": 0.44, "MX": 0.34, "WL": 0.22},
+    "RoW_Europe": {
+      "ES": 0.13, "NL": 0.09, "CH": 0.08, "PL": 0.07, "SE": 0.05, "BE": 0.05,
+      "AT": 0.04, "NO": 0.05, "IE": 0.05, "DK": 0.04, "TR": 0.10, "RO": 0.03,
+      "CZ": 0.03, "PT": 0.02, "GR": 0.02, "FI": 0.03, "HU": 0.02, "SK": 0.01,
+      "BG": 0.01, "HR": 0.01, "LU": 0.01, "SI": 0.01, "LT": 0.01, "LV": 0.005,
+      "EE": 0.005, "CY": 0.003, "MT": 0.002, "WE": 0.025
+    },
+    "RoW_Africa": {"ZA": 0.35, "WF": 0.65},
+    "RoW_MiddleEast": {"WM": 1.0}
+  },
+  "sector_archetype": {
+    "agriculture": "BRD", "mining": "BRD", "energy_coal": "BRD", "energy_oil_gas": "BRD",
+    "electricity": "BRD", "chemicals": "BRD", "metals": "BRD", "minerals": "BRD",
+    "manufacturing": "BRD", "construction": "BRD",
+    "trade": "MIL", "transport": "MIL", "services": "MIL", "water_waste": "MIL", "other": "MIL"
+  },
+  "sources": {
+    "country_archetype": "World Bank country and lending groups, FY2025 income classification (July 2024 release). High-income → N; low/lower-middle/upper-middle → S. https://datahelpdesk.worldbank.org/knowledgebase/articles/906519",
+    "block_membership": "EXIOBASE coarse-v3 region folding (cge.data.build._coarse_region), with GDP weights from IMF World Economic Outlook, October 2024 (nominal GDP, current USD). https://www.imf.org/en/Publications/WEO",
+    "sector_archetype": "ISIC Rev.4 / EU KLEMS goods-vs-services split. https://unstats.un.org/unsd/classifications/Econ/isic"
+  }
+}
