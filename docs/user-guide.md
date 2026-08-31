@@ -796,10 +796,42 @@ kind of thing the stock–flow bridge (`docs/models/recursive-dynamics.md`) is d
 than hide. Add a `retirement={2035: 0.2}` to strand 20% of the capital in one year (e.g. fossil assets
 under a carbon shock) and watch the path drop.
 
-> **Scope, honestly.** This is the **closed/gov single-region** CGE for now (open/multi-region capital
-> accumulation is a follow-up), and magnitudes are illustrative on the toy calibration. The value is the
-> **mechanism** — a static CGE turned into a capital-carrying path — which is the backbone the NGFS and
-> climate pathway stack (Phase 7.2/7.3) build on. See `docs/models/recursive-dynamics.md`.
+> **Scope, honestly.** Capital accumulation runs on **all three CGE variants** — the closed/gov and open
+> economies carry one aggregate stock, the multi-region CGE a per-region capital path — and magnitudes
+> are illustrative on the toy calibration. The value is the **mechanism** — a static CGE turned into a
+> capital-carrying path — which is the backbone the NGFS and climate pathway stack (Phase 7.2/7.3) build
+> on. See `docs/models/recursive-dynamics.md`.
+
+### Sourced trends instead of flat scalars (Phase 7b.2)
+
+The flat `labour_growth` / `productivity_growth` scalars are the same for every region and sector. To
+drive the path with **documented, sourced, per-region and per-sector** trajectories instead — each rate
+carrying its own citation and confidence — pass a `StructuralTrajectory` on the config:
+
+```python
+from cge.data.structural import load_structural_trajectories
+
+cfg = DynamicConfig(structural=load_structural_trajectories())
+path = run_recursive(sc, config=cfg, data_source="toy_cge_multi_gov")
+```
+
+The vendored trajectory (population, participation, TFP per region; sectoral labour productivity and
+emissions intensity per sector) makes the emerging region outgrow the developed one, shifts the sector
+mix (labour-augmenting drift), and decarbonises covered emissions — all as *model results*, not imposed
+targets. On a **real EXIOBASE build** the trajectory's archetype keys must first be bound to the build's
+own coarse-v3 region/sector labels by the GDP-weighted concordance, or the run refuses to collapse them
+silently to the uniform default:
+
+```python
+from cge.data.structural import structural_trajectories_for_build
+
+# regions/sectors come from your build; this returns a trajectory keyed by the build's OWN labels
+traj = structural_trajectories_for_build(regions, sectors)
+path = run_recursive(sc, config=DynamicConfig(structural=traj), data_source="my-exio-build", store=store)
+```
+
+An unmapped label fails loudly; a trajectory that differentiates none of the build's labels is rejected
+unless you deliberately set `DynamicConfig(allow_uniform_fallback=True)`.
 
 ---
 

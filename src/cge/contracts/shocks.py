@@ -163,13 +163,25 @@ class EnergyPrice(Shock):
 
 
 class ProductivityShock(Shock):
-    """A proportional change in total-factor or sectoral productivity.
+    """A proportional change in productivity.
 
     The lingua franca shock: nature degradation and climate damages both land here.
-    """
+
+    ``mechanism`` selects HOW the change enters production:
+    - ``"hicks_neutral"`` (default) — a per-sector total-factor multiplier θ[i] that scales the
+      whole technology bundle (intermediates + value added) by 1/θ. Nature degradation and climate
+      damages use this.
+    - ``"labour_augmenting"`` — a per-sector LABOUR-augmenting factor φ[i]: the sector's effective
+      labour is φ·L, so it faces ``w_LAB/φ`` in its value-added cost and hires less physical labour
+      per unit output. Only the labour factor and only that sector move. This is the economically
+      identified channel for a sourced sector LABOUR-productivity series (Phase 7b.2 review
+      2026-08-29): applying labour-productivity growth as ``hicks_neutral`` TFP would double-count
+      capital deepening, whereas as ``labour_augmenting`` it acts through the labour share by
+      construction (the VA cost falls by φ^{−s_L}), with no ad-hoc exponent."""
 
     type: Literal["productivity"] = "productivity"
     delta: float = Field(description="fractional change, e.g. -0.1 for -10%")
+    mechanism: Literal["hicks_neutral", "labour_augmenting"] = "hicks_neutral"
 
     @model_validator(mode="after")
     def _validate_delta(self) -> ProductivityShock:

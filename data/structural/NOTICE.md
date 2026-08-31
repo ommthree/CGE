@@ -14,16 +14,29 @@ the build's OWN labels — so a real build has genuine country differentiation a
 drift, not every label collapsing to the global `__all__` default. An unmapped build label fails
 loudly rather than silently taking `__all__` (review P1c 2026-08-28).
 
-## Region/sector concordance — `concordance_v1.json`
+## Region/sector concordance — `concordance_v2.json` (default)
 
-- **Regions → archetype (N/S):** World Bank country and lending groups (income classification) —
-  high-income economies map to `N` (advanced proxy), low/middle-income to `S` (emerging proxy).
+`concordance_v2.json` is the default; `concordance_v1.json` (a single unweighted archetype per
+coarse block) remains loadable for back-compatibility. **v2 fixes the review-3 P1**: World Bank
+regional aggregates (`RoW_Asia`, `RoW_Europe`, `RoW_America`) mix income levels, so a *single*
+unweighted N/S archetype could not honestly come from an income-classification rule. v2 therefore
+keeps **country-level** archetypes and blends them per block with documented **GDP weights**.
+
+- **`country_archetype`:** each country → `N` (advanced proxy) or `S` (emerging proxy) by World Bank
+  income classification (FY2025 vintage; e.g. Russia → `N` under the current high-income
+  classification, correcting the v1 RU→S vintage error).
   <https://datahelpdesk.worldbank.org/knowledgebase/articles/906519>
-- **Sectors → archetype (BRD/MIL):** ISIC Rev.4 / EU KLEMS goods-vs-services split — goods-producing
-  industries (agriculture, extraction, energy, manufacturing, construction) map to `BRD`;
-  distribution, transport and services to `MIL`.
+- **`block_membership`:** for each coarse-v3 build region, the member countries and their **GDP
+  weights** (summing to 1 per block). A mixed block's archetype path is the GDP-weighted blend of its
+  members' country paths (`_blend_region_path`), so `RoW_Asia` sits *between* the pure `N` and `S`
+  paths rather than collapsing wholly to one. Weights are validated finite, ≥ 0 and sum-to-1 on load.
+- **`sector_archetype`:** sector → `BRD`/`MIL` by the ISIC Rev.4 / EU KLEMS goods-vs-services split
+  (goods-producing → `BRD`; distribution/transport/services → `MIL`).
   <https://unstats.un.org/unsd/classifications/Econ/isic>
 - **Licence:** derived mapping (CC BY 4.0); underlying groupings CC BY 4.0.
+- **Provenance:** a mapped trajectory carries a **composite** provenance
+  (`structural-concordance-v2+structural-trajectories-v1`) naming both artifact identities, so the
+  concordance source/version is auditable in the run manifest (review P2 2026-08-29).
 
 ## Population — UN World Population Prospects 2024
 
@@ -58,13 +71,18 @@ loudly rather than silently taking `__all__` (review P1c 2026-08-28).
   are headline goods-vs-services **labour-productivity** growth central estimates (output per hour),
   **absolute** per-sector rates (see the artifact `sector_productivity`). Because labour-
   productivity growth embeds capital deepening — which the recursive model accumulates separately —
-  the wrapper does **not** apply these as Hicks-neutral TFP directly. It converts each sector's
-  deviation from the region's aggregate trend into a Hicks-neutral-equivalent θ by the growth-
-  accounting identity `θ_dev = (labour-productivity deviation) ** s_L`, where `s_L` is the sector's
-  benchmark labour share of value added (a labour-augmenting improvement `a` contributes `s_L·a` to
-  TFP). This avoids double-counting capital deepening (review P2c 2026-08-28). On a real EXIOBASE
-  build these sector keys map to actual industries via the structural concordance
-  (`data/structural/concordance_v1.json`).
+  the wrapper does **not** apply these as Hicks-neutral TFP directly. It applies each sector's series
+  as a genuine **labour-augmenting** improvement on that sector's labour input, emitting a
+  `ProductivityShock(mechanism="labour_augmenting")` whose factor scales ONLY the sector's labour
+  entry (review P1 2026-08-29, replacing the earlier `θ_dev = deviation ** s_L` growth-accounting
+  conversion). Under a labour-augmenting factor φ the sector's value-added cost falls by φ^{−s_L}
+  *by construction* (s_L = the sector's labour share of value added), so capital deepening is not
+  double-counted against the model's own capital accumulation. The per-sector *drift* is measured as
+  each sector's cumulative labour-productivity level relative to the benchmark-VA-weighted **geometric
+  mean** of all sectors' levels (zero-mean relative drift), so the biases straddle zero — a
+  high-aggregate region no longer gets uniformly negative sector biases. On a real EXIOBASE build
+  these sector keys map to actual industries via the structural concordance
+  (`data/structural/concordance_v2.json`).
 
 ## Emissions intensity — IEA WEO 2024 / NGFS Net Zero 2050
 

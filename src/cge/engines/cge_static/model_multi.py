@@ -76,13 +76,28 @@ class MultiModelState:
     savings: np.ndarray  # [r] household savings (investment_r = savings_r + Sf_r)
 
 
-def _va_unit_cost(cal: MultiCalibratedModel, w: np.ndarray) -> np.ndarray:
-    """VA unit cost [r,s]. σ_va=1 ⇒ Cobb-Douglas; ≠1 ⇒ CES (per region-sector). ``w`` is [f,r]."""
+def _effective_wr(cal, wr: np.ndarray, lprod, ri: int, si: int) -> np.ndarray:
+    """Region ``ri``'s factor-price vector as sector ``si`` faces it after LABOUR-AUGMENTING
+    technical change φ[r,s] (Phase 7b.2 review 2026-08-29): the LAB entry divides by φ[r,s]. φ≡1
+    (None) is byte-identical. ``lprod`` is a [nr, ns] array or None."""
+    if lprod is None:
+        return wr
+    lab = cal.factors.index("LAB") if "LAB" in cal.factors else None
+    if lab is None:
+        return wr
+    w_eff = np.array(wr, dtype=wr.dtype if hasattr(wr, "dtype") else float)
+    w_eff[lab] = wr[lab] / lprod[ri, si]
+    return w_eff
+
+
+def _va_unit_cost(cal: MultiCalibratedModel, w: np.ndarray, lprod=None) -> np.ndarray:
+    """VA unit cost [r,s]. σ_va=1 ⇒ Cobb-Douglas; ≠1 ⇒ CES (per region-sector). ``w`` is [f,r].
+    ``lprod`` (Phase 7b.2) applies the per-(region,sector) labour-augmenting effective wage."""
     nr, ns = cal.nr, cal.ns
     pv = np.empty((nr, ns))
     for ri in range(nr):
-        wr = w[:, ri]
         for si in range(ns):
+            wr = _effective_wr(cal, w[:, ri], lprod, ri, si)
             s = cal.va_elast[ri, si]
             if abs(s - 1.0) < 1e-12:
                 b = cal.beta[:, ri, si]
@@ -96,13 +111,16 @@ def _va_unit_cost(cal: MultiCalibratedModel, w: np.ndarray) -> np.ndarray:
     return pv
 
 
-def _factor_demand(cal, w, pv, va_cost):
-    """Factor demand [f,r,s] by Shephard on the VA cost (CD or CES per region-sector)."""
+def _factor_demand(cal, w, pv, va_cost, lprod=None):
+    """Factor demand [f,r,s] by Shephard on the VA cost (CD or CES per region-sector). ``lprod``
+    (Phase 7b.2): the sector demands EFFICIENCY labour at ``w_LAB/φ``; physical labour is that ÷φ,
+    so factor clearing counts physical labour. φ≡1 is byte-identical."""
     nr, ns, nf = cal.nr, cal.ns, cal.nf
+    lab = cal.factors.index("LAB") if "LAB" in cal.factors else None
     F = np.empty((nf, nr, ns))
     for ri in range(nr):
-        wr = w[:, ri]
         for si in range(ns):
+            wr = _effective_wr(cal, w[:, ri], lprod, ri, si)
             s = cal.va_elast[ri, si]
             if abs(s - 1.0) < 1e-12:
                 F[:, ri, si] = cal.beta[:, ri, si] * va_cost[ri, si] / wr
@@ -112,6 +130,8 @@ def _factor_demand(cal, w, pv, va_cost):
                     (1.0 / cal.av[ri, si]) * (pv[ri, si] * cal.av[ri, si]) ** s * d**s * wr ** (-s)
                 )
                 F[:, ri, si] = unit * (va_cost[ri, si] / pv[ri, si])
+            if lprod is not None and lab is not None:
+                F[lab, ri, si] = F[lab, ri, si] / lprod[ri, si]
     return F
 
 
@@ -292,6 +312,7 @@ def derive_multi_state(
     gov_closure: str = "balanced_budget",
     inv_closure: str = "savings_driven",
     productivity: np.ndarray | None = None,
+    labour_productivity: np.ndarray | None = None,
 ) -> MultiModelState:
     """Close the multi-region model at prices (pd, pq, pe, w): derive all quantities and per-region
     income. ``carbon_cost`` is [r,s]. Income per region = factor income + Sf transfer + recycled
@@ -312,7 +333,7 @@ def derive_multi_state(
     ``fixed_real`` mirror the open model, per region."""
     nr, ns = cal.nr, cal.ns
     cc = np.zeros((nr, ns)) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
-    pv = _va_unit_cost(cal, w)
+    pv = _va_unit_cost(cal, w, labour_productivity)
     pz = _cet_price(cal, pd, pe)
 
     # Per-region income: base = factor income + (WITHOUT a savings-investment layer) the fixed
@@ -456,7 +477,7 @@ def derive_multi_state(
     # scaled by 1/θ so a less-productive sector draws proportionally more value added (Phase 6.4).
     va_qty = _intermediate_coeffs(cal, pq, pv, cc, productivity)[1]
     va_cost = va_qty * pv * Z
-    F = _factor_demand(cal, w, pv, va_cost)
+    F = _factor_demand(cal, w, pv, va_cost, labour_productivity)
     return MultiModelState(
         pd=pd,
         pq=pq,
@@ -517,6 +538,7 @@ def residuals(
     drop_factor: int = 0,
     inv_closure: str = "savings_driven",
     productivity: np.ndarray | None = None,
+    labour_productivity: np.ndarray | None = None,
 ) -> np.ndarray:
     nr, ns, nf = cal.nr, cal.ns, cal.nf
     pd, pq, pe, w = _unpack(cal, z)
@@ -532,8 +554,9 @@ def residuals(
         recycling=recycling,
         inv_closure=inv_closure,
         productivity=productivity,
+        labour_productivity=labour_productivity,
     )
-    pv = _va_unit_cost(cal, w)
+    pv = _va_unit_cost(cal, w, labour_productivity)
     pz = _cet_price(cal, pd, pe)
     # Per-(region,sector) productivity multiplier θ[r,i] (Phase 6.4 GE tier): only the TECHNOLOGY
     # part of the zero-profit unit cost divides by θ (matching the 1/θ scaling _intermediate_coeffs
@@ -600,6 +623,7 @@ def unpack_state(
     strict=True,
     inv_closure="savings_driven",
     productivity=None,
+    labour_productivity=None,
 ):
     """Convenience: derive the model state from a solved unknown vector (used by the engine)."""
     pd, pq, pe, w = _unpack(cal, x)
@@ -614,4 +638,5 @@ def unpack_state(
         strict=strict,
         inv_closure=inv_closure,
         productivity=productivity,
+        labour_productivity=labour_productivity,
     )

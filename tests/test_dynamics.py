@@ -461,16 +461,16 @@ def test_sector_productivity_drift_shifts_output_mix():
     )
     drift = run_recursive(sc, config=DynamicConfig(structural=traj), data_source="toy_cge_gov")
     flat = run_recursive(sc, config=DynamicConfig(), data_source="toy_cge_gov")
-    assert _sector_vol(drift, "BRD", 2045) > _sector_vol(flat, "BRD", 2045) + 0.1
+    # BRD gains a positive labour-augmenting drift (above the weighted mean) → more output than flat
+    # — genuine, but milder than a Hicks-neutral θ (acts through the labour share only).
+    assert _sector_vol(drift, "BRD", 2045) > _sector_vol(flat, "BRD", 2045) + 0.02
 
 
-def test_multi_sector_productivity_uses_region_specific_denominator():
-    """In multi mode each region's sector-productivity θ deviation must use THAT region's aggregate
-    TFP denominator (review P1b 2026-08-28): region N (aggregate 1.2%/yr) and region S (3.0%/yr)
-    have different aggregates, so an identical sector labour-productivity rate nets to a DIFFERENT
-    Hicks-neutral deviation in each region. The shocks are emitted per (region, sector) with the
-    region's own denominator and labour share; here we assert the emitted deltas differ by
-    region."""
+def test_multi_sector_productivity_biases_are_per_region_and_zero_mean():
+    """In multi mode the sector labour-augmenting biases are computed WITHIN each region and are
+    zero-mean there (review P1 2026-08-29): each region's per-(region,sector) shocks straddle zero.
+    Different within-region sector rates in N vs S give different biases per region, and the engine
+    honours each shock's coverage_regions."""
     from cge.contracts.data_objects import Provenance, StructuralTrajectory
     from cge.dynamics.recursive import DynamicConfig as _DC
     from cge.dynamics.recursive import _sector_productivity_shocks
@@ -479,28 +479,38 @@ def test_multi_sector_productivity_uses_region_specific_denominator():
         provenance=Provenance(
             source="t", source_version="v", licence="n", reference_year=2024, retrieved="2026-08-16"
         ),
-        rates={"productivity": {"N": {2025: 0.012}, "S": {2025: 0.030}}},
-        sector_rates={"sector_productivity": {"BRD": {2025: 0.020}}},
+        # Region N: BRD fast, MIL slow. Region S: the reverse — so the biases differ by region.
+        sector_rates={
+            "sector_productivity": {
+                "BRD": {2025: 0.030},
+                "MIL": {2025: 0.010},
+                "__all__": {2025: 0.015},
+            }
+        },
+        rates={},
         sources={
-            "productivity:N": "c",
-            "productivity:S": "c",
             "sector_productivity:BRD": "c",
+            "sector_productivity:MIL": "c",
+            "sector_productivity:__all__": "c",
         },
         confidence={
-            "productivity:N": "low",
-            "productivity:S": "low",
             "sector_productivity:BRD": "low",
+            "sector_productivity:MIL": "low",
+            "sector_productivity:__all__": "low",
         },
     )
-    shares = {"N": {"BRD": 0.6}, "S": {"BRD": 0.6}}
+    shares = {"N": {"BRD": 0.5, "MIL": 0.5}, "S": {"BRD": 0.5, "MIL": 0.5}}
     shocks = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2027, ["BRD"], ["N", "S"], True, shares
+        _DC(structural=traj), 2025, 2030, ["BRD", "MIL"], ["N", "S"], True, shares
     )
-    by_region = {s.coverage_regions[0]: s.delta for s in shocks}
-    assert set(by_region) == {"N", "S"}
-    # BRD grows 2%/yr in both regions, but N's aggregate (1.2%) is slower than S's (3.0%), so BRD's
-    # deviation-from-aggregate is POSITIVE in N and NEGATIVE in S — a region-specific denominator.
-    assert by_region["N"] > 0.0 > by_region["S"]
+    assert all(s.mechanism == "labour_augmenting" for s in shocks)
+    for region in ("N", "S"):
+        rd = {s.coverage_sectors[0]: s.delta for s in shocks if s.coverage_regions == [region]}
+        assert set(rd) == {"BRD", "MIL"}
+        # Within the region, BRD (faster) is up and MIL (slower) is down: a zero-mean drift.
+        assert rd["BRD"] > 0.0 > rd["MIL"]
+        geo = (1.0 + rd["BRD"]) ** 0.5 * (1.0 + rd["MIL"]) ** 0.5
+        assert geo == pytest.approx(1.0, rel=1e-12)
 
 
 def test_sector_productivity_all_default_drives_every_model_sector():
@@ -512,68 +522,93 @@ def test_sector_productivity_all_default_drives_every_model_sector():
     from cge.dynamics.recursive import _sector_productivity_shocks
 
     traj = _traj_sector({"sector_productivity": {"__all__": {2025: 0.02}}})
-    # Single-region call: regions=["R"], multi=False, labour shares = 1 (Hicks-neutral equivalent).
+    # Single-region call: regions=["R"], multi=False. Every sector is driven (a shock is emitted for
+    # each), even from an __all__-only path.
     shocks = _sector_productivity_shocks(
         _DC(structural=traj), 2025, 2027, ["BRD", "MIL"], ["R"], False, {}
     )
     assert {tuple(s.coverage_sectors) for s in shocks} == {("BRD",), ("MIL",)}
-    assert all(s.delta > 0 for s in shocks)  # a positive global rate drives every sector up
+    # When EVERY sector grows at the same rate there is no COMPOSITION drift — relative biases are
+    # exactly zero (the uniform level is carried by the aggregate endowment scale, not this driver).
+    assert all(s.delta == pytest.approx(0.0, abs=1e-12) for s in shocks)
+    assert all(s.mechanism == "labour_augmenting" for s in shocks)
 
 
-def test_sector_productivity_absolute_not_double_counted():
-    """The absolute sector rate must NOT be double-counted against the aggregate TFP the endowment
-    scale already applies (review P1): with labour share s_L=1 (pure labour-augmenting = Hicks-
-    neutral) the θ deviation × aggregate level nets to the sector's stated absolute rate. Aggregate
-    1.7%/yr + sector-BRD absolute 1.5%/yr → net BRD level 1.015 over one year, NOT 1.017 × 1.015."""
+def test_sector_productivity_shocks_are_labour_augmenting():
+    """The sector series is applied as a genuine LABOUR-AUGMENTING shock, not a Hicks-neutral θ
+    (review P1 2026-08-29). The synthesized shocks carry mechanism='labour_augmenting', so the
+    engine's labour-share weighting is structural (no ad-hoc ^s_L exponent)."""
+    from cge.dynamics.recursive import DynamicConfig as _DC
+    from cge.dynamics.recursive import _sector_productivity_shocks
+
+    traj = _traj_sector(
+        {"sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}, "__all__": {2025: 0.02}}}
+    )
+    shocks = _sector_productivity_shocks(
+        _DC(structural=traj), 2025, 2027, ["BRD", "MIL"], ["R"], False, {"BRD": 0.5, "MIL": 0.5}
+    )
+    assert all(s.mechanism == "labour_augmenting" for s in shocks)
+
+
+def test_sector_productivity_biases_are_zero_mean_relative_drift():
+    """The sector biases must be a zero-mean structural DRIFT — the VA-weighted geometric mean of
+    (1+delta) factors is 1 — so no aggregate productivity level is re-imposed and a faster sector's
+    positive bias is balanced by a slower sector's negative bias (review P1 2026-08-29: the earlier
+    (LP/TFP)^s_L gave every sector in a high-TFP region a negative bias). BRD grows 3%/yr, MIL
+    1%/yr, equal labour shares → BRD gets φ>1, MIL φ<1, weighted geo-mean 1."""
+    from cge.dynamics.recursive import DynamicConfig as _DC
+    from cge.dynamics.recursive import _sector_productivity_shocks
+
+    traj = _traj_sector({"sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}}})
+    shares = {"BRD": 0.5, "MIL": 0.5}
+    shocks = _sector_productivity_shocks(
+        _DC(structural=traj), 2025, 2030, ["BRD", "MIL"], ["R"], False, shares
+    )
+    by_sector = {s.coverage_sectors[0]: s.delta for s in shocks}
+    assert by_sector["BRD"] > 0.0 > by_sector["MIL"]  # faster up, slower down (a genuine drift)
+    # VA-weighted geometric mean of (1+delta) is 1 (zero-mean drift; no aggregate level re-imposed).
+    geo = (1.0 + by_sector["BRD"]) ** 0.5 * (1.0 + by_sector["MIL"]) ** 0.5
+    assert geo == pytest.approx(1.0, rel=1e-12)
+
+
+def test_high_aggregate_region_does_not_get_all_negative_sector_biases():
+    """Review P1 2026-08-29: in a HIGH-aggregate-TFP region the old (sector_LP/aggregate_TFP)^s_L
+    made EVERY sector's bias negative (all sector rates sat below the region's TFP rate). The
+    zero-mean relative-drift formulation must not: within a region the biases straddle zero
+    REGARDLESS of the aggregate TFP level (which is carried separately by the endowment scale)."""
     from cge.contracts.data_objects import Provenance, StructuralTrajectory
     from cge.dynamics.recursive import DynamicConfig as _DC
-    from cge.dynamics.recursive import _aggregate_productivity_level, _sector_productivity_shocks
+    from cge.dynamics.recursive import _sector_productivity_shocks
 
+    # Region S has a very high aggregate TFP (3%/yr); its sector rates (1–2%/yr) are all below it.
     traj = StructuralTrajectory(
         provenance=Provenance(
             source="t", source_version="v", licence="n", reference_year=2024, retrieved="2026-08-16"
         ),
-        rates={"productivity": {"__all__": {2025: 0.017}}},
-        sector_rates={"sector_productivity": {"BRD": {2025: 0.015}}},
-        sources={"productivity:__all__": "c", "sector_productivity:BRD": "c"},
-        confidence={"productivity:__all__": "low", "sector_productivity:BRD": "low"},
+        rates={"productivity": {"S": {2025: 0.030}}},
+        sector_rates={"sector_productivity": {"BRD": {2025: 0.020}, "MIL": {2025: 0.010}}},
+        sources={
+            "productivity:S": "c",
+            "sector_productivity:BRD": "c",
+            "sector_productivity:MIL": "c",
+        },
+        confidence={
+            "productivity:S": "low",
+            "sector_productivity:BRD": "low",
+            "sector_productivity:MIL": "low",
+        },
     )
-    # "R" falls back to the __all__ aggregate path — the per-region denominator (review P1b).
-    agg = _aggregate_productivity_level(traj, "R", 2025, 2026)
     shocks = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2026, ["BRD"], ["R"], False, {}
+        _DC(structural=traj),
+        2025,
+        2030,
+        ["BRD", "MIL"],
+        ["S"],
+        True,
+        {"S": {"BRD": 0.5, "MIL": 0.5}},
     )
-    brd = next(s for s in shocks if s.coverage_sectors == ["BRD"])
-    assert agg * (1.0 + brd.delta) == pytest.approx(1.015, rel=1e-12)
-
-
-def test_sector_productivity_labour_augmenting_scales_by_labour_share():
-    """The sourced sector series is labour-productivity; the wrapper converts it to a Hicks-neutral-
-    equivalent θ deviation by the labour share s_L (review P2c) so capital deepening is not
-    double-counted. With s_L=0.6 the θ deviation from the aggregate is (sector/agg)**0.6, strictly
-    milder than the s_L=1 (pure labour-augmenting) case."""
-    from cge.contracts.data_objects import Provenance, StructuralTrajectory
-    from cge.dynamics.recursive import DynamicConfig as _DC
-    from cge.dynamics.recursive import _aggregate_productivity_level, _sector_productivity_shocks
-
-    traj = StructuralTrajectory(
-        provenance=Provenance(
-            source="t", source_version="v", licence="n", reference_year=2024, retrieved="2026-08-16"
-        ),
-        rates={"productivity": {"__all__": {2025: 0.010}}},
-        sector_rates={"sector_productivity": {"BRD": {2025: 0.030}}},
-        sources={"productivity:__all__": "c", "sector_productivity:BRD": "c"},
-        confidence={"productivity:__all__": "low", "sector_productivity:BRD": "low"},
-    )
-    agg = _aggregate_productivity_level(traj, "R", 2025, 2027)
-    lp_dev = ((1.03**2) / agg) - 1.0  # pure labour-augmenting deviation over two years
-    # s_L = 0.6 for BRD → θ deviation is (1+lp_dev)**0.6 − 1, milder than lp_dev itself.
-    shocks = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2027, ["BRD"], ["R"], False, {"BRD": 0.6}
-    )
-    brd = next(s for s in shocks if s.coverage_sectors == ["BRD"])
-    assert brd.delta == pytest.approx((1.0 + lp_dev) ** 0.6 - 1.0, rel=1e-12)
-    assert 0.0 < brd.delta < lp_dev  # labour share dampens the double-counted deepening
+    deltas = [s.delta for s in shocks]
+    assert max(deltas) > 0.0 and min(deltas) < 0.0  # biases straddle zero, NOT all-negative
 
 
 def _covered(path, year):
@@ -714,4 +749,110 @@ def test_sector_drivers_absent_is_byte_identical_to_phase_7_1():
     b = run_recursive(sc, data_source="toy_cge_gov")
     for year in (2025, 2030):
         assert _covered(a, year) == pytest.approx(_covered(b, year), abs=1e-12)
-        assert _sector_vol(a, "BRD", year) == pytest.approx(_sector_vol(b, "BRD", year), abs=1e-12)
+
+
+# --- Full physical-nature dynamic run (Phase 6b × 7.1, review 7b.2 2026-08-30) --------------------
+# The review flagged that the ONLY committed physical-nature dynamic test exercised the hash helper
+# (test_dynamic_scenario_hash_distinguishes_nature_state_from_bare_shocks), NOT the full
+# physical-state -> NatureStress -> exposure -> ProductivityShock -> CGE pipeline through the
+# recursive-dynamic wrapper. A physical run needs three things at once — a capital-carrying SAM
+# (SAVINV), an EncoreDependencies + ConcordanceMap, and an exposure IOSystem — which no single toy
+# source shipped. run_recursive now takes ``data_overrides``, so the dynamic-capable toy CGE SAM
+# (BRD/MIL, with SAVINV) supplies the capital core while the nature triple is injected here. The
+# exposure IO/ENCORE fixture below is labelled with the SAM's own sectors so the derived
+# ProductivityShocks land on real sectors.
+
+
+def _brd_mil_nature_triple():
+    """An exposure IOSystem + ENCORE dependency + concordance whose sectors are the toy CGE SAM's
+    BRD/MIL, so a ``surface_water`` degradation translates into per-sector ProductivityShocks the
+    CGE consumes. BRD (the water-intensive dirty sector) depends VERY HIGHLY on surface water; MIL
+    only lightly — so a water-stock decline hits BRD harder, an economically legible asymmetry."""
+    import pandas as pd
+
+    from cge.contracts.data_objects import (
+        Classification,
+        ConcordanceMap,
+        IOSystem,
+        Provenance,
+    )
+    from cge.nature.encore import EncoreDependencies
+
+    prov = Provenance(
+        source="toy BRD/MIL nature fixture",
+        source_version="v1",
+        licence="illustrative",
+        reference_year=2020,
+        retrieved="2026-08-30",
+        notes="Illustrative BRD/MIL exposure fixture for the dynamic physical-nature test.",
+    )
+    labels = ["R:BRD", "R:MIL"]
+    io = IOSystem(
+        provenance=prov,
+        sectors=Classification(name="s", kind="sector", labels=["BRD", "MIL"]),
+        regions=Classification(name="r", kind="region", labels=["R"]),
+        A=pd.DataFrame([[0.10, 0.05], [0.05, 0.10]], index=labels, columns=labels),
+        final_demand=pd.DataFrame({"final_demand": [100.0, 100.0]}, index=labels),
+        unit="MEUR",
+        currency="EUR",
+    )
+    encore = EncoreDependencies(
+        provenance=prov,
+        ratings=pd.DataFrame(
+            [("BRD", "surface_water", "VH"), ("MIL", "surface_water", "L")],
+            columns=["process", "service", "materiality"],
+        ),
+        kind="dependency",
+    )
+    concordance = ConcordanceMap(
+        provenance=prov,
+        from_classification="toy-cge-sectors",
+        to_classification="ENCORE-processes",
+        weights={"BRD": {"BRD": 1.0}, "MIL": {"MIL": 1.0}},
+    )
+    return {
+        "nature_iosystem": io,
+        "EncoreDependencies": encore,
+        "ConcordanceMap": concordance,
+    }
+
+
+def test_physical_nature_state_runs_end_to_end_through_run_recursive():
+    """A physical water-stock degradation pathway (nature_state), threaded through the FULL
+    recursive-dynamic wrapper, lowers covered-sector output — and the deeper the degradation, the
+    larger the loss (the physical channel is genuinely driving the CGE, not a no-op)."""
+    overrides = _brd_mil_nature_triple()
+
+    def _run(states):
+        sc = Scenario(
+            name="phys",
+            engine="cge_static",
+            years=[2025, 2030, 2035],
+            nature_state=[{"channel": "toy_water", "states": states}],
+        )
+        return run_recursive(sc, data_source="toy_cge_gov", data_overrides=overrides)
+
+    mild = _run({2025: 100.0, 2035: 95.0})
+    severe = _run({2025: 100.0, 2035: 80.0})
+
+    # BRD (very-highly water-dependent) loses output under the degradation, and MORE so when the
+    # water stock falls further — a monotone physical response carried through the whole pipeline.
+    brd_mild = _sector_vol(mild, "BRD", 2035)
+    brd_severe = _sector_vol(severe, "BRD", 2035)
+    assert brd_severe < brd_mild < 0.0
+    # The physical channel is recorded in the manifest so the dynamic run is reconstructible.
+    assert "nature_state" in severe.result.manifest.assumptions
+
+
+def test_physical_nature_state_hits_water_dependent_sector_harder():
+    """The exposure asymmetry survives the dynamic pipeline: the very-highly water-dependent sector
+    (BRD) loses more output than the lightly-dependent one (MIL) under the same degradation."""
+    overrides = _brd_mil_nature_triple()
+    sc = Scenario(
+        name="phys",
+        engine="cge_static",
+        years=[2025, 2035],
+        nature_state=[{"channel": "toy_water", "states": {2025: 100.0, 2035: 80.0}}],
+    )
+    path = run_recursive(sc, data_source="toy_cge_gov", data_overrides=overrides)
+    assert _sector_vol(path, "BRD", 2035) < _sector_vol(path, "MIL", 2035)

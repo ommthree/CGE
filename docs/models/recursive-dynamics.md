@@ -37,6 +37,44 @@ agents in year *t* do not optimise over the future; the year-*t* equilibrium is 
 determines year-*(t+1)*'s capital, and we move on. This is the standard "recursive dynamic" closure
 used by most applied CGE/IAM-style tools — distinct from an intertemporal (Ramsey) model.
 
+### Notation
+
+| Symbol | Meaning | Units |
+| --- | --- | --- |
+| $t$ | calendar year (internal solve years are every year in $[t_0, T]$) | year |
+| $K_t$ | capital **stock** at the start of year $t$ (per capital region $r$) | GDP-normalised |
+| $INV_t$ | real investment volume in year $t$ (engine's `investment_volume`, benchmark prices) | share of benchmark GDP |
+| $\delta$ | forward accumulation depreciation rate (`DynamicConfig.depreciation`) | /yr |
+| $r_t$ | premature-retirement fraction of the opening stock in year $t$ | dimensionless |
+| $\delta_c$ | user-cost **calibration** depreciation (fixed 5%, distinct from $\delta$) | /yr |
+| $u,\ \text{net\_return}$ | Jorgensonian user cost and its net-return component | /yr |
+| $L_t$ | labour-force scale in year $t$ | index (benchmark = 1) |
+| $A_t$ | Hicks-neutral aggregate-productivity scale | index (benchmark = 1) |
+| $\varphi_{s}$ | cumulative labour-augmenting factor on sector $s$'s labour input | index (benchmark = 1) |
+| $s_L$ | benchmark labour share of a sector's value added | dimensionless |
+| $\theta$ | the engine's per-sector Hicks-neutral productivity multiplier | index |
+
+### Assumptions
+
+1. **No perfect foresight.** Each year is a static equilibrium of the same calibrated model; agents
+   do not optimise intertemporally. Encoded by the year-by-year loop; the manifest's
+   `recursive_dynamics.mode` records "no perfect foresight".
+2. **Capital services ∝ stock.** The CAP endowment scales linearly with the stock (eq $(4)$), so a
+   stock ratio is an endowment ratio. No vintage structure.
+3. **Real investment steps the stock.** Accumulation uses the engine's benchmark-priced
+   `investment_volume`, not the nominal investment share, so investment-price movements are not
+   miscounted as capital formation.
+4. **Annual accumulation.** Capital is stepped every calendar year in $[t_0, T]$ regardless of which
+   years are reported (eq $(1)$); reporting years are a strict subset.
+5. **Two depreciation concepts are independent.** The calibration $\delta_c$ (fixed 5%) bootstraps
+   $K_0$ (eq $(2)$); the forward $\delta$ (`DynamicConfig.depreciation`) drives eq $(1)$. They are
+   never conflated (manifest labels them separately).
+6. **Aggregate productivity is Hicks-neutral**, applied as an equal endowment-equivalent scale on
+   both primary factors (eq $(3)$). Per-**sector** structural change is **labour-augmenting** on the
+   sector's labour input only (eq $(5)$), not Hicks-neutral TFP.
+7. **Exogenous trends.** Labour and productivity paths are exogenous inputs — flat `DynamicConfig`
+   scalars, or a sourced per-region/per-sector `StructuralTrajectory` (§6). Never implicit.
+
 ## 2. The loop
 
 Starting from the benchmark capital stock **K₀** (from the stock–flow bridge, §3):
@@ -46,19 +84,41 @@ Starting from the benchmark capital stock **K₀** (from the stock–flow bridge
 2. **Read investment INVₜ** — the CGE's own savings-investment outcome for that year.
 3. **Accumulate** (Phase 5d.3 perpetual inventory, with optional premature retirement rₜ):
 
-   $$ K_{t+1} = (1-\delta)(1-r_t)\,K_t + INV_t $$
+   $$ K_{t+1} = (1-\delta)(1-r_t)\,K_t + INV_t \tag{1} $$
 
 4. **Step the exogenous trends** — labour Lₜ₊₁ = Lₜ·(1+n), productivity by its trend — and advance.
 
 The capital endowment in the CGE is the capital-**services** flow, proportional to the stock, so
 scaling the stock by Kₜ/K₀ scales the services endowment by the same factor (the engine's
-`factor_endowment_scale` hook). Labour scales the same way. **Aggregate productivity** enters as a
-Hicks-neutral endowment-equivalent scale on both primary factors. **Sector-level** productivity is
-implemented (Phase 7b.2): a sourced per-sector trajectory rides the engine's per-sector θ multiplier
-so the output mix shifts endogenously — see §6. The sector series is treated as *labour-augmenting*
-(converted to a Hicks-neutral-equivalent θ via the benchmark labour share) so that labour
-productivity's capital-deepening component is not double-counted against the model's own capital
-accumulation (review P2c 2026-08-28).
+`factor_endowment_scale` hook), equation $(4)$. Labour scales the same way. **Aggregate
+productivity** enters as a Hicks-neutral endowment-equivalent scale on both primary factors.
+**Sector-level** productivity is implemented (Phase 7b.2) as a genuine **labour-augmenting** term on
+each sector's labour input — NOT a Hicks-neutral θ (review P1 2026-08-29) — so the output mix shifts
+endogenously (§6, equation $(5)$). Modelling it on labour input directly (rather than converting a
+labour-productivity number into an equivalent TFP shock) is what keeps the capital-deepening
+component of labour-productivity growth from being double-counted against the model's own capital
+accumulation, following the factor-augmenting formalism of [Solow1957].
+
+Concretely, the year-$t$ primary-factor endowment scales fed to the engine's `factor_endowment_scale`
+hook are
+
+$$ \text{lab\_scale}_t = L_t \cdot A_t, \qquad \text{cap\_scale}_t = \frac{K_t}{K_0} \cdot A_t \tag{3} $$
+
+so a static solve at year $t$ is the benchmark model with its labour and capital services endowments
+re-scaled by $(3)$; with $A_t = L_t = 1$ and $K_t = K_0$ (the base year, no trends) the scales are
+unity and the solve is byte-identical to the static benchmark run. Because the CAP endowment is the
+capital-services flow proportional to the stock,
+
+$$ \frac{\partial\,\text{cap\_scale}_t}{\partial K_t} = \frac{A_t}{K_0} \tag{4} $$
+
+i.e. a stock ratio maps one-to-one to a services-endowment ratio (assumption 2). The per-sector
+labour-augmenting factor $\varphi_s$ scales **only** sector $s$'s labour entry; under the CES/Cobb–
+Douglas value-added nest the sector's VA unit cost then satisfies
+
+$$ c^{VA}_s(\varphi_s) = \varphi_s^{-s_L}\, c^{VA}_s(1) \tag{5} $$
+
+so a $\varphi_s > 1$ (faster sector labour productivity) lowers that sector's cost by $\varphi_s^{-s_L}$
+and it gains output share endogenously ([Solow1957]).
 
 Results are reported per year **relative to the original benchmark**, so capital accumulation and the
 trends are **visible in the level path** (a growing stock raises output vs the benchmark). Two result
@@ -69,7 +129,7 @@ rows are added: `capital_stock` and `capital_growth`.
 `capital_next` works in **stock** units, but the CGE's capital factor income is a **services flow**.
 The bridge (Phase 5d.3, `benchmark_capital`) converts one to the other via the Jorgensonian user cost:
 
-$$ \text{capital income} = u \cdot K_0, \quad u = \text{net\_return} + \delta \;\Rightarrow\; K_0 = \frac{\text{capital income}}{\text{net\_return}+\delta} $$
+$$ \text{capital income} = u \cdot K_0, \quad u = \text{net\_return} + \delta \;\Rightarrow\; K_0 = \frac{\text{capital income}}{\text{net\_return}+\delta} \tag{2} $$
 
 with documented defaults (net return 4%/yr, **calibration** δ 5%/yr). The CGE manifest reports **K₀**
 and the benchmark's **implied growth** g = INV₀/K₀ − δ under `capital_dynamics`.
@@ -129,15 +189,20 @@ horizon, δ, trends, retirement, K₀, and the capital path.
       *proportional* annual growth rates, not percentage-point changes), and labour productivity
       (TFP), applied as endowment scales. *(UN WPP 2024, ILO/World Bank, PWT 10.01.)*
     - **Per-sector `sector_productivity`** (structural change / GDP-share drift) — a sourced
-      **labour-productivity** series fed through the engine's per-sector θ multiplier, so the output
-      mix shifts **endogenously** (a sector with faster productivity gains share); shares are a model
-      result, not an imposed target. Because labour-productivity growth embeds capital deepening —
-      which this model accumulates separately — the wrapper converts each sector's deviation from its
-      region's aggregate trend into a *Hicks-neutral-equivalent* θ by the growth-accounting identity
-      `θ_dev = (labour-productivity deviation) ** s_L`, where `s_L` is the sector's benchmark labour
-      share of value added; this avoids double-counting deepening (review P2c). In **multi** mode the
-      aggregate denominator and the labour share are both **region-specific**, so an identical sector
-      rate nets to a different deviation in each region (review P1b). *(EU KLEMS.)*
+      **labour-productivity** series applied as a genuine **labour-augmenting** term on the sector's
+      labour input (a `ProductivityShock(mechanism="labour_augmenting")`), so the output mix shifts
+      **endogenously** (a sector with faster productivity gains share); shares are a model result, not
+      an imposed target. Under a labour-augmenting factor $\varphi$ the sector's value-added unit cost
+      falls by $\varphi^{-s_L}$ *by construction* ($s_L$ = the sector's benchmark labour share of
+      value added), equation $(5)$ — this is why modelling it on labour, not as Hicks-neutral TFP,
+      does not double-count the capital deepening the model accumulates separately (review P1
+      2026-08-29, [Solow1957]). The per-sector **drift** is each sector's cumulative labour-
+      productivity level relative to the benchmark-VA-weighted **geometric mean** of all sectors'
+      levels — a **zero-mean** relative drift, so the biases straddle zero and a high-aggregate region
+      does not get uniformly negative sector biases (review P1 2026-08-29). In **multi** mode the
+      geometric-mean denominator and the labour share are both **region-specific**, so an identical
+      sector rate nets to a different bias in each region (review P1b). *(EU KLEMS 2023 [EUKLEMS2023];
+      Penn World Table 10.01 [FeenstraPWT] for the aggregate reference.)*
     - **Per-sector `emissions_intensity`** (decarbonisation) — a **price-independent** engine hook
       (`emissions_intensity_scale`) that multiplies the sector's physical emission intensity (so
       covered emissions fall) AND its priced carbon wedge. Because it acts on the intensity the engine
@@ -146,21 +211,100 @@ horizon, δ, trends, retirement, K₀, and the capital path.
       the wrapper feeds the engine (all three variants; a **per-region** reference for the multi CGE,
       where an **uncovered** region carries a zero reference without invalidating the covered
       regions), a decarbonising sector shows falling covered emissions measured against the base year.
-      *(IEA WEO 2024 / NGFS Net Zero 2050.)*
+      *(IEA WEO 2024 [IEA_WEO2024] / NGFS Net Zero 2050 [NGFS].)*
       **One limitation to state plainly.** With **no `CarbonPrice`** in the scenario there is no
       priced carbon and no covered-emissions output at all, so an `emissions_intensity` trajectory has
       **no observable effect** — pair it with a `CarbonPrice`.
   On a **real EXIOBASE build** the trajectory's archetype keys (N/S, BRD/MIL) are bound to the
   build's actual coarse-v3 region/sector labels by the provenance-carrying concordance
-  `data/structural/concordance_v1.json` (via `structural_trajectories_for_build`), so a real run has
-  genuine country differentiation and sectoral composition drift rather than every label falling
-  through to `__all__`; an unmapped label fails loudly and the manifest stamps a `coverage`
-  diagnostic (review P1c).
+  `data/structural/concordance_v2.json` (via `structural_trajectories_for_build`). **v2 is
+  GDP-weighted** (review P1 2026-08-29): World Bank regional aggregates mix income levels, so rather
+  than assign one unweighted N/S archetype per block, v2 keeps **country-level** archetypes
+  ([WorldBankIncome], FY2025 vintage) and blends the member countries' paths by **GDP weights**
+  (`block_membership`) — a mixed block such as `RoW_Asia` sits *between* the pure N and S paths. The
+  mapped trajectory carries a **composite** provenance naming both the concordance and the trajectory
+  artifact; the loader validates the Provenance contract, that every archetype target is a known
+  path, and that the v2 weights are finite, ≥ 0 and sum to 1 (review P2 2026-08-29). An unmapped
+  label fails loudly, and `run_recursive` **rejects** a run whose trajectory does not differentiate
+  any of the build's labels (every label falling through to `__all__`) unless the caller sets
+  `DynamicConfig(allow_uniform_fallback=True)` — so a real build cannot silently collapse to the
+  uniform default (review P2 2026-08-29).
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
 - Aggregate productivity is Hicks-neutral on primary factors; the per-sector series is modelled as
-  labour-augmenting (via the labour-share transform above). No factor-biased or vintage-specific TFP.
+  labour-augmenting (a factor on the sector's labour input, not a TFP transform). No other
+  factor-biased or vintage-specific technical change.
 - Magnitudes are illustrative (toy calibration); the value is the **mechanism** — a static CGE turned
   into a capital-carrying dynamic path, the backbone Phase 7.2 (NGFS) and 7.3 (climate) build on.
+
+## 7. Algorithm
+
+`run_recursive` (in `cge.dynamics.recursive`):
+
+1. **Probe.** Solve one no-shock static run at $t_0$ to read $K_0$ (per capital region) off the
+   `capital_dynamics` manifest block (eq $(2)$), the model's sectors, and the per-(region, sector)
+   benchmark labour shares $s_L$.
+2. **Coverage gate.** If a `StructuralTrajectory` is supplied, reject the run when it differentiates
+   none of the build's labels (all `__all__`) unless `allow_uniform_fallback=True` (§6).
+3. **Expand physical nature once.** Any Phase-6b `nature_state` pathway is expanded over the FULL
+   annual horizon before the loop, so its rate-form start year and recovery hysteresis are not reset
+   by per-year slicing (review P1).
+4. **Annual loop** over every year in $[t_0, T]$: build the endowment scales (eq $(3)$) and any
+   per-sector `emissions_intensity_scale` / labour-augmenting `sector_productivity` shocks (eq $(5)$),
+   call the static engine, read `investment_volume`, step the stock (eq $(1)$), and — for **reporting**
+   years only — append the result rows. Static overrides passed via `data_overrides` (e.g. a nature
+   exposure IOSystem + ENCORE for a physical run) are merged into every year's solve.
+5. **Assemble** the `DynamicPath`: concatenated per-reporting-year `ResultSet`, capital path dicts,
+   and a `recursive_dynamics` manifest block; the scenario hash is re-stamped over the ORIGINAL
+   scenario (nature_state intact) plus the normalised `DynamicConfig`, and each solve-year's child
+   hash is recorded.
+
+Complexity is $O(T - t_0)$ static solves (every calendar year), independent of how many years are
+reported. The hot path is the per-year static CGE solve; the wrapper itself is cheap bookkeeping.
+
+## 8. Calibration & parameters
+
+| Parameter | Default | Source |
+| --- | --- | --- |
+| user-cost net return | 4%/yr | [KingRebelo1999] |
+| calibration $\delta_c$ (bridge) | 5%/yr | [MillerBlair2009] ch. 5 (PIM) |
+| forward $\delta$ (`DynamicConfig.depreciation`) | 5%/yr | [MillerBlair2009] ch. 5; user-set |
+| $K_0$ (services→stock) | derived, eq $(2)$ | [Jorgenson1963] |
+| labour / participation paths | sourced per region | [UNWPP2024], [ILOSTAT] |
+| aggregate TFP path | sourced per region | [FeenstraPWT] |
+| sectoral labour productivity | sourced per sector | [EUKLEMS2023] |
+| emissions-intensity path | illustrative central path | [IEA_WEO2024], [NGFS] |
+| region/sector concordance | GDP-weighted, country-level | [WorldBankIncome] |
+
+The vendored trajectory (`data/structural/trajectories_v1.json`) and concordance
+(`data/structural/concordance_v2.json`) are documented, sourced, per-entry-cited artifacts; see
+`data/structural/NOTICE.md` for licences and the reproducibility caveat (headline transcribed rates,
+not a committed extraction pipeline).
+
+## 9. Validation
+
+Standing model-correctness checks live in `src/cge/validation/suites/dynamics.py` (run by
+`cge validate`) and unit tests in `tests/test_dynamics.py` / `tests/test_structural_trajectories.py`:
+
+- **Accumulation identity** eq $(1)$ holds at every consecutive step; a **sparse** horizon gives the
+  same closing stock as the full annual horizon.
+- The path **starts from the benchmark** (year 0, no shock ⇒ real GDP change 0); with $A=L=1$,
+  $K=K_0$ the run is byte-identical to the static benchmark (eq $(3)$).
+- **Premature retirement** lowers the closing stock; the multi-region CGE carries a genuinely
+  per-region capital path.
+- A sourced `StructuralTrajectory` makes the emerging region **outgrow** the developed one; sector
+  labour-augmenting biases are **zero-mean** (a high-aggregate region is not uniformly negative) and
+  per-region in multi mode; a declining `emissions_intensity` path drives **covered emissions down**
+  against the base year — including on a **real IO-backed build** (opt-in `exiobase_live` suite,
+  intensity engine-derived, not a supplied `carbon_cost_share`).
+- A full **physical `nature_state`** pathway runs end-to-end through `run_recursive` (NatureStress →
+  exposure → `ProductivityShock` → CGE), with a deeper degradation producing a larger output loss and
+  the water-dependent sector hit harder.
+
+## 10. References
+
+Cited inline by key; full entries in [`docs/references.md`](../references.md): [MillerBlair2009],
+[Jorgenson1963], [KingRebelo1999], [Solow1957], [FeenstraPWT], [EUKLEMS2023], [UNWPP2024], [ILOSTAT],
+[WorldBankIncome], [IEA_WEO2024], [NGFS].
 
 See `docs/models/macro-aggregates.md` for the GDP/GVA reporting and
 [`roadmap.md`](../../roadmap.md) Phase 7 for the pathway stack this unblocks.

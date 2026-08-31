@@ -63,38 +63,77 @@ class ModelState:
     adaptation_investment: float = 0.0
 
 
-def _va_unit_cost(cal: CalibratedModel, w: np.ndarray) -> np.ndarray:
+def _effective_wage(cal: CalibratedModel, w: np.ndarray, lprod, i: int) -> np.ndarray:
+    """The wage vector sector ``i`` faces after LABOUR-AUGMENTING technical change (Phase 7b.2
+    review 2026-08-29). ``lprod`` is a per-sector labour-augmentation factor φ[i] (φ=1 ⇒ none): the
+    sector's effective labour is φ[i]·L[i], so in efficiency units it faces a lower unit cost of
+    labour ``w_LAB/φ[i]`` — the standard factor-augmenting formulation (Chamberlin/Solow neutral in
+    labour). This scales ONLY the labour factor and ONLY sector i, so a benchmark run (φ≡1) is
+    byte-identical, capital is untouched, and — unlike a Hicks-neutral θ — it does NOT re-scale the
+    intermediate bundle, so it is a genuine labour-augmenting term rather than an approximation of
+    one (review P1 2026-08-29)."""
+    if lprod is None:
+        return w
+    lab = cal.factors.index("LAB") if "LAB" in cal.factors else None
+    if lab is None:
+        return w
+    w_eff = np.array(w, dtype=w.dtype if hasattr(w, "dtype") else float)
+    w_eff[lab] = w[lab] / lprod[i]
+    return w_eff
+
+
+def _va_unit_cost(cal: CalibratedModel, w: np.ndarray, lprod=None) -> np.ndarray:
     """Value-added unit cost pv[i]. σ_va = 1 ⇒ Cobb-Douglas
     ``pv = (1/av)·Π_f (w_f/β_f)^{β_f}``; σ_va ≠ 1 ⇒ CES
-    ``pv = (1/av)·[Σ_f δ_f^σ w_f^{1-σ}]^{1/(1-σ)}``. Computed per sector so a mix of σ works."""
+    ``pv = (1/av)·[Σ_f δ_f^σ w_f^{1-σ}]^{1/(1-σ)}``. Computed per sector so a mix of σ works.
+
+    ``lprod`` (Phase 7b.2) is an optional per-sector labour-augmentation φ[i] applied via
+    :func:`_effective_wage` — the sector sees ``w_LAB/φ[i]`` in its VA cost, so a labour-augmenting
+    improvement lowers its VA cost through the labour channel only. φ≡1 (default) is byte-identical
+    to the pre-7b.2 cost."""
     ns = len(cal.sectors)
     pv = np.empty(ns)
     for i in range(ns):
+        wi = _effective_wage(cal, w, lprod, i)
         s = cal.va_elast[i]
         if abs(s - 1.0) < 1e-12:
             b = cal.beta[:, i]
-            ratio = np.where(b > 0, w / np.where(b > 0, b, 1.0), 1.0)
+            ratio = np.where(b > 0, wi / np.where(b > 0, b, 1.0), 1.0)
             pv[i] = (1.0 / cal.av[i]) * np.prod(np.power(ratio, b))
         else:
             d = cal.va_ces_share[:, i]
-            pv[i] = (1.0 / cal.av[i]) * np.power(np.sum(d**s * w ** (1.0 - s)), 1.0 / (1.0 - s))
+            pv[i] = (1.0 / cal.av[i]) * np.power(np.sum(d**s * wi ** (1.0 - s)), 1.0 / (1.0 - s))
     return pv
 
 
-def _factor_demand(cal: CalibratedModel, w: np.ndarray, pv: np.ndarray, va_cost: np.ndarray):
+def _factor_demand(
+    cal: CalibratedModel, w: np.ndarray, pv: np.ndarray, va_cost: np.ndarray, lprod=None
+):
     """Factor demand F[f,i] by Shephard's lemma on the VA cost. CD: F = β·va_cost/w; CES:
     F = va_cost·(1/av)·(pv·av)^σ·δ^σ·w^{-σ}. ``va_cost`` = pv·(VA quantity) is total VA payment
-    (VA quantity = va_share·X in the flat model, or the KL quantity from the energy nest)."""
+    (VA quantity = va_share·X in the flat model, or the KL quantity from the energy nest).
+
+    ``lprod`` (Phase 7b.2): the sector faces the labour-augmented effective wage (see
+    :func:`_effective_wage`), so its demand for labour in EFFICIENCY units uses ``w_LAB/φ[i]``. The
+    PHYSICAL labour hired is that efficiency demand divided by φ[i] again (efficiency units = φ·
+    physical), so a labour-augmenting sector hires strictly less physical labour per unit VA — the
+    factor-clearing residual sees the physical quantity. φ≡1 is byte-identical."""
     ns, nf = len(cal.sectors), len(cal.factors)
+    lab = cal.factors.index("LAB") if "LAB" in cal.factors else None
     F = np.empty((nf, ns))
     for i in range(ns):
+        wi = _effective_wage(cal, w, lprod, i)
         s = cal.va_elast[i]
         if abs(s - 1.0) < 1e-12:
-            F[:, i] = cal.beta[:, i] * va_cost[i] / w
+            F[:, i] = cal.beta[:, i] * va_cost[i] / wi
         else:
             d = cal.va_ces_share[:, i]
-            unit = (1.0 / cal.av[i]) * (pv[i] * cal.av[i]) ** s * d**s * w ** (-s)
+            unit = (1.0 / cal.av[i]) * (pv[i] * cal.av[i]) ** s * d**s * wi ** (-s)
             F[:, i] = unit * (va_cost[i] / pv[i])  # va_cost/pv = VA quantity
+        # Shephard's lemma gives demand in EFFICIENCY units for the augmented factor; convert LAB
+        # back to PHYSICAL units (÷φ[i]) so factor-market clearing counts physical labour.
+        if lprod is not None and lab is not None:
+            F[lab, i] = F[lab, i] / lprod[i]
     return F
 
 
@@ -241,6 +280,7 @@ def derive_state(
     adapt_amount: float = 0.0,
     adapt_gamma: np.ndarray | None = None,
     productivity: np.ndarray | None = None,
+    labour_productivity: np.ndarray | None = None,
 ) -> ModelState:
     """Close the model at equilibrium prices (p, w): compute VA cost, outputs, demands and income.
 
@@ -294,7 +334,7 @@ def derive_state(
     household + investment demand, kg government spending's own marginal-revenue coefficient."""
     ns = len(cal.sectors)
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
-    pv = _va_unit_cost(cal, w)
+    pv = _va_unit_cost(cal, w, labour_productivity)
 
     # (I − A(p))⁻¹ and VA quantity per unit output. Flat model: fixed Leontief + va_share. Energy
     # nest (Phase 5d.5): both price-responsive (energy substitutes as the carbon-inclusive energy
@@ -592,7 +632,7 @@ def derive_state(
         # Total VA payment per sector = pv · (VA quantity). VA quantity per unit output is
         # cal.va_share (flat) or the price-responsive KL quantity per unit output (energy nest).
         va_cost = pv * va_qty_per_x * X  # [i]
-        F = _factor_demand(cal, w, pv, va_cost)  # [f,i]
+        F = _factor_demand(cal, w, pv, va_cost, labour_productivity)  # [f,i]
         return FD, GD, ID, X, F, income, gov_income, savings, fiscal_balance
 
     # Labour-floor fixed point. Full employment: factor income = w·endowment. Floor binding: labour
@@ -680,6 +720,7 @@ def residuals(
     adapt_amount: float = 0.0,
     adapt_gamma: np.ndarray | None = None,
     productivity: np.ndarray | None = None,
+    labour_productivity: np.ndarray | None = None,
 ) -> np.ndarray:
     """Equilibrium residual vector F(z) for z = [p (ns), w (nf)].
 
@@ -733,6 +774,7 @@ def residuals(
         adapt_amount=adapt_amount,
         adapt_gamma=adapt_gamma,
         productivity=productivity,
+        labour_productivity=labour_productivity,
     )
 
     # Per-sector productivity multiplier θ[i] (Phase 6.4 GE tier): a sector with productivity θ

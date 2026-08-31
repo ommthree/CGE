@@ -1,0 +1,37 @@
+# Reproducible-deployment constraints — the exact dependency versions this project's
+# test suite and validation battery were last verified against (Phase 7b.2, 2026-08-30).
+#
+# The pyproject.toml dependency ranges are deliberately LOOSE lower bounds so the library
+# installs cleanly into a range of environments. For a *reproducible* install (consulting
+# deployment, CI, or reproducing a published result) pin to these known-good versions:
+#
+#     pip install -e '.[data,cge,gui,dev]' -c constraints.txt
+#
+# Refresh this file when you re-verify against a newer stack (bump the date above), so the
+# "verified against" claim never drifts from what was actually run. Newer versions may work
+# but are not what these numbers were produced on. pymrio in particular emits forward-compat
+# (pandas) warnings across minor releases; pinning it here keeps a deployment on a quiet,
+# tested combination.
+
+# --- core ---
+pydantic==2.11.9
+pandas==2.3.3
+pyyaml==6.0.3
+numpy==2.3.3
+
+# --- data extra ([data]) ---
+pymrio==0.6.3
+duckdb==1.5.5
+pyarrow==24.0.0
+
+# --- cge extra ([cge]) ---
+# pyomo is only needed for the optional Pyomo-backed solver path; pin when installed.
+# pyomo==6.7.3
+scipy==1.16.2
+
+# --- gui extra ([gui]) ---
+streamlit==1.61.1
+altair==6.2.2
+
+# --- dev extra ([dev]) ---
+# pytest / ruff / pre-commit floats are fine for dev; pin if a CI needs byte-stability.
