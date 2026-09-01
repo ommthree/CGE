@@ -8,7 +8,7 @@ records the underlying sources and their licences. The figures are **headline tr
 from the published sources below — a compact, review-friendly artifact, not a re-distribution of the
 full source databases. The shipped `N`/`S` region and `BRD`/`MIL` sector keys are development/
 composition **archetypes**. On a real EXIOBASE build, the provenance-carrying concordance
-`concordance_v1.json` (see below) binds each real coarse-v3 build label to its archetype, and
+`concordance_v2.json` (the default; see below) binds each real coarse-v3 build label to its archetype, and
 `cge.data.structural.structural_trajectories_for_build(regions, sectors)` emits a trajectory keyed by
 the build's OWN labels — so a real build has genuine country differentiation and sectoral composition
 drift, not every label collapsing to the global `__all__` default. An unmapped build label fails
@@ -69,18 +69,23 @@ keeps **country-level** archetypes and blends them per block with documented **G
 - **Licence:** CC BY 4.0 (EU KLEMS/INTANProd public release).
 - **Note:** the shipped `BRD`/`MIL` sector keys are the toy model's illustrative sectors; the rates
   are headline goods-vs-services **labour-productivity** growth central estimates (output per hour),
-  **absolute** per-sector rates (see the artifact `sector_productivity`). Because labour-
-  productivity growth embeds capital deepening — which the recursive model accumulates separately —
-  the wrapper does **not** apply these as Hicks-neutral TFP directly. It applies each sector's series
-  as a genuine **labour-augmenting** improvement on that sector's labour input, emitting a
-  `ProductivityShock(mechanism="labour_augmenting")` whose factor scales ONLY the sector's labour
-  entry (review P1 2026-08-29, replacing the earlier `θ_dev = deviation ** s_L` growth-accounting
-  conversion). Under a labour-augmenting factor φ the sector's value-added cost falls by φ^{−s_L}
-  *by construction* (s_L = the sector's labour share of value added), so capital deepening is not
-  double-counted against the model's own capital accumulation. The per-sector *drift* is measured as
-  each sector's cumulative labour-productivity level relative to the benchmark-VA-weighted **geometric
-  mean** of all sectors' levels (zero-mean relative drift), so the biases straddle zero — a
-  high-aggregate region no longer gets uniformly negative sector biases. On a real EXIOBASE build
+  **absolute** per-sector rates (see the artifact `sector_productivity`). This series drives a
+  **heuristic composition lever**, NOT an identified technology term (review P1 2026-08-31). Observed
+  labour productivity is `g_{Y/L}=g_A+s_K·g_{K/L}+s_L·g_φ` — it mixes true labour-augmenting
+  technology with capital deepening, utilisation and composition, and the wrapper does **not**
+  decompose those out. It applies the series as a **labour-augmenting** improvement on the sector's
+  labour input (`ProductivityShock(mechanism="labour_augmenting")`, scaling ONLY that sector's labour
+  entry) rather than as Hicks-neutral TFP, so it stays a composition lever rather than re-imposing an
+  aggregate level — but we make **no claim** that this removes capital-deepening double-counting; a
+  growth-accounting decomposition (needing sector K/L data not vendored here) is the documented
+  follow-up. (This replaces the earlier `θ_dev = deviation ** s_L` conversion, and the earlier
+  "capital-deepening not double-counted" claim is retracted.) Under a Cobb-Douglas VA nest the
+  sector's value-added cost falls by φ^{−s_L} exactly (s_L = labour share of VA); for CES the engine
+  computes the exact cost. The per-sector *drift* is each sector's cumulative labour-productivity
+  level relative to the **VA-share-weighted geometric mean** of all sectors' levels — weighted by each
+  sector's SHARE of value added `v_i=VA_i/ΣVA_j` (review P1 2026-08-31: previously the labour
+  composition `s_L`, which weighted a 1%-of-economy sector like a 99% one) — so the VA-weighted
+  geometric mean of the biases is 1 and a large sector's drift dominates. On a real EXIOBASE build
   these sector keys map to actual industries via the structural concordance
   (`data/structural/concordance_v2.json`).
 

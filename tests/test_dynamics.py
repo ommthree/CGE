@@ -555,7 +555,7 @@ def test_sector_productivity_biases_are_zero_mean_relative_drift():
     (1+delta) factors is 1 — so no aggregate productivity level is re-imposed and a faster sector's
     positive bias is balanced by a slower sector's negative bias (review P1 2026-08-29: the earlier
     (LP/TFP)^s_L gave every sector in a high-TFP region a negative bias). BRD grows 3%/yr, MIL
-    1%/yr, equal labour shares → BRD gets φ>1, MIL φ<1, weighted geo-mean 1."""
+    1%/yr, equal VA shares → BRD gets φ>1, MIL φ<1, weighted geo-mean 1."""
     from cge.dynamics.recursive import DynamicConfig as _DC
     from cge.dynamics.recursive import _sector_productivity_shocks
 
@@ -569,6 +569,35 @@ def test_sector_productivity_biases_are_zero_mean_relative_drift():
     # VA-weighted geometric mean of (1+delta) is 1 (zero-mean drift; no aggregate level re-imposed).
     geo = (1.0 + by_sector["BRD"]) ** 0.5 * (1.0 + by_sector["MIL"]) ** 0.5
     assert geo == pytest.approx(1.0, rel=1e-12)
+
+
+def test_sector_productivity_drift_uses_va_SHARE_weights_not_labour_composition():
+    """Review P1 2026-08-31: the geometric-mean denominator must weight each sector by its SHARE of
+    value added v_i = VA_i/ΣVA_j, so a tiny sector cannot swing the mean. With BRD = 99% of VA and
+    MIL = 1%, both growing (BRD 3%/yr, MIL 1%/yr), the mean is pinned near BRD's level, so BRD's
+    drift is ~0 and MIL's is strongly negative — unlike equal weighting, where BRD would get
+    a large positive bias. Also: the VA-share-weighted geometric mean of (1+delta) is exactly 1."""
+    from cge.dynamics.recursive import DynamicConfig as _DC
+    from cge.dynamics.recursive import _sector_productivity_shocks
+
+    traj = _traj_sector({"sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}}})
+    va_shares = {"BRD": 0.99, "MIL": 0.01}
+    shocks = _sector_productivity_shocks(
+        _DC(structural=traj), 2025, 2045, ["BRD", "MIL"], ["R"], False, va_shares
+    )
+    by_sector = {s.coverage_sectors[0]: s.delta for s in shocks}
+    # BRD dominates the mean → its own drift is near zero; MIL (tiny) absorbs the redistribution.
+    assert abs(by_sector["BRD"]) < 0.01
+    assert by_sector["MIL"] < -0.10
+    # And the VA-SHARE-weighted geometric mean of (1+delta) is exactly 1.
+    geo = (1.0 + by_sector["BRD"]) ** 0.99 * (1.0 + by_sector["MIL"]) ** 0.01
+    assert geo == pytest.approx(1.0, rel=1e-12)
+    # Equal weighting would instead give BRD a clearly positive bias — prove the fix changed it.
+    eq = _sector_productivity_shocks(
+        _DC(structural=traj), 2025, 2045, ["BRD", "MIL"], ["R"], False, {"BRD": 0.5, "MIL": 0.5}
+    )
+    eq_brd = next(s.delta for s in eq if s.coverage_sectors[0] == "BRD")
+    assert eq_brd > 0.10  # equal weights: BRD gets a large positive bias (the old, wrong behaviour)
 
 
 def test_high_aggregate_region_does_not_get_all_negative_sector_biases():

@@ -472,19 +472,21 @@ class StructuralTrajectory(_DataObject):
       through the engine's price-independent ``emissions_intensity_scale`` hook).
 
     ``sector_productivity`` rates are **sector labour-productivity** growth estimates (EU KLEMS-
-    style: output per hour), NOT total-factor productivity. They are applied as a genuine LABOUR-
-    AUGMENTING shock on the sector's labour input (``mechanism="labour_augmenting"``), NOT a
-    Hicks-neutral θ (review P1 2026-08-29). This matters because labour-productivity growth embeds
-    capital deepening, which the recursive model accumulates SEPARATELY — applying it as Hicks-
-    neutral TFP would double-count deepening. Under a labour-augmenting factor φ the sector's value-
-    added cost falls by φ^{−s_L} *by construction* (s_L = the sector's labour share of value added),
-    so the labour-share weighting is STRUCTURAL, with no ad-hoc exponent. The wrapper expresses each
-    sector's cumulative level RELATIVE to the benchmark-VA-weighted geometric mean of all sectors'
-    levels, so the driver contributes only sector COMPOSITION drift (zero-mean redistribution), NOT
-    re-impose an aggregate productivity level — that is carried separately by the per-region TFP
-    endowment scale. (The earlier ``(sector_LP/aggregate_TFP)^{s_L}`` mixed labour productivity with
-    TFP and gave every sector in a high-TFP region a negative bias; that is retracted — see
-    ``dynamics.recursive``.)
+    style: output per hour), NOT total-factor productivity. They drive a **heuristic composition
+    lever** (review P1 2026-08-31): a ``ProductivityShock(mechanism="labour_augmenting")`` on the
+    sector's labour input, so the output mix shifts endogenously. Observed labour productivity mixes
+    technology, capital deepening and utilisation (g_{Y/L}=g_A+s_K·g_{K/L}+s_L·g_φ) and this driver
+    does NOT decompose those out — it is put on the labour input (not Hicks-neutral TFP) only so it
+    stays a composition lever rather than re-imposing an aggregate level; it is NOT an identified
+    technology term and makes NO capital-deepening-removal claim (a growth-accounting decomposition
+    needing sector K/L data is the follow-up). Under a Cobb-Douglas VA nest the sector's VA cost
+    falls by φ^{−s_L} exactly (s_L = labour share of VA); for CES the engine computes the exact.
+    The wrapper expresses each sector's cumulative level RELATIVE to the **VA-share-weighted**
+    geometric mean of all sectors' levels (weight = sector's share of VA v_i=VA_i/ΣVA_j, so a
+    large sector's drift dominates), contributing only sector COMPOSITION drift (VA-weighted geo
+    mean of biases = 1), NOT re-imposing an aggregate level — that is carried separately by the
+    per-region TFP endowment scale. (The earlier ``(sector_LP/aggregate_TFP)^{s_L}`` and the
+    labour-composition weighting are retracted — see ``dynamics.recursive``.)
 
     A rate is a decimal fraction (0.012 = +1.2 %/yr). Years present are the *knots*; the effective
     rate holds the most recent knot for years between/after knots (piecewise-constant, documented),

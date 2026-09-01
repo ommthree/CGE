@@ -67,7 +67,11 @@ _DEFAULT_CONCORDANCE = (
 )
 
 
-def load_structural_concordance(path: str | Path | None = None) -> dict:
+def load_structural_concordance(
+    path: str | Path | None = None,
+    *,
+    trajectory: StructuralTrajectory | None = None,
+) -> dict:
     """The vendored region/sector concordance (Phase 7b.2; v2 review P1 2026-08-29).
 
     Maps each real EXIOBASE coarse-v3 build label onto the trajectory's archetypes. Two shapes are
@@ -82,7 +86,12 @@ def load_structural_concordance(path: str | Path | None = None) -> dict:
     contract; ``sector_archetype`` targets are among the known BRD/MIL archetype keys; for v2 every
     ``block_membership`` country has a ``country_archetype``, its archetype is a known key, and each
     block's member weights are finite, non-negative and sum to 1. A malformed concordance fails
-    loudly rather than silently substituting ``__all__``."""
+    loudly rather than silently substituting ``__all__``.
+
+    ``trajectory`` (review P2 2026-08-31): validate the archetype targets against the trajectory the
+    concordance will actually be applied to — NOT always the default artifact. Passing a custom
+    trajectory here catches a concordance that names an archetype the custom trajectory lacks,
+    rather than that member being silently dropped from the blend downstream."""
     artifact = Path(path) if path is not None else _DEFAULT_CONCORDANCE
     if not artifact.exists():
         raise FileNotFoundError(
@@ -97,10 +106,11 @@ def load_structural_concordance(path: str | Path | None = None) -> dict:
     if not raw.get("sector_archetype"):
         raise ValueError("structural concordance is missing or empty 'sector_archetype'")
 
-    known_region_arch = set(load_structural_trajectories().rates.get("productivity", {}))
-    known_sector_arch = set(
-        load_structural_trajectories().sector_rates.get("sector_productivity", {})
-    )
+    # Validate against the trajectory this concordance will be applied to (default artifact if none
+    # given), so a custom trajectory's missing archetype is caught here, not silently dropped later.
+    traj = trajectory if trajectory is not None else load_structural_trajectories()
+    known_region_arch = set(traj.rates.get("productivity", {}))
+    known_sector_arch = set(traj.sector_rates.get("sector_productivity", {}))
     bad_sec = {
         s: a
         for s, a in raw["sector_archetype"].items()
@@ -176,31 +186,47 @@ class UnmappedStructuralLabels(ValueError):
 
 def _blend_region_path(
     by_arch: dict, block: str, conc: dict, region_arch_v1: dict | None
-) -> dict | None:
+) -> tuple[dict, dict] | None:
     """The rate path for a coarse ``block`` on one region driver: the GDP-WEIGHTED blend of its
-    member countries' archetype paths (v2), or the block's single archetype path (v1). Returns a
-    ``{year: rate}`` dict, or None if no archetype path is available.
+    member countries' archetype paths (v2), or the block's single archetype path (v1). Returns
+    ``(path, arch_weights)`` — the ``{year: rate}`` dict and the ``{archetype: weight}`` map of
+    which archetypes actually contributed (for provenance) — or None if no archetype path is
+    available.
 
     v2 blend (review P1 2026-08-29): for each knot year present across the members' archetype paths,
     the blended rate is Σ_c weight[c] · archetype_rate(archetype[c], year) — so a mixed block gets a
     weighted average, honestly reflecting that (e.g.) RoW_Asia contains both advanced and emerging
-    economies. The union of member knot years is used so no knot is dropped."""
+    economies. The union of member knot years is used so no knot is dropped.
+
+    **Renormalisation (review P2 2026-08-31):** members whose archetype has NO path in *this*
+    trajectory (e.g. a custom trajectory missing one archetype) are dropped from BOTH the numerator
+    and the weight denominator, so the blend stays a proper convex combination rather than silently
+    shrinking toward zero. If NO member has a usable path, returns None (the caller falls back to
+    ``__all__``)."""
     if region_arch_v1 is not None:  # v1: single archetype
         arch = region_arch_v1.get(block)
         path = by_arch.get(arch) if arch else None
-        return dict(path) if path is not None else None
+        return (dict(path), {arch: 1.0}) if path is not None else None
     members: dict = conc["block_membership"].get(block)
     if not members:
         return None
     country_arch: dict = conc["country_archetype"]
-    # Union of knot years across the members' archetype paths.
+    # Members whose archetype path exists in THIS trajectory, and the total weight per archetype.
+    usable: list[tuple[str, float]] = []  # (archetype, weight)
     knot_years: set[int] = set()
-    for c in members:
-        p = by_arch.get(country_arch[c])
+    for c, w in members.items():
+        arch = country_arch[c]
+        p = by_arch.get(arch)
         if p:
+            usable.append((arch, float(w)))
             knot_years |= set(p)
-    if not knot_years:
+    if not knot_years or not usable:
         return None
+    # Renormalise the surviving members' weights to sum to 1 (a proper convex combination).
+    total_w = sum(w for _, w in usable)
+    arch_weights: dict = {}
+    for arch, w in usable:
+        arch_weights[arch] = arch_weights.get(arch, 0.0) + w / total_w
 
     def _rate_at(path: dict, year: int) -> float:
         # Piecewise-constant hold (same rule as StructuralTrajectory._lookup).
@@ -211,12 +237,10 @@ def _blend_region_path(
     blended: dict = {}
     for year in sorted(knot_years):
         acc = 0.0
-        for c, w in members.items():
-            p = by_arch.get(country_arch[c])
-            if p:
-                acc += float(w) * _rate_at(p, year)
+        for arch, w in arch_weights.items():
+            acc += w * _rate_at(by_arch[arch], year)
         blended[int(year)] = acc
-    return blended
+    return blended, arch_weights
 
 
 def structural_trajectories_for_build(
@@ -237,16 +261,21 @@ def structural_trajectories_for_build(
     emerging ID/WA — gets a blended path, not one archetype; review P1 2026-08-29). Sectors map to
     their goods/services archetype path.
 
-    The emitted trajectory carries **composite provenance** (review P2 2026-08-29): the concordance
-    source/version/licence, plus a stamp of the underlying archetype-trajectory identity and a
-    content hash of both artifacts, so the mapped object is NOT mislabelled as the bare
-    ``structural-trajectories-v1`` — it records that a concordance was applied.
+    The emitted trajectory carries **composite provenance** (review P2 2026-08-29/2026-08-31): the
+    concordance source/version/licence + the archetype-trajectory identity + a CONTENT HASH of BOTH
+    artifacts (so a concordance edit that leaves the blended numbers unchanged — e.g. reallocating
+    weight among same-archetype countries — is still detectable). Each mapped region key records the
+    ACTUAL contributing archetype sources and their blend weights (a mixed block shows both N and S,
+    not a spurious world-average citation).
 
     ``require_full_coverage`` (default True): a build label not mapped by the concordance raises
     :class:`UnmappedStructuralLabels` — so a real run can never silently degrade to an
     all-``__all__`` trajectory."""
     archetype = load_structural_trajectories(trajectory_path)
-    conc = load_structural_concordance(concordance_path)
+    # Validate the concordance against the trajectory it will actually be applied to (review P2
+    # 2026-08-31): a custom trajectory missing an archetype the concordance names now fails loudly
+    # here rather than that member being silently dropped from the blend.
+    conc = load_structural_concordance(concordance_path, trajectory=archetype)
     region_arch_v1 = conc.get("region_archetype") if "block_membership" not in conc else None
     sector_arch: dict[str, str] = conc["sector_archetype"]
     mapped_regions = (
@@ -263,16 +292,22 @@ def structural_trajectories_for_build(
             "require_full_coverage=False to accept the __all__ fallback explicitly."
         )
 
-    # Region axis: blend per (driver, region) from the member countries' archetype paths.
+    # Region axis: blend per (driver, region) from the member countries' archetype paths. Record the
+    # per-(driver, region) contributing archetypes + weights so the provenance can name the actual
+    # sources rather than always the __all__ citation (review P2 2026-08-31).
     new_rates: dict = {}
+    region_arch_weights: dict[tuple[str, str], dict] = {}  # (driver, region) -> {archetype: weight}
     for driver, by_arch in archetype.rates.items():
         new: dict = {}
         for r in regions:
-            path = _blend_region_path(by_arch, r, conc, region_arch_v1)
-            if path is None:
-                path = dict(by_arch["__all__"]) if "__all__" in by_arch else None
-            if path is not None:
+            blend = _blend_region_path(by_arch, r, conc, region_arch_v1)
+            if blend is not None:
+                path, aw = blend
                 new[r] = path
+                region_arch_weights[(driver, r)] = aw
+            elif "__all__" in by_arch:
+                new[r] = dict(by_arch["__all__"])
+                region_arch_weights[(driver, r)] = {"__all__": 1.0}
         if "__all__" in by_arch:
             new["__all__"] = dict(by_arch["__all__"])
         new_rates[driver] = new
@@ -292,31 +327,47 @@ def structural_trajectories_for_build(
             new["__all__"] = dict(by_arch["__all__"])
         new_sector_rates[driver] = new
 
-    # Provenance/confidence per emitted key: a blended region inherits the __all__ (or its dominant
-    # archetype's) citation, tagged as concordance-derived; a sector inherits its archetype's.
+    # Provenance/confidence per emitted key (review P2 2026-08-31): a blended region records the
+    # ACTUAL contributing archetype sources and their weights (not always the __all__ citation); a
+    # pure block inherits its single archetype's source; a sector inherits its archetype's.
+    conc_ver = conc["provenance"]["source_version"]
     sources: dict = {}
     confidence: dict = {}
+
+    def _arch_src(driver: str, arch: str) -> str | None:
+        return archetype.sources.get(f"{driver}:{arch}") or archetype.sources.get(
+            f"{driver}:__all__"
+        )
+
+    def _arch_cf(driver: str, arch: str) -> str | None:
+        return archetype.confidence.get(f"{driver}:{arch}") or archetype.confidence.get(
+            f"{driver}:__all__"
+        )
+
     for driver, by_key in new_rates.items():
         for k in by_key:
-            src = archetype.sources.get(f"{driver}:__all__")
-            cf = archetype.confidence.get(f"{driver}:__all__")
-            # Fall back to any archetype citation for this driver if no __all__ entry exists.
-            if src is None:
-                src = next(
-                    (v for kk, v in archetype.sources.items() if kk.startswith(f"{driver}:")), None
-                )
-            if cf is None:
-                cf = next(
-                    (v for kk, v in archetype.confidence.items() if kk.startswith(f"{driver}:")),
-                    None,
-                )
-            if src is not None:
-                conc_ver = conc["provenance"]["source_version"]
-                sources[f"{driver}:{k}"] = (
-                    src if k == "__all__" else f"{src} [concordance-blended: {conc_ver}]"
-                )
-            if cf is not None:
-                confidence[f"{driver}:{k}"] = cf
+            if k == "__all__":
+                src = _arch_src(driver, "__all__")
+                if src is not None:
+                    sources[f"{driver}:{k}"] = src
+                cf = _arch_cf(driver, "__all__")
+                if cf is not None:
+                    confidence[f"{driver}:{k}"] = cf
+                continue
+            aw = region_arch_weights.get((driver, k), {})
+            # Name each contributing archetype's source with its blend weight, so a mixed block has
+            # both N and S sources (not a spurious world-average citation).
+            parts = []
+            for arch in sorted(aw):
+                s = _arch_src(driver, arch)
+                parts.append(f"{arch} ({aw[arch]:.2f}): {s}" if s else f"{arch} ({aw[arch]:.2f})")
+            if parts:
+                sources[f"{driver}:{k}"] = f"concordance-blended [{conc_ver}] — " + "; ".join(parts)
+            # Confidence: the lowest (most conservative) among the contributing archetypes.
+            cfs = [c for arch in aw if (c := _arch_cf(driver, arch)) is not None]
+            order = {"low": 0, "medium": 1, "high": 2}
+            if cfs:
+                confidence[f"{driver}:{k}"] = min(cfs, key=lambda c: order.get(c, 1))
     for driver, by_key in new_sector_rates.items():
         for k in by_key:
             arch = sector_arch.get(k, "__all__")
@@ -331,21 +382,27 @@ def structural_trajectories_for_build(
             if cf is not None:
                 confidence[f"{driver}:{k}"] = cf
 
-    # Composite provenance: the CONCORDANCE identity (source/version/licence) + a stamp of the
-    # archetype-trajectory identity and a content hash of both, so the mapped object records that a
-    # concordance was applied (review P2 2026-08-29: the old object kept only the v1 identity).
+    # Composite provenance: the CONCORDANCE identity (source/version/licence) + the archetype-
+    # trajectory identity + a CONTENT HASH of BOTH artifacts (review P2 2026-08-31). The concordance
+    # hash matters because the emitted numeric rate tables can be UNCHANGED by a concordance edit
+    # that reallocates weights among countries of the SAME archetype (the blend is unchanged), so a
+    # rate-table hash alone cannot detect it — the concordance hash can.
+    from cge.contracts.provenance import content_hash
+
     cp = conc["provenance"]
+    conc_hash = content_hash(conc)
+    arch_hash = content_hash({"rates": archetype.rates, "sector_rates": archetype.sector_rates})
     composite = Provenance(
         source=(f"{cp['source']} | archetype paths: {archetype.provenance.source}"),
         source_version=(f"{cp['source_version']}+{archetype.provenance.source_version}"),
         licence=cp["licence"],
         reference_year=cp.get("reference_year", archetype.provenance.reference_year),
         retrieved=cp.get("retrieved", archetype.provenance.retrieved),
+        notes=(
+            f"concordance-mapped structural trajectory; concordance_content_hash={conc_hash}; "
+            f"archetype_content_hash={arch_hash}"
+        ),
     )
-    # The mapped trajectory's numeric rate tables ARE the GDP-blended per-region paths, so the
-    # recursive manifest's existing rate-table hash (in _trend_provenance) already moves when the
-    # concordance weights or the archetype rates change — the mapping is captured in the numbers
-    # themselves, and the composite provenance records WHICH concordance produced them.
     return StructuralTrajectory(
         provenance=composite,
         rates=new_rates,
