@@ -189,20 +189,21 @@ def _probe_sectors(probe: ResultSet) -> list[str]:
     return seen
 
 
-def _probe_labour_shares(manifest, regions: list[str], sectors: list[str]) -> dict:
-    """The per-sector benchmark labour share of value added the engine stamped (7b.2 review
-    2026-08-28), used as the **VA weights** for the geometric-mean denominator the labour-augmenting
-    sectoral-productivity drift is measured against (``_sector_productivity_shocks``), so the biases
-    net out per region and no aggregate level is re-imposed (review P1 2026-08-29).
+def _probe_va_shares(manifest, regions: list[str], sectors: list[str]) -> dict:
+    """The per-sector benchmark **value-added share** v_i = VA_i / Σ_j VA_j the engine stamped, used
+    as the weights for the geometric-mean denominator the labour-augmenting sectoral-productivity
+    drift is measured against (``_sector_productivity_shocks``), so a large sector's drift is
+    weighted by its economic SIZE and the biases net out per region (review P1 2026-08-31: the
+    earlier code used the labour COMPOSITION s_L here, weighting small and large sectors alike).
 
-    Returns the flat ``{sector: s_L}`` map for the single-region variants and the nested
-    ``{region: {sector: s_L}}`` map for multi. When the engine exposed no labour share (e.g. a model
-    with no LAB factor), returns an empty map — the caller then falls back to equal weighting,
-    preserving the prior behaviour rather than failing."""
+    Returns the flat ``{sector: v_i}`` map for the single-region variants and the nested
+    ``{region: {sector: v_i}}`` map for multi. When the engine exposed no shares (e.g. a model with
+    no LAB factor), returns an empty map — the caller then falls back to equal weighting, preserving
+    the prior behaviour rather than failing."""
     lvs = manifest.assumptions.get("labour_va_shares", {})
     if not lvs.get("available"):
         return {}
-    return lvs.get("labour_va_share", {})
+    return lvs.get("va_share", {})
 
 
 def _year_investment(res: ResultSet, year: int, regions: list[str]) -> np.ndarray:
@@ -287,12 +288,12 @@ def run_recursive(
     # do
     # not match real sector names still drives every sector).
     sectors = _probe_sectors(probe)
-    # Per-region per-sector benchmark labour share of value added (7b.2 review 2026-08-28), read off
-    # the probe manifest — the VA weights for the geometric-mean denominator the labour-augmenting
-    # sectoral-productivity DRIFT is measured against, so the per-region biases net out (review P1
-    # 2026-08-29). Capital deepening is not double-counted because the shock augments labour only,
-    # while the model accumulates capital separately.
-    labour_shares = _probe_labour_shares(probe.manifest, regions, sectors)
+    # Per-region per-sector benchmark VALUE-ADDED SHARE v_i = VA_i/ΣVA_j (7b.2 review 2026-08-31),
+    # read off the probe manifest — the weights for the geometric-mean denominator the labour-
+    # augmenting sectoral-productivity DRIFT is measured against, so a large sector's drift is
+    # weighted by its economic SIZE and the per-region biases net out. (Was wrongly the labour
+    # composition s_L before — review P1 2026-08-31.)
+    va_shares = _probe_va_shares(probe.manifest, regions, sectors)
 
     # "Unmapped label fails loudly" at the RUN boundary (review P2 2026-08-29): if a structural
     # trajectory is supplied but EVERY model region/sector falls through to the global ``__all__``
@@ -376,13 +377,13 @@ def run_recursive(
                 )
 
         # Sectoral-productivity drift (7b.2, structural change): synthesize per-sector
-        # ProductivityShocks whose cumulative level rides the engine's existing θ multiplier, so
-        # sector-biased productivity shifts the output mix endogenously. Composed with the
-        # scenario's shocks (and any pre-expanded nature shocks). nature_state is cleared — expanded
-        # above. In multi mode the shocks are PER (region, sector) so each region uses its OWN
-        # aggregate-TFP denominator and its OWN labour share (review P1b/P2c 2026-08-28).
+        # labour-augmenting ProductivityShocks (the engine's labour-augmenting channel scales that
+        # sector's labour input), so sector-biased productivity shifts the output mix endogenously.
+        # Composed with the scenario's shocks (and any pre-expanded nature shocks). nature_state is
+        # cleared — expanded above. In multi mode the shocks are PER (region, sector) so each region
+        # uses its OWN VA-share-weighted mean (review P1b 2026-08-28 / P1 2026-08-31).
         year_shocks = list(base_nature_shocks or scenario.shocks) + _sector_productivity_shocks(
-            config, base_year, year, sectors, regions, multi, labour_shares
+            config, base_year, year, sectors, regions, multi, va_shares
         )
 
         res = run_scenario(
@@ -558,30 +559,34 @@ def _sector_productivity_shocks(
     sectors: list[str],
     regions: list[str],
     multi: bool,
-    labour_shares: dict,
+    va_shares: dict,
 ) -> list:
     """Synthesize LABOUR-AUGMENTING ProductivityShocks for the sectoral-drift driver (7b.2
     structural change), for EVERY model sector in ``sectors`` (an ``__all__``-only trajectory, or
     one whose keys do not match real EXIOBASE names, still drives every sector).
 
-    **Labour-augmenting, economically identified (review P1 2026-08-29).** The sourced sector series
-    is *labour-productivity* growth. It is applied as a genuine LABOUR-AUGMENTING shock on the
-    sector's labour input (``mechanism="labour_augmenting"``), NOT a Hicks-neutral θ: the engine's
-    value-added cost then falls by φ^{−s_L} through the labour channel by construction, so the
-    labour-share weighting is STRUCTURAL — there is no ad-hoc ``^s_L`` exponent (the earlier
-    ``(sector_LP/TFP)^s_L`` mixed labour-productivity with TFP and was not growth-accounting
-    identified). Capital deepening is not double-counted because the shock augments labour only,
-    while the model accumulates capital separately.
+    **A HEURISTIC structural-drift parameter, not an identified technology series (review P1
+    2026-08-31).** The sourced sector series is observed *labour-productivity* (output-per-hour)
+    growth, which mixes true labour-augmenting technology with capital deepening, utilisation
+    and labour-composition effects (g_{Y/L}=g_A+s_K·g_{K/L}+s_L·g_φ). This driver does NOT decompose
+    those out — it uses the series as a transparent, illustrative knob for how the OUTPUT MIX drifts
+    when one sector's measured productivity outpaces another's. It is implemented on the *labour*
+    input (``mechanism="labour_augmenting"``) rather than as Hicks-neutral TFP so it stays a
+    composition lever rather than re-imposing an aggregate level — but we do NOT claim it identifies
+    the technology term or that it removes capital-deepening double-counting; a growth-accounting
+    decomposition (needing sector K/L data the project does not vendor) is the documented follow-up.
 
-    **Structural DRIFT, not a level (review P1 2026-08-29).** The aggregate productivity level is
-    ALREADY carried by the TFP endowment scale, so this driver must contribute only the sector
-    COMPOSITION drift, not an implied aggregate. Each sector's cumulative labour-productivity level
-    is therefore expressed RELATIVE to the benchmark-VA-weighted geometric mean of all sectors'
-    levels, so the drift is a pure redistribution: a faster sector gets φ>1, a slower one φ<1,
-    and the VA-weighted mean of the biases is neutral (this removes the earlier artifact where, in a
-    high-TFP region, EVERY sector received a negative bias because all sector rates sat below the
-    region's TFP rate). The relative mean is a within-region quantity, computed per region —
-    the shocks are per (region, sector) in multi mode (the engine honours ``coverage_regions``).
+    **Structural DRIFT, not a level.** The aggregate productivity level is ALREADY carried by the
+    TFP endowment scale, so this driver contributes only the sector COMPOSITION drift. Each sector's
+    cumulative labour-productivity level is expressed RELATIVE to the **VA-share-weighted** geo
+    mean of all sectors' levels — weighted by each sector's SHARE OF VALUE ADDED v_i=VA_i/ΣVA_j
+    (review P1 2026-08-31: was wrongly the labour composition s_L, which weighted a 1%-of-economy
+    sector the same as a 99% one). So a large sector's drift dominates the mean and small sectors do
+    not swing it: a faster sector gets φ>1, a slower one φ<1, and the VA-weighted geometric mean of
+    the biases is 1 by construction. NOTE this cost-neutrality of the *mean* is geometric, not the
+    aggregate model cost effect (which for CES is not φ^{−s_L}); a transparent normalisation, not
+    an exact general-equilibrium neutrality claim. The mean is a within-region quantity, computed
+    per region — shocks are per (region, sector) in multi mode (engine honours coverage_regions).
 
     Empty when the config has no ``sector_productivity`` driver, so a run without it is
     byte-identical to Phase 7.1."""
@@ -592,19 +597,20 @@ def _sector_productivity_shocks(
 
     shocks = []
     for region in regions:
-        share_by_sector = labour_shares.get(region, {}) if multi else labour_shares
+        share_by_sector = va_shares.get(region, {}) if multi else va_shares
         # Cumulative labour-productivity LEVEL per sector (∏(1+rate)); the sector_rate lookup falls
         # back to the ``__all__`` sector path so a global-only trajectory drives every sector.
         levels = {
             s: _cumulative_sector_level(traj, "sector_productivity", s, base_year, year) + 1.0
             for s in sectors
         }
-        # Benchmark-VA-weighted GEOMETRIC mean of the sector levels — the "average" the drift is
-        # measured against, so the biases net out and no aggregate level is re-imposed (review P1).
-        # Weights are the sectors' benchmark VALUE-ADDED shares (labour + capital), approximated
-        # by the labour VA share the engine stamped (a positive per-sector weight); a sector with no
-        # weight falls back to equal weighting.
-        weights = np.array([max(float(share_by_sector.get(s, 1.0)), 1e-9) for s in sectors])
+        # VA-SHARE-weighted GEOMETRIC mean of the sector levels — the "average" the drift is
+        # measured against, so a large sector's drift dominates and no aggregate level is re-imposed
+        # (review P1 2026-08-31). Weights are each sector's SHARE of regional value added
+        # v_i=VA_i/ΣVA_j (engine-stamped); a sector with no stamped weight falls to equal weighting.
+        weights = np.array([max(float(share_by_sector.get(s, 0.0)), 0.0) for s in sectors])
+        if weights.sum() <= 0:
+            weights = np.ones(len(sectors))
         weights = weights / weights.sum()
         log_mean = float(np.sum(weights * np.log([levels[s] for s in sectors])))
         mean_level = float(np.exp(log_mean))
@@ -812,8 +818,9 @@ def _trend_provenance(config: DynamicConfig, regions: list[str], sectors: list[s
         "coverage": _structural_coverage(traj, regions, sectors),
         "note": (
             "Phase 7b.2 sourced trajectories: per-region labour-supply (population×participation) "
-            "and productivity growth as endowment scales; per-sector productivity drift via the θ "
-            "multiplier (structural change) and emissions-intensity decarbonisation scaling the "
+            "and productivity growth as endowment scales; per-sector productivity drift as a "
+            "HEURISTIC labour-augmenting composition lever (VA-share-weighted zero-mean, not an "
+            "identified technology series) and emissions-intensity decarbonisation scaling the "
             "per-sector intensity, all compounded from the cited annual rates. 'coverage' reports "
             "whether the model's labels are explicitly keyed (differentiated) or fall through to "
             "__all__ (see the structural concordance)."

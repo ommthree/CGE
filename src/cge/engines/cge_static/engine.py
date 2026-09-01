@@ -513,20 +513,21 @@ def _capital_dynamics_manifest(cal) -> dict:
 
 
 def _labour_va_shares_manifest(cal) -> dict:
-    """Per-sector benchmark **labour share of value added** s_L[i] = F0[LAB,i] / Σ_f F0[f,i], for
-    the recursive-dynamic wrapper's labour-augmenting sector-productivity driver (review P2
-    2026-08-28, updated P1 2026-08-29).
+    """Per-sector benchmark factor shares the recursive-dynamic wrapper's labour-augmenting
+    sector-productivity driver needs (review P2 2026-08-28, updated P1 2026-08-31). Two DISTINCT
+    quantities, both stamped per sector (and per region in multi):
 
-    The sourced sectoral productivity series (EU KLEMS) is *labour-productivity* growth, which
-    includes capital deepening. The recursive model accumulates capital separately, so the wrapper
-    applies the series as a genuine LABOUR-AUGMENTING shock on the sector's labour input
-    (``mechanism="labour_augmenting"``) rather than as Hicks-neutral TFP — the VA unit cost falls
-    by φ^{−s_L} by construction, so capital deepening is not double-counted. Stamping s_L here gives
-    the wrapper the benchmark VA weights it uses (a) to form the geometric-mean denominator the
-    per-sector drift is measured against (so the biases net out per region) and (b) as the labour
-    share the engine's own labour-augmenting channel weights each shock by.
+    - ``labour_va_share`` s_L[i] = F0[LAB,i] / Σ_f F0[f,i] — the LABOUR COMPOSITION of sector i's
+      value added. The engine's labour-augmenting channel weights each shock's cost effect by this
+      (VA unit cost falls by φ^{−s_L} under a Cobb-Douglas VA nest).
+    - ``va_share`` v[i] = VA_i / Σ_j VA_j — sector i's SHARE of regional value added. The wrapper
+      uses THIS as the weights for the geometric-mean the per-sector drift is measured against, so a
+      large sector's drift is weighted by its economic size (review P1 2026-08-31: the earlier code
+      wrongly used s_L there, which weights by labour composition — two sectors with equal labour
+      shares got equal weight even at a 99:1 size split, exaggerating small sectors' drift).
 
-    Single-region: ``{sector: s_L}``. Multi-region: ``{region: {sector: s_L}}`` (F0 is [f, r, s]).
+    These are genuinely different: s_L is a within-sector ratio, v is a cross-sector share. Single-
+    region: ``{sector: value}``. Multi-region: ``{region: {sector: value}}`` (F0 is [f, r, s]).
     Returns ``{"available": False, ...}`` when the model has no LAB factor."""
     factors = list(cal.factors)
     # The base factor label is "LAB" in the single-region variants and "LAB_<r>" in multi; detect
@@ -538,19 +539,24 @@ def _labour_va_shares_manifest(cal) -> dict:
     if F0.ndim == 3:  # multi: [f, r, s]
         regions = list(cal.regions)
         lab = factors.index("LAB")
-        out: dict = {}
+        sl_out: dict = {}
+        va_out: dict = {}
         for ri, r in enumerate(regions):
             va = F0[:, ri, :].sum(axis=0)  # [s] total VA per sector in region r
             sl = np.divide(F0[lab, ri, :], va, out=np.zeros_like(va), where=va > 0)
-            out[r] = {s: round(float(sl[si]), 12) for si, s in enumerate(sectors)}
-        return {"available": True, "labour_va_share": out}
+            v = va / va.sum() if va.sum() > 0 else np.full_like(va, 1.0 / max(len(va), 1))
+            sl_out[r] = {s: round(float(sl[si]), 12) for si, s in enumerate(sectors)}
+            va_out[r] = {s: round(float(v[si]), 12) for si, s in enumerate(sectors)}
+        return {"available": True, "labour_va_share": sl_out, "va_share": va_out}
     # Single-region: [f, s]
     lab = factors.index("LAB")
     va = F0.sum(axis=0)  # [s] total VA per sector
     sl = np.divide(F0[lab, :], va, out=np.zeros_like(va), where=va > 0)
+    v = va / va.sum() if va.sum() > 0 else np.full_like(va, 1.0 / max(len(va), 1))
     return {
         "available": True,
         "labour_va_share": {s: round(float(sl[si]), 12) for si, s in enumerate(sectors)},
+        "va_share": {s: round(float(v[si]), 12) for si, s in enumerate(sectors)},
     }
 
 

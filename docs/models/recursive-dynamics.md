@@ -70,8 +70,9 @@ used by most applied CGE/IAM-style tools — distinct from an intertemporal (Ram
    $K_0$ (eq $(2)$); the forward $\delta$ (`DynamicConfig.depreciation`) drives eq $(1)$. They are
    never conflated (manifest labels them separately).
 6. **Aggregate productivity is Hicks-neutral**, applied as an equal endowment-equivalent scale on
-   both primary factors (eq $(3)$). Per-**sector** structural change is **labour-augmenting** on the
-   sector's labour input only (eq $(5)$), not Hicks-neutral TFP.
+   both primary factors (eq $(3)$). Per-**sector** structural change is a **heuristic labour-
+   augmenting composition lever** on the sector's labour input (eq $(5)$), not an identified
+   technology term and not a claim of decomposed capital deepening (§6).
 7. **Exogenous trends.** Labour and productivity paths are exogenous inputs — flat `DynamicConfig`
    scalars, or a sourced per-region/per-sector `StructuralTrajectory` (§6). Never implicit.
 
@@ -92,12 +93,13 @@ The capital endowment in the CGE is the capital-**services** flow, proportional 
 scaling the stock by Kₜ/K₀ scales the services endowment by the same factor (the engine's
 `factor_endowment_scale` hook), equation $(4)$. Labour scales the same way. **Aggregate
 productivity** enters as a Hicks-neutral endowment-equivalent scale on both primary factors.
-**Sector-level** productivity is implemented (Phase 7b.2) as a genuine **labour-augmenting** term on
-each sector's labour input — NOT a Hicks-neutral θ (review P1 2026-08-29) — so the output mix shifts
-endogenously (§6, equation $(5)$). Modelling it on labour input directly (rather than converting a
-labour-productivity number into an equivalent TFP shock) is what keeps the capital-deepening
-component of labour-productivity growth from being double-counted against the model's own capital
-accumulation, following the factor-augmenting formalism of [Solow1957].
+**Sector-level** productivity is implemented (Phase 7b.2) as a **labour-augmenting** term on each
+sector's labour input — not a Hicks-neutral θ — so the output mix shifts endogenously (§6, equation
+$(5)$). It is a **heuristic composition lever**: the sourced series is observed labour productivity
+(which mixes technology, capital deepening and utilisation), and this driver does not decompose those
+out. Putting it on labour input keeps it a composition lever rather than an aggregate-level re-imposer
+(the factor-augmenting form of [Solow1957]); it is NOT a claim that capital deepening has been
+identified out — see §6 for the honest statement and the growth-accounting follow-up.
 
 Concretely, the year-$t$ primary-factor endowment scales fed to the engine's `factor_endowment_scale`
 hook are
@@ -112,13 +114,19 @@ capital-services flow proportional to the stock,
 $$ \frac{\partial\,\text{cap\_scale}_t}{\partial K_t} = \frac{A_t}{K_0} \tag{4} $$
 
 i.e. a stock ratio maps one-to-one to a services-endowment ratio (assumption 2). The per-sector
-labour-augmenting factor $\varphi_s$ scales **only** sector $s$'s labour entry; under the CES/Cobb–
-Douglas value-added nest the sector's VA unit cost then satisfies
+labour-augmenting factor $\varphi_s$ scales **only** sector $s$'s labour entry. Under a **Cobb–
+Douglas** value-added nest ($\sigma_{va}=1$, the default) the sector's VA unit cost then satisfies,
+exactly,
 
 $$ c^{VA}_s(\varphi_s) = \varphi_s^{-s_L}\, c^{VA}_s(1) \tag{5} $$
 
-so a $\varphi_s > 1$ (faster sector labour productivity) lowers that sector's cost by $\varphi_s^{-s_L}$
-and it gains output share endogenously ([Solow1957]).
+so a $\varphi_s > 1$ (faster sector labour productivity) lowers that sector's cost and it gains output
+share endogenously ([Solow1957]). For a **CES** nest ($\sigma_{va}\neq1$) the exact unit-cost response
+is *not* $\varphi_s^{-s_L}$ — it depends on $\sigma_{va}$ and the post-substitution factor shares; eq
+$(5)$ is then a first-order ($s_L$-weighted) approximation, and the engine computes the exact CES cost
+internally regardless. The important honesty point (see §6): the sourced sector series is observed
+labour productivity, so $\varphi_s$ here is a **heuristic composition lever**, not an identified
+labour-augmenting technology parameter.
 
 Results are reported per year **relative to the original benchmark**, so capital accumulation and the
 trends are **visible in the level path** (a growing stock raises output vs the benchmark). Two result
@@ -188,21 +196,27 @@ horizon, δ, trends, retirement, K₀, and the capital path.
       participation growth, i.e. the exact multiplicative step (1+pop)(1+part) each year (both are
       *proportional* annual growth rates, not percentage-point changes), and labour productivity
       (TFP), applied as endowment scales. *(UN WPP 2024, ILO/World Bank, PWT 10.01.)*
-    - **Per-sector `sector_productivity`** (structural change / GDP-share drift) — a sourced
-      **labour-productivity** series applied as a genuine **labour-augmenting** term on the sector's
-      labour input (a `ProductivityShock(mechanism="labour_augmenting")`), so the output mix shifts
-      **endogenously** (a sector with faster productivity gains share); shares are a model result, not
-      an imposed target. Under a labour-augmenting factor $\varphi$ the sector's value-added unit cost
-      falls by $\varphi^{-s_L}$ *by construction* ($s_L$ = the sector's benchmark labour share of
-      value added), equation $(5)$ — this is why modelling it on labour, not as Hicks-neutral TFP,
-      does not double-count the capital deepening the model accumulates separately (review P1
-      2026-08-29, [Solow1957]). The per-sector **drift** is each sector's cumulative labour-
-      productivity level relative to the benchmark-VA-weighted **geometric mean** of all sectors'
-      levels — a **zero-mean** relative drift, so the biases straddle zero and a high-aggregate region
-      does not get uniformly negative sector biases (review P1 2026-08-29). In **multi** mode the
-      geometric-mean denominator and the labour share are both **region-specific**, so an identical
-      sector rate nets to a different bias in each region (review P1b). *(EU KLEMS 2023 [EUKLEMS2023];
-      Penn World Table 10.01 [FeenstraPWT] for the aggregate reference.)*
+    - **Per-sector `sector_productivity`** (structural composition drift) — a sourced
+      **labour-productivity** series applied as a **labour-augmenting** term on the sector's labour
+      input (a `ProductivityShock(mechanism="labour_augmenting")`), so the output mix shifts
+      **endogenously** (a sector with faster measured productivity gains share); shares are a model
+      result, not an imposed target. **Honesty (review P1 2026-08-31).** Observed labour productivity
+      is $g_{Y/L}=g_A+s_K\,g_{K/L}+s_L\,g_\varphi$ — it mixes true labour-augmenting technology with
+      capital deepening, utilisation and composition. This driver does **not** decompose those out, so
+      $\varphi_s$ is a **heuristic, illustrative composition lever**, NOT an identified technology
+      parameter, and we do **not** claim it removes capital-deepening double-counting. It is put on the
+      labour input (not Hicks-neutral TFP) only so it stays a composition lever rather than re-imposing
+      an aggregate level; a growth-accounting decomposition (needing sector K/L data the project does
+      not vendor) is the documented follow-up. The per-sector **drift** is each sector's cumulative
+      labour-productivity level relative to the **VA-share-weighted geometric mean** of all sectors'
+      levels — weighted by each sector's **share of value added** $v_i=VA_i/\sum_j VA_j$ (review P1
+      2026-08-31: previously the labour composition $s_L$, which weighted a 1%-of-economy sector like a
+      99% one). The VA-weighted geometric mean of the biases is 1 **by construction**, so a large
+      sector's drift dominates and the composition redistributes without re-imposing an aggregate
+      level; this is a transparent normalisation, not an exact GE cost-neutrality. In **multi** mode
+      the mean is **region-specific**, so an identical sector rate nets to a different bias per region
+      (review P1b). *(EU KLEMS 2023 [EUKLEMS2023]; Penn World Table 10.01 [FeenstraPWT] for the
+      aggregate reference.)*
     - **Per-sector `emissions_intensity`** (decarbonisation) — a **price-independent** engine hook
       (`emissions_intensity_scale`) that multiplies the sector's physical emission intensity (so
       covered emissions fall) AND its priced carbon wedge. Because it acts on the intensity the engine
@@ -230,9 +244,10 @@ horizon, δ, trends, retirement, K₀, and the capital path.
   `DynamicConfig(allow_uniform_fallback=True)` — so a real build cannot silently collapse to the
   uniform default (review P2 2026-08-29).
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
-- Aggregate productivity is Hicks-neutral on primary factors; the per-sector series is modelled as
-  labour-augmenting (a factor on the sector's labour input, not a TFP transform). No other
-  factor-biased or vintage-specific technical change.
+- Aggregate productivity is Hicks-neutral on primary factors; the per-sector series is a heuristic
+  labour-augmenting composition lever (a factor on the sector's labour input, not a TFP transform,
+  and not an identified technology term — no capital-deepening decomposition). No other factor-biased
+  or vintage-specific technical change.
 - Magnitudes are illustrative (toy calibration); the value is the **mechanism** — a static CGE turned
   into a capital-carrying dynamic path, the backbone Phase 7.2 (NGFS) and 7.3 (climate) build on.
 

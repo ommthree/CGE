@@ -17,26 +17,29 @@ example: [`docs/models/io-price-model.md`](docs/models/io-price-model.md)).
 
 ## Status
 
-**Phase 4 — volume response complete.** The platform now answers both halves of the original
-question — the change in the **cost** of a good under a carbon price (Engine 1, Leontief price
-model, validated on live EXIOBASE) and the change in its **production volume** (Engine 2,
-partial-equilibrium demand response with a low/central/high uncertainty band). Built on the
-Phase 3 GUI, Phase 1 data layer (live EXIOBASE + quality/consistency checks), and Phase 0
-contracts, with a standing model-validation suite ([`docs/validation.md`](docs/validation.md)).
-Also: **macro aggregates** (GVA/GDP/deflators, real vs nominal — Phase 4b) and a **static CGE**
-(Engine 3, Phase 5) with **carbon-tax revenue recycling** — a pilot that calibrates on an
-EXIOBASE-shaped SAM, passes the standard CGE battery (replication/homogeneity/Walras), and shows
-the revenue-recycling effect and dirty→clean reallocation. It also runs as an **open economy**
-(Armington imports + CET exports + a rest-of-world account, CES value added, elasticity sweeps),
-where a carbon price causes textbook **carbon leakage**, and as a **true multi-region economy**
-with bilateral trade between build regions (destination-specific route prices, explicit bilateral
-market clearing, cross-region leakage). **Phase 5d** extends the CGE with an explicit **government
-account** (balanced-budget and deficit-financed closures), **adaptation/transition investment**, and
-a **KL-E-M energy nest** across all three variants. An IOSystem-driven multi-region SAM build is the
-remaining data sub-phase (§5.1b: the offline test MRIO's inter-region trade is dust at the sector
-granularity, so the live-EXIOBASE build with genuine bilateral trade is the outstanding step).
-Volume magnitudes are indicative; cost answers are validated. See
-[`docs/models/cge-static.md`](docs/models/cge-static.md).
+**Phases 0–7b.2 implemented; recursive dynamics + nature live (methodological calibration ongoing).**
+The platform answers both halves of the original question — the change in the **cost** of a good
+under a carbon price (Engine 1, Leontief price model, validated on live EXIOBASE) and the change in
+its **production volume** (Engine 2, partial-equilibrium demand response with a low/central/high
+band) — on the Phase 3 GUI, Phase 1 data layer (live EXIOBASE + quality/consistency checks), Phase 0
+contracts, and a standing model-validation suite ([`docs/validation.md`](docs/validation.md)), plus
+**macro aggregates** (GVA/GDP/deflators, real vs nominal — Phase 4b).
+
+A **static CGE** (Engine 3, Phase 5) with carbon-tax revenue recycling calibrates on an
+EXIOBASE-shaped SAM, passes the standard battery (replication/homogeneity/Walras), and runs as a
+closed, **open** (Armington/CET + rest-of-world → textbook carbon leakage) and **true multi-region**
+economy (bilateral trade, explicit market clearing). **Phase 5d** adds a **government account**
+(balanced-budget/deficit closures), **adaptation/transition investment**, and a **KL-E-M energy
+nest**. **Phase 6/6b** adds a **nature (ENCORE) extension** — physical ecosystem-service state →
+exposure → productivity loss — and **Phase 7.1** turns the static CGE **recursive-dynamic** (a
+capital-carrying path across years, all three variants), driven by **Phase 7b.2 sourced structural
+trajectories** (population/participation/TFP, an illustrative per-sector composition-drift lever,
+and emissions-intensity decarbonisation).
+
+Cost answers are validated; volume and CGE/dynamic magnitudes are **illustrative** (the structural
+productivity trajectories are a documented heuristic, not a calibrated baseline — see
+[`docs/models/recursive-dynamics.md`](docs/models/recursive-dynamics.md) §6). See
+[`roadmap.md`](roadmap.md) for the phase map and [`docs/models/cge-static.md`](docs/models/cge-static.md).
 
 ```bash
 cge gui                                                # launch the web GUI

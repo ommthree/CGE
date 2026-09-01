@@ -12,6 +12,10 @@
 # but are not what these numbers were produced on. pymrio in particular emits forward-compat
 # (pandas) warnings across minor releases; pinning it here keeps a deployment on a quiet,
 # tested combination.
+#
+# CI ENFORCES this file: the `reproducible` job in .github/workflows/ci.yml installs with
+# `-c constraints.txt` and runs the full lint + test + validation gates on the pinned toolchain,
+# so this is a TESTED reproducibility claim, not just an assertion (review P2 2026-08-31).
 
 # --- core ---
 pydantic==2.11.9
@@ -34,4 +38,6 @@ streamlit==1.61.1
 altair==6.2.2
 
 # --- dev extra ([dev]) ---
-# pytest / ruff / pre-commit floats are fine for dev; pin if a CI needs byte-stability.
+# Pinned so the constrained CI job (ci.yml `reproducible` job) runs a byte-stable toolchain.
+pytest==8.4.2
+ruff==0.16.0
