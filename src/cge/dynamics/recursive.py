@@ -206,6 +206,18 @@ def _probe_va_shares(manifest, regions: list[str], sectors: list[str]) -> dict:
     return lvs.get("va_share", {})
 
 
+def _probe_labour_shares(manifest, regions: list[str], sectors: list[str]) -> dict:
+    """The per-sector benchmark **labour share of value added** s_L = LAB_i / Σ_f F_{f,i} the engine
+    stamped. Used to decompose observed labour productivity into capital deepening + technology (the
+    capital share is s_K = 1 − s_L) — g_φ = (g_{Y/L} − s_K·g_{K/L}) / s_L (review P1 decomposition
+    2026-09-01). Flat ``{sector: s_L}`` (single-region) or nested ``{region: {sector: s_L}}``;
+    empty when the engine exposed no shares (the caller then keeps the heuristic path)."""
+    lvs = manifest.assumptions.get("labour_va_shares", {})
+    if not lvs.get("available"):
+        return {}
+    return lvs.get("labour_va_share", {})
+
+
 def _year_investment(res: ResultSet, year: int, regions: list[str]) -> np.ndarray:
     """That year's REAL investment VOLUME (share of benchmark GDP) per region, ordered by regions.
 
@@ -294,6 +306,11 @@ def run_recursive(
     # weighted by its economic SIZE and the per-region biases net out. (Was wrongly the labour
     # composition s_L before — review P1 2026-08-31.)
     va_shares = _probe_va_shares(probe.manifest, regions, sectors)
+    # Per-sector benchmark LABOUR SHARE of value added s_L (and hence s_K = 1−s_L), needed to
+    # decompose observed labour productivity into its capital-deepening and technology parts when a
+    # ``capital_deepening`` series is supplied: g_φ = (g_{Y/L} − s_K·g_{K/L}) / s_L (review P1
+    # decomposition 2026-09-01).
+    labour_shares = _probe_labour_shares(probe.manifest, regions, sectors)
 
     # "Unmapped label fails loudly" at the RUN boundary (review P2 2026-08-29): if a structural
     # trajectory is supplied but EVERY model region/sector falls through to the global ``__all__``
@@ -383,7 +400,7 @@ def run_recursive(
         # cleared — expanded above. In multi mode the shocks are PER (region, sector) so each region
         # uses its OWN VA-share-weighted mean (review P1b 2026-08-28 / P1 2026-08-31).
         year_shocks = list(base_nature_shocks or scenario.shocks) + _sector_productivity_shocks(
-            config, base_year, year, sectors, regions, multi, va_shares
+            config, base_year, year, sectors, regions, multi, va_shares, labour_shares
         )
 
         res = run_scenario(
@@ -552,6 +569,35 @@ def _cumulative_sector_level(traj, driver: str, sector: str, base_year: int, yea
     return acc - 1.0
 
 
+def _decomposed_tech_level(
+    traj, sector: str, base_year: int, year: int, s_L: float, identified: bool
+) -> float:
+    """Cumulative LABOUR-AUGMENTING TECHNOLOGY level (∏(1+g_φ)) for a sector from ``base_year`` to
+    ``year``, growth-accounting-decomposed (review P1 decomposition 2026-09-01).
+
+    Value-added growth accounting gives ``g_{Y/L} = g_MFP + s_K·g_{K/L}`` (labour productivity = MFP
+    growth + capital deepening; [Solow1957], [EUKLEMS2023]). A labour-augmenting factor a adds
+    ``s_L·a`` to MFP, so the labour-augmenting technology rate is
+    ``g_φ = (g_{Y/L} − s_K·g_{K/L}) / s_L`` with s_K = 1 − s_L. When ``identified`` (a
+    ``capital_deepening`` series is present AND a valid s_L is known) this removes the capital
+    deepening the recursive model already accumulates. Otherwise g_φ falls back to the raw observed
+    labour-productivity rate g_{Y/L} — the transparent heuristic (deepening not removed).
+
+    Compounds the per-year decomposed rate over the actual gap (piecewise-constant, like the other
+    drivers). Returns the cumulative multiplier LEVEL (≥ 0), not minus one."""
+    acc = 1.0
+    for y in range(base_year, year):
+        g_yl = traj.sector_rate("sector_productivity", sector, y)
+        if identified:
+            s_k = 1.0 - s_L
+            g_kl = traj.sector_rate("capital_deepening", sector, y)
+            g_phi = (g_yl - s_k * g_kl) / s_L
+        else:
+            g_phi = g_yl
+        acc *= 1.0 + g_phi
+    return max(acc, 1e-9)
+
+
 def _sector_productivity_shocks(
     config: DynamicConfig,
     base_year: int,
@@ -560,33 +606,35 @@ def _sector_productivity_shocks(
     regions: list[str],
     multi: bool,
     va_shares: dict,
+    labour_shares: dict,
 ) -> list:
     """Synthesize LABOUR-AUGMENTING ProductivityShocks for the sectoral-drift driver (7b.2
     structural change), for EVERY model sector in ``sectors`` (an ``__all__``-only trajectory, or
     one whose keys do not match real EXIOBASE names, still drives every sector).
 
-    **A HEURISTIC structural-drift parameter, not an identified technology series (review P1
-    2026-08-31).** The sourced sector series is observed *labour-productivity* (output-per-hour)
-    growth, which mixes true labour-augmenting technology with capital deepening, utilisation
-    and labour-composition effects (g_{Y/L}=g_A+s_K·g_{K/L}+s_L·g_φ). This driver does NOT decompose
-    those out — it uses the series as a transparent, illustrative knob for how the OUTPUT MIX drifts
-    when one sector's measured productivity outpaces another's. It is implemented on the *labour*
-    input (``mechanism="labour_augmenting"``) rather than as Hicks-neutral TFP so it stays a
-    composition lever rather than re-imposing an aggregate level — but we do NOT claim it identifies
-    the technology term or that it removes capital-deepening double-counting; a growth-accounting
-    decomposition (needing sector K/L data the project does not vendor) is the documented follow-up.
+    **Growth-accounting-identified when possible (review P1 decomposition 2026-09-01).** The sourced
+    sector series is observed *labour-productivity* (output-per-hour) growth, which by growth
+    accounting is ``g_{Y/L} = g_MFP + s_K·g_{K/L}`` — genuine MFP growth PLUS capital deepening.
+    Since the recursive model accumulates capital separately, the raw series would double-count the
+    deepening. When a ``capital_deepening`` series g_{K/L} is supplied (and the engine stamped the
+    sector's labour share s_L), the wrapper subtracts it and drives the sector with the identified
+    labour-augmenting rate ``g_φ = (g_{Y/L} − s_K·g_{K/L}) / s_L`` (s_K = 1−s_L) — free of the
+    deepening. Without a ``capital_deepening`` series it falls back to the raw rate as a
+    transparent HEURISTIC composition lever (deepening not removed); the manifest records which mode
+    ran. Either way it is a ``ProductivityShock(mechanism="labour_augmenting")`` on the sector's
+    labour input.
 
     **Structural DRIFT, not a level.** The aggregate productivity level is ALREADY carried by the
     TFP endowment scale, so this driver contributes only the sector COMPOSITION drift. Each sector's
-    cumulative labour-productivity level is expressed RELATIVE to the **VA-share-weighted** geo
-    mean of all sectors' levels — weighted by each sector's SHARE OF VALUE ADDED v_i=VA_i/ΣVA_j
-    (review P1 2026-08-31: was wrongly the labour composition s_L, which weighted a 1%-of-economy
-    sector the same as a 99% one). So a large sector's drift dominates the mean and small sectors do
-    not swing it: a faster sector gets φ>1, a slower one φ<1, and the VA-weighted geometric mean of
-    the biases is 1 by construction. NOTE this cost-neutrality of the *mean* is geometric, not the
-    aggregate model cost effect (which for CES is not φ^{−s_L}); a transparent normalisation, not
-    an exact general-equilibrium neutrality claim. The mean is a within-region quantity, computed
-    per region — shocks are per (region, sector) in multi mode (engine honours coverage_regions).
+    cumulative technology level is expressed RELATIVE to the **VA-share-weighted** geo mean of all
+    sectors' levels — weighted by each sector's SHARE OF VALUE ADDED v_i=VA_i/ΣVA_j (review P1
+    2026-08-31: was wrongly the labour composition s_L, which weighted a 1%-of-economy sector like a
+    99% one). So a large sector's drift dominates the mean and small sectors do not swing it: a
+    faster sector gets φ>1, a slower one φ<1, and the VA-weighted geometric mean of biases is 1 by
+    construction. NOTE this cost-neutrality of the *mean* is geometric, not the aggregate model cost
+    effect (which for CES is not φ^{−s_L}); a transparent normalisation, not an exact GE neutrality
+    claim. The mean is a within-region quantity, computed per region — shocks are per (region,
+    sector) in multi mode (engine honours coverage_regions).
 
     Empty when the config has no ``sector_productivity`` driver, so a run without it is
     byte-identical to Phase 7.1."""
@@ -595,15 +643,22 @@ def _sector_productivity_shocks(
         return []
     from cge.contracts.shocks import ProductivityShock
 
+    # The decomposition is ON only when a capital_deepening series exists. s_L per sector comes from
+    # the engine's stamped labour shares; a sector with no stamped share (or s_L≈0) cannot be
+    # decomposed, so it keeps the raw heuristic rate rather than dividing by ~0.
+    has_deepening = bool(traj.sector_rates.get("capital_deepening"))
+
     shocks = []
     for region in regions:
         share_by_sector = va_shares.get(region, {}) if multi else va_shares
-        # Cumulative labour-productivity LEVEL per sector (∏(1+rate)); the sector_rate lookup falls
-        # back to the ``__all__`` sector path so a global-only trajectory drives every sector.
-        levels = {
-            s: _cumulative_sector_level(traj, "sector_productivity", s, base_year, year) + 1.0
-            for s in sectors
-        }
+        sl_by_sector = labour_shares.get(region, {}) if multi else labour_shares
+        # Cumulative TECHNOLOGY level per sector (∏(1+g_φ)); decomposed when a capital_deepening
+        # series + a usable labour share exist, else the raw labour-productivity rate (heuristic).
+        levels = {}
+        for s in sectors:
+            s_L = float(sl_by_sector.get(s, 0.0))
+            identified = has_deepening and s_L > 1e-6
+            levels[s] = _decomposed_tech_level(traj, s, base_year, year, s_L, identified)
         # VA-SHARE-weighted GEOMETRIC mean of the sector levels — the "average" the drift is
         # measured against, so a large sector's drift dominates and no aggregate level is re-imposed
         # (review P1 2026-08-31). Weights are each sector's SHARE of regional value added
@@ -816,14 +871,24 @@ def _trend_provenance(config: DynamicConfig, regions: list[str], sectors: list[s
         # Review P1c 2026-08-28: prove the trajectory differentiates the model's OWN labels (via the
         # concordance) rather than every label collapsing to __all__.
         "coverage": _structural_coverage(traj, regions, sectors),
+        # Whether the sectoral-productivity driver runs growth-accounting-IDENTIFIED (a
+        # ``capital_deepening`` series is present, so g_φ=(g_{Y/L}−s_K·g_{K/L})/s_L removes the
+        # capital deepening the model accumulates) or as the raw-rate HEURISTIC (review P1
+        # decomposition 2026-09-01).
+        "sector_productivity_mode": (
+            "identified (capital deepening netted out via g_phi=(g_Y/L - s_K*g_K/L)/s_L)"
+            if traj.sector_rates.get("capital_deepening")
+            else "heuristic (raw labour-productivity rate; capital deepening NOT removed)"
+        ),
         "note": (
             "Phase 7b.2 sourced trajectories: per-region labour-supply (population×participation) "
             "and productivity growth as endowment scales; per-sector productivity drift as a "
-            "HEURISTIC labour-augmenting composition lever (VA-share-weighted zero-mean, not an "
-            "identified technology series) and emissions-intensity decarbonisation scaling the "
-            "per-sector intensity, all compounded from the cited annual rates. 'coverage' reports "
-            "whether the model's labels are explicitly keyed (differentiated) or fall through to "
-            "__all__ (see the structural concordance)."
+            "labour-augmenting term (VA-share-weighted zero-mean composition drift) — "
+            "growth-accounting-identified when a capital_deepening series is supplied, else a "
+            "raw-rate heuristic (see 'sector_productivity_mode') — and emissions-intensity "
+            "decarbonisation scaling the per-sector intensity, compounded from the cited annual "
+            "rates. 'coverage' reports whether the model's labels are explicitly keyed "
+            "(differentiated) or fall through to __all__ (see the structural concordance)."
         ),
     }
 
