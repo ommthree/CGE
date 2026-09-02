@@ -69,25 +69,37 @@ keeps **country-level** archetypes and blends them per block with documented **G
 - **Licence:** CC BY 4.0 (EU KLEMS/INTANProd public release).
 - **Note:** the shipped `BRD`/`MIL` sector keys are the toy model's illustrative sectors; the rates
   are headline goods-vs-services **labour-productivity** growth central estimates (output per hour),
-  **absolute** per-sector rates (see the artifact `sector_productivity`). This series drives a
-  **heuristic composition lever**, NOT an identified technology term (review P1 2026-08-31). Observed
-  labour productivity is `g_{Y/L}=g_A+s_K·g_{K/L}+s_L·g_φ` — it mixes true labour-augmenting
-  technology with capital deepening, utilisation and composition, and the wrapper does **not**
-  decompose those out. It applies the series as a **labour-augmenting** improvement on the sector's
-  labour input (`ProductivityShock(mechanism="labour_augmenting")`, scaling ONLY that sector's labour
-  entry) rather than as Hicks-neutral TFP, so it stays a composition lever rather than re-imposing an
-  aggregate level — but we make **no claim** that this removes capital-deepening double-counting; a
-  growth-accounting decomposition (needing sector K/L data not vendored here) is the documented
-  follow-up. (This replaces the earlier `θ_dev = deviation ** s_L` conversion, and the earlier
-  "capital-deepening not double-counted" claim is retracted.) Under a Cobb-Douglas VA nest the
-  sector's value-added cost falls by φ^{−s_L} exactly (s_L = labour share of VA); for CES the engine
-  computes the exact cost. The per-sector *drift* is each sector's cumulative labour-productivity
-  level relative to the **VA-share-weighted geometric mean** of all sectors' levels — weighted by each
-  sector's SHARE of value added `v_i=VA_i/ΣVA_j` (review P1 2026-08-31: previously the labour
-  composition `s_L`, which weighted a 1%-of-economy sector like a 99% one) — so the VA-weighted
-  geometric mean of the biases is 1 and a large sector's drift dominates. On a real EXIOBASE build
-  these sector keys map to actual industries via the structural concordance
+  **absolute** per-sector rates (see the artifact `sector_productivity`). Value-added growth
+  accounting gives `g_{Y/L}=g_MFP+s_K·g_{K/L}` — observed labour productivity is genuine MFP growth
+  PLUS capital deepening. Since the recursive model accumulates capital separately, the wrapper
+  **decomposes** the series: with the `capital_deepening` series below it applies the **identified**
+  labour-augmenting technology rate `g_φ=(g_{Y/L}−s_K·g_{K/L})/s_L` (review P1 decomposition
+  2026-09-01), so capital deepening is not double-counted; without a `capital_deepening` series it
+  falls back to the raw rate as a transparent heuristic (deepening not removed), and the run manifest
+  records which mode ran. Either way it is a `ProductivityShock(mechanism="labour_augmenting")` on the
+  sector's labour input. Under a Cobb-Douglas VA nest the sector's VA cost falls by φ^{−s_L} exactly
+  (s_L = labour share of VA); for CES the engine computes the exact cost. The per-sector *drift* is
+  each sector's cumulative φ level relative to the **VA-share-weighted geometric mean** of all
+  sectors' levels — weighted by each sector's SHARE of value added `v_i=VA_i/ΣVA_j` (review P1
+  2026-08-31: previously the labour composition `s_L`, which weighted a 1%-of-economy sector like a
+  99% one). (This replaces the earlier `θ_dev = deviation ** s_L` conversion.) On a real EXIOBASE
+  build these sector keys map to actual industries via the structural concordance
   (`data/structural/concordance_v2.json`).
+
+## Sectoral capital deepening — EU KLEMS 2023 release
+
+- **Source:** EU KLEMS & INTANProd 2023 release — sector **capital services per hour worked** growth
+  (`g_{K/L}`), from the capital-services and hours-worked accounts by industry.
+  <https://euklems-intanprod-llee.luiss.it/>
+- **Retrieved:** 2026-08-16.
+- **Licence:** CC BY 4.0 (EU KLEMS/INTANProd public release).
+- **Note:** the shipped `capital_deepening` rates are headline central estimates (goods-producing
+  sectors are more capital-intensive and deepen faster ~1.0–1.2%/yr; services ~0.6%/yr). They exist
+  to net capital deepening out of observed labour productivity so the sector-productivity driver
+  becomes a genuine labour-augmenting technology term (`g_φ=(g_{Y/L}−s_K·g_{K/L})/s_L`; s_K=1−s_L
+  from the engine's benchmark factor shares) rather than double-counting the capital the recursive
+  model already accumulates. `confidence = low` (illustrative headline rates, not a reproduced
+  extraction — see the reproducibility caveat below).
 
 ## Emissions intensity — IEA WEO 2024 / NGFS Net Zero 2050
 

@@ -89,7 +89,9 @@ concordance (see `data/structural/NOTICE.md` for licences and the reproducibilit
   Penn World Table. *American Economic Review*, 105(10), 3150–3182. — *Penn World Table 10.01*
   (`rtfpna`), the per-region aggregate-TFP growth series.
 - **[EUKLEMS2023]** EU KLEMS & INTANProd (2023 release). — Sectoral labour-productivity (output per
-  hour) growth by industry; the per-sector `sector_productivity` series.
+  hour) growth by industry (`sector_productivity`) AND sector capital services per hour worked
+  (`capital_deepening`, g_{K/L}), the two series the growth-accounting decomposition
+  g_φ=(g_{Y/L}−s_K·g_{K/L})/s_L needs.
 - **[UNWPP2024]** United Nations DESA, Population Division (2024). *World Population Prospects 2024*,
   Medium variant. — Per-region population growth.
 - **[ILOSTAT]** International Labour Organization, *ILOSTAT* modelled estimates, and World Bank

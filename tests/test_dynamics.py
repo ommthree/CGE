@@ -500,8 +500,9 @@ def test_multi_sector_productivity_biases_are_per_region_and_zero_mean():
         },
     )
     shares = {"N": {"BRD": 0.5, "MIL": 0.5}, "S": {"BRD": 0.5, "MIL": 0.5}}
+    # No capital_deepening in this trajectory → heuristic path; labour_shares (last arg) is unused.
     shocks = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2030, ["BRD", "MIL"], ["N", "S"], True, shares
+        _DC(structural=traj), 2025, 2030, ["BRD", "MIL"], ["N", "S"], True, shares, {}
     )
     assert all(s.mechanism == "labour_augmenting" for s in shocks)
     for region in ("N", "S"):
@@ -525,7 +526,7 @@ def test_sector_productivity_all_default_drives_every_model_sector():
     # Single-region call: regions=["R"], multi=False. Every sector is driven (a shock is emitted for
     # each), even from an __all__-only path.
     shocks = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2027, ["BRD", "MIL"], ["R"], False, {}
+        _DC(structural=traj), 2025, 2027, ["BRD", "MIL"], ["R"], False, {}, {}
     )
     assert {tuple(s.coverage_sectors) for s in shocks} == {("BRD",), ("MIL",)}
     # When EVERY sector grows at the same rate there is no COMPOSITION drift — relative biases are
@@ -545,7 +546,7 @@ def test_sector_productivity_shocks_are_labour_augmenting():
         {"sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}, "__all__": {2025: 0.02}}}
     )
     shocks = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2027, ["BRD", "MIL"], ["R"], False, {"BRD": 0.5, "MIL": 0.5}
+        _DC(structural=traj), 2025, 2027, ["BRD", "MIL"], ["R"], False, {"BRD": 0.5, "MIL": 0.5}, {}
     )
     assert all(s.mechanism == "labour_augmenting" for s in shocks)
 
@@ -562,7 +563,7 @@ def test_sector_productivity_biases_are_zero_mean_relative_drift():
     traj = _traj_sector({"sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}}})
     shares = {"BRD": 0.5, "MIL": 0.5}
     shocks = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2030, ["BRD", "MIL"], ["R"], False, shares
+        _DC(structural=traj), 2025, 2030, ["BRD", "MIL"], ["R"], False, shares, {}
     )
     by_sector = {s.coverage_sectors[0]: s.delta for s in shocks}
     assert by_sector["BRD"] > 0.0 > by_sector["MIL"]  # faster up, slower down (a genuine drift)
@@ -583,7 +584,7 @@ def test_sector_productivity_drift_uses_va_SHARE_weights_not_labour_composition(
     traj = _traj_sector({"sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}}})
     va_shares = {"BRD": 0.99, "MIL": 0.01}
     shocks = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2045, ["BRD", "MIL"], ["R"], False, va_shares
+        _DC(structural=traj), 2025, 2045, ["BRD", "MIL"], ["R"], False, va_shares, {}
     )
     by_sector = {s.coverage_sectors[0]: s.delta for s in shocks}
     # BRD dominates the mean → its own drift is near zero; MIL (tiny) absorbs the redistribution.
@@ -594,10 +595,146 @@ def test_sector_productivity_drift_uses_va_SHARE_weights_not_labour_composition(
     assert geo == pytest.approx(1.0, rel=1e-12)
     # Equal weighting would instead give BRD a clearly positive bias — prove the fix changed it.
     eq = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2045, ["BRD", "MIL"], ["R"], False, {"BRD": 0.5, "MIL": 0.5}
+        _DC(structural=traj), 2025, 2045, ["BRD", "MIL"], ["R"], False, {"BRD": 0.5, "MIL": 0.5}, {}
     )
     eq_brd = next(s.delta for s in eq if s.coverage_sectors[0] == "BRD")
     assert eq_brd > 0.10  # equal weights: BRD gets a large positive bias (the old, wrong behaviour)
+
+
+# --- Growth-accounting decomposition: identify the labour-augmenting technology term ------------
+# When a capital_deepening series is supplied the driver subtracts it and drives the sector with the
+# IDENTIFIED technology rate g_φ = (g_{Y/L} − s_K·g_{K/L}) / s_L, so the capital deepening the model
+# accumulates separately is not double-counted.
+
+
+def test_decomposed_tech_level_removes_capital_deepening_known_answer():
+    """Known answer for the decomposition: with g_{Y/L}=0.02, g_{K/L}=0.01, s_L=0.6 (s_K=0.4), the
+    identified labour-augmenting rate is g_φ=(0.02−0.4·0.01)/0.6=0.026̄, compounded over the gap. The
+    heuristic path (no decomposition) instead compounds the raw 0.02."""
+    from cge.dynamics.recursive import _decomposed_tech_level
+
+    traj = _traj_sector(
+        {
+            "sector_productivity": {"BRD": {2025: 0.02}},
+            "capital_deepening": {"BRD": {2025: 0.01}},
+        }
+    )
+    s_L = 0.6
+    g_phi = (0.02 - (1 - s_L) * 0.01) / s_L  # = 0.0266..
+    n = 10  # 2025 -> 2035
+    got = _decomposed_tech_level(traj, "BRD", 2025, 2035, s_L, identified=True)
+    assert got == pytest.approx((1.0 + g_phi) ** n, rel=1e-12)
+    heur = _decomposed_tech_level(traj, "BRD", 2025, 2035, s_L, identified=False)
+    assert heur == pytest.approx(1.02**n, rel=1e-12)
+    # Deepening genuinely changed the technology level (it is not a relabelling no-op).
+    assert abs(got - heur) > 1e-6
+
+
+def test_capital_deepening_series_changes_the_sector_shocks():
+    """Supplying a capital_deepening series changes the synthesized shocks vs the raw heuristic —
+    the decomposition is actually wired into the shock path (not just the helper)."""
+    from cge.dynamics.recursive import DynamicConfig as _DC
+    from cge.dynamics.recursive import _sector_productivity_shocks
+
+    lp = {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}}
+    va = {"BRD": 0.5, "MIL": 0.5}
+    sl = {"BRD": 0.5, "MIL": 0.5}
+    heur = _sector_productivity_shocks(
+        _DC(structural=_traj_sector({"sector_productivity": lp})),
+        2025,
+        2045,
+        ["BRD", "MIL"],
+        ["R"],
+        False,
+        va,
+        sl,
+    )
+    # BRD deepens faster than MIL, so netting deepening out reshapes the drift.
+    ident = _sector_productivity_shocks(
+        _DC(
+            structural=_traj_sector(
+                {
+                    "sector_productivity": lp,
+                    "capital_deepening": {"BRD": {2025: 0.02}, "MIL": {2025: 0.005}},
+                }
+            )
+        ),
+        2025,
+        2045,
+        ["BRD", "MIL"],
+        ["R"],
+        False,
+        va,
+        sl,
+    )
+    d_heur = {s.coverage_sectors[0]: s.delta for s in heur}
+    d_ident = {s.coverage_sectors[0]: s.delta for s in ident}
+    assert d_heur != d_ident
+    # Both remain proper zero-mean drifts (VA-weighted geometric mean of 1+delta = 1).
+    for d in (d_heur, d_ident):
+        assert (1 + d["BRD"]) ** 0.5 * (1 + d["MIL"]) ** 0.5 == pytest.approx(1.0, rel=1e-12)
+
+
+def test_decomposition_needs_a_usable_labour_share_else_heuristic():
+    """Without a stamped labour share (s_L≈0) a sector cannot be decomposed (would divide by ~0), so
+    it stays on the raw heuristic rate rather than blowing up."""
+    from cge.dynamics.recursive import DynamicConfig as _DC
+    from cge.dynamics.recursive import _sector_productivity_shocks
+
+    traj = _traj_sector(
+        {
+            "sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}},
+            "capital_deepening": {"BRD": {2025: 0.02}, "MIL": {2025: 0.005}},
+        }
+    )
+    va = {"BRD": 0.5, "MIL": 0.5}
+    # Empty labour shares → no usable s_L → heuristic path for every sector (finite, sensible).
+    shocks = _sector_productivity_shocks(
+        _DC(structural=traj), 2025, 2045, ["BRD", "MIL"], ["R"], False, va, {}
+    )
+    assert all(np.isfinite(s.delta) for s in shocks)
+    by = {s.coverage_sectors[0]: s.delta for s in shocks}
+    assert by["BRD"] > 0.0 > by["MIL"]
+
+
+def test_manifest_records_identified_vs_heuristic_mode():
+    """The recursive manifest must record WHICH sector-productivity mode ran (identified when a
+    capital_deepening series is present, else heuristic), so a run is auditable."""
+    from cge.contracts.data_objects import Provenance, StructuralTrajectory
+
+    def _traj(with_deepening):
+        sr = {"sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}}}
+        if with_deepening:
+            sr["capital_deepening"] = {"BRD": {2025: 0.02}, "MIL": {2025: 0.005}}
+        keys = [f"{d}:{s}" for d, by in sr.items() for s in by]
+        return StructuralTrajectory(
+            provenance=Provenance(
+                source="t",
+                source_version="v",
+                licence="n",
+                reference_year=2024,
+                retrieved="2026-09-01",
+            ),
+            sector_rates=sr,
+            sources={k: "c" for k in keys},
+            confidence={k: "low" for k in keys},
+        )
+
+    from cge.contracts.shocks import CarbonPrice
+
+    sc = Scenario(
+        name="m", engine="cge_static", years=[2025, 2030], shocks=[CarbonPrice(price=50.0)]
+    )
+    ident = run_recursive(
+        sc, config=DynamicConfig(structural=_traj(True)), data_source="toy_cge_gov"
+    )
+    heur = run_recursive(
+        sc, config=DynamicConfig(structural=_traj(False)), data_source="toy_cge_gov"
+    )
+    ts_i = ident.result.manifest.assumptions["recursive_dynamics"]["trend_source"]
+    ts_h = heur.result.manifest.assumptions["recursive_dynamics"]["trend_source"]
+    assert "identified" in ts_i["sector_productivity_mode"]
+    assert "heuristic" in ts_h["sector_productivity_mode"]
 
 
 def test_high_aggregate_region_does_not_get_all_negative_sector_biases():
@@ -635,6 +772,7 @@ def test_high_aggregate_region_does_not_get_all_negative_sector_biases():
         ["S"],
         True,
         {"S": {"BRD": 0.5, "MIL": 0.5}},
+        {},
     )
     deltas = [s.delta for s in shocks]
     assert max(deltas) > 0.0 and min(deltas) < 0.0  # biases straddle zero, NOT all-negative
