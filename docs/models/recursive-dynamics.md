@@ -260,7 +260,12 @@ horizon, δ, trends, retirement, K₀, and the capital path.
   label fails loudly, and `run_recursive` **rejects** a run whose trajectory does not differentiate
   any of the build's labels (every label falling through to `__all__`) unless the caller sets
   `DynamicConfig(allow_uniform_fallback=True)` — so a real build cannot silently collapse to the
-  uniform default (review P2 2026-08-29).
+  uniform default (review P2 2026-08-29). **Weighting caveat (review P1 2026-08-31).** The blend is a
+  documented simplification, stamped into the mapped provenance notes: the *same* static GDP-share
+  weights drive population, participation AND productivity (not per-driver population/labour-force/
+  output weights), are held fixed over the horizon, and the residual EXIOBASE `W*` blocks (esp.
+  `RoW_MiddleEast` = 100% S) are coarse single-archetype aggregates. Per-driver, time-varying weights
+  are the follow-up (see `data/structural/NOTICE.md`).
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
 - Aggregate productivity is Hicks-neutral on primary factors; the per-sector series is a
   labour-augmenting term on the sector's labour input (not a TFP transform), growth-accounting-

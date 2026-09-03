@@ -268,6 +268,13 @@ def structural_trajectories_for_build(
     ACTUAL contributing archetype sources and their blend weights (a mixed block shows both N and S,
     not a spurious world-average citation).
 
+    **Weighting caveat (review P1 2026-08-31).** The same static GDP-share block weights are applied
+    to every region driver (population, participation, productivity) rather than per-driver
+    population/labour-force/output weights, are held fixed over the horizon, and the residual W*
+    blocks (esp. ``RoW_MiddleEast`` = 100% S) are coarse single-archetype aggregates. This is a
+    documented illustrative simplification, stamped into the composite provenance notes and detailed
+    in ``data/structural/NOTICE.md``; per-driver, time-varying weights are the follow-up.
+
     ``require_full_coverage`` (default True): a build label not mapped by the concordance raises
     :class:`UnmappedStructuralLabels` — so a real run can never silently degrade to an
     all-``__all__`` trajectory."""
@@ -400,7 +407,12 @@ def structural_trajectories_for_build(
         retrieved=cp.get("retrieved", archetype.provenance.retrieved),
         notes=(
             f"concordance-mapped structural trajectory; concordance_content_hash={conc_hash}; "
-            f"archetype_content_hash={arch_hash}"
+            f"archetype_content_hash={arch_hash}. WEIGHTING CAVEAT (review P1 2026-08-31): the "
+            "same static GDP-share block weights are applied to ALL region drivers (population, "
+            "participation, productivity) — not per-driver population/labour-force/output weights "
+            "— and are held fixed over the horizon; residual W* blocks (esp. RoW_MiddleEast=100% "
+            "S) are coarse single-archetype aggregates. Documented simplification; see "
+            "data/structural/NOTICE.md."
         ),
     )
     return StructuralTrajectory(

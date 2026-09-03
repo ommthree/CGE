@@ -38,6 +38,32 @@ keeps **country-level** archetypes and blends them per block with documented **G
   (`structural-concordance-v2+structural-trajectories-v1`) naming both artifact identities, so the
   concordance source/version is auditable in the run manifest (review P2 2026-08-29).
 
+### Aggregation-weighting limitations (review P1 2026-08-31 — documented, not yet resolved)
+
+The GDP-weighted blend is a **documented simplification**, not an internally consistent aggregation.
+Three limitations to state plainly (they bound how much a real-build regional trajectory should be
+trusted; resolving them is a follow-up that needs per-driver weight data this artifact does not yet
+vendor):
+
+1. **One weight table for every region driver.** The single `block_membership` GDP-share table is
+   applied to *all three* per-region drivers — population, labour-force participation and
+   productivity. That is not the internally consistent choice: population growth should be aggregated
+   from population levels (or population weights), labour-force growth from working-age/labour-force
+   levels, and productivity growth from output/value-added (or Divisia) weights. Using GDP shares for
+   all three is a transparent common-proxy approximation, defensible only because the whole artifact
+   is illustrative. Per-driver weight tables are the documented follow-up.
+2. **Static weights over a long horizon.** The GDP shares are a single reference-year snapshot held
+   fixed across the whole scenario (e.g. to 2050). As economies grow at different rates the true
+   shares drift, so a fixed 2025 weight progressively misweights later years. A time-varying weight
+   (or re-derived shares per decade) is the follow-up.
+3. **Residual `W*` blocks are coarse.** EXIOBASE's five rest-of-world aggregates (`WA`, `WL`, `WE`,
+   `WF`, `WM`) are opaque multi-country regions with no within-block country detail, so each is
+   assigned a single archetype. In particular **`RoW_MiddleEast` (`WM`) is 100% `S`** even though the
+   real region contains high-income Gulf economies — an acknowledged mis-assignment that cannot be
+   split without country detail EXIOBASE does not provide at this granularity. The other residuals
+   (`WA`/`WL`/`WE`/`WF`) at least sit *inside* mixed blocks whose country members carry most of the
+   weight, so their coarseness is diluted; `WM` stands alone and is the least reliable region path.
+
 ## Population — UN World Population Prospects 2024
 
 - **Source:** United Nations, Department of Economic and Social Affairs, Population Division —

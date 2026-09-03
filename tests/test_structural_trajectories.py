@@ -234,6 +234,19 @@ def test_concordance_v2_carries_composite_provenance():
     assert "structural-trajectories-v1" in t.provenance.source_version
 
 
+def test_mapped_trajectory_stamps_the_weighting_caveat():
+    """Review P1 2026-08-31: the single-GDP-weight-for-all-drivers / static-weights / residual-block
+    limitation must be recorded in the mapped trajectory's provenance so a real-build run carries it
+    auditable-in-place, not only in NOTICE.md."""
+    from cge.data.structural import structural_trajectories_for_build
+
+    t = structural_trajectories_for_build(["US", "CN"], ["manufacturing", "services"])
+    notes = t.provenance.notes
+    assert "WEIGHTING CAVEAT" in notes
+    assert "GDP-share" in notes and "all region drivers" in notes.lower()
+    assert "RoW_MiddleEast" in notes
+
+
 def test_concordance_validation_rejects_bad_archetype_and_weights(tmp_path):
     """Review P2 2026-08-29: load_structural_concordance validates through the Provenance contract,
     rejects a country archetype that isn't a known trajectory path (the reviewer's US→TYPO), and
