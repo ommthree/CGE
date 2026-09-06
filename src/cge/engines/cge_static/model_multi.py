@@ -90,45 +90,48 @@ def _effective_wr(cal, wr: np.ndarray, lprod, ri: int, si: int) -> np.ndarray:
     return w_eff
 
 
-def _va_unit_cost(cal: MultiCalibratedModel, w: np.ndarray, lprod=None) -> np.ndarray:
+def _va_unit_cost(cal: MultiCalibratedModel, w: np.ndarray, lprod=None, va_prod=None) -> np.ndarray:
     """VA unit cost [r,s]. σ_va=1 ⇒ Cobb-Douglas; ≠1 ⇒ CES (per region-sector). ``w`` is [f,r].
-    ``lprod`` (Phase 7b.2) applies the per-(region,sector) labour-augmenting effective wage."""
+    ``lprod`` (Phase 7b.2) applies the per-(region,sector) labour-augmenting effective wage.
+    ``va_prod`` (Phase 7b.2 CES channel 2026-09-06) is a per-(region,sector) VALUE-ADDED
+    Hicks-neutral multiplier A_va[r,s] via the effective VA scale ``av·A_va`` (pv falls by 1/A_va
+    every price vector (mirrors the closed model)."""
     nr, ns = cal.nr, cal.ns
     pv = np.empty((nr, ns))
     for ri in range(nr):
         for si in range(ns):
             wr = _effective_wr(cal, w[:, ri], lprod, ri, si)
+            av = float(cal.av[ri, si]) * (1.0 if va_prod is None else float(va_prod[ri, si]))
             s = cal.va_elast[ri, si]
             if abs(s - 1.0) < 1e-12:
                 b = cal.beta[:, ri, si]
                 ratio = np.where(b > 0, wr / np.where(b > 0, b, 1.0), 1.0)
-                pv[ri, si] = (1.0 / cal.av[ri, si]) * np.prod(np.power(ratio, b))
+                pv[ri, si] = (1.0 / av) * np.prod(np.power(ratio, b))
             else:
                 d = cal.va_ces_share[:, ri, si]
-                pv[ri, si] = (1.0 / cal.av[ri, si]) * np.power(
-                    np.sum(d**s * wr ** (1.0 - s)), 1.0 / (1.0 - s)
-                )
+                pv[ri, si] = (1.0 / av) * np.power(np.sum(d**s * wr ** (1.0 - s)), 1.0 / (1.0 - s))
     return pv
 
 
-def _factor_demand(cal, w, pv, va_cost, lprod=None):
+def _factor_demand(cal, w, pv, va_cost, lprod=None, va_prod=None):
     """Factor demand [f,r,s] by Shephard on the VA cost (CD or CES per region-sector). ``lprod``
     (Phase 7b.2): the sector demands EFFICIENCY labour at ``w_LAB/φ``; physical labour is that ÷φ,
-    so factor clearing counts physical labour. φ≡1 is byte-identical."""
+    so factor clearing counts physical labour. φ≡1 is byte-identical. ``va_prod`` (CES channel
+    2026-09-06) enters through the reduced pv and effective scale ``av·A_va``; at a fixed VA payment
+    the physical factor demand is unchanged (the effect shows up in equilibrium via pv)."""
     nr, ns, nf = cal.nr, cal.ns, cal.nf
     lab = cal.factors.index("LAB") if "LAB" in cal.factors else None
     F = np.empty((nf, nr, ns))
     for ri in range(nr):
         for si in range(ns):
             wr = _effective_wr(cal, w[:, ri], lprod, ri, si)
+            av = float(cal.av[ri, si]) * (1.0 if va_prod is None else float(va_prod[ri, si]))
             s = cal.va_elast[ri, si]
             if abs(s - 1.0) < 1e-12:
                 F[:, ri, si] = cal.beta[:, ri, si] * va_cost[ri, si] / wr
             else:
                 d = cal.va_ces_share[:, ri, si]
-                unit = (
-                    (1.0 / cal.av[ri, si]) * (pv[ri, si] * cal.av[ri, si]) ** s * d**s * wr ** (-s)
-                )
+                unit = (1.0 / av) * (pv[ri, si] * av) ** s * d**s * wr ** (-s)
                 F[:, ri, si] = unit * (va_cost[ri, si] / pv[ri, si])
             if lprod is not None and lab is not None:
                 F[lab, ri, si] = F[lab, ri, si] / lprod[ri, si]
@@ -313,6 +316,7 @@ def derive_multi_state(
     inv_closure: str = "savings_driven",
     productivity: np.ndarray | None = None,
     labour_productivity: np.ndarray | None = None,
+    va_productivity: np.ndarray | None = None,
 ) -> MultiModelState:
     """Close the multi-region model at prices (pd, pq, pe, w): derive all quantities and per-region
     income. ``carbon_cost`` is [r,s]. Income per region = factor income + Sf transfer + recycled
@@ -333,7 +337,7 @@ def derive_multi_state(
     ``fixed_real`` mirror the open model, per region."""
     nr, ns = cal.nr, cal.ns
     cc = np.zeros((nr, ns)) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
-    pv = _va_unit_cost(cal, w, labour_productivity)
+    pv = _va_unit_cost(cal, w, labour_productivity, va_productivity)
     pz = _cet_price(cal, pd, pe)
 
     # Per-region income: base = factor income + (WITHOUT a savings-investment layer) the fixed
@@ -477,7 +481,7 @@ def derive_multi_state(
     # scaled by 1/θ so a less-productive sector draws proportionally more value added (Phase 6.4).
     va_qty = _intermediate_coeffs(cal, pq, pv, cc, productivity)[1]
     va_cost = va_qty * pv * Z
-    F = _factor_demand(cal, w, pv, va_cost, labour_productivity)
+    F = _factor_demand(cal, w, pv, va_cost, labour_productivity, va_productivity)
     return MultiModelState(
         pd=pd,
         pq=pq,
@@ -539,6 +543,7 @@ def residuals(
     inv_closure: str = "savings_driven",
     productivity: np.ndarray | None = None,
     labour_productivity: np.ndarray | None = None,
+    va_productivity: np.ndarray | None = None,
 ) -> np.ndarray:
     nr, ns, nf = cal.nr, cal.ns, cal.nf
     pd, pq, pe, w = _unpack(cal, z)
@@ -555,8 +560,9 @@ def residuals(
         inv_closure=inv_closure,
         productivity=productivity,
         labour_productivity=labour_productivity,
+        va_productivity=va_productivity,
     )
-    pv = _va_unit_cost(cal, w, labour_productivity)
+    pv = _va_unit_cost(cal, w, labour_productivity, va_productivity)
     pz = _cet_price(cal, pd, pe)
     # Per-(region,sector) productivity multiplier θ[r,i] (Phase 6.4 GE tier): only the TECHNOLOGY
     # part of the zero-profit unit cost divides by θ (matching the 1/θ scaling _intermediate_coeffs
@@ -624,6 +630,7 @@ def unpack_state(
     inv_closure="savings_driven",
     productivity=None,
     labour_productivity=None,
+    va_productivity=None,
 ):
     """Convenience: derive the model state from a solved unknown vector (used by the engine)."""
     pd, pq, pe, w = _unpack(cal, x)
@@ -639,4 +646,5 @@ def unpack_state(
         inv_closure=inv_closure,
         productivity=productivity,
         labour_productivity=labour_productivity,
+        va_productivity=va_productivity,
     )

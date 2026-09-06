@@ -86,41 +86,53 @@ def _effective_wage(cal: OpenCalibratedModel, w: np.ndarray, lprod, i: int) -> n
     return w_eff
 
 
-def _va_unit_cost(cal: OpenCalibratedModel, w: np.ndarray, lprod=None) -> np.ndarray:
+def _va_unit_cost(cal: OpenCalibratedModel, w: np.ndarray, lprod=None, va_prod=None) -> np.ndarray:
     """VA unit cost per activity. σ_va = 1 ⇒ Cobb-Douglas; σ_va ≠ 1 ⇒ CES (per sector). ``lprod``
-    (Phase 7b.2) applies the per-sector labour-augmenting effective wage (see _effective_wage)."""
+    (Phase 7b.2) applies the per-sector labour-augmenting effective wage (see _effective_wage).
+    ``va_prod`` (Phase 7b.2 CES channel 2026-09-06) is a per-sector VALUE-ADDED Hicks-neutral
+    multiplier A_va[i] via the effective VA scale ``av·A_va``, so ``pv[i]=pv_base[i]/A_va[i]``
+    at every price vector (mirrors the closed model)."""
     ns = len(cal.sectors)
     pv = np.empty(ns)
     for i in range(ns):
         wi = _effective_wage(cal, w, lprod, i)
+        av = float(cal.av[i]) * (1.0 if va_prod is None else float(va_prod[i]))
         s = cal.va_elast[i]
         if abs(s - 1.0) < 1e-12:
             b = cal.beta[:, i]
             ratio = np.where(b > 0, wi / np.where(b > 0, b, 1.0), 1.0)
-            pv[i] = (1.0 / cal.av[i]) * np.prod(np.power(ratio, b))
+            pv[i] = (1.0 / av) * np.prod(np.power(ratio, b))
         else:
             d = cal.va_ces_share[:, i]
-            pv[i] = (1.0 / cal.av[i]) * np.power(np.sum(d**s * wi ** (1.0 - s)), 1.0 / (1.0 - s))
+            pv[i] = (1.0 / av) * np.power(np.sum(d**s * wi ** (1.0 - s)), 1.0 / (1.0 - s))
     return pv
 
 
 def _factor_demand(
-    cal: OpenCalibratedModel, w: np.ndarray, pv: np.ndarray, va_cost: np.ndarray, lprod=None
+    cal: OpenCalibratedModel,
+    w: np.ndarray,
+    pv: np.ndarray,
+    va_cost: np.ndarray,
+    lprod=None,
+    va_prod=None,
 ):
     """Factor demand by Shephard on the VA cost. CD or CES per sector (mirrors the closed model).
     ``lprod`` (Phase 7b.2): the sector demands EFFICIENCY labour at ``w_LAB/φ``; physical labour is
-    that ÷φ, so factor clearing counts physical labour. φ≡1 is byte-identical."""
+    that ÷φ, so factor clearing counts physical labour. φ≡1 is byte-identical. ``va_prod`` enters
+    through the reduced pv and effective scale ``av·A_va`` (see :func:`_va_unit_cost`); at fixed VA
+    payment the physical factor demand is unchanged (the effect shows up in equilibrium via pv)."""
     ns, nf = len(cal.sectors), len(cal.factors)
     lab = cal.factors.index("LAB") if "LAB" in cal.factors else None
     F = np.empty((nf, ns))
     for i in range(ns):
         wi = _effective_wage(cal, w, lprod, i)
+        av = float(cal.av[i]) * (1.0 if va_prod is None else float(va_prod[i]))
         s = cal.va_elast[i]
         if abs(s - 1.0) < 1e-12:
             F[:, i] = cal.beta[:, i] * va_cost[i] / wi
         else:
             d = cal.va_ces_share[:, i]
-            unit = (1.0 / cal.av[i]) * (pv[i] * cal.av[i]) ** s * d**s * wi ** (-s)
+            unit = (1.0 / av) * (pv[i] * av) ** s * d**s * wi ** (-s)
             F[:, i] = unit * (va_cost[i] / pv[i])
         if lprod is not None and lab is not None:
             F[lab, i] = F[lab, i] / lprod[i]
@@ -170,6 +182,7 @@ def derive_open_state(
     foreign_savings: float | None = None,
     productivity: np.ndarray | None = None,
     labour_productivity: np.ndarray | None = None,
+    va_productivity: np.ndarray | None = None,
 ) -> OpenModelState:
     """Close the open model at prices (pd, pq, w, er): derive all quantities by CES/CET duals.
 
@@ -199,7 +212,7 @@ def derive_open_state(
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
     pm = er * np.ones(ns)  # world import price 1
     pe = er * np.ones(ns)  # world export price 1
-    pv = _va_unit_cost(cal, w, labour_productivity)
+    pv = _va_unit_cost(cal, w, labour_productivity, va_productivity)
     pz = _cet_price(cal, pd, pe)
     # Effective per-output carbon cost (Phase 5d.5): cc for the flat model, energy-weighted for the
     # nest. Carbon revenue and all recycling/government marginal-revenue coefficients use cc_eff·Z,
@@ -415,7 +428,7 @@ def derive_open_state(
     # less-productive sector draws proportionally more value added per unit output (Phase 6.4).
     va_qty_per_z = _intermediate_coeffs(cal, pq, pv, cc, productivity)[1]
     va_cost = va_qty_per_z * pv * Z
-    F = _factor_demand(cal, w, pv, va_cost, labour_productivity)
+    F = _factor_demand(cal, w, pv, va_cost, labour_productivity, va_productivity)
     return OpenModelState(
         pd=pd,
         pq=pq,
@@ -542,6 +555,7 @@ def residuals(
     trade_closure: str = "fixed_foreign_savings",
     productivity: np.ndarray | None = None,
     labour_productivity: np.ndarray | None = None,
+    va_productivity: np.ndarray | None = None,
 ) -> np.ndarray:
     ns = len(cal.sectors)
     nf = len(cal.factors)
@@ -569,6 +583,7 @@ def residuals(
             foreign_savings=fs,
             productivity=productivity,
             labour_productivity=labour_productivity,
+            va_productivity=va_productivity,
         )
     elif trade_closure == "fixed_foreign_savings":
         er = float(z[2 * ns + nf])  # the last unknown is er
@@ -584,6 +599,7 @@ def residuals(
             gov_closure=gov_closure,
             productivity=productivity,
             labour_productivity=labour_productivity,
+            va_productivity=va_productivity,
         )
     else:
         raise ValueError(
@@ -592,7 +608,7 @@ def residuals(
         )
     pm = er * np.ones(ns)
     pe = er * np.ones(ns)
-    pv = _va_unit_cost(cal, w, labour_productivity)
+    pv = _va_unit_cost(cal, w, labour_productivity, va_productivity)
 
     res = []
     # Armington price identity: pq = CES cost of (pd, pm).  [ns rows]

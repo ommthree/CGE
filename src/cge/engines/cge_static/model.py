@@ -82,32 +82,58 @@ def _effective_wage(cal: CalibratedModel, w: np.ndarray, lprod, i: int) -> np.nd
     return w_eff
 
 
-def _va_unit_cost(cal: CalibratedModel, w: np.ndarray, lprod=None) -> np.ndarray:
+def _va_scale(cal: CalibratedModel, va_prod, i: int) -> float:
+    """The sector's EFFECTIVE value-added scale ``av[i]·A_va[i]``. ``va_prod`` (Phase 7b.2 CES
+    channel 2026-09-06) is an optional per-sector VALUE-ADDED Hicks-neutral productivity multiplier
+    A_va[i] (A_va=1 ⇒ none): VA[i] = A_va[i]·av[i]·(factor aggregate), so a higher A_va raises value
+    added per unit of the combined primary-factor bundle. Because it multiplies the VA scale, the VA
+    unit cost falls by exactly 1/A_va at EVERY factor-price vector — a genuine Hicks-neutral
+    (Harrod-neutral on value added) shift, unlike labour-augmentation whose cost effect is
+    price-dependent under CES. This is the correct home for a value-added-based MFP shift
+    (g_{Y/L}=g_MFP+s_K·g_{K/L} is a VA decomposition), distinct from the whole-output θ channel
+    (:func:`_leontief_and_va`, which also scales intermediates)."""
+    if va_prod is None:
+        return float(cal.av[i])
+    return float(cal.av[i]) * float(va_prod[i])
+
+
+def _va_unit_cost(cal: CalibratedModel, w: np.ndarray, lprod=None, va_prod=None) -> np.ndarray:
     """Value-added unit cost pv[i]. σ_va = 1 ⇒ Cobb-Douglas
     ``pv = (1/av)·Π_f (w_f/β_f)^{β_f}``; σ_va ≠ 1 ⇒ CES
     ``pv = (1/av)·[Σ_f δ_f^σ w_f^{1-σ}]^{1/(1-σ)}``. Computed per sector so a mix of σ works.
 
     ``lprod`` (Phase 7b.2) is an optional per-sector labour-augmentation φ[i] applied via
     :func:`_effective_wage` — the sector sees ``w_LAB/φ[i]`` in its VA cost, so a labour-augmenting
-    improvement lowers its VA cost through the labour channel only. φ≡1 (default) is byte-identical
-    to the pre-7b.2 cost."""
+    improvement lowers its VA cost through the labour channel only. φ≡1 (default) is byte-identical.
+
+    ``va_prod`` (Phase 7b.2 CES channel 2026-09-06) is an optional per-sector VALUE-ADDED
+    Hicks-neutral multiplier A_va[i] applied via the effective VA scale (:func:`_va_scale`), so
+    ``pv[i] = pv_base[i] / A_va[i]`` at EVERY price vector — the globally-correct home for a VA MFP
+    shift (labour-augmentation only reproduces it at benchmark prices under CES). A_va≡1 is
+    byte-identical; ``lprod`` and ``va_prod`` compose (a sector may use one or the other)."""
     ns = len(cal.sectors)
     pv = np.empty(ns)
     for i in range(ns):
         wi = _effective_wage(cal, w, lprod, i)
+        av = _va_scale(cal, va_prod, i)
         s = cal.va_elast[i]
         if abs(s - 1.0) < 1e-12:
             b = cal.beta[:, i]
             ratio = np.where(b > 0, wi / np.where(b > 0, b, 1.0), 1.0)
-            pv[i] = (1.0 / cal.av[i]) * np.prod(np.power(ratio, b))
+            pv[i] = (1.0 / av) * np.prod(np.power(ratio, b))
         else:
             d = cal.va_ces_share[:, i]
-            pv[i] = (1.0 / cal.av[i]) * np.power(np.sum(d**s * wi ** (1.0 - s)), 1.0 / (1.0 - s))
+            pv[i] = (1.0 / av) * np.power(np.sum(d**s * wi ** (1.0 - s)), 1.0 / (1.0 - s))
     return pv
 
 
 def _factor_demand(
-    cal: CalibratedModel, w: np.ndarray, pv: np.ndarray, va_cost: np.ndarray, lprod=None
+    cal: CalibratedModel,
+    w: np.ndarray,
+    pv: np.ndarray,
+    va_cost: np.ndarray,
+    lprod=None,
+    va_prod=None,
 ):
     """Factor demand F[f,i] by Shephard's lemma on the VA cost. CD: F = β·va_cost/w; CES:
     F = va_cost·(1/av)·(pv·av)^σ·δ^σ·w^{-σ}. ``va_cost`` = pv·(VA quantity) is total VA payment
@@ -117,18 +143,30 @@ def _factor_demand(
     :func:`_effective_wage`), so its demand for labour in EFFICIENCY units uses ``w_LAB/φ[i]``. The
     PHYSICAL labour hired is that efficiency demand divided by φ[i] again (efficiency units = φ·
     physical), so a labour-augmenting sector hires strictly less physical labour per unit VA — the
-    factor-clearing residual sees the physical quantity. φ≡1 is byte-identical."""
+    factor-clearing residual sees the physical quantity. φ≡1 is byte-identical.
+
+    ``va_prod`` (Phase 7b.2 CES channel 2026-09-06): a VA Hicks-neutral multiplier A_va[i] enters
+    through the reduced VA unit cost ``pv[i]=pv_base[i]/A_va[i]`` and the effective scale
+    ``av·A_va``. At a given VA PAYMENT ``va_cost[i]`` the physical factor demand is unchanged (like
+    labour-augmentation), because the VA QUANTITY bought = ``va_cost/pv`` rises by A_va exactly as
+    factor use per unit VA quantity falls by A_va — the two cancel at fixed payment; the real factor
+    saving shows up in EQUILIBRIUM via pv and va_cost. No explicit 1/A_va rescale is applied here
+    (that would double-count the effect already carried by pv). A_va≡1 is byte-identical."""
     ns, nf = len(cal.sectors), len(cal.factors)
     lab = cal.factors.index("LAB") if "LAB" in cal.factors else None
     F = np.empty((nf, ns))
     for i in range(ns):
         wi = _effective_wage(cal, w, lprod, i)
+        av = _va_scale(cal, va_prod, i)
         s = cal.va_elast[i]
         if abs(s - 1.0) < 1e-12:
             F[:, i] = cal.beta[:, i] * va_cost[i] / wi
         else:
             d = cal.va_ces_share[:, i]
-            unit = (1.0 / cal.av[i]) * (pv[i] * cal.av[i]) ** s * d**s * wi ** (-s)
+            # The effective scale av (=av·A_va) enters the CES unit term with the reduced
+            # pv=pv_base/A_va: (pv·av) is invariant, the leading (1/av) carries the 1/A_va, and the
+            # VA quantity va_cost/pv rises by A_va — Shephard on the A_va-scaled VA aggregate.
+            unit = (1.0 / av) * (pv[i] * av) ** s * d**s * wi ** (-s)
             F[:, i] = unit * (va_cost[i] / pv[i])  # va_cost/pv = VA quantity
         # Shephard's lemma gives demand in EFFICIENCY units for the augmented factor; convert LAB
         # back to PHYSICAL units (÷φ[i]) so factor-market clearing counts physical labour.
@@ -281,6 +319,7 @@ def derive_state(
     adapt_gamma: np.ndarray | None = None,
     productivity: np.ndarray | None = None,
     labour_productivity: np.ndarray | None = None,
+    va_productivity: np.ndarray | None = None,
 ) -> ModelState:
     """Close the model at equilibrium prices (p, w): compute VA cost, outputs, demands and income.
 
@@ -334,7 +373,7 @@ def derive_state(
     household + investment demand, kg government spending's own marginal-revenue coefficient."""
     ns = len(cal.sectors)
     cc = np.zeros(ns) if carbon_cost is None else np.asarray(carbon_cost, dtype=float)
-    pv = _va_unit_cost(cal, w, labour_productivity)
+    pv = _va_unit_cost(cal, w, labour_productivity, va_productivity)
 
     # (I − A(p))⁻¹ and VA quantity per unit output. Flat model: fixed Leontief + va_share. Energy
     # nest (Phase 5d.5): both price-responsive (energy substitutes as the carbon-inclusive energy
@@ -632,7 +671,7 @@ def derive_state(
         # Total VA payment per sector = pv · (VA quantity). VA quantity per unit output is
         # cal.va_share (flat) or the price-responsive KL quantity per unit output (energy nest).
         va_cost = pv * va_qty_per_x * X  # [i]
-        F = _factor_demand(cal, w, pv, va_cost, labour_productivity)  # [f,i]
+        F = _factor_demand(cal, w, pv, va_cost, labour_productivity, va_productivity)  # [f,i]
         return FD, GD, ID, X, F, income, gov_income, savings, fiscal_balance
 
     # Labour-floor fixed point. Full employment: factor income = w·endowment. Floor binding: labour
@@ -721,6 +760,7 @@ def residuals(
     adapt_gamma: np.ndarray | None = None,
     productivity: np.ndarray | None = None,
     labour_productivity: np.ndarray | None = None,
+    va_productivity: np.ndarray | None = None,
 ) -> np.ndarray:
     """Equilibrium residual vector F(z) for z = [p (ns), w (nf)].
 
@@ -775,6 +815,7 @@ def residuals(
         adapt_gamma=adapt_gamma,
         productivity=productivity,
         labour_productivity=labour_productivity,
+        va_productivity=va_productivity,
     )
 
     # Per-sector productivity multiplier θ[i] (Phase 6.4 GE tier): a sector with productivity θ
