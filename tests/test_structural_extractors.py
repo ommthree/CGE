@@ -15,10 +15,14 @@ import pytest
 from scripts.extract_structural_sources import (
     country_archetype,
     extract_euklems,
+    extract_ilo_participation,
     extract_ngfs_emissions,
     extract_pwt_productivity,
     extract_wpp_population,
     industry_archetype,
+    normalise_euklems,
+    normalise_ilostat,
+    normalise_wpp,
 )
 
 _CMAP = {"USA": "N", "DEU": "N", "CHN": "S", "IND": "S"}
@@ -116,3 +120,99 @@ def test_extractor_no_op_when_no_raw_files(monkeypatch, capsys):
     rc = ex.main()
     assert rc == 0
     assert "No raw source files" in capsys.readouterr().out
+
+
+# --- Raw-layout normalisers (accept the ACTUAL published downloads) -------------------------------
+
+
+def test_normalise_wpp_maps_raw_columns_and_drops_aggregates():
+    """The raw WPP export uses ISO3_code/Time/PopTotal, a Variant column, and mixes country rows
+    with region aggregates (blank/non-3-letter ISO3). normalise_wpp yields tidy iso3/year/pop,
+    Medium variant only, countries only — then extract_wpp_population works on it unchanged."""
+    raw = pd.DataFrame(
+        {
+            "ISO3_code": ["USA", "USA", "", "USA"],  # blank row = a region aggregate → dropped
+            "Time": [2025, 2026, 2025, 2025],
+            "PopTotal": [1000.0, 1010.0, 9999.0, 500.0],
+            "Variant": ["Medium", "Medium", "Medium", "High"],  # non-Medium → dropped
+        }
+    )
+    tidy = normalise_wpp(raw)
+    assert list(tidy.columns) == ["iso3", "year", "population"]
+    assert set(tidy["iso3"]) == {"USA"}
+    assert len(tidy) == 2  # the blank-ISO3 and the High-variant rows are gone
+    out = extract_wpp_population(raw, {"USA": "N"}, knots=(2025,))
+    assert out["N"][2025] == pytest.approx(0.01)
+
+
+def test_normalise_euklems_pivots_long_export_to_isic_sections():
+    """The raw EU KLEMS growth accounts are long (geo_code/nace_r2_code/var/year/value). normalise
+    picks a country, keeps the latest year, pivots the growth-account variables, and maps NACE to
+    its ISIC section. Two manufacturing industries (C10, C11) collapse to one VA-weighted row."""
+    raw = pd.DataFrame(
+        {
+            "geo_code": ["DE"] * 8,
+            "nace_r2_code": ["C10", "C10", "C10", "C10", "C11", "C11", "C11", "C11"],
+            "var": ["VA_QI_growth", "CAP_QI_growth", "LAB_share", "VA_CP"] * 2,
+            "year": [2020] * 8,
+            "value": [0.02, 0.012, 0.55, 3.0, 0.01, 0.008, 0.60, 1.0],
+        }
+    )
+    tidy = normalise_euklems(raw)
+    assert set(tidy.columns) >= {"isic_section", "lp_growth", "k_deepening", "labour_cost_share"}
+    row = tidy[tidy["isic_section"] == "C"].iloc[0]
+    assert row["lp_growth"] == pytest.approx((3 * 0.02 + 1 * 0.01) / 4)  # VA-weighted
+    assert row["labour_cost_share"] == pytest.approx((3 * 0.55 + 1 * 0.60) / 4)
+
+
+def test_normalise_euklems_raises_on_missing_variable_codes():
+    """If the release's variable codes differ, normalise_euklems raises naming the codes it found —
+    an explicit failure, not silent empties."""
+    raw = pd.DataFrame(
+        {
+            "geo_code": ["DE"],
+            "nace_r2_code": ["C10"],
+            "var": ["SOME_OTHER_CODE"],
+            "year": [2020],
+            "value": [0.02],
+        }
+    )
+    with pytest.raises(ValueError, match="missing expected variable code"):
+        normalise_euklems(raw)
+
+
+def test_normalise_ngfs_melts_iamc_wide_format():
+    """The IIASA IAMC WIDE export has a column per year; normalise_ngfs melts it to long and
+    normalises the capitalised headers, so extract_ngfs_emissions consumes it directly."""
+    wide = pd.DataFrame(
+        {
+            "Model": ["M"],
+            "Scenario": ["NZ"],
+            "Region": ["World"],
+            "Variable": ["Emissions|CO2 Intensity"],
+            "2025": [100.0],
+            "2040": [60.0],
+        }
+    )
+    out = extract_ngfs_emissions(wide, model="M", scenario="NZ", knots=(2025,))
+    assert out["__all__"][2025] == pytest.approx(round((60 / 100) ** (1 / 15) - 1, 4))
+
+
+def test_ilo_participation_growth_from_raw_lfpr():
+    """ILOSTAT LFPR raw uses ref_area/time/obs_value with sex/classif1 breakdowns; normalise keeps
+    the total and extract computes the proportional change of the rate per archetype. USA rate
+    60→60.6 (2025→2026) = +1%."""
+    raw = pd.DataFrame(
+        {
+            "ref_area": ["USA", "USA", "USA"],
+            "time": [2025, 2026, 2025],
+            "obs_value": [60.0, 60.6, 40.0],
+            "sex": ["SEX_T", "SEX_T", "SEX_M"],  # the SEX_M row is dropped
+            "classif1": ["AGE_AGGREGATE_TOTAL"] * 3,
+        }
+    )
+    tidy = normalise_ilostat(raw)
+    assert list(tidy.columns) == ["iso3", "year", "lfpr"]
+    assert len(tidy) == 2  # SEX_M dropped
+    out = extract_ilo_participation(raw, {"USA": "N"}, knots=(2025,))
+    assert out["N"][2025] == pytest.approx(0.01)
