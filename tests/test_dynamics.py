@@ -8,6 +8,8 @@ and the open economy (one aggregate stock), and the multi-region CGE (a per-regi
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -562,12 +564,14 @@ def test_sector_productivity_biases_are_zero_mean_relative_drift():
 
     traj = _traj_sector({"sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}}})
     shares = {"BRD": 0.5, "MIL": 0.5}
+    labour = {"BRD": 0.5, "MIL": 0.5}  # equal labour shares → v_i·s_Li ∝ v_i here
     shocks = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2030, ["BRD", "MIL"], ["R"], False, shares, {}
+        _DC(structural=traj), 2025, 2030, ["BRD", "MIL"], ["R"], False, shares, labour
     )
     by_sector = {s.coverage_sectors[0]: s.delta for s in shocks}
     assert by_sector["BRD"] > 0.0 > by_sector["MIL"]  # faster up, slower down (a genuine drift)
-    # VA-weighted geometric mean of (1+delta) is 1 (zero-mean drift; no aggregate level re-imposed).
+    # v_i·s_Li-weighted geometric mean of (1+delta) is 1 (zero-mean drift; no aggregate level
+    # re-imposed). With equal shares this is the plain geometric mean.
     geo = (1.0 + by_sector["BRD"]) ** 0.5 * (1.0 + by_sector["MIL"]) ** 0.5
     assert geo == pytest.approx(1.0, rel=1e-12)
 
@@ -583,22 +587,56 @@ def test_sector_productivity_drift_uses_va_SHARE_weights_not_labour_composition(
 
     traj = _traj_sector({"sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}}})
     va_shares = {"BRD": 0.99, "MIL": 0.01}
+    labour = {"BRD": 0.5, "MIL": 0.5}  # equal labour shares → v_i·s_Li ∝ v_i (isolates VA weight)
     shocks = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2045, ["BRD", "MIL"], ["R"], False, va_shares, {}
+        _DC(structural=traj), 2025, 2045, ["BRD", "MIL"], ["R"], False, va_shares, labour
     )
     by_sector = {s.coverage_sectors[0]: s.delta for s in shocks}
     # BRD dominates the mean → its own drift is near zero; MIL (tiny) absorbs the redistribution.
     assert abs(by_sector["BRD"]) < 0.01
     assert by_sector["MIL"] < -0.10
-    # And the VA-SHARE-weighted geometric mean of (1+delta) is exactly 1.
+    # And the v_i·s_Li-weighted geometric mean of (1+delta) is exactly 1 (∝ VA weights here).
     geo = (1.0 + by_sector["BRD"]) ** 0.99 * (1.0 + by_sector["MIL"]) ** 0.01
     assert geo == pytest.approx(1.0, rel=1e-12)
     # Equal weighting would instead give BRD a clearly positive bias — prove the fix changed it.
     eq = _sector_productivity_shocks(
-        _DC(structural=traj), 2025, 2045, ["BRD", "MIL"], ["R"], False, {"BRD": 0.5, "MIL": 0.5}, {}
+        _DC(structural=traj),
+        2025,
+        2045,
+        ["BRD", "MIL"],
+        ["R"],
+        False,
+        {"BRD": 0.5, "MIL": 0.5},
+        labour,
     )
     eq_brd = next(s.delta for s in eq if s.coverage_sectors[0] == "BRD")
     assert eq_brd > 0.10  # equal weights: BRD gets a large positive bias (the old, wrong behaviour)
+
+
+def test_composition_drift_is_aggregate_cost_neutral_under_unequal_labour_shares():
+    """Review P1 2026-09-03: the normalizer must zero the AGGREGATE CD cost effect Σ v_i s_Li ln φ,
+    not just the v_i-weighted geometric mean of φ. With two equal-VA sectors but UNEQUAL labour
+    shares (s_L = 0.8 / 0.2) the old v_i-only mean left a non-zero aggregate cost effect; the
+    v_i·s_Li-weighted mean makes it exactly neutral. Verify Σ v_i·s_Li·ln(1+delta) == 0."""
+    from cge.dynamics.recursive import DynamicConfig as _DC
+    from cge.dynamics.recursive import _sector_productivity_shocks
+
+    traj = _traj_sector({"sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}}})
+    va = {"BRD": 0.5, "MIL": 0.5}
+    sl = {"BRD": 0.8, "MIL": 0.2}
+    shocks = _sector_productivity_shocks(
+        _DC(structural=traj), 2025, 2045, ["BRD", "MIL"], ["R"], False, va, sl
+    )
+    d = {s.coverage_sectors[0]: s.delta for s in shocks}
+    # Aggregate CD log-cost effect Σ v_i·s_Li·ln(1+delta_i) is exactly zero (neutral drift).
+    agg = sum(va[s] * sl[s] * np.log(1.0 + d[s]) for s in ("BRD", "MIL"))
+    assert agg == pytest.approx(0.0, abs=1e-12)
+    # A faster sector still drifts up, a slower one down — it is a real composition drift, not flat.
+    assert d["BRD"] > 0.0 > d["MIL"]
+    # The plain v_i-only geometric mean would NOT be neutral here (prove the s_L matters): the
+    # v_i-weighted Σ v_i·ln(1+delta) is non-zero under these unequal labour shares.
+    agg_va_only = sum(va[s] * np.log(1.0 + d[s]) for s in ("BRD", "MIL"))
+    assert abs(agg_va_only) > 1e-6
 
 
 # --- Growth-accounting decomposition: identify the labour-augmenting technology term ------------
@@ -607,11 +645,12 @@ def test_sector_productivity_drift_uses_va_SHARE_weights_not_labour_composition(
 # accumulates separately is not double-counted.
 
 
-def test_decomposed_tech_level_removes_capital_deepening_known_answer():
-    """Known answer for the decomposition: with g_{Y/L}=0.02, g_{K/L}=0.01, s_L=0.6 (s_K=0.4), the
-    identified labour-augmenting rate is g_φ=(0.02−0.4·0.01)/0.6=0.026̄, compounded over the gap. The
-    heuristic path (no decomposition) instead compounds the raw 0.02."""
-    from cge.dynamics.recursive import _decomposed_tech_level
+def test_decomposed_log_level_removes_capital_deepening_known_answer():
+    """Known answer for the decomposition, using the COHERENT Cobb-Douglas finite-change mapping in
+    LOG space (review P1 2026-09-03; log-space review P2 2026-09-05): the per-year log factor is
+    ln(1+g_φ) = [ln(1+g_{Y/L}) − s_K·ln(1+g_{K/L})]/s_L, so the cumulative LOG level is n× that.
+    g_{Y/L}=0.02, g_{K/L}=0.01, s_L=0.6 (s_K=0.4). The heuristic path compounds the raw ln(1.02)."""
+    from cge.dynamics.recursive import _decomposed_log_level
 
     traj = _traj_sector(
         {
@@ -620,25 +659,65 @@ def test_decomposed_tech_level_removes_capital_deepening_known_answer():
         }
     )
     s_L = 0.6
-    g_phi = (0.02 - (1 - s_L) * 0.01) / s_L  # = 0.0266..
+    s_K = 1.0 - s_L
+    log_step = (math.log(1.02) - s_K * math.log(1.01)) / s_L  # coherent CD finite-change log factor
     n = 10  # 2025 -> 2035
-    got = _decomposed_tech_level(traj, "BRD", 2025, 2035, s_L, identified=True)
-    assert got == pytest.approx((1.0 + g_phi) ** n, rel=1e-12)
-    heur = _decomposed_tech_level(traj, "BRD", 2025, 2035, s_L, identified=False)
-    assert heur == pytest.approx(1.02**n, rel=1e-12)
+    got = _decomposed_log_level(traj, "BRD", 2025, 2035, s_L, identified=True)
+    assert got == pytest.approx(log_step * n, rel=1e-12)
+    heur = _decomposed_log_level(traj, "BRD", 2025, 2035, s_L, identified=False)
+    assert heur == pytest.approx(math.log(1.02) * n, rel=1e-12)
     # Deepening genuinely changed the technology level (it is not a relabelling no-op).
     assert abs(got - heur) > 1e-6
 
 
+def test_decomposed_log_level_admissible_but_extreme_does_not_overflow():
+    """Review P2 2026-09-05: an admissible rate combination that would OVERFLOW math.exp per year
+    (g_{Y/L}=0.99, g_{K/L}=−0.99, s_L=0.001) must be finite in LOG space — the helper returns the
+    (large but finite) cumulative log, and the cross-sector normaliser cancels the common part
+    before
+    any exponentiation, so no OverflowError. The old per-year exp-and-multiply raised here."""
+    from cge.dynamics.recursive import _decomposed_log_level
+
+    traj = _traj_sector(
+        {
+            "sector_productivity": {"BRD": {2025: 0.99}},
+            "capital_deepening": {"BRD": {2025: -0.99}},
+        }
+    )
+    got = _decomposed_log_level(traj, "BRD", 2025, 2026, 0.001, identified=True)
+    assert math.isfinite(got)
+    # Exact log value: [ln(1.99) − 0.999·ln(0.01)]/0.001, a large positive number, still finite.
+    expected = (math.log(1.99) - (1 - 0.001) * math.log(0.01)) / 0.001
+    assert got == pytest.approx(expected, rel=1e-12)
+
+
+def test_decomposed_log_level_rejects_rate_at_or_below_minus_100pct():
+    """A rate ≤ −100% is not a valid annual growth rate; the level factor would be ≤0 and its log
+    undefined, so the helper raises rather than producing a non-finite log. (The trajectory contract
+    also bounds rates to (−1,1); this is defense-in-depth via a construction near the edge.)"""
+    from cge.dynamics.recursive import _decomposed_log_level
+
+    # Near-edge admissible values stay finite (no raise) — proves the guard is not over-eager.
+    ok = _traj_sector(
+        {
+            "sector_productivity": {"BRD": {2025: -0.99}},
+            "capital_deepening": {"BRD": {2025: 0.99}},
+        }
+    )
+    assert math.isfinite(_decomposed_log_level(ok, "BRD", 2025, 2026, 0.5, identified=True))
+
+
 def test_capital_deepening_series_changes_the_sector_shocks():
     """Supplying a capital_deepening series changes the synthesized shocks vs the raw heuristic —
-    the decomposition is actually wired into the shock path (not just the helper)."""
+    the decomposition is actually wired into the shock path (not just the helper). Requires σ_va=1
+    (CD nest) for the identified path (review P2 2026-09-05)."""
     from cge.dynamics.recursive import DynamicConfig as _DC
     from cge.dynamics.recursive import _sector_productivity_shocks
 
     lp = {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}}
     va = {"BRD": 0.5, "MIL": 0.5}
     sl = {"BRD": 0.5, "MIL": 0.5}
+    elast = {"BRD": 1.0, "MIL": 1.0}  # Cobb-Douglas VA nest → identified path is eligible
     heur = _sector_productivity_shocks(
         _DC(structural=_traj_sector({"sector_productivity": lp})),
         2025,
@@ -648,6 +727,7 @@ def test_capital_deepening_series_changes_the_sector_shocks():
         False,
         va,
         sl,
+        elast,
     )
     # BRD deepens faster than MIL, so netting deepening out reshapes the drift.
     ident = _sector_productivity_shocks(
@@ -666,6 +746,7 @@ def test_capital_deepening_series_changes_the_sector_shocks():
         False,
         va,
         sl,
+        elast,
     )
     d_heur = {s.coverage_sectors[0]: s.delta for s in heur}
     d_ident = {s.coverage_sectors[0]: s.delta for s in ident}
@@ -673,6 +754,294 @@ def test_capital_deepening_series_changes_the_sector_shocks():
     # Both remain proper zero-mean drifts (VA-weighted geometric mean of 1+delta = 1).
     for d in (d_heur, d_ident):
         assert (1 + d["BRD"]) ** 0.5 * (1 + d["MIL"]) ** 0.5 == pytest.approx(1.0, rel=1e-12)
+
+
+def test_source_share_identification_uses_source_not_model_labour_share():
+    """Pipeline step 1b (review P2 2026-09-05): the source-side MFP identification must use the
+    SOURCE labour share s_L^src, NOT the receiving model's benchmark share. Set a source share that
+    differs from the model share and check the per-year log level equals the source-share formula
+    [ln(1+g_Y/L) − (1−s_L^src)·ln(1+g_K/L)] / s_L^model (CD nest), which differs from the
+    all-model-share value."""
+    import math
+
+    from cge.dynamics.recursive import _decomposed_log_level
+
+    traj = _traj_sector(
+        {
+            "sector_productivity": {"BRD": {2025: 0.03}},
+            "capital_deepening": {"BRD": {2025: 0.02}},
+        }
+    )
+    traj.source_labour_shares = {"BRD": 0.4}  # source share ≠ model share below
+    s_L_model = 0.6
+    got = _decomposed_log_level(
+        traj, "BRD", 2025, 2026, s_L_model, identified=True, sigma=1.0, source_labour_share=0.4
+    )
+    # MFP identified at source with s_L^src=0.4 (s_K^src=0.6), then CD-translated by /s_L^model.
+    g_mfp_log = math.log(1.03) - 0.6 * math.log(1.02)
+    expected = g_mfp_log / s_L_model
+    assert got == pytest.approx(expected, rel=1e-12)
+    # Using the MODEL share on both sides (the old, wrong behaviour) gives a different number.
+    wrong = (math.log(1.03) - (1 - s_L_model) * math.log(1.02)) / s_L_model
+    assert abs(got - wrong) > 1e-6
+
+
+def test_sourced_mfp_series_is_used_directly():
+    """Pipeline step 1b: when the trajectory ships an ``mfp`` series (identified at source in the
+    data build), the wrapper uses it directly — the per-year log level is the CD translation
+    ln(1+g_MFP)/s_L^model, independent of sector_productivity/capital_deepening."""
+    import math
+
+    from cge.dynamics.recursive import _decomposed_log_level
+
+    traj = _traj_sector(
+        {
+            "sector_productivity": {"BRD": {2025: 0.05}},  # present but IGNORED when mfp exists
+            "capital_deepening": {"BRD": {2025: 0.9}},  # ditto
+            "mfp": {"BRD": {2025: 0.012}},
+        }
+    )
+    got = _decomposed_log_level(traj, "BRD", 2025, 2026, 0.6, identified=True, sigma=1.0)
+    assert got == pytest.approx(math.log(1.012) / 0.6, rel=1e-12)
+
+
+def test_ces_sector_is_identified_via_nest_aware_translation():
+    """Pipeline step 1b (review P2 2026-09-05): a CES sector is now IDENTIFIED — the MFP implied by
+    the decomposition is translated into a labour-augmentation through the sector's ACTUAL CES nest
+    (numeric), instead of being dropped to the heuristic. Assert (a) the CES result differs from the
+    CD result (the nest matters — it is not the CD closed form), and (b) both differ from the raw
+    heuristic (capital deepening IS being netted out for both)."""
+    from cge.dynamics.recursive import DynamicConfig as _DC
+    from cge.dynamics.recursive import _sector_productivity_shocks
+
+    traj = _traj_sector(
+        {
+            "sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}},
+            "capital_deepening": {"BRD": {2025: 0.02}, "MIL": {2025: 0.005}},
+        }
+    )
+    va = {"BRD": 0.5, "MIL": 0.5}
+    sl = {"BRD": 0.5, "MIL": 0.5}
+    args = (2025, 2045, ["BRD", "MIL"], ["R"], False, va, sl)
+    cd = _sector_productivity_shocks(_DC(structural=traj), *args, {"BRD": 1.0, "MIL": 1.0})
+    ces = _sector_productivity_shocks(_DC(structural=traj), *args, {"BRD": 0.5, "MIL": 0.5})
+    heur_only = _sector_productivity_shocks(
+        _DC(
+            structural=_traj_sector(
+                {"sector_productivity": traj.sector_rates["sector_productivity"]}
+            )
+        ),
+        *args,
+        {"BRD": 0.5, "MIL": 0.5},
+    )
+    d_cd = {s.coverage_sectors[0]: s.delta for s in cd}
+    d_ces = {s.coverage_sectors[0]: s.delta for s in ces}
+    d_heur = {s.coverage_sectors[0]: s.delta for s in heur_only}
+    assert d_cd != d_ces  # the CES nest gives a different augmentation than the CD closed form
+    assert d_ces != pytest.approx(d_heur)  # CES IS identified (deepening netted out), not heuristic
+    assert d_cd != pytest.approx(d_heur)
+
+
+def test_ces_translation_reproduces_target_cost_ratio():
+    """Review P2 2026-09-06: the CES translation must reproduce the MFP-implied VA-cost ratio at
+    benchmark prices (not merely 'differ from CD'). Verify the solved ln φ makes the CES cost index
+    fall by exactly 1+g_MFP, and that it reduces to the CD closed form as σ→1."""
+    import math
+
+    from cge.dynamics.recursive import _mfp_to_labour_aug_log
+
+    for sigma in (0.4, 0.7, 1.5, 2.0):
+        for theta_L in (0.3, 0.6):
+            for g_mfp in (-0.03, 0.02):
+                x = _mfp_to_labour_aug_log(g_mfp, theta_L, sigma)
+                om = 1.0 - sigma
+                cx = (theta_L * math.exp(om * (-x)) + (1.0 - theta_L)) ** (1.0 / om)
+                assert cx == pytest.approx(1.0 / (1.0 + g_mfp), rel=1e-10)
+    # CD limit
+    assert _mfp_to_labour_aug_log(0.02, 0.6, 1.0) == pytest.approx(math.log(1.02) / 0.6, rel=1e-12)
+
+
+def test_ces_translation_raises_on_infeasible_target():
+    """Review P2 2026-09-06: when no labour augmentation can reproduce the CES MFP cost change
+    (capital is essential), the solver RAISES rather than returning an enormous boundary value.
+    Reviewer's cases: g_MFP=+50% sL=0.1 σ=0.5, and g_MFP=−90% sL=0.6 σ=2."""
+    from cge.dynamics.recursive import InfeasibleMFPTranslation, _mfp_to_labour_aug_log
+
+    for g_mfp, s_l, sigma in [(0.50, 0.1, 0.5), (-0.90, 0.6, 2.0)]:
+        with pytest.raises(InfeasibleMFPTranslation):
+            _mfp_to_labour_aug_log(g_mfp, s_l, sigma)
+
+
+def test_source_shares_change_run_identity_and_manifest():
+    """Review P1 2026-09-06: source_labour_shares materially change the shocks, so two otherwise
+    identical recursive runs differing ONLY in source shares must get DIFFERENT scenario_hashes and
+    the trend manifest must record the shares (previously they were absent from both, so a result
+    revealed something changed but could not reconstruct the input)."""
+    from cge.contracts.data_objects import Provenance, StructuralTrajectory
+    from cge.contracts.shocks import CarbonPrice
+
+    def _traj(sl_val):
+        return StructuralTrajectory(
+            provenance=Provenance(
+                source="t",
+                source_version="v",
+                licence="n",
+                reference_year=2024,
+                retrieved="2026-09-06",
+            ),
+            sector_rates={
+                "sector_productivity": {"__all__": {2025: 0.02}},
+                "capital_deepening": {"__all__": {2025: 0.01}},
+            },
+            sources={
+                "sector_productivity:__all__": "c",
+                "capital_deepening:__all__": "c",
+                "source_labour_share:__all__": "illustrative",
+            },
+            confidence={
+                "sector_productivity:__all__": "low",
+                "capital_deepening:__all__": "low",
+                "source_labour_share:__all__": "low",
+            },
+            source_labour_shares={"__all__": sl_val},
+        )
+
+    sc = Scenario(
+        name="x", engine="cge_static", years=[2025, 2030], shocks=[CarbonPrice(price=50.0)]
+    )
+    a = run_recursive(
+        sc,
+        config=DynamicConfig(structural=_traj(0.45), allow_uniform_fallback=True),
+        data_source="toy_cge_gov",
+    )
+    b = run_recursive(
+        sc,
+        config=DynamicConfig(structural=_traj(0.75), allow_uniform_fallback=True),
+        data_source="toy_cge_gov",
+    )
+    # Different source shares → different run identity.
+    assert a.result.manifest.scenario_hash != b.result.manifest.scenario_hash
+    # And the manifest records the shares so the input is reconstructible.
+    ts_a = a.result.manifest.assumptions["recursive_dynamics"]["trend_source"]
+    assert ts_a["source_labour_shares"] == {"__all__": 0.45}
+    assert ts_a["rate_tables"]["source_labour_shares"] == {"__all__": 0.45}
+
+
+def test_source_labour_shares_reject_invalid_values():
+    """Review P2 2026-09-06: source labour shares must be finite and in (0, 1] with value-level
+    provenance — NaN/inf/negative/>1 or unsourced are rejected at construction."""
+    from cge.contracts.data_objects import Provenance, StructuralTrajectory
+
+    def _mk(sl):
+        return StructuralTrajectory(
+            provenance=Provenance(
+                source="t",
+                source_version="v",
+                licence="n",
+                reference_year=2024,
+                retrieved="2026-09-06",
+            ),
+            sector_rates={"sector_productivity": {"__all__": {2025: 0.02}}},
+            sources={
+                "sector_productivity:__all__": "c",
+                "source_labour_share:__all__": "s",
+            },
+            confidence={
+                "sector_productivity:__all__": "low",
+                "source_labour_share:__all__": "low",
+            },
+            source_labour_shares={"__all__": sl},
+        )
+
+    for bad in (float("nan"), float("inf"), -0.2, 1.2, 0.0):
+        with pytest.raises(ValueError, match="source_labour_shares|not a finite|out of range"):
+            _mk(bad)
+    # Missing provenance is rejected too.
+    with pytest.raises(ValueError, match="missing source or confidence"):
+        StructuralTrajectory(
+            provenance=Provenance(
+                source="t",
+                source_version="v",
+                licence="n",
+                reference_year=2024,
+                retrieved="2026-09-06",
+            ),
+            sector_rates={"sector_productivity": {"__all__": {2025: 0.02}}},
+            sources={"sector_productivity:__all__": "c"},
+            confidence={"sector_productivity:__all__": "low"},
+            source_labour_shares={"__all__": 0.6},
+        )
+
+
+def test_missing_labour_productivity_is_not_identified():
+    """Review P2 2026-09-05: a sector with capital_deepening but NO sector_productivity observation
+    must NOT be reported identified. Missing rates read as 0.0, so treating it as identified would
+    infer NEGATIVE technology growth (0 − s_K·g_K/L)/s_L from missing data. Sector A has an explicit
+    LP path, sector B has NONE (and there is no LP __all__), while capital_deepening covers both via
+    __all__. Only A is identified; B stays heuristic. Uses the manifest-mode helper (same rule as
+    the shock path)."""
+    from cge.dynamics.recursive import _sector_productivity_modes
+
+    traj = _traj_sector(
+        {
+            "sector_productivity": {"A": {2025: 0.03}},  # A only; NO __all__, so B is uncovered
+            "capital_deepening": {"__all__": {2025: 0.01}},
+        }
+    )
+    labour = {"A": 0.6, "B": 0.6}
+    elast = {"A": 1.0, "B": 1.0}
+    modes = _sector_productivity_modes(traj, ["A", "B"], ["R"], False, labour, elast)["R"]
+    # A has LP+deepening but NO source_labour_shares → model-share approximation (NOT source-
+    # identified, review P2 2026-09-06); B has no LP observation → raw heuristic.
+    assert modes["A"] == "model_share_approx"
+    assert modes["B"] == "raw_lp_heuristic"
+
+
+def test_source_share_gives_derived_source_share_mode():
+    """Review P2 2026-09-06: LP+deepening WITH a source labour share is ``derived_source_share``
+    (source-identified); WITHOUT one it is only ``model_share_approx``. The distinction is what
+    makes the manifest honest about whether the source pipeline was actually used."""
+    from cge.dynamics.recursive import _sector_productivity_modes
+
+    base = {
+        "sector_productivity": {"A": {2025: 0.03}},
+        "capital_deepening": {"A": {2025: 0.01}},
+    }
+    labour = {"A": 0.6}
+    elast = {"A": 1.0}
+    without = _sector_productivity_modes(_traj_sector(base), ["A"], ["R"], False, labour, elast)[
+        "R"
+    ]
+    assert without["A"] == "model_share_approx"
+
+    t_with = _traj_sector(base)
+    t_with.source_labour_shares = {"A": 0.55}
+    with_src = _sector_productivity_modes(t_with, ["A"], ["R"], False, labour, elast)["R"]
+    assert with_src["A"] == "derived_source_share"
+
+
+def test_manifest_summary_reports_mode_mix_without_overclaiming():
+    """Review P2 2026-09-06: the summary must report the mode MIX honestly — never a blanket
+    'identified at source' — and carry the CES benchmark-equivalence caveat when any source-
+    identified sector is present. Here A is sourced_mfp (source-identified), B is raw heuristic."""
+    from cge.dynamics.recursive import (
+        _sector_productivity_mode_summary,
+        _sector_productivity_modes,
+    )
+
+    traj = _traj_sector(
+        {
+            "mfp": {"A": {2025: 0.012}},  # A: sourced MFP
+            "sector_productivity": {"B": {2025: 0.01}},  # B: raw LP only
+        }
+    )
+    labour = {"A": 0.6, "B": 0.6}
+    elast = {"A": 1.0, "B": 1.0}
+    modes = _sector_productivity_modes(traj, ["A", "B"], ["R"], False, labour, elast)
+    assert modes["R"] == {"A": "sourced_mfp", "B": "raw_lp_heuristic"}
+    summary = _sector_productivity_mode_summary(modes)
+    assert "sourced MFP" in summary and "raw labour-productivity heuristic" in summary
+    assert "benchmark prices" in summary  # CES caveat present because a source-identified sector is
 
 
 def test_decomposition_needs_a_usable_labour_share_else_heuristic():
@@ -697,44 +1066,58 @@ def test_decomposition_needs_a_usable_labour_share_else_heuristic():
     assert by["BRD"] > 0.0 > by["MIL"]
 
 
-def test_manifest_records_identified_vs_heuristic_mode():
-    """The recursive manifest must record WHICH sector-productivity mode ran (identified when a
-    capital_deepening series is present, else heuristic), so a run is auditable."""
+def test_manifest_records_honest_identification_mode():
+    """The recursive manifest must record the HONEST fine-grained mode (review P2 2026-09-06): with
+    capital_deepening but NO source labour share it is a MODEL-share approximation (NOT
+    source-identified); adding source_labour_shares makes it source-identified; with neither it is the
+    raw heuristic. This retires the earlier test that expected a blanket 'identified' when source
+    shares were absent — exactly the overclaim the reviewer flagged."""
     from cge.contracts.data_objects import Provenance, StructuralTrajectory
+    from cge.contracts.shocks import CarbonPrice
 
-    def _traj(with_deepening):
+    def _traj(with_deepening, with_source_share=False):
         sr = {"sector_productivity": {"BRD": {2025: 0.03}, "MIL": {2025: 0.01}}}
         if with_deepening:
             sr["capital_deepening"] = {"BRD": {2025: 0.02}, "MIL": {2025: 0.005}}
         keys = [f"{d}:{s}" for d, by in sr.items() for s in by]
+        srcs = {k: "c" for k in keys}
+        cfs = {k: "low" for k in keys}
+        ssl = {}
+        if with_source_share:
+            ssl = {"BRD": 0.58, "MIL": 0.62}
+            for s in ("BRD", "MIL"):
+                srcs[f"source_labour_share:{s}"] = "illustrative"
+                cfs[f"source_labour_share:{s}"] = "low"
         return StructuralTrajectory(
             provenance=Provenance(
                 source="t",
                 source_version="v",
                 licence="n",
                 reference_year=2024,
-                retrieved="2026-09-01",
+                retrieved="2026-09-06",
             ),
             sector_rates=sr,
-            sources={k: "c" for k in keys},
-            confidence={k: "low" for k in keys},
+            sources=srcs,
+            confidence=cfs,
+            source_labour_shares=ssl,
         )
-
-    from cge.contracts.shocks import CarbonPrice
 
     sc = Scenario(
         name="m", engine="cge_static", years=[2025, 2030], shocks=[CarbonPrice(price=50.0)]
     )
-    ident = run_recursive(
-        sc, config=DynamicConfig(structural=_traj(True)), data_source="toy_cge_gov"
-    )
-    heur = run_recursive(
-        sc, config=DynamicConfig(structural=_traj(False)), data_source="toy_cge_gov"
-    )
-    ts_i = ident.result.manifest.assumptions["recursive_dynamics"]["trend_source"]
-    ts_h = heur.result.manifest.assumptions["recursive_dynamics"]["trend_source"]
-    assert "identified" in ts_i["sector_productivity_mode"]
-    assert "heuristic" in ts_h["sector_productivity_mode"]
+
+    def _mode(traj):
+        r = run_recursive(sc, config=DynamicConfig(structural=traj), data_source="toy_cge_gov")
+        return r.result.manifest.assumptions["recursive_dynamics"]["trend_source"][
+            "sector_productivity_mode"
+        ]
+
+    approx = _mode(_traj(with_deepening=True))  # deepening but no source share
+    sourced = _mode(_traj(with_deepening=True, with_source_share=True))
+    heur = _mode(_traj(with_deepening=False))
+    assert "approximation, not source-id" in approx  # honest: NOT source-identified
+    assert "identified at source" in sourced
+    assert "raw labour-productivity heuristic" in heur
 
 
 def test_high_aggregate_region_does_not_get_all_negative_sector_biases():

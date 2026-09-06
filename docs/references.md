@@ -90,8 +90,8 @@ concordance (see `data/structural/NOTICE.md` for licences and the reproducibilit
   (`rtfpna`), the per-region aggregate-TFP growth series.
 - **[EUKLEMS2023]** EU KLEMS & INTANProd (2023 release). — Sectoral labour-productivity (output per
   hour) growth by industry (`sector_productivity`) AND sector capital services per hour worked
-  (`capital_deepening`, g_{K/L}), the two series the growth-accounting decomposition
-  g_φ=(g_{Y/L}−s_K·g_{K/L})/s_L needs.
+  (`capital_deepening`, g_{K/L}), the two series the growth-accounting decomposition needs — netted
+  via the Cobb-Douglas finite-change mapping 1+g_φ=[(1+g_{Y/L})/(1+g_{K/L})^{s_K}]^{1/s_L}.
 - **[UNWPP2024]** United Nations DESA, Population Division (2024). *World Population Prospects 2024*,
   Medium variant. — Per-region population growth.
 - **[ILOSTAT]** International Labour Organization, *ILOSTAT* modelled estimates, and World Bank

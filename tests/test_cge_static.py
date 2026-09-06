@@ -2437,11 +2437,15 @@ def test_labour_augmenting_cd_va_cost_falls_by_phi_to_the_minus_sL():
     assert got[1] == pytest.approx(base[1], rel=1e-12)  # sector 1 untouched
 
 
-def test_labour_augmenting_cd_lowers_physical_labour_demand():
-    """Cobb-Douglas: under phi>1 the augmented sector hires strictly LESS physical labour per unit
-    VA (efficiency demand / phi), while capital demand is unchanged at the same VA payment. Known
-    answer: F_LAB(phi) = F_LAB(1)/phi at fixed va_cost and w (CD factor demand is beta*va_cost/w in
-    efficiency units, then /phi to physical)."""
+def test_labour_augmenting_cd_physical_labour_unchanged_at_fixed_va_payment():
+    """Cobb-Douglas, at a FIXED VA payment va_cost: physical labour in the augmented sector is
+    UNCHANGED, not reduced (review P3 2026-09-03 — the old name claimed a 1/phi reduction that the
+    derivation itself contradicts). CD efficiency demand is beta*va_cost/w_eff with
+    w_eff_LAB = w_LAB/phi, so efficiency demand rises by exactly phi; converting back to physical
+    divides by phi again, cancelling: F_phys(phi) = F_phys(1). The labour-SAVING effect is real but
+    operates in EQUILIBRIUM through pv and va_cost, NOT at a mechanically fixed va_cost. This test
+    pins the demand identity actually implemented; equilibrium labour saving is covered by the
+    full-solve tests."""
     cal = _cal()
     w = np.ones(len(cal.factors))
     lab = cal.factors.index("LAB")
@@ -2453,11 +2457,10 @@ def test_labour_augmenting_cd_lowers_physical_labour_demand():
     phi[0] = 1.25
     pv_a = M._va_unit_cost(cal, w, phi)
     got = M._factor_demand(cal, w, pv_a, va_cost, phi)
-    # Physical labour in the augmented sector falls exactly by 1/phi (CD: beta*va_cost/w_eff /phi,
-    # and w_eff_LAB = w_LAB/phi, so efficiency demand rises by phi then /phi -> unchanged? NO:
-    # va_cost fixed, w_eff_LAB smaller -> efficiency demand larger by phi, /phi -> base). The NET
-    # physical labour at FIXED va_cost is therefore equal; the real effect comes through pv/va_cost
-    # in equilibrium. So assert the identity actually implemented: physical LAB = efficiency/phi.
+    # Physical labour at FIXED va_cost is EQUAL to the baseline: efficiency demand grows by phi
+    # (smaller w_eff), and the physical conversion divides by phi, so the two cancel.
+    assert got[lab, 0] == pytest.approx(base[lab, 0], rel=1e-12)
+    # Equivalently, physical = efficiency/phi and efficiency = phi * baseline.
     lab_eff = cal.beta[lab, 0] * va_cost[0] / (w[lab] / phi[0])
     assert got[lab, 0] == pytest.approx(lab_eff / phi[0], rel=1e-12)
     # Capital demand in the augmented sector is unchanged (phi touches labour only).

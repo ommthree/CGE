@@ -451,7 +451,17 @@ class ConcordanceMap(_DataObject):
 # change — sector-biased TFP shifts the output mix endogenously) and emissions intensity (per-sector
 # decarbonisation of the carbon-cost intensity).
 StructuralDriver = Literal["population", "labour_participation", "productivity"]
-StructuralSectorDriver = Literal["sector_productivity", "emissions_intensity", "capital_deepening"]
+StructuralSectorDriver = Literal[
+    "sector_productivity",
+    "emissions_intensity",
+    "capital_deepening",
+    # Sector MULTI-FACTOR-PRODUCTIVITY growth, identified at SOURCE (review P2 2026-09-05, pipeline
+    # step 1b): g_MFP = g_{Y/L} − s_K^src·g_{K/L} using source-period (Törnqvist) factor shares, NOT
+    # the receiving CGE model's benchmark share. When present the wrapper drives the
+    # labour-augmenting term from this directly (translating MFP → augmentation through the sector's
+    # ACTUAL nest — CES too), superseding the in-wrapper CD-only decomposition of LP + deepening.
+    "mfp",
+]
 
 
 class StructuralTrajectory(_DataObject):
@@ -476,27 +486,35 @@ class StructuralTrajectory(_DataObject):
     style: output per hour), NOT total-factor productivity. Growth accounting for value added gives
     ``g_{Y/L} = g_MFP + s_K·g_{K/L}`` (labour productivity = MFP growth + capital deepening;
     [Solow1957], [EUKLEMS2023]). So observed labour productivity mixes genuine technology with
-    capital deepening — which the recursive model accumulates SEPARATELY. Two modes (review P1
-    2026-08-31 → decomposition 2026-09-01):
+    capital deepening — which the recursive model accumulates SEPARATELY. The technology term is
+    recovered in TWO STAGES (review P1 2026-08-31 → source-share MFP 2026-09-06):
 
-    * **Identified (preferred).** When a ``capital_deepening`` series g_{K/L} is supplied, the
-      wrapper subtracts the deepening and recovers the labour-augmenting technology rate
-      ``g_φ = (g_{Y/L} − s_K·g_{K/L}) / s_L`` (s_K = capital share of VA = 1−s_L, s_L from the
-      engine's benchmark factor shares). This g_φ is a genuine labour-augmenting term FREE of the
-      capital deepening the model double-counts otherwise.
-    * **Heuristic (fallback).** Without a ``capital_deepening`` series the raw labour-productivity
-      rate is used directly as an ILLUSTRATIVE composition lever — transparent, but not identified
-      (it still contains deepening); flagged as such in the manifest.
+    * **Stage 1 — identify MFP at SOURCE.** Either a sourced ``mfp`` series is used directly, or MFP
+      is netted out of observed labour productivity using the SOURCE-period labour share s_L^src
+      (``source_labour_shares``, the source economy's factor share — NOT the receiving model's
+      benchmark): ``g_MFP = g_{Y/L} − (1−s_L^src)·g_{K/L}`` (log-change form).
+    * **Stage 2 — translate MFP through the RECEIVING model's ACTUAL nest.** Solve for the labour
+      augmentation φ that reproduces the Hicks-neutral MFP cost change: ``ln φ = ln(1+g_MFP)/s_L``
+      for Cobb-Douglas (price-independent — exact globally), or the CES closed form for σ_va≠1. For
+      CES this reproduces the cost change only AT BENCHMARK PRICES — a *benchmark-calibrated
+      Harrod-neutral* equivalent, NOT a globally identified technology term (a fixed labour
+      augmentation and a Hicks-neutral MFP shift diverge once equilibrium prices move).
+    * **Modes (per region, sector, in the manifest):** ``sourced_mfp`` / ``derived_source_share``
+      (both source-identified), ``model_share_approx`` (LP+deepening but only the model benchmark
+      share is available — an approximation, NOT source-identified), or ``raw_lp_heuristic`` (no
+      identifying inputs / no usable s_L / unknown σ_va → raw rate, deepening not removed).
 
-    Either way the rate is applied as a ``ProductivityShock(mechanism="labour_augmenting")`` on the
+    The rate is applied as a ``ProductivityShock(mechanism="labour_augmenting")`` on the
     sector's labour input. Under a Cobb-Douglas VA nest the sector's VA cost falls by φ^{−s_L}
     exactly (s_L = labour share of VA); for CES the engine computes the exact. The wrapper expresses
-    each sector's cumulative level RELATIVE to the **VA-share-weighted** geometric mean of all
-    sectors' levels (weight = sector's share of VA v_i=VA_i/ΣVA_j, so a large sector dominates),
-    contributing only sector COMPOSITION drift (VA-weighted geo mean of biases = 1), NOT re-imposing
-    an aggregate level — that is carried separately by the per-region TFP endowment scale. (The
-    earlier ``(sector_LP/aggregate_TFP)^{s_L}`` and the labour-composition weighting are retracted —
-    see ``dynamics.recursive``.)
+    each sector's cumulative level RELATIVE to an **aggregate-neutral** geometric mean of all
+    sectors' levels — weighted by v_i·s_{L,i} (each sector's share of VA v_i=VA_i/ΣVA_j TIMES its
+    labour share s_{L,i}), which zeros the aggregate CD log-cost effect Σ_i v_i·s_{L,i}·ln φ_i, so
+    the driver contributes only sector COMPOSITION drift and re-imposes NO aggregate level — that is
+    carried separately by the per-region TFP endowment scale. (The earlier
+    ``(sector_LP/aggregate_TFP)^{s_L}``, the labour-composition weight, the VA-share-only mean, and
+    the simple-rate ``(g_{Y/L}−s_K·g_{K/L})/s_L`` arithmetic are all retracted — see
+    ``dynamics.recursive``.)
 
     A rate is a decimal fraction (0.012 = +1.2 %/yr). Years present are the *knots*; the effective
     rate holds the most recent knot for years between/after knots (piecewise-constant, documented),
@@ -511,12 +529,21 @@ class StructuralTrajectory(_DataObject):
     sector_rates: dict[str, dict[str, dict[int, float]]] = Field(default_factory=dict)
     sources: dict[str, str] = Field(default_factory=dict, description="'driver:key' -> citation")
     confidence: dict[str, Literal["high", "medium", "low", "default"]] = Field(default_factory=dict)
+    # SOURCE-period labour share of value added s_L^src per sector (pipeline step 1b, review P2
+    # 2026-09-05), used to identify sector MFP at SOURCE: g_MFP = g_{Y/L} − (1−s_L^src)·g_{K/L}.
+    # This is the source economy's factor share (ideally an EU KLEMS adjacent-period Törnqvist
+    # average), NOT the receiving CGE model's benchmark labour share — the two are different
+    # quantities and conflating them was the review-6 P1. Keyed by sector (``"__all__"`` allowed).
+    # Only consulted when an ``mfp`` series is NOT supplied and MFP must be derived; when a sourced
+    # ``mfp`` series is present it is used directly. Empty ⇒ no source-side identification.
+    source_labour_shares: dict[str, float] = Field(default_factory=dict)
 
     _REGION_DRIVERS: ClassVar[set[str]] = {"population", "labour_participation", "productivity"}
     _SECTOR_DRIVERS: ClassVar[set[str]] = {
         "sector_productivity",
         "emissions_intensity",
         "capital_deepening",
+        "mfp",
     }
 
     @model_validator(mode="after")
@@ -525,7 +552,30 @@ class StructuralTrajectory(_DataObject):
         driver a known one on the right axis, and every path carrying a source + confidence."""
         self._validate_axis(self.rates, self._REGION_DRIVERS, "region")
         self._validate_axis(self.sector_rates, self._SECTOR_DRIVERS, "sector")
+        self._validate_source_labour_shares()
         return self
+
+    def _validate_source_labour_shares(self) -> None:
+        """Source labour shares are empirical factor shares used to identify MFP at source, so they
+        must be finite and in ``(0, 1]`` (review P2 2026-09-06 — the field previously accepted
+        NaN/inf/negative/>1, which silently corrupts the decomposition), and each must carry
+        value-level provenance keyed ``source_labour_share:{key}`` in ``sources``/``confidence``
+        (they are presented as sourced inputs, so an unsourced share is rejected like any rate)."""
+        import math
+
+        for key, val in self.source_labour_shares.items():
+            if not isinstance(val, int | float) or not math.isfinite(val):
+                raise ValueError(f"source_labour_shares[{key!r}] = {val!r} is not a finite number")
+            if not (0.0 < val <= 1.0):
+                raise ValueError(
+                    f"source_labour_shares[{key!r}] = {val} is out of range; a labour share of "
+                    "value added must be in (0, 1]"
+                )
+            mkey = f"source_labour_share:{key}"
+            if mkey not in self.sources or mkey not in self.confidence:
+                raise ValueError(
+                    f"source labour share {mkey!r} is missing source or confidence metadata"
+                )
 
     def _validate_axis(self, table: dict, allowed: set[str], axis: str) -> None:
         import math

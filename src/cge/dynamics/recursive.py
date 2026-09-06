@@ -49,6 +49,7 @@ GDP-normalised units as the stock), not the nominal ``investment`` share.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -218,6 +219,20 @@ def _probe_labour_shares(manifest, regions: list[str], sectors: list[str]) -> di
     return lvs.get("labour_va_share", {})
 
 
+def _probe_va_elast(manifest, regions: list[str], sectors: list[str]) -> dict:
+    """The per-sector VA-nest substitution elasticity σ_va the engine stamped (review P2
+    2026-09-05). The growth-accounting decomposition ``g_φ=[(1+g_{Y/L})/(1+g_{K/L})^{s_K}]^{1/s_L}``
+    is a COBB-DOUGLAS mapping, exact only for σ_va = 1; for a CES VA nest the inference of the
+    labour-augmenting term from observed labour productivity depends on the elasticity and
+    calibration, not just s_L. The wrapper reads this to run the IDENTIFIED decomposition only for
+    CD sectors (σ_va≈1) and fall back to the heuristic for CES sectors. Flat ``{sector: σ}`` or
+    nested ``{region: {sector: σ}}``; empty when the engine exposed no shares."""
+    lvs = manifest.assumptions.get("labour_va_shares", {})
+    if not lvs.get("available"):
+        return {}
+    return lvs.get("va_elast", {})
+
+
 def _year_investment(res: ResultSet, year: int, regions: list[str]) -> np.ndarray:
     """That year's REAL investment VOLUME (share of benchmark GDP) per region, ordered by regions.
 
@@ -311,6 +326,10 @@ def run_recursive(
     # ``capital_deepening`` series is supplied: g_φ = (g_{Y/L} − s_K·g_{K/L}) / s_L (review P1
     # decomposition 2026-09-01).
     labour_shares = _probe_labour_shares(probe.manifest, regions, sectors)
+    # Per-sector VA-nest elasticity σ_va (review P2 2026-09-05): the CD growth-accounting
+    # decomposition is only valid for σ_va = 1, so the wrapper runs the identified decomposition for
+    # CD sectors and the heuristic for CES sectors.
+    va_elast = _probe_va_elast(probe.manifest, regions, sectors)
 
     # "Unmapped label fails loudly" at the RUN boundary (review P2 2026-08-29): if a structural
     # trajectory is supplied but EVERY model region/sector falls through to the global ``__all__``
@@ -400,7 +419,7 @@ def run_recursive(
         # cleared — expanded above. In multi mode the shocks are PER (region, sector) so each region
         # uses its OWN VA-share-weighted mean (review P1b 2026-08-28 / P1 2026-08-31).
         year_shocks = list(base_nature_shocks or scenario.shocks) + _sector_productivity_shocks(
-            config, base_year, year, sectors, regions, multi, va_shares, labour_shares
+            config, base_year, year, sectors, regions, multi, va_shares, labour_shares, va_elast
         )
 
         res = run_scenario(
@@ -465,7 +484,7 @@ def run_recursive(
         },
         # Trend provenance: either the flat fallback scalars (Phase 7.1) or the sourced structural
         # trajectory (Phase 7b.2), so a run records exactly which drove its trends.
-        "trend_source": _trend_provenance(config, regions, sectors),
+        "trend_source": _trend_provenance(config, regions, sectors, multi, labour_shares, va_elast),
         # Per-solve-year child scenario hashes (review P2a): the full provenance chain of the
         # internal static solves the dynamic result is composed of.
         "child_run_hashes": {int(y): h for y, h in child_hashes.items()},
@@ -569,33 +588,248 @@ def _cumulative_sector_level(traj, driver: str, sector: str, base_year: int, yea
     return acc - 1.0
 
 
-def _decomposed_tech_level(
-    traj, sector: str, base_year: int, year: int, s_L: float, identified: bool
+# Fine-grained per-(region, sector) identification modes (review P2 2026-09-06). The old binary
+# identified/heuristic overclaimed: it called a run "MFP identified at source" even when NO source
+# labour share was supplied (LP/deepening then fell back to the RECEIVING model's share — the very
+# thing the source-share pipeline retires) and when the nest is CES (where labour-augmentation is
+# only a benchmark-calibrated equivalent, not a globally identified technology term). The modes:
+#   sourced_mfp             — a sourced ``mfp`` series is used directly (identified at source).
+#   derived_source_share    — MFP derived here from LP+deepening using a SOURCE labour share.
+#   model_share_approx      — MFP derived from LP+deepening but only the MODEL benchmark share is
+#                             available (an approximation, NOT source-identified).
+#   raw_lp_heuristic        — raw labour-productivity rate (capital deepening not removed).
+# Only sourced_mfp and derived_source_share count as "source-identified". For a CES nest even those
+# are a benchmark-calibrated Harrod-neutral translation (exact only at benchmark prices), flagged in
+# the summary — see :func:`_mfp_to_labour_aug_log`.
+_SOURCE_IDENTIFIED_MODES = frozenset({"sourced_mfp", "derived_source_share"})
+
+
+def _classify_sector_mode(
+    s: str,
+    s_L: float,
+    sigma: float | None,
+    *,
+    has_mfp: bool,
+    has_lp_dp: bool,
+    has_source_share: bool,
+) -> str:
+    """The identification mode for one sector (see the vocabulary above). ``raw_lp_heuristic`` when
+    the technology term cannot be recovered from source-identified inputs (no usable labour share,
+    no known VA elasticity, or neither an mfp nor an LP+deepening pair)."""
+    if s_L <= 1e-6 or sigma is None:
+        return "raw_lp_heuristic"
+    if has_mfp:
+        return "sourced_mfp"
+    if has_lp_dp:
+        return "derived_source_share" if has_source_share else "model_share_approx"
+    return "raw_lp_heuristic"
+
+
+def _sector_productivity_modes(
+    traj,
+    sectors: list[str],
+    regions: list[str],
+    multi: bool,
+    labour_shares: dict,
+    va_elast: dict | None = None,
+) -> dict:
+    """Per-(region, sector) identification-mode classification for the sectoral-productivity driver
+    (review P2 2026-09-03; productivity-coverage + CES requirements review P2 2026-09-05). A sector
+    is ``identified`` (capital deepening netted out) only when ALL hold: BOTH observation inputs are
+    surfaced for the manifest. Returns one of the fine-grained modes (see ``_classify_sector_mode``)
+    per (region, sector): ``sourced_mfp`` / ``derived_source_share`` (source-identified),
+    ``model_share_approx`` (LP+deepening but only the model share — an approximation), or
+    ``raw_lp_heuristic``. Activates when the trajectory carries EITHER an ``mfp`` OR a
+    ``sector_productivity`` driver (review P2 2026-09-06: an mfp-only trajectory must not be a
+    no-op)."""
+    has_mfp_driver = bool(traj and traj.sector_rates.get("mfp"))
+    has_lp_driver = bool(traj and traj.sector_rates.get("sector_productivity"))
+    if not (has_mfp_driver or has_lp_driver):
+        return {}
+    lp_table = traj.sector_rates.get("sector_productivity") or {}
+    dp_table = traj.sector_rates.get("capital_deepening") or {}
+    mfp_table = traj.sector_rates.get("mfp") or {}
+    lp_all = "__all__" in lp_table
+    dp_all = "__all__" in dp_table
+    mfp_all = "__all__" in mfp_table
+    src_sl = traj.source_labour_shares or {}
+    src_all = "__all__" in src_sl
+    va_elast = va_elast or {}
+    out: dict[str, dict[str, str]] = {}
+    loop_regions = regions if multi else regions[:1]
+    for region in loop_regions:
+        sl_by_sector = labour_shares.get(region, {}) if multi else labour_shares
+        elast_by_sector = va_elast.get(region, {}) if multi else va_elast
+        modes: dict[str, str] = {}
+        for s in sectors:
+            s_L = float(sl_by_sector.get(s, 0.0))
+            sigma = elast_by_sector.get(s)
+            modes[s] = _classify_sector_mode(
+                s,
+                s_L,
+                sigma,
+                has_mfp=s in mfp_table or mfp_all,
+                has_lp_dp=(s in lp_table or lp_all) and (s in dp_table or dp_all),
+                has_source_share=s in src_sl or src_all,
+            )
+        out[region] = modes
+    return out
+
+
+def _sector_productivity_mode_summary(modes_by_region: dict) -> str:
+    """A manifest headline over the fine-grained per-(region, sector) modes (review P2 2026-09-06):
+    the count in each mode, so a run never overclaims "identified at source" when it actually fell
+    back to the model-share approximation or the raw heuristic. Carries the CES benchmark caveat
+    (the augmentation reproduces the MFP cost change only at benchmark prices for CES — see
+    :func:`_mfp_to_labour_aug_log`)."""
+    if not modes_by_region:
+        return "n/a (no mfp or sector_productivity driver)"
+    all_modes = [m for region in modes_by_region.values() for m in region.values()]
+    from collections import Counter
+
+    counts = Counter(all_modes)
+    labels = {
+        "sourced_mfp": "sourced MFP (identified at source)",
+        "derived_source_share": "MFP derived with source labour share (identified at source)",
+        "model_share_approx": "MFP derived with MODEL share only (approximation, not source-id'd)",
+        "raw_lp_heuristic": "raw labour-productivity heuristic (capital deepening NOT removed)",
+    }
+    parts = [f"{counts[m]} {labels[m]}" for m in labels if counts.get(m)]
+    n_src = sum(counts.get(m, 0) for m in _SOURCE_IDENTIFIED_MODES)
+    caveat = ""
+    if n_src:
+        caveat = (
+            " — for CES sectors the labour-augmentation reproduces the MFP cost change only at "
+            "benchmark prices (a benchmark-calibrated Harrod-neutral translation, exact globally "
+            "only under Cobb-Douglas)"
+        )
+    return "; ".join(parts) + caveat
+
+
+class InfeasibleMFPTranslation(ValueError):
+    """No labour augmentation can reproduce a target MFP cost change in a CES nest (review P2
+    2026-09-06). Under CES with essential capital the VA unit cost cannot fall below the capital
+    term's floor by moving labour productivity alone, so a large MFP cut (or a large MFP gain when
+    σ>1) has NO equivalent labour augmentation. Raised rather than returning an enormous boundary
+    value that would masquerade as a valid (huge) shock."""
+
+
+def _mfp_to_labour_aug_log(g_mfp: float, s_L_model: float, sigma: float) -> float:
+    """Translate a per-year VA MFP growth ``g_MFP`` into the labour-augmentation log-step ``ln φ``
+    that reproduces the same VA unit-cost change in the RECEIVING model's nest, AT BENCHMARK FACTOR
+    PRICES (pipeline step 1b; closed-form + feasibility review P2 2026-09-06). MFP is Hicks-neutral
+    on value added: it lowers the VA unit cost by ``1/(1+g_MFP)``. A labour-augmentation φ lowers it
+    through the labour channel only (the engine sees ``w_LAB/φ``); we pick ln φ so the
+    benchmark-price cost falls by the same factor.
+
+    * **Cobb-Douglas (σ_va = 1).** VA unit cost ∝ φ^{−s_L} INDEPENDENTLY of prices, so
+      ``ln φ = ln(1+g_MFP) / s_L`` reproduces the MFP cost change at EVERY price vector — a genuine
+      Harrod-neutral equivalent (s_L the receiving model's labour share; the SOURCE share was used
+      upstream to identify g_MFP).
+    * **CES (σ_va ≠ 1).** The unit-cost response to φ is the CES dual, not φ^{−s_L}. With benchmark
+      unit prices and labour COST share θ_L, ``c(x)^{1−σ} = θ_L·e^{−(1−σ)x} + (1−θ_L)`` (x = ln φ;
+      c(0)=1). Requiring the cost to fall by ``m = 1+g_MFP`` gives
+      ``c(x)^{1−σ} = m^{−(1−σ)} =: R``, hence a CLOSED FORM
+      ``x = −ln[(R − (1−θ_L)) / θ_L] / (1−σ)`` — no iteration. It is FEASIBLE only when the log
+      argument is positive, i.e. ``R > 1−θ_L``: capital is essential in CES, so the VA cost cannot
+      be pushed past the capital floor by labour augmentation alone; an infeasible target raises
+      :class:`InfeasibleMFPTranslation` rather than returning a boundary. **This equivalence holds
+      only at benchmark prices** — once equilibrium wages/rentals move, a fixed labour augmentation
+      no longer reproduces the Hicks-neutral MFP shift, so for CES this is a *benchmark-calibrated
+      Harrod-neutral translation*, not a globally identified technology term (review P1)."""
+    m = 1.0 + g_mfp
+    if m <= 0.0:
+        raise ValueError(f"MFP factor ≤ 0 (1+g_MFP={m:.4g}); not a valid annual growth rate.")
+    if s_L_model <= 1e-9:
+        # No labour channel to augment → cannot translate; treat as no drift for this year.
+        return 0.0
+    if abs(sigma - 1.0) < 1e-9:
+        return math.log(m) / s_L_model  # CD closed form (price-independent)
+    # CES closed form. c(x)^{1-σ} = θL·e^{-(1-σ)x} + (1-θL); want c(x) = c(0)/m = 1/m, so
+    # c(x)^{1-σ} = m^{-(1-σ)} = R. Solve θL·e^{-(1-σ)x} = R - (1-θL).
+    theta_L = min(max(s_L_model, 1e-12), 1.0 - 1e-12)
+    om = 1.0 - sigma
+    R = m ** (-om)
+    arg = (R - (1.0 - theta_L)) / theta_L
+    if arg <= 0.0:
+        raise InfeasibleMFPTranslation(
+            f"no labour augmentation reproduces a CES MFP cost change of factor {m:.4g} at "
+            f"σ_va={sigma:.4g}, labour cost share θ_L={theta_L:.4g}: the implied labour term "
+            f"{arg:.4g} ≤ 0 (capital is essential — the VA cost cannot pass the capital floor by "
+            "labour augmentation alone)."
+        )
+    return -math.log(arg) / om
+
+
+def _decomposed_log_level(
+    traj,
+    sector: str,
+    base_year: int,
+    year: int,
+    s_L: float,
+    identified: bool,
+    sigma: float = 1.0,
+    source_labour_share: float | None = None,
 ) -> float:
-    """Cumulative LABOUR-AUGMENTING TECHNOLOGY level (∏(1+g_φ)) for a sector from ``base_year`` to
-    ``year``, growth-accounting-decomposed (review P1 decomposition 2026-09-01).
+    """Cumulative LABOUR-AUGMENTING TECHNOLOGY level in LOG space (Σ ln φ) for a sector from
+    ``base_year`` to ``year`` (review P1 decomposition 2026-09-01; finite-change 2026-09-03;
+    log-space + source-share MFP identification review P2 2026-09-05).
 
-    Value-added growth accounting gives ``g_{Y/L} = g_MFP + s_K·g_{K/L}`` (labour productivity = MFP
-    growth + capital deepening; [Solow1957], [EUKLEMS2023]). A labour-augmenting factor a adds
-    ``s_L·a`` to MFP, so the labour-augmenting technology rate is
-    ``g_φ = (g_{Y/L} − s_K·g_{K/L}) / s_L`` with s_K = 1 − s_L. When ``identified`` (a
-    ``capital_deepening`` series is present AND a valid s_L is known) this removes the capital
-    deepening the recursive model already accumulates. Otherwise g_φ falls back to the raw observed
-    labour-productivity rate g_{Y/L} — the transparent heuristic (deepening not removed).
+    Three identification routes, in preference order, all producing a per-year labour-augmentation
+    log-step which is summed (log-space, so a valid-but-extreme rate cannot overflow — the caller
+    normalises then exponentiates only the small relative deviation):
 
-    Compounds the per-year decomposed rate over the actual gap (piecewise-constant, like the other
-    drivers). Returns the cumulative multiplier LEVEL (≥ 0), not minus one."""
-    acc = 1.0
+    1. **Sourced MFP (best).** If the trajectory carries an ``mfp`` series for the sector, that MFP
+       growth was identified at SOURCE (``g_MFP = g_{Y/L} − s_K^src·g_{K/L}`` with source-period
+       Törnqvist shares, done in the data build). The wrapper translates it into labour augmentation
+       through the RECEIVING model's actual nest via :func:`_mfp_to_labour_aug_log` — CES too.
+    2. **Source-share derived.** Else if ``identified`` and a ``source_labour_share`` s_L^src is
+       supplied, derive g_MFP HERE from ``sector_productivity`` (g_{Y/L}) and ``capital_deepening``
+       (g_{K/L}) using the SOURCE share ``g_MFP = g_{Y/L} − (1−s_L^src)·g_{K/L}`` (log-change form),
+       then translate through the model nest. This uses the source economy's factor share for the
+       source-side step — NOT the receiving model's benchmark (the review-6 P1).
+    3. **Heuristic.** Else the raw observed labour-productivity rate g_{Y/L} is used directly (a
+       transparent composition lever; capital deepening not removed).
+
+    Level factors are VALIDATED: a rate ≤ −100% (an invalid annual growth rate) raises a
+    ``ValueError`` naming the sector/year rather than producing a non-finite log."""
+    mfp_table = traj.sector_rates.get("mfp") or {}
+    has_mfp = sector in mfp_table or "__all__" in mfp_table
+    log_acc = 0.0
     for y in range(base_year, year):
-        g_yl = traj.sector_rate("sector_productivity", sector, y)
-        if identified:
-            s_k = 1.0 - s_L
+        if identified and has_mfp:
+            g_mfp = traj.sector_rate("mfp", sector, y)
+            if 1.0 + g_mfp <= 0.0:
+                raise ValueError(
+                    f"MFP rate ≤ −100% for sector {sector!r} year {y} (1+g_MFP={1 + g_mfp:.4g})."
+                )
+            log_step = _mfp_to_labour_aug_log(g_mfp, s_L, sigma)
+        elif identified:
+            g_yl = traj.sector_rate("sector_productivity", sector, y)
             g_kl = traj.sector_rate("capital_deepening", sector, y)
-            g_phi = (g_yl - s_k * g_kl) / s_L
+            yl_factor, kl_factor = 1.0 + g_yl, 1.0 + g_kl
+            if yl_factor <= 0.0 or kl_factor <= 0.0:
+                raise ValueError(
+                    f"rate ≤ −100% for sector {sector!r} year {y}: "
+                    f"(1+g_Y/L)={yl_factor:.4g}, (1+g_K/L)={kl_factor:.4g}."
+                )
+            # Source-side MFP identification (log-change): use the SOURCE labour share s_L^src if
+            # supplied, else fall back to the model share (the pre-source-share behaviour).
+            sl_src = source_labour_share if source_labour_share is not None else s_L
+            s_k_src = 1.0 - sl_src
+            g_mfp_log = math.log(yl_factor) - s_k_src * math.log(kl_factor)
+            log_step = _mfp_to_labour_aug_log(math.expm1(g_mfp_log), s_L, sigma)
         else:
-            g_phi = g_yl
-        acc *= 1.0 + g_phi
-    return max(acc, 1e-9)
+            g_yl = traj.sector_rate("sector_productivity", sector, y)
+            yl_factor = 1.0 + g_yl
+            if yl_factor <= 0.0:
+                raise ValueError(
+                    f"labour productivity rate ≤ −100% for sector {sector!r} year {y} "
+                    f"((1+g_Y/L)={yl_factor:.4g})."
+                )
+            log_step = math.log(yl_factor)
+        log_acc += log_step
+    return log_acc
 
 
 def _sector_productivity_shocks(
@@ -607,6 +841,7 @@ def _sector_productivity_shocks(
     multi: bool,
     va_shares: dict,
     labour_shares: dict,
+    va_elast: dict | None = None,
 ) -> list:
     """Synthesize LABOUR-AUGMENTING ProductivityShocks for the sectoral-drift driver (7b.2
     structural change), for EVERY model sector in ``sectors`` (an ``__all__``-only trajectory, or
@@ -626,53 +861,110 @@ def _sector_productivity_shocks(
 
     **Structural DRIFT, not a level.** The aggregate productivity level is ALREADY carried by the
     TFP endowment scale, so this driver contributes only the sector COMPOSITION drift. Each sector's
-    cumulative technology level is expressed RELATIVE to the **VA-share-weighted** geo mean of all
-    sectors' levels — weighted by each sector's SHARE OF VALUE ADDED v_i=VA_i/ΣVA_j (review P1
-    2026-08-31: was wrongly the labour composition s_L, which weighted a 1%-of-economy sector like a
-    99% one). So a large sector's drift dominates the mean and small sectors do not swing it: a
-    faster sector gets φ>1, a slower one φ<1, and the VA-weighted geometric mean of biases is 1 by
-    construction. NOTE this cost-neutrality of the *mean* is geometric, not the aggregate model cost
-    effect (which for CES is not φ^{−s_L}); a transparent normalisation, not an exact GE neutrality
-    claim. The mean is a within-region quantity, computed per region — shocks are per (region,
-    sector) in multi mode (engine honours coverage_regions).
+    cumulative technology level is expressed RELATIVE to an **aggregate-neutral** geo mean of all
+    sectors' levels. Under Cobb-Douglas the VA unit cost responds as pv_i ∝ φ_i^{−s_Li}, so the
+    aggregate VA-weighted log-cost effect of the drift is Σ_i v_i·s_Li·ln φ_i; the mean is chosen to
+    zero exactly that, i.e. weighted by **v_i·s_Li** (each sector's VA share TIMES its labour share,
+    v_i=VA_i/ΣVA_j). This makes the drift genuinely aggregate-cost-neutral, not merely φ-geometric-
+    neutral (review P1 2026-09-03; the 2026-08-31 fix corrected s_L→v_i but a v_i-only mean still
+    left an aggregate effect when labour shares differ across sectors). A faster sector gets φ>1, a
+    slower one φ<1, and the v_i·s_Li-weighted mean of biases is 1 by construction. This is the exact
+    first-order neutral criterion for Cobb-Douglas; for CES the unit-cost response is not φ^{−s_L},
+    so neutrality is a local (benchmark-share) approximation there — a transparent normalisation,
+    not an exact CES GE-neutrality claim. The mean is a within-region quantity, computed per region
+    — shocks are per (region, sector) in multi mode (engine honours coverage_regions).
 
     Empty when the config has no ``sector_productivity`` driver, so a run without it is
     byte-identical to Phase 7.1."""
     traj = config.structural
-    if not (traj and traj.sector_rates.get("sector_productivity")):
+    # Activate for an ``mfp`` OR a ``sector_productivity`` driver (review P2 2026-09-06: an mfp-only
+    # trajectory must drive the model, not be a silent no-op). A run with neither is byte-identical
+    # to Phase 7.1.
+    if not (
+        traj and (traj.sector_rates.get("mfp") or traj.sector_rates.get("sector_productivity"))
+    ):
         return []
     from cge.contracts.shocks import ProductivityShock
 
-    # The decomposition is ON only when a capital_deepening series exists. s_L per sector comes from
-    # the engine's stamped labour shares; a sector with no stamped share (or s_L≈0) cannot be
-    # decomposed, so it keeps the raw heuristic rate rather than dividing by ~0.
-    has_deepening = bool(traj.sector_rates.get("capital_deepening"))
+    # Per (region, sector) the technology term is recovered via the mode ``_classify_sector_mode``
+    # assigns (sourced_mfp / derived_source_share / model_share_approx / raw_lp_heuristic); the
+    # first three feed _decomposed_log_level's identified path, the last the raw heuristic. In log
+    # space lets the cross-sector normalisation cancel huge common levels before exponentiating.
+    lp_table = traj.sector_rates.get("sector_productivity") or {}
+    dp_table = traj.sector_rates.get("capital_deepening") or {}
+    mfp_table = traj.sector_rates.get("mfp") or {}
+    lp_all = "__all__" in lp_table
+    dp_all = "__all__" in dp_table
+    mfp_all = "__all__" in mfp_table
+    src_sl = traj.source_labour_shares or {}
+    src_all = "__all__" in src_sl
+    va_elast = va_elast or {}
+
+    def _source_share(s: str) -> float | None:
+        if s in src_sl:
+            return float(src_sl[s])
+        if "__all__" in src_sl:
+            return float(src_sl["__all__"])
+        return None
 
     shocks = []
     for region in regions:
         share_by_sector = va_shares.get(region, {}) if multi else va_shares
         sl_by_sector = labour_shares.get(region, {}) if multi else labour_shares
-        # Cumulative TECHNOLOGY level per sector (∏(1+g_φ)); decomposed when a capital_deepening
-        # series + a usable labour share exist, else the raw labour-productivity rate (heuristic).
-        levels = {}
+        elast_by_sector = va_elast.get(region, {}) if multi else va_elast
+        log_levels = {}
         for s in sectors:
             s_L = float(sl_by_sector.get(s, 0.0))
-            identified = has_deepening and s_L > 1e-6
-            levels[s] = _decomposed_tech_level(traj, s, base_year, year, s_L, identified)
-        # VA-SHARE-weighted GEOMETRIC mean of the sector levels — the "average" the drift is
-        # measured against, so a large sector's drift dominates and no aggregate level is re-imposed
-        # (review P1 2026-08-31). Weights are each sector's SHARE of regional value added
-        # v_i=VA_i/ΣVA_j (engine-stamped); a sector with no stamped weight falls to equal weighting.
-        weights = np.array([max(float(share_by_sector.get(s, 0.0)), 0.0) for s in sectors])
+            sigma = elast_by_sector.get(s)
+            sigma = float(sigma) if sigma is not None else None
+            mode = _classify_sector_mode(
+                s,
+                s_L,
+                sigma,
+                has_mfp=s in mfp_table or mfp_all,
+                has_lp_dp=(s in lp_table or lp_all) and (s in dp_table or dp_all),
+                has_source_share=s in src_sl or src_all,
+            )
+            identified = mode in _SOURCE_IDENTIFIED_MODES or mode == "model_share_approx"
+            log_levels[s] = _decomposed_log_level(
+                traj,
+                s,
+                base_year,
+                year,
+                s_L,
+                identified,
+                sigma if sigma is not None else 1.0,
+                _source_share(s),
+            )
+        # AGGREGATE-NEUTRAL normalizer (review P1 2026-09-03). Under Cobb-Douglas the VA unit cost
+        # responds to φ_i as pv_i ∝ φ_i^{−s_Li}, so the aggregate (VA-weighted) log-cost effect of
+        # the composition drift is Σ_i v_i·s_Li·ln φ_i. For this driver to re-impose NO aggregate
+        # productivity/cost level (it carries only the sector COMPOSITION drift; the aggregate level
+        # is already in the TFP endowment scale) the mean must zero THAT quantity, i.e.
+        #   Σ_i (v_i·s_Li)(ln level_i − ln mean) = 0  ⟹  ln mean = Σ(v_i s_Li ln lvl)/Σ(v_i s_Li).
+        # A plain VA-share (v_i-only) geometric mean is only φ-geometric-neutral, NOT aggregate-cost
+        # neutral when labour shares differ across sectors (review P1 2026-08-31 fixed the weight to
+        # v_i; review P1 2026-09-03 adds the missing s_Li so the mean is truly aggregate-neutral).
+        va = np.array([max(float(share_by_sector.get(s, 0.0)), 0.0) for s in sectors])
+        sl = np.array([max(float(sl_by_sector.get(s, 0.0)), 0.0) for s in sectors])
+        weights = va * sl
         if weights.sum() <= 0:
-            weights = np.ones(len(sectors))
+            # No usable VA×labour-share weights (e.g. unstamped) → fall back to equal weighting,
+            # labour-share-weighted where available, else uniform, so the mean stays well-defined.
+            weights = sl if sl.sum() > 0 else np.ones(len(sectors))
         weights = weights / weights.sum()
-        log_mean = float(np.sum(weights * np.log([levels[s] for s in sectors])))
-        mean_level = float(np.exp(log_mean))
-        for sector in sectors:
+        # Normalise ENTIRELY in log space: the relative log deviation is ln φ_i = ln lvl_i − mean,
+        # so a large common level cancels here and never reaches math.exp.
+        log_arr = np.array([log_levels[s] for s in sectors])
+        log_mean = float(np.sum(weights * log_arr))
+        for i, sector in enumerate(sectors):
             # RELATIVE labour-productivity deviation from the weighted mean → the labour-augmenting
-            # factor φ. A sector at the mean gets φ=1 (no drift). delta = φ − 1, floored at −1.
-            phi = levels[sector] / mean_level if mean_level > 0 else levels[sector]
+            # factor φ = exp(ln lvl_i − mean). A sector at the mean gets φ=1 (no drift). We clamp
+            # the relative log to a representable range so an extreme (but valid) rate yields a
+            # finite φ rather than raising OverflowError (review P2 2026-09-05); ±700 spans the full
+            # float exp range, well beyond any economically meaningful drift.
+            rel_log = float(np.clip(log_arr[i] - log_mean, -700.0, 700.0))
+            phi = math.exp(rel_log)
             delta = max(phi - 1.0, -1.0)
             kwargs = {
                 "delta": delta,
@@ -784,9 +1076,19 @@ def _dynamic_scenario_hash(scenario: Scenario, config: DynamicConfig) -> str:
         # Retirement is already int-keyed and validated in __post_init__; sort for a stable hash.
         "retirement": {int(y): float(r) for y, r in sorted(config.retirement.items())},
         # The structural trajectory's numeric rate tables (not just its provenance) — a changed rate
-        # must move the hash, the same discipline as _trend_provenance's rate_tables_hash.
+        # must move the hash, the same discipline as _trend_provenance's rate_tables_hash. Includes
+        # source_labour_shares (review P1 2026-09-06): they MATERIALLY change the synthesized shocks
+        # (they set s_L^src in the source-side MFP identification), so two runs differing only in
+        # source shares MUST get different scenario_hashes — otherwise the run identity would not
+        # reconstruct the input responsible.
         "structural": (
-            None if traj is None else {"rates": traj.rates, "sector_rates": traj.sector_rates}
+            None
+            if traj is None
+            else {
+                "rates": traj.rates,
+                "sector_rates": traj.sector_rates,
+                "source_labour_shares": traj.source_labour_shares,
+            }
         ),
     }
     return content_hash(
@@ -832,7 +1134,34 @@ def _structural_coverage(traj, regions: list[str], sectors: list[str]) -> dict:
     }
 
 
-def _trend_provenance(config: DynamicConfig, regions: list[str], sectors: list[str]) -> dict:
+def _structural_provenance_audit_fields(notes: str) -> dict:
+    """Pull the concordance/archetype content hashes and the weighting caveat OUT of a
+    concordance-mapped trajectory's ``provenance.notes`` and surface them as explicit manifest keys
+    (review P2 2026-09-03), so a result can be audited without parsing prose. Returns an empty dict
+    for a non-mapped trajectory (no such notes), leaving the manifest unchanged."""
+    import re
+
+    out: dict = {}
+    if not notes:
+        return out
+    for key in ("concordance_content_hash", "archetype_content_hash"):
+        m = re.search(rf"{key}=([0-9a-fA-F]+)", notes)
+        if m:
+            out[key] = m.group(1)
+    if "WEIGHTING CAVEAT" in notes:
+        # The full caveat text is preserved verbatim in provenance.notes; flag its presence here.
+        out["weighting_caveat"] = notes[notes.index("WEIGHTING CAVEAT") :]
+    return out
+
+
+def _trend_provenance(
+    config: DynamicConfig,
+    regions: list[str],
+    sectors: list[str],
+    multi: bool = False,
+    labour_shares: dict | None = None,
+    va_elast: dict | None = None,
+) -> dict:
     """Record how the labour/productivity trends were set — the flat fallback scalars (Phase 7.1) or
     a sourced :class:`StructuralTrajectory` (Phase 7b.2), with its provenance and per-entry cites —
     so a run's manifest is self-documenting about which drove it. Also records a structural-coverage
@@ -852,15 +1181,27 @@ def _trend_provenance(config: DynamicConfig, regions: list[str], sectors: list[s
     # confidence alone do not pin the numbers, so a changed rate would leave an identical manifest.
     # Hashing the rate tables makes any edit to a rate move the manifest; the full tables are also
     # stamped so a run is reconstructible without the source file.
-    rate_tables = {"rates": traj.rates, "sector_rates": traj.sector_rates}
+    # Include source_labour_shares in the hashed rate tables (review P1 2026-09-06): they set
+    # s_L^src in the source-side MFP identification and so MATERIALLY change the emitted shocks, so
+    # the manifest must both HASH them (any edit moves rate_tables_hash) and STAMP them (the run is
+    # reconstructible without the source file).
+    rate_tables = {
+        "rates": traj.rates,
+        "sector_rates": traj.sector_rates,
+        "source_labour_shares": traj.source_labour_shares,
+    }
     return {
         "kind": "structural_trajectory",
-        "provenance": {
-            "source": traj.provenance.source,
-            "source_version": traj.provenance.source_version,
-            "licence": traj.provenance.licence,
-            "retrieved": traj.provenance.retrieved,
-        },
+        # Serialize the FULL provenance object (review P2 2026-09-03): a concordance-mapped
+        # trajectory records the concordance + archetype CONTENT HASHES and the aggregation
+        # weighting caveat in provenance.notes (see structural/library.py), plus reference_year —
+        # the previous source/version/licence/retrieved-only projection SILENTLY DROPPED them from
+        # the result manifest, so a run could not be audited for which concordance produced it.
+        # model_dump keeps every field (notes, reference_year, any build_id/aggregation/generation).
+        "provenance": traj.provenance.model_dump(mode="json"),
+        # Surface the two content hashes + caveat as explicit top-level manifest fields too, so an
+        # auditor does not have to parse them out of the notes prose.
+        **_structural_provenance_audit_fields(traj.provenance.notes),
         "region_drivers": sorted(traj.rates),
         "sector_drivers": sorted(traj.sector_rates),
         "drivers": sorted(traj.rates) + sorted(traj.sector_rates),
@@ -868,27 +1209,38 @@ def _trend_provenance(config: DynamicConfig, regions: list[str], sectors: list[s
         "confidence": dict(traj.confidence),
         "rate_tables": rate_tables,
         "rate_tables_hash": content_hash(rate_tables),
+        # Explicit top-level echo of the source labour shares that drove the source-side MFP
+        # identification (review P1 2026-09-06), so an auditor sees s_L^src without digging into
+        # rate_tables. Empty when the trajectory carries none.
+        "source_labour_shares": dict(traj.source_labour_shares),
         # Review P1c 2026-08-28: prove the trajectory differentiates the model's OWN labels (via the
         # concordance) rather than every label collapsing to __all__.
         "coverage": _structural_coverage(traj, regions, sectors),
-        # Whether the sectoral-productivity driver runs growth-accounting-IDENTIFIED (a
-        # ``capital_deepening`` series is present, so g_φ=(g_{Y/L}−s_K·g_{K/L})/s_L removes the
-        # capital deepening the model accumulates) or as the raw-rate HEURISTIC (review P1
-        # decomposition 2026-09-01).
-        "sector_productivity_mode": (
-            "identified (capital deepening netted out via g_phi=(g_Y/L - s_K*g_K/L)/s_L)"
-            if traj.sector_rates.get("capital_deepening")
-            else "heuristic (raw labour-productivity rate; capital deepening NOT removed)"
+        # Per (region, sector) identification MODE (review P2 2026-09-06): sourced_mfp /
+        # derived_source_share (both source-identified) / model_share_approx (LP+deepening but only
+        # the receiving model's benchmark share available — an approximation) / raw_lp_heuristic.
+        # MFP is translated into labour augmentation through the sector's ACTUAL nest; for CES that
+        # equivalence holds only at benchmark prices (a benchmark-calibrated Harrod-neutral
+        # translation), so the summary carries that caveat and never blanket-claims "identified".
+        "sector_productivity_mode": _sector_productivity_mode_summary(
+            _sector_productivity_modes(traj, sectors, regions, multi, labour_shares or {}, va_elast)
+        ),
+        "sector_productivity_mode_by_sector": _sector_productivity_modes(
+            traj, sectors, regions, multi, labour_shares or {}, va_elast
         ),
         "note": (
             "Phase 7b.2 sourced trajectories: per-region labour-supply (population×participation) "
             "and productivity growth as endowment scales; per-sector productivity drift as a "
-            "labour-augmenting term (VA-share-weighted zero-mean composition drift) — "
-            "growth-accounting-identified when a capital_deepening series is supplied, else a "
-            "raw-rate heuristic (see 'sector_productivity_mode') — and emissions-intensity "
-            "decarbonisation scaling the per-sector intensity, compounded from the cited annual "
-            "rates. 'coverage' reports whether the model's labels are explicitly keyed "
-            "(differentiated) or fall through to __all__ (see the structural concordance)."
+            "labour-augmenting term normalised by an aggregate-neutral (VA-share × labour-share) "
+            "weighted zero-mean composition drift. The technology term is recovered by identifying "
+            "MFP at SOURCE (a sourced 'mfp' series, or netting capital deepening out of observed "
+            "labour productivity using 'source_labour_shares' s_L^src) and translating it into "
+            "labour augmentation through the sector's ACTUAL VA nest — exact for Cobb-Douglas, a "
+            "benchmark-calibrated Harrod-neutral equivalent for CES; where inputs are missing it "
+            "falls back to the raw-rate heuristic (see 'sector_productivity_mode'). Plus "
+            "emissions-intensity decarbonisation scaling the per-sector intensity, compounded from "
+            "the cited annual rates. 'coverage' reports whether the model's labels are explicitly "
+            "keyed (differentiated) or fall through to __all__ (see the structural concordance)."
         ),
     }
 

@@ -528,7 +528,13 @@ def _labour_va_shares_manifest(cal) -> dict:
 
     These are genuinely different: s_L is a within-sector ratio, v is a cross-sector share. Single-
     region: ``{sector: value}``. Multi-region: ``{region: {sector: value}}`` (F0 is [f, r, s]).
-    Returns ``{"available": False, ...}`` when the model has no LAB factor."""
+    Returns ``{"available": False, ...}`` when the model has no LAB factor.
+
+    Also stamps ``va_elast`` σ_va[i], the VA-nest substitution elasticity (review P2 2026-09-05):
+    the
+    wrapper's growth-accounting decomposition is a COBB-DOUGLAS mapping, valid only for σ_va = 1, so
+    it uses this to run the identified decomposition ONLY for CD sectors and fall back to the
+    heuristic for CES sectors (rather than mis-applying the CD mapping regardless of σ_va)."""
     factors = list(cal.factors)
     # The base factor label is "LAB" in the single-region variants and "LAB_<r>" in multi; detect
     # the labour factor by its base name so both shapes work.
@@ -536,18 +542,26 @@ def _labour_va_shares_manifest(cal) -> dict:
         return {"available": False, "reason": "no labour factor"}
     F0 = np.asarray(cal.F0, dtype=float)
     sectors = list(cal.sectors)
+    sigma = np.asarray(cal.va_elast, dtype=float)  # [s] single-region or [r, s] multi
     if F0.ndim == 3:  # multi: [f, r, s]
         regions = list(cal.regions)
         lab = factors.index("LAB")
         sl_out: dict = {}
         va_out: dict = {}
+        elast_out: dict = {}
         for ri, r in enumerate(regions):
             va = F0[:, ri, :].sum(axis=0)  # [s] total VA per sector in region r
             sl = np.divide(F0[lab, ri, :], va, out=np.zeros_like(va), where=va > 0)
             v = va / va.sum() if va.sum() > 0 else np.full_like(va, 1.0 / max(len(va), 1))
             sl_out[r] = {s: round(float(sl[si]), 12) for si, s in enumerate(sectors)}
             va_out[r] = {s: round(float(v[si]), 12) for si, s in enumerate(sectors)}
-        return {"available": True, "labour_va_share": sl_out, "va_share": va_out}
+            elast_out[r] = {s: round(float(sigma[ri, si]), 12) for si, s in enumerate(sectors)}
+        return {
+            "available": True,
+            "labour_va_share": sl_out,
+            "va_share": va_out,
+            "va_elast": elast_out,
+        }
     # Single-region: [f, s]
     lab = factors.index("LAB")
     va = F0.sum(axis=0)  # [s] total VA per sector
@@ -557,6 +571,7 @@ def _labour_va_shares_manifest(cal) -> dict:
         "available": True,
         "labour_va_share": {s: round(float(sl[si]), 12) for si, s in enumerate(sectors)},
         "va_share": {s: round(float(v[si]), 12) for si, s in enumerate(sectors)},
+        "va_elast": {s: round(float(sigma[si]), 12) for si, s in enumerate(sectors)},
     }
 
 
