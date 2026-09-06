@@ -1,0 +1,27 @@
+# Source industry code -> sector archetype. BRD = broad goods-producing / manufacturing
+# (capital-intensive, above-average measured labour productivity); MIL = services / mixed
+# (below-average). Basis: ISIC Rev.4 / EU KLEMS one-letter section. Agriculture (A), mining (B),
+# manufacturing (C), utilities (D,E) and construction (F) -> BRD; all services (G..U) -> MIL.
+# Codes absent here fall back to MIL (services is the larger residual).
+isic_section,archetype
+A,BRD
+B,BRD
+C,BRD
+D,BRD
+E,BRD
+F,BRD
+G,MIL
+H,MIL
+I,MIL
+J,MIL
+K,MIL
+L,MIL
+M,MIL
+N,MIL
+O,MIL
+P,MIL
+Q,MIL
+R,MIL
+S,MIL
+T,MIL
+U,MIL

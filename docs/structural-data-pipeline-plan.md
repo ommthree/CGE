@@ -61,16 +61,28 @@ real per-country/industry pulls now drop into the digest without touching the bu
   principally the EU, UK, US and Japan through ~2020**; applying its archetype rates to every model
   region is an assumption that must be labelled per region (see 1c).
 
-**Acceptance:** re-running the build reproduces the committed artifact; a CI job (opt-in, needs the
-vendored source digests) diffs a fresh build against the committed file.
+**Extractors BUILT 2026-09-06** (`scripts/extract_structural_sources.py`): real parsers for PWT
+10.01 (`rtfpna` → annualised log-growth), UN WPP 2024 (population-weighted growth), EU KLEMS 2023
+(VA-weighted LP / capital deepening / source labour share), and NGFS Phase 5 (annualised
+emissions-intensity decline of a pinned model+scenario), each mapping source countries/industries to
+the N/S and BRD/MIL archetypes via committed `archetype_maps/`. They read `data/structural/sources/
+raw/` (git-ignored, separately licensed; see its README for downloads) and rebuild the digest;
+sources still absent keep their illustrative value and are reported. The parsing is covered by
+byte-level fixtures in `tests/test_structural_extractors.py`. **What remains** is placing the actual
+raw files and re-running — the digest values are illustrative until then.
+
+**Acceptance:** re-running the build reproduces the committed artifact; the extractor's `--check`
+diffs a fresh extraction against the committed digest once raw files are present.
 
 ### 1b. Source-period factor shares for the growth-accounting identity (review-6 P1, rigorous fix)
-**DONE (mechanism) 2026-09-06 — real EU KLEMS Törnqvist shares still to extract (part of 1a data).**
-The two-stage identification below is now implemented: MFP is identified at SOURCE using a
-`source_labour_shares` s_L^src (a first-class trajectory field), or a sourced `mfp` series is used
-directly; then MFP is translated into the labour-augmenting shock through the receiving model's
-**actual** VA nest — CES solved numerically (`_mfp_to_labour_aug_log`), CD as the closed form. CES
-sectors are now IDENTIFIED, not dropped to the heuristic. The shipped `source_labour_shares` (BRD
+**DONE (mechanism) 2026-09-06; CES made globally identified 2026-09-06 — real EU KLEMS Törnqvist
+shares still to extract (part of 1a data).** Two-stage identification: MFP is identified at SOURCE
+using a `source_labour_shares` s_L^src (a first-class trajectory field), or a sourced `mfp` series is
+used directly; then MFP is applied through the receiving model's **actual** VA nest, routed by nest
+type — Cobb-Douglas via labour augmentation (`ln φ = ln(1+g_MFP)/s_L`, price-independent), CES via a
+**value-added Hicks-neutral engine channel** (`va_hicks_neutral`, A_va = 1+g_MFP scaling the whole VA
+aggregate so the VA cost falls by 1/A_va at ALL prices — globally identified, not benchmark-only).
+CES sectors are now GLOBALLY identified. The shipped `source_labour_shares` (BRD
 0.58 / MIL 0.62 / __all__ 0.60) are illustrative headline values; the EU KLEMS Törnqvist extraction
 that replaces them is part of the 1a data work.
 **Was (review-6 P1):** the wrapper netted capital deepening out with the CD mapping

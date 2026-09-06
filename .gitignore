@@ -23,3 +23,10 @@ runs/
 
 # Raw ENCORE download (the used subset is vendored under data/encore/ with attribution)
 ENCORE_data.zip
+
+# Raw structural-data source downloads (large, separately licensed): the extractor
+# (scripts/extract_structural_sources.py) reads these to rebuild the digest, but only the
+# README + archetype_maps are committed — not the multi-hundred-MB source files.
+data/structural/sources/raw/*
+!data/structural/sources/raw/README.md
+!data/structural/sources/raw/fixtures/

@@ -48,6 +48,11 @@ jobs:
       - name: Structural artifact reproduces from source digest (pipeline step 1a)
         run: python scripts/build_structural_trajectories.py --check
 
+      - name: Structural source digest matches raw extraction (pipeline step 1a-data)
+        # No-op (exit 0) when the raw source files are absent, as they are in CI (large, separately
+        # licensed — see data/structural/sources/raw/README.md); when present it fails on drift.
+        run: python scripts/extract_structural_sources.py --check
+
       - name: Pytest
         run: pytest -q
 
