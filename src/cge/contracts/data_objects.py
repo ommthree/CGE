@@ -493,28 +493,28 @@ class StructuralTrajectory(_DataObject):
       is netted out of observed labour productivity using the SOURCE-period labour share s_L^src
       (``source_labour_shares``, the source economy's factor share — NOT the receiving model's
       benchmark): ``g_MFP = g_{Y/L} − (1−s_L^src)·g_{K/L}`` (log-change form).
-    * **Stage 2 — translate MFP through the RECEIVING model's ACTUAL nest.** Solve for the labour
-      augmentation φ that reproduces the Hicks-neutral MFP cost change: ``ln φ = ln(1+g_MFP)/s_L``
-      for Cobb-Douglas (price-independent — exact globally), or the CES closed form for σ_va≠1. For
-      CES this reproduces the cost change only AT BENCHMARK PRICES — a *benchmark-calibrated
-      Harrod-neutral* equivalent, NOT a globally identified technology term (a fixed labour
-      augmentation and a Hicks-neutral MFP shift diverge once equilibrium prices move).
+    * **Stage 2 — apply MFP through the RECEIVING model's ACTUAL nest, ROUTED BY NEST TYPE** so it
+      globally correct at every price vector: a **Cobb-Douglas** sector via the labour-augmenting
+      channel (``ln φ = ln(1+g_MFP)/s_L``; VA cost ∝ φ^{−s_L}, price-independent), a **CES** sector
+      via a value-added Hicks-neutral channel (``ProductivityShock(mechanism="va_hicks_neutral")``,
+      A_va = 1+g_MFP scaling the whole VA aggregate so the VA cost falls by 1/A_va at ALL prices — a
+      genuinely identified value-added technology term, not a benchmark-only surrogate).
     * **Modes (per region, sector, in the manifest):** ``sourced_mfp`` / ``derived_source_share``
       (both source-identified), ``model_share_approx`` (LP+deepening but only the model benchmark
       share is available — an approximation, NOT source-identified), or ``raw_lp_heuristic`` (no
       identifying inputs / no usable s_L / unknown σ_va → raw rate, deepening not removed).
 
-    The rate is applied as a ``ProductivityShock(mechanism="labour_augmenting")`` on the
-    sector's labour input. Under a Cobb-Douglas VA nest the sector's VA cost falls by φ^{−s_L}
-    exactly (s_L = labour share of VA); for CES the engine computes the exact. The wrapper expresses
-    each sector's cumulative level RELATIVE to an **aggregate-neutral** geometric mean of all
-    sectors' levels — weighted by v_i·s_{L,i} (each sector's share of VA v_i=VA_i/ΣVA_j TIMES its
-    labour share s_{L,i}), which zeros the aggregate CD log-cost effect Σ_i v_i·s_{L,i}·ln φ_i, so
-    the driver contributes only sector COMPOSITION drift and re-imposes NO aggregate level — that is
-    carried separately by the per-region TFP endowment scale. (The earlier
-    ``(sector_LP/aggregate_TFP)^{s_L}``, the labour-composition weight, the VA-share-only mean, and
-    the simple-rate ``(g_{Y/L}−s_K·g_{K/L})/s_L`` arithmetic are all retracted — see
-    ``dynamics.recursive``.)
+    The rate is applied as a ``ProductivityShock`` — ``labour_augmenting`` on the sector's labour
+    input for a Cobb-Douglas sector (VA cost falls by φ^{−s_L} exactly, s_L = labour VA share), or
+    ``va_hicks_neutral`` scaling the whole VA aggregate for a CES sector (VA cost falls by 1/A_va).
+    The wrapper normalises the cumulative source-MFP levels across sectors so the composition drift
+    re-imposes NO aggregate value-added cost: the VA-share-weighted aggregate log-cost effect
+    Σ_i v_i·ln(1+g_MFP,i) is zeroed (the SAME criterion in MFP terms for both channels, since the CD
+    labour cost effect s_L·ln φ = ln(1+g_MFP) equals the VA-channel ln A_va). So the driver carries
+    only sector COMPOSITION drift; the aggregate level is carried separately by the per-region TFP
+    endowment scale. (The earlier ``(sector_LP/aggregate_TFP)^{s_L}``, the labour-composition wt,
+    the VA-share-only mean, the simple-rate ``(g_{Y/L}−s_K·g_{K/L})/s_L`` arithmetic, and the
+    CES benchmark-only labour-augmentation translation are all retracted — see dynamics.recursive.)
 
     A rate is a decimal fraction (0.012 = +1.2 %/yr). Years present are the *knots*; the effective
     rate holds the most recent knot for years between/after knots (piecewise-constant, documented),

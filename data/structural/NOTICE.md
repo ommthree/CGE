@@ -102,27 +102,28 @@ vendor):
   accounting gives `g_{Y/L}=g_MFP+s_K·g_{K/L}` — observed labour productivity is genuine MFP growth
   PLUS capital deepening. Since the recursive model accumulates capital separately, the wrapper
   **decomposes** the series into an identified MFP term (pipeline step 1b, review P2 2026-09-05).
-  **The MFP is identified at SOURCE**, then translated into a labour-augmentation through the
-  receiving model's ACTUAL VA nest (CES too, solved numerically; CD reduces to the closed form). Two
-  source-identification routes: (a) a sourced **`mfp`** series in the artifact is used directly; else
-  (b) `g_MFP = g_{Y/L} − (1−s_L^src)·g_{K/L}` from `sector_productivity` + `capital_deepening` using
-  the **source-period labour share** `source_labour_shares` s_L^src (NOT the receiving model's
-  benchmark share — the two are different quantities, and conflating them was a review finding). The
-  shipped `source_labour_shares` (BRD 0.58, MIL 0.62, `__all__` 0.60) are **illustrative headline
-  values**; an EU KLEMS adjacent-period Törnqvist extraction is the consulting-grade follow-up (see
-  `docs/structural-data-pipeline-plan.md`). Without a `capital_deepening`/`mfp` series, or where a
-  labour share or VA elasticity is missing, the sector falls back to the raw rate as a transparent
-  heuristic (deepening not removed); the run manifest records which mode ran per (region, sector).
-  Either way it is a
-  `ProductivityShock(mechanism="labour_augmenting")` on the sector's labour input. Under a
-  Cobb-Douglas VA nest the sector's VA cost falls by φ^{−s_L} exactly (s_L = labour share of VA); for
-  CES the engine computes the exact cost. The per-sector *drift* is each sector's cumulative φ level
-  relative to an **aggregate-neutral geometric mean** of all sectors' levels — weighted by
-  `v_i·s_{L,i}` (each sector's SHARE of value added `v_i=VA_i/ΣVA_j` TIMES its labour share, which
-  zeros the aggregate CD log-cost effect Σ_i v_i·s_{L,i}·ln φ_i; review P1 2026-08-31 fixed the weight
-  from labour composition to v_i, and review P1 2026-09-03 added the missing s_{L,i}). (This replaces
-  the earlier `θ_dev = deviation ** s_L` conversion and the simple-rate `(g_{Y/L}−s_K·g_{K/L})/s_L`
-  arithmetic.) On a real EXIOBASE
+  **The MFP is identified at SOURCE**, then applied through the receiving model's ACTUAL VA nest,
+  ROUTED BY NEST TYPE so it is globally correct: a Cobb-Douglas sector via labour augmentation
+  (`ln φ = ln(1+g_MFP)/s_L`, price-independent), a CES sector via the **value-added Hicks-neutral**
+  engine channel (`mechanism="va_hicks_neutral"`, A_va = 1+g_MFP scaling the whole VA aggregate so
+  the VA cost falls by 1/A_va at every price — a genuinely identified VA technology term for CES, not
+  a benchmark-only surrogate). Two source-identification routes: (a) a sourced **`mfp`** series in the
+  artifact is used directly; else (b) `g_MFP = g_{Y/L} − (1−s_L^src)·g_{K/L}` from
+  `sector_productivity` + `capital_deepening` using the **source-period labour share**
+  `source_labour_shares` s_L^src (NOT the receiving model's benchmark share — conflating them was a
+  review finding). The shipped `source_labour_shares` (BRD 0.58, MIL 0.62, `__all__` 0.60) are
+  **illustrative headline values**; an EU KLEMS adjacent-period Törnqvist extraction is the
+  consulting-grade follow-up (see `docs/structural-data-pipeline-plan.md`). Without a
+  `capital_deepening`/`mfp` series, or where a labour share or VA elasticity is missing, the sector
+  falls back to the raw rate as a transparent heuristic (deepening not removed); the run manifest
+  records which mode ran per (region, sector). The per-sector *drift* normalises the cumulative MFP
+  levels across sectors so the composition drift re-imposes no aggregate VA cost — the VA-share
+  (`v_i=VA_i/ΣVA_j`) weighted aggregate log-cost effect Σ_i v_i·ln(1+g_MFP,i) is zeroed (the same
+  criterion in MFP terms for both channels, since the CD labour cost effect s_L·ln φ = ln(1+g_MFP)
+  equals the VA-channel ln A_va; the aggregate level is carried separately by the per-region TFP
+  endowment scale). (This replaces the earlier `θ_dev = deviation ** s_L` conversion, the VA-share ×
+  labour-share weighting, the simple-rate `(g_{Y/L}−s_K·g_{K/L})/s_L` arithmetic, and the
+  benchmark-only CES labour-augmentation translation — all retracted.) On a real EXIOBASE
   build these sector keys map to actual industries via the structural concordance
   (`data/structural/concordance_v2.json`).
 

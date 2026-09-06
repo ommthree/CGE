@@ -600,7 +600,7 @@ def _cumulative_sector_level(traj, driver: str, sector: str, base_year: int, yea
 #   raw_lp_heuristic        — raw labour-productivity rate (capital deepening not removed).
 # Only sourced_mfp and derived_source_share count as "source-identified". For a CES nest even those
 # are a benchmark-calibrated Harrod-neutral translation (exact only at benchmark prices), flagged in
-# the summary — see :func:`_mfp_to_labour_aug_log`.
+# the summary (see the CES value-added channel note below).
 _SOURCE_IDENTIFIED_MODES = frozenset({"sourced_mfp", "derived_source_share"})
 
 
@@ -679,9 +679,9 @@ def _sector_productivity_modes(
 def _sector_productivity_mode_summary(modes_by_region: dict) -> str:
     """A manifest headline over the fine-grained per-(region, sector) modes (review P2 2026-09-06):
     the count in each mode, so a run never overclaims "identified at source" when it actually fell
-    back to the model-share approximation or the raw heuristic. Carries the CES benchmark caveat
-    (the augmentation reproduces the MFP cost change only at benchmark prices for CES — see
-    :func:`_mfp_to_labour_aug_log`)."""
+    back to the model-share approximation or the raw heuristic. CES sectors route through the
+    value-added Hicks-neutral engine channel (globally correct at all prices), so no benchmark-only
+    caveat is needed (review P1 2026-09-06)."""
     if not modes_by_region:
         return "n/a (no mfp or sector_productivity driver)"
     all_modes = [m for region in modes_by_region.values() for m in region.values()]
@@ -695,104 +695,41 @@ def _sector_productivity_mode_summary(modes_by_region: dict) -> str:
         "raw_lp_heuristic": "raw labour-productivity heuristic (capital deepening NOT removed)",
     }
     parts = [f"{counts[m]} {labels[m]}" for m in labels if counts.get(m)]
-    n_src = sum(counts.get(m, 0) for m in _SOURCE_IDENTIFIED_MODES)
-    caveat = ""
-    if n_src:
-        caveat = (
-            " — for CES sectors the labour-augmentation reproduces the MFP cost change only at "
-            "benchmark prices (a benchmark-calibrated Harrod-neutral translation, exact globally "
-            "only under Cobb-Douglas)"
-        )
-    return "; ".join(parts) + caveat
+    note = (
+        " — MFP routed by nest: Cobb-Douglas via labour augmentation (ln φ = MFP/s_L), CES via the "
+        "value-added Hicks-neutral channel (reproduces the MFP cost change at ALL prices)"
+    )
+    return "; ".join(parts) + note
 
 
-class InfeasibleMFPTranslation(ValueError):
-    """No labour augmentation can reproduce a target MFP cost change in a CES nest (review P2
-    2026-09-06). Under CES with essential capital the VA unit cost cannot fall below the capital
-    term's floor by moving labour productivity alone, so a large MFP cut (or a large MFP gain when
-    σ>1) has NO equivalent labour augmentation. Raised rather than returning an enormous boundary
-    value that would masquerade as a valid (huge) shock."""
+# NOTE (review P1 2026-09-06): the earlier ``_mfp_to_labour_aug_log`` / ``InfeasibleMFPTranslation``
+# — which translated a CES MFP shift into a labour-augmentation that reproduced the cost change only
+# at BENCHMARK prices (a benchmark-calibrated Harrod-neutral equivalent, and infeasible for large
+# CES targets) — are RETIRED. CES sectors now route through the value-added Hicks-neutral engine
+# channel (mechanism ``va_hicks_neutral``), which reproduces the MFP cost change at EVERY price
+# vector and is always feasible. Cobb-Douglas sectors use the exact price-independent map
+# ``ln φ = mfp_log / s_L`` inline in ``_sector_productivity_shocks``.
 
 
-def _mfp_to_labour_aug_log(g_mfp: float, s_L_model: float, sigma: float) -> float:
-    """Translate a per-year VA MFP growth ``g_MFP`` into the labour-augmentation log-step ``ln φ``
-    that reproduces the same VA unit-cost change in the RECEIVING model's nest, AT BENCHMARK FACTOR
-    PRICES (pipeline step 1b; closed-form + feasibility review P2 2026-09-06). MFP is Hicks-neutral
-    on value added: it lowers the VA unit cost by ``1/(1+g_MFP)``. A labour-augmentation φ lowers it
-    through the labour channel only (the engine sees ``w_LAB/φ``); we pick ln φ so the
-    benchmark-price cost falls by the same factor.
-
-    * **Cobb-Douglas (σ_va = 1).** VA unit cost ∝ φ^{−s_L} INDEPENDENTLY of prices, so
-      ``ln φ = ln(1+g_MFP) / s_L`` reproduces the MFP cost change at EVERY price vector — a genuine
-      Harrod-neutral equivalent (s_L the receiving model's labour share; the SOURCE share was used
-      upstream to identify g_MFP).
-    * **CES (σ_va ≠ 1).** The unit-cost response to φ is the CES dual, not φ^{−s_L}. With benchmark
-      unit prices and labour COST share θ_L, ``c(x)^{1−σ} = θ_L·e^{−(1−σ)x} + (1−θ_L)`` (x = ln φ;
-      c(0)=1). Requiring the cost to fall by ``m = 1+g_MFP`` gives
-      ``c(x)^{1−σ} = m^{−(1−σ)} =: R``, hence a CLOSED FORM
-      ``x = −ln[(R − (1−θ_L)) / θ_L] / (1−σ)`` — no iteration. It is FEASIBLE only when the log
-      argument is positive, i.e. ``R > 1−θ_L``: capital is essential in CES, so the VA cost cannot
-      be pushed past the capital floor by labour augmentation alone; an infeasible target raises
-      :class:`InfeasibleMFPTranslation` rather than returning a boundary. **This equivalence holds
-      only at benchmark prices** — once equilibrium wages/rentals move, a fixed labour augmentation
-      no longer reproduces the Hicks-neutral MFP shift, so for CES this is a *benchmark-calibrated
-      Harrod-neutral translation*, not a globally identified technology term (review P1)."""
-    m = 1.0 + g_mfp
-    if m <= 0.0:
-        raise ValueError(f"MFP factor ≤ 0 (1+g_MFP={m:.4g}); not a valid annual growth rate.")
-    if s_L_model <= 1e-9:
-        # No labour channel to augment → cannot translate; treat as no drift for this year.
-        return 0.0
-    if abs(sigma - 1.0) < 1e-9:
-        return math.log(m) / s_L_model  # CD closed form (price-independent)
-    # CES closed form. c(x)^{1-σ} = θL·e^{-(1-σ)x} + (1-θL); want c(x) = c(0)/m = 1/m, so
-    # c(x)^{1-σ} = m^{-(1-σ)} = R. Solve θL·e^{-(1-σ)x} = R - (1-θL).
-    theta_L = min(max(s_L_model, 1e-12), 1.0 - 1e-12)
-    om = 1.0 - sigma
-    R = m ** (-om)
-    arg = (R - (1.0 - theta_L)) / theta_L
-    if arg <= 0.0:
-        raise InfeasibleMFPTranslation(
-            f"no labour augmentation reproduces a CES MFP cost change of factor {m:.4g} at "
-            f"σ_va={sigma:.4g}, labour cost share θ_L={theta_L:.4g}: the implied labour term "
-            f"{arg:.4g} ≤ 0 (capital is essential — the VA cost cannot pass the capital floor by "
-            "labour augmentation alone)."
-        )
-    return -math.log(arg) / om
-
-
-def _decomposed_log_level(
+def _cumulative_mfp_log(
     traj,
     sector: str,
     base_year: int,
     year: int,
-    s_L: float,
     identified: bool,
-    sigma: float = 1.0,
-    source_labour_share: float | None = None,
+    source_labour_share: float | None,
+    s_L: float,
 ) -> float:
-    """Cumulative LABOUR-AUGMENTING TECHNOLOGY level in LOG space (Σ ln φ) for a sector from
-    ``base_year`` to ``year`` (review P1 decomposition 2026-09-01; finite-change 2026-09-03;
-    log-space + source-share MFP identification review P2 2026-09-05).
+    """Cumulative source-identified MFP level in LOG space (Σ ln(1+g_MFP)) for a sector from
+    ``base_year`` to ``year``, or (when not ``identified``) the raw labour-productivity log level
+    heuristic). This is the CHANNEL-AGNOSTIC quantity: the caller normalises it across sectors and
+    then routes each sector's MFP to the labour-augmenting channel (Cobb-Douglas) or the value-added
+    Hicks-neutral channel (CES) — review P1 2026-09-06.
 
-    Three identification routes, in preference order, all producing a per-year labour-augmentation
-    log-step which is summed (log-space, so a valid-but-extreme rate cannot overflow — the caller
-    normalises then exponentiates only the small relative deviation):
-
-    1. **Sourced MFP (best).** If the trajectory carries an ``mfp`` series for the sector, that MFP
-       growth was identified at SOURCE (``g_MFP = g_{Y/L} − s_K^src·g_{K/L}`` with source-period
-       Törnqvist shares, done in the data build). The wrapper translates it into labour augmentation
-       through the RECEIVING model's actual nest via :func:`_mfp_to_labour_aug_log` — CES too.
-    2. **Source-share derived.** Else if ``identified`` and a ``source_labour_share`` s_L^src is
-       supplied, derive g_MFP HERE from ``sector_productivity`` (g_{Y/L}) and ``capital_deepening``
-       (g_{K/L}) using the SOURCE share ``g_MFP = g_{Y/L} − (1−s_L^src)·g_{K/L}`` (log-change form),
-       then translate through the model nest. This uses the source economy's factor share for the
-       source-side step — NOT the receiving model's benchmark (the review-6 P1).
-    3. **Heuristic.** Else the raw observed labour-productivity rate g_{Y/L} is used directly (a
-       transparent composition lever; capital deepening not removed).
-
-    Level factors are VALIDATED: a rate ≤ −100% (an invalid annual growth rate) raises a
-    ``ValueError`` naming the sector/year rather than producing a non-finite log."""
+    Two identified routes: a sourced ``mfp`` series is used directly; else g_MFP is derived from
+    ``sector_productivity`` (g_{Y/L}) and ``capital_deepening`` (g_{K/L}) with the SOURCE share
+    ``g_MFP = g_{Y/L} − (1−s_L^src)·g_{K/L}`` (log-change; s_L^src the source share, else the model
+    share). Summed in log space so a valid-but-extreme rate cannot overflow. Rates ≤ −100% raise."""
     mfp_table = traj.sector_rates.get("mfp") or {}
     has_mfp = sector in mfp_table or "__all__" in mfp_table
     log_acc = 0.0
@@ -803,7 +740,7 @@ def _decomposed_log_level(
                 raise ValueError(
                     f"MFP rate ≤ −100% for sector {sector!r} year {y} (1+g_MFP={1 + g_mfp:.4g})."
                 )
-            log_step = _mfp_to_labour_aug_log(g_mfp, s_L, sigma)
+            log_acc += math.log(1.0 + g_mfp)
         elif identified:
             g_yl = traj.sector_rate("sector_productivity", sector, y)
             g_kl = traj.sector_rate("capital_deepening", sector, y)
@@ -813,12 +750,8 @@ def _decomposed_log_level(
                     f"rate ≤ −100% for sector {sector!r} year {y}: "
                     f"(1+g_Y/L)={yl_factor:.4g}, (1+g_K/L)={kl_factor:.4g}."
                 )
-            # Source-side MFP identification (log-change): use the SOURCE labour share s_L^src if
-            # supplied, else fall back to the model share (the pre-source-share behaviour).
             sl_src = source_labour_share if source_labour_share is not None else s_L
-            s_k_src = 1.0 - sl_src
-            g_mfp_log = math.log(yl_factor) - s_k_src * math.log(kl_factor)
-            log_step = _mfp_to_labour_aug_log(math.expm1(g_mfp_log), s_L, sigma)
+            log_acc += math.log(yl_factor) - (1.0 - sl_src) * math.log(kl_factor)
         else:
             g_yl = traj.sector_rate("sector_productivity", sector, y)
             yl_factor = 1.0 + g_yl
@@ -827,8 +760,7 @@ def _decomposed_log_level(
                     f"labour productivity rate ≤ −100% for sector {sector!r} year {y} "
                     f"((1+g_Y/L)={yl_factor:.4g})."
                 )
-            log_step = math.log(yl_factor)
-        log_acc += log_step
+            log_acc += math.log(yl_factor)
     return log_acc
 
 
@@ -886,10 +818,12 @@ def _sector_productivity_shocks(
         return []
     from cge.contracts.shocks import ProductivityShock
 
-    # Per (region, sector) the technology term is recovered via the mode ``_classify_sector_mode``
-    # assigns (sourced_mfp / derived_source_share / model_share_approx / raw_lp_heuristic); the
-    # first three feed _decomposed_log_level's identified path, the last the raw heuristic. In log
-    # space lets the cross-sector normalisation cancel huge common levels before exponentiating.
+    # Per (region, sector) ``_classify_sector_mode`` assigns sourced_mfp / derived_source_share /
+    # model_share_approx (all identified) or raw_lp_heuristic. Each identified sector's cumulative
+    # SOURCE MFP is then ROUTED by nest (review P1 2026-09-06): a Cobb-Douglas sector via the
+    # labour-augmenting channel (price-independent for CD), a CES sector via the value-added
+    # Hicks-neutral channel (globally correct — reproduces the MFP cost change at ALL prices, not
+    # benchmark). Heuristic sectors keep the raw labour-productivity rate on the labour channel.
     lp_table = traj.sector_rates.get("sector_productivity") or {}
     dp_table = traj.sector_rates.get("capital_deepening") or {}
     mfp_table = traj.sector_rates.get("mfp") or {}
@@ -912,7 +846,9 @@ def _sector_productivity_shocks(
         share_by_sector = va_shares.get(region, {}) if multi else va_shares
         sl_by_sector = labour_shares.get(region, {}) if multi else labour_shares
         elast_by_sector = va_elast.get(region, {}) if multi else va_elast
-        log_levels = {}
+        # Per sector: cumulative MFP log (identified) or raw-LP log (heuristic), labour share,
+        # σ, mode, and the aggregate-VA-cost contribution ``cost_log`` used for the neutral mean.
+        info: dict[str, dict] = {}
         for s in sectors:
             s_L = float(sl_by_sector.get(s, 0.0))
             sigma = elast_by_sector.get(s)
@@ -926,51 +862,59 @@ def _sector_productivity_shocks(
                 has_source_share=s in src_sl or src_all,
             )
             identified = mode in _SOURCE_IDENTIFIED_MODES or mode == "model_share_approx"
-            log_levels[s] = _decomposed_log_level(
-                traj,
-                s,
-                base_year,
-                year,
-                s_L,
-                identified,
-                sigma if sigma is not None else 1.0,
-                _source_share(s),
+            level_log = _cumulative_mfp_log(
+                traj, s, base_year, year, identified, _source_share(s), s_L
             )
-        # AGGREGATE-NEUTRAL normalizer (review P1 2026-09-03). Under Cobb-Douglas the VA unit cost
-        # responds to φ_i as pv_i ∝ φ_i^{−s_Li}, so the aggregate (VA-weighted) log-cost effect of
-        # the composition drift is Σ_i v_i·s_Li·ln φ_i. For this driver to re-impose NO aggregate
-        # productivity/cost level (it carries only the sector COMPOSITION drift; the aggregate level
-        # is already in the TFP endowment scale) the mean must zero THAT quantity, i.e.
-        #   Σ_i (v_i·s_Li)(ln level_i − ln mean) = 0  ⟹  ln mean = Σ(v_i s_Li ln lvl)/Σ(v_i s_Li).
-        # A plain VA-share (v_i-only) geometric mean is only φ-geometric-neutral, NOT aggregate-cost
-        # neutral when labour shares differ across sectors (review P1 2026-08-31 fixed the weight to
-        # v_i; review P1 2026-09-03 adds the missing s_Li so the mean is truly aggregate-neutral).
-        va = np.array([max(float(share_by_sector.get(s, 0.0)), 0.0) for s in sectors])
-        sl = np.array([max(float(sl_by_sector.get(s, 0.0)), 0.0) for s in sectors])
-        weights = va * sl
-        if weights.sum() <= 0:
-            # No usable VA×labour-share weights (e.g. unstamped) → fall back to equal weighting,
-            # labour-share-weighted where available, else uniform, so the mean stays well-defined.
-            weights = sl if sl.sum() > 0 else np.ones(len(sectors))
-        weights = weights / weights.sum()
-        # Normalise ENTIRELY in log space: the relative log deviation is ln φ_i = ln lvl_i − mean,
-        # so a large common level cancels here and never reaches math.exp.
-        log_arr = np.array([log_levels[s] for s in sectors])
-        log_mean = float(np.sum(weights * log_arr))
-        for i, sector in enumerate(sectors):
-            # RELATIVE labour-productivity deviation from the weighted mean → the labour-augmenting
-            # factor φ = exp(ln lvl_i − mean). A sector at the mean gets φ=1 (no drift). We clamp
-            # the relative log to a representable range so an extreme (but valid) rate yields a
-            # finite φ rather than raising OverflowError (review P2 2026-09-05); ±700 spans the full
-            # float exp range, well beyond any economically meaningful drift.
-            rel_log = float(np.clip(log_arr[i] - log_mean, -700.0, 700.0))
-            phi = math.exp(rel_log)
-            delta = max(phi - 1.0, -1.0)
-            kwargs = {
-                "delta": delta,
-                "coverage_sectors": [sector],
-                "mechanism": "labour_augmenting",
+            # ``cost_log`` is the per-sector aggregate-VA-cost contribution for the neutral mean:
+            #   * identified → the sector's cumulative MFP log. The VA cost falls by 1/exp(mfp_log)
+            #     whether routed as A_va (CES) or as φ with s_L·ln φ = mfp_log (CD), so the cost
+            #     contribution is exactly ``mfp_log`` for BOTH channels — one unified currency.
+            #   * heuristic → the raw-LP log enters the labour channel as ln φ, whose VA cost effect
+            #     is s_L·ln φ, so cost_log = s_L·level_log (the review P1 2026-09-03 aggregate-cost-
+            #     neutral weighting). With NO stamped labour share (s_L≈0) we fall back to
+            #     level_log directly so a heuristic-only run stays well-defined (pre-CES behaviour).
+            cost_log = level_log if (identified or s_L <= 1e-9) else s_L * level_log
+            info[s] = {
+                "level_log": level_log,
+                "s_L": s_L,
+                "sigma": sigma,
+                "mode": mode,
+                "identified": identified,
+                "cost_log": cost_log,
             }
+        # AGGREGATE-NEUTRAL mean (review P1 2026-09-03/2026-09-06). The composition drift must
+        # re-impose NO aggregate VA cost: for the IDENTIFIED (MFP) sectors the mean zeros
+        # Σ_i v_i·(mfp_log_i − mean). Weighted by VA share v_i (the aggregate is VA-weighted). A
+        # heuristic-only run keeps the pre-CES v_i-weighted zero-mean of the φ-log (transparent).
+        va = np.array([max(float(share_by_sector.get(s, 0.0)), 0.0) for s in sectors])
+        w = va if va.sum() > 0 else np.ones(len(sectors))
+        w = w / w.sum()
+        mean_cost = float(np.sum(w * np.array([info[s]["cost_log"] for s in sectors])))
+        for sector in sectors:
+            it = info[sector]
+            s_L, sigma = it["s_L"], it["sigma"]
+            # Relative (composition) deviation from the neutral mean.
+            rel_cost = it["cost_log"] - mean_cost
+            is_ces = it["identified"] and sigma is not None and abs(sigma - 1.0) >= 1e-9
+            if is_ces:
+                # CES identified → VALUE-ADDED Hicks-neutral channel: A_va = exp(relative MFP log),
+                # reproducing the MFP cost change at every price vector (globally correct, review P1
+                # 2026-09-06). rel_cost IS the relative MFP log (cost_log = mfp_log for identified).
+                factor = math.exp(float(np.clip(rel_cost, -700.0, 700.0)))
+                mechanism = "va_hicks_neutral"
+            elif s_L > 1e-9:
+                # LABOUR channel with a usable labour share. cost_log = s_L·ln φ (identified: MFP;
+                # heuristic: s_L·raw-LP log), so ln φ = rel_cost/s_L. For CD-identified this is
+                # price-independent MFP→φ map; for heuristic it is the aggregate-cost-neutral lever.
+                factor = math.exp(float(np.clip(rel_cost / s_L, -700.0, 700.0)))
+                mechanism = "labour_augmenting"
+            else:
+                # No usable labour share → labour channel with ln φ = rel_cost (raw φ-log dev),
+                # the transparent composition lever (pre-CES fallback when shares are unstamped).
+                factor = math.exp(float(np.clip(rel_cost, -700.0, 700.0)))
+                mechanism = "labour_augmenting"
+            delta = max(factor - 1.0, -1.0)
+            kwargs = {"delta": delta, "coverage_sectors": [sector], "mechanism": mechanism}
             if multi:
                 kwargs["coverage_regions"] = [region]
             shocks.append(ProductivityShock(**kwargs))

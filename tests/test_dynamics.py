@@ -645,12 +645,12 @@ def test_composition_drift_is_aggregate_cost_neutral_under_unequal_labour_shares
 # accumulates separately is not double-counted.
 
 
-def test_decomposed_log_level_removes_capital_deepening_known_answer():
-    """Known answer for the decomposition, using the COHERENT Cobb-Douglas finite-change mapping in
-    LOG space (review P1 2026-09-03; log-space review P2 2026-09-05): the per-year log factor is
-    ln(1+g_φ) = [ln(1+g_{Y/L}) − s_K·ln(1+g_{K/L})]/s_L, so the cumulative LOG level is n× that.
-    g_{Y/L}=0.02, g_{K/L}=0.01, s_L=0.6 (s_K=0.4). The heuristic path compounds the raw ln(1.02)."""
-    from cge.dynamics.recursive import _decomposed_log_level
+def test_cumulative_mfp_log_nets_out_capital_deepening_known_answer():
+    """Known answer for the cumulative SOURCE MFP log (review P1 2026-09-06): identified,
+    g_MFP = ln(1+g_{Y/L}) − (1−s_L^src)·ln(1+g_{K/L}) per year, summed. With g_{Y/L}=0.02,
+    g_{K/L}=0.01 and the source share s_L^src=0.6 (s_K=0.4). The heuristic path is the raw ln(1.02).
+    (Channel-agnostic MFP quantity; routing to φ or A_va happens in the shock builder.)"""
+    from cge.dynamics.recursive import _cumulative_mfp_log
 
     traj = _traj_sector(
         {
@@ -658,25 +658,21 @@ def test_decomposed_log_level_removes_capital_deepening_known_answer():
             "capital_deepening": {"BRD": {2025: 0.01}},
         }
     )
-    s_L = 0.6
-    s_K = 1.0 - s_L
-    log_step = (math.log(1.02) - s_K * math.log(1.01)) / s_L  # coherent CD finite-change log factor
+    sl_src = 0.6
+    step = math.log(1.02) - (1 - sl_src) * math.log(1.01)  # per-year MFP log
     n = 10  # 2025 -> 2035
-    got = _decomposed_log_level(traj, "BRD", 2025, 2035, s_L, identified=True)
-    assert got == pytest.approx(log_step * n, rel=1e-12)
-    heur = _decomposed_log_level(traj, "BRD", 2025, 2035, s_L, identified=False)
+    got = _cumulative_mfp_log(traj, "BRD", 2025, 2035, True, sl_src, 0.6)
+    assert got == pytest.approx(step * n, rel=1e-12)
+    heur = _cumulative_mfp_log(traj, "BRD", 2025, 2035, False, None, 0.6)
     assert heur == pytest.approx(math.log(1.02) * n, rel=1e-12)
-    # Deepening genuinely changed the technology level (it is not a relabelling no-op).
-    assert abs(got - heur) > 1e-6
+    assert abs(got - heur) > 1e-6  # deepening genuinely changed the MFP level
 
 
-def test_decomposed_log_level_admissible_but_extreme_does_not_overflow():
-    """Review P2 2026-09-05: an admissible rate combination that would OVERFLOW math.exp per year
-    (g_{Y/L}=0.99, g_{K/L}=−0.99, s_L=0.001) must be finite in LOG space — the helper returns the
-    (large but finite) cumulative log, and the cross-sector normaliser cancels the common part
-    before
-    any exponentiation, so no OverflowError. The old per-year exp-and-multiply raised here."""
-    from cge.dynamics.recursive import _decomposed_log_level
+def test_cumulative_mfp_log_admissible_but_extreme_does_not_overflow():
+    """Review P2 2026-09-05: an admissible rate combination that would overflow if exponentiated per
+    year (g_{Y/L}=0.99, g_{K/L}=−0.99) is finite in LOG space — the helper returns the large-but-
+    finite cumulative MFP log; the caller normalises then exponentiates the relative deviation."""
+    from cge.dynamics.recursive import _cumulative_mfp_log
 
     traj = _traj_sector(
         {
@@ -684,27 +680,24 @@ def test_decomposed_log_level_admissible_but_extreme_does_not_overflow():
             "capital_deepening": {"BRD": {2025: -0.99}},
         }
     )
-    got = _decomposed_log_level(traj, "BRD", 2025, 2026, 0.001, identified=True)
+    got = _cumulative_mfp_log(traj, "BRD", 2025, 2026, True, 0.5, 0.5)
     assert math.isfinite(got)
-    # Exact log value: [ln(1.99) − 0.999·ln(0.01)]/0.001, a large positive number, still finite.
-    expected = (math.log(1.99) - (1 - 0.001) * math.log(0.01)) / 0.001
+    expected = math.log(1.99) - (1 - 0.5) * math.log(0.01)
     assert got == pytest.approx(expected, rel=1e-12)
 
 
-def test_decomposed_log_level_rejects_rate_at_or_below_minus_100pct():
-    """A rate ≤ −100% is not a valid annual growth rate; the level factor would be ≤0 and its log
-    undefined, so the helper raises rather than producing a non-finite log. (The trajectory contract
-    also bounds rates to (−1,1); this is defense-in-depth via a construction near the edge.)"""
-    from cge.dynamics.recursive import _decomposed_log_level
+def test_cumulative_mfp_log_stays_finite_across_admissible_band():
+    """The MFP log is finite for every admissible rate (the contract bounds rates to (−1,1)); a rate
+    ≤ −100% would raise (defense-in-depth), but near-edge admissible values do not."""
+    from cge.dynamics.recursive import _cumulative_mfp_log
 
-    # Near-edge admissible values stay finite (no raise) — proves the guard is not over-eager.
     ok = _traj_sector(
         {
             "sector_productivity": {"BRD": {2025: -0.99}},
             "capital_deepening": {"BRD": {2025: 0.99}},
         }
     )
-    assert math.isfinite(_decomposed_log_level(ok, "BRD", 2025, 2026, 0.5, identified=True))
+    assert math.isfinite(_cumulative_mfp_log(ok, "BRD", 2025, 2026, True, 0.5, 0.5))
 
 
 def test_capital_deepening_series_changes_the_sector_shocks():
@@ -758,13 +751,12 @@ def test_capital_deepening_series_changes_the_sector_shocks():
 
 def test_source_share_identification_uses_source_not_model_labour_share():
     """Pipeline step 1b (review P2 2026-09-05): the source-side MFP identification must use the
-    SOURCE labour share s_L^src, NOT the receiving model's benchmark share. Set a source share that
-    differs from the model share and check the per-year log level equals the source-share formula
-    [ln(1+g_Y/L) − (1−s_L^src)·ln(1+g_K/L)] / s_L^model (CD nest), which differs from the
-    all-model-share value."""
+    SOURCE labour share s_L^src, NOT the receiving model's benchmark share. The cumulative MFP log
+    equals [ln(1+g_Y/L) − (1−s_L^src)·ln(1+g_K/L)] with s_L^src, differing from the model-share
+    value. (Channel translation to φ/A_va happens later in the shock builder.)"""
     import math
 
-    from cge.dynamics.recursive import _decomposed_log_level
+    from cge.dynamics.recursive import _cumulative_mfp_log
 
     traj = _traj_sector(
         {
@@ -772,27 +764,22 @@ def test_source_share_identification_uses_source_not_model_labour_share():
             "capital_deepening": {"BRD": {2025: 0.02}},
         }
     )
-    traj.source_labour_shares = {"BRD": 0.4}  # source share ≠ model share below
     s_L_model = 0.6
-    got = _decomposed_log_level(
-        traj, "BRD", 2025, 2026, s_L_model, identified=True, sigma=1.0, source_labour_share=0.4
-    )
-    # MFP identified at source with s_L^src=0.4 (s_K^src=0.6), then CD-translated by /s_L^model.
-    g_mfp_log = math.log(1.03) - 0.6 * math.log(1.02)
-    expected = g_mfp_log / s_L_model
+    got = _cumulative_mfp_log(traj, "BRD", 2025, 2026, True, 0.4, s_L_model)  # s_L^src=0.4
+    expected = math.log(1.03) - (1 - 0.4) * math.log(1.02)
     assert got == pytest.approx(expected, rel=1e-12)
-    # Using the MODEL share on both sides (the old, wrong behaviour) gives a different number.
-    wrong = (math.log(1.03) - (1 - s_L_model) * math.log(1.02)) / s_L_model
+    # Using the MODEL share (the old, wrong behaviour) gives a different MFP.
+    wrong = math.log(1.03) - (1 - s_L_model) * math.log(1.02)
     assert abs(got - wrong) > 1e-6
 
 
 def test_sourced_mfp_series_is_used_directly():
     """Pipeline step 1b: when the trajectory ships an ``mfp`` series (identified at source in the
-    data build), the wrapper uses it directly — the per-year log level is the CD translation
-    ln(1+g_MFP)/s_L^model, independent of sector_productivity/capital_deepening."""
+    data build), the cumulative MFP log IS that series' log, independent of
+    sector_productivity/capital_deepening."""
     import math
 
-    from cge.dynamics.recursive import _decomposed_log_level
+    from cge.dynamics.recursive import _cumulative_mfp_log
 
     traj = _traj_sector(
         {
@@ -801,16 +788,15 @@ def test_sourced_mfp_series_is_used_directly():
             "mfp": {"BRD": {2025: 0.012}},
         }
     )
-    got = _decomposed_log_level(traj, "BRD", 2025, 2026, 0.6, identified=True, sigma=1.0)
-    assert got == pytest.approx(math.log(1.012) / 0.6, rel=1e-12)
+    got = _cumulative_mfp_log(traj, "BRD", 2025, 2026, True, 0.6, 0.6)
+    assert got == pytest.approx(math.log(1.012), rel=1e-12)
 
 
-def test_ces_sector_is_identified_via_nest_aware_translation():
-    """Pipeline step 1b (review P2 2026-09-05): a CES sector is now IDENTIFIED — the MFP implied by
-    the decomposition is translated into a labour-augmentation through the sector's ACTUAL CES nest
-    (numeric), instead of being dropped to the heuristic. Assert (a) the CES result differs from the
-    CD result (the nest matters — it is not the CD closed form), and (b) both differ from the raw
-    heuristic (capital deepening IS being netted out for both)."""
+def test_ces_sector_routes_through_va_hicks_neutral_channel():
+    """Engagement-grade CES (review P1 2026-09-06): a CES sector's identified MFP is emitted as a
+    ``va_hicks_neutral`` shock (the value-added Hicks-neutral engine channel — globally correct at
+    all prices), while a Cobb-Douglas sector uses ``labour_augmenting``. The CES A_va delta is
+    exp(relative MFP log), independent of the labour share (unlike the CD φ=exp(MFP/s_L))."""
     from cge.dynamics.recursive import DynamicConfig as _DC
     from cge.dynamics.recursive import _sector_productivity_shocks
 
@@ -823,53 +809,52 @@ def test_ces_sector_is_identified_via_nest_aware_translation():
     va = {"BRD": 0.5, "MIL": 0.5}
     sl = {"BRD": 0.5, "MIL": 0.5}
     args = (2025, 2045, ["BRD", "MIL"], ["R"], False, va, sl)
-    cd = _sector_productivity_shocks(_DC(structural=traj), *args, {"BRD": 1.0, "MIL": 1.0})
     ces = _sector_productivity_shocks(_DC(structural=traj), *args, {"BRD": 0.5, "MIL": 0.5})
-    heur_only = _sector_productivity_shocks(
-        _DC(
-            structural=_traj_sector(
-                {"sector_productivity": traj.sector_rates["sector_productivity"]}
-            )
-        ),
-        *args,
-        {"BRD": 0.5, "MIL": 0.5},
+    cd = _sector_productivity_shocks(_DC(structural=traj), *args, {"BRD": 1.0, "MIL": 1.0})
+    assert all(s.mechanism == "va_hicks_neutral" for s in ces)  # CES → VA channel
+    assert all(s.mechanism == "labour_augmenting" for s in cd)  # CD → labour channel
+    # A faster sector drifts up, a slower one down, in BOTH — a genuine composition drift.
+    for shocks in (ces, cd):
+        d = {s.coverage_sectors[0]: s.delta for s in shocks}
+        assert d["BRD"] > 0.0 > d["MIL"]
+
+
+def test_va_channel_delta_is_global_relative_mfp():
+    """The CES ``va_hicks_neutral`` delta is exp(relative MFP log) — the A_va that scales the whole
+    VA nest — so it depends only on the MFP levels, NOT the labour share (review P1 2026-09-06). Two
+    runs with the SAME MFP but different labour shares give the SAME CES delta (contrast the CD
+    labour channel, whose φ=exp(MFP/s_L) does depend on s_L)."""
+    from cge.dynamics.recursive import DynamicConfig as _DC
+    from cge.dynamics.recursive import _sector_productivity_shocks
+
+    traj = _traj_sector({"mfp": {"BRD": {2025: 0.02}, "MIL": {2025: 0.005}}})
+    va = {"BRD": 0.5, "MIL": 0.5}
+    ces_sigma = {"BRD": 0.5, "MIL": 0.5}
+    a = _sector_productivity_shocks(
+        _DC(structural=traj),
+        2025,
+        2035,
+        ["BRD", "MIL"],
+        ["R"],
+        False,
+        va,
+        {"BRD": 0.7, "MIL": 0.3},
+        ces_sigma,
     )
-    d_cd = {s.coverage_sectors[0]: s.delta for s in cd}
-    d_ces = {s.coverage_sectors[0]: s.delta for s in ces}
-    d_heur = {s.coverage_sectors[0]: s.delta for s in heur_only}
-    assert d_cd != d_ces  # the CES nest gives a different augmentation than the CD closed form
-    assert d_ces != pytest.approx(d_heur)  # CES IS identified (deepening netted out), not heuristic
-    assert d_cd != pytest.approx(d_heur)
-
-
-def test_ces_translation_reproduces_target_cost_ratio():
-    """Review P2 2026-09-06: the CES translation must reproduce the MFP-implied VA-cost ratio at
-    benchmark prices (not merely 'differ from CD'). Verify the solved ln φ makes the CES cost index
-    fall by exactly 1+g_MFP, and that it reduces to the CD closed form as σ→1."""
-    import math
-
-    from cge.dynamics.recursive import _mfp_to_labour_aug_log
-
-    for sigma in (0.4, 0.7, 1.5, 2.0):
-        for theta_L in (0.3, 0.6):
-            for g_mfp in (-0.03, 0.02):
-                x = _mfp_to_labour_aug_log(g_mfp, theta_L, sigma)
-                om = 1.0 - sigma
-                cx = (theta_L * math.exp(om * (-x)) + (1.0 - theta_L)) ** (1.0 / om)
-                assert cx == pytest.approx(1.0 / (1.0 + g_mfp), rel=1e-10)
-    # CD limit
-    assert _mfp_to_labour_aug_log(0.02, 0.6, 1.0) == pytest.approx(math.log(1.02) / 0.6, rel=1e-12)
-
-
-def test_ces_translation_raises_on_infeasible_target():
-    """Review P2 2026-09-06: when no labour augmentation can reproduce the CES MFP cost change
-    (capital is essential), the solver RAISES rather than returning an enormous boundary value.
-    Reviewer's cases: g_MFP=+50% sL=0.1 σ=0.5, and g_MFP=−90% sL=0.6 σ=2."""
-    from cge.dynamics.recursive import InfeasibleMFPTranslation, _mfp_to_labour_aug_log
-
-    for g_mfp, s_l, sigma in [(0.50, 0.1, 0.5), (-0.90, 0.6, 2.0)]:
-        with pytest.raises(InfeasibleMFPTranslation):
-            _mfp_to_labour_aug_log(g_mfp, s_l, sigma)
+    b = _sector_productivity_shocks(
+        _DC(structural=traj),
+        2025,
+        2035,
+        ["BRD", "MIL"],
+        ["R"],
+        False,
+        va,
+        {"BRD": 0.4, "MIL": 0.6},
+        ces_sigma,
+    )
+    da = {s.coverage_sectors[0]: s.delta for s in a}
+    db = {s.coverage_sectors[0]: s.delta for s in b}
+    assert da == pytest.approx(db)  # VA-channel delta independent of the labour share
 
 
 def test_source_shares_change_run_identity_and_manifest():
@@ -1041,7 +1026,9 @@ def test_manifest_summary_reports_mode_mix_without_overclaiming():
     assert modes["R"] == {"A": "sourced_mfp", "B": "raw_lp_heuristic"}
     summary = _sector_productivity_mode_summary(modes)
     assert "sourced MFP" in summary and "raw labour-productivity heuristic" in summary
-    assert "benchmark prices" in summary  # CES caveat present because a source-identified sector is
+    # CES now routes through the value-added channel (globally correct at all prices) — the summary
+    # states that, and no longer carries a benchmark-only caveat (review P1 2026-09-06).
+    assert "ALL prices" in summary and "benchmark prices" not in summary
 
 
 def test_decomposition_needs_a_usable_labour_share_else_heuristic():
@@ -1069,7 +1056,7 @@ def test_decomposition_needs_a_usable_labour_share_else_heuristic():
 def test_manifest_records_honest_identification_mode():
     """The recursive manifest must record the HONEST fine-grained mode (review P2 2026-09-06): with
     capital_deepening but NO source labour share it is a MODEL-share approximation (NOT
-    source-identified); adding source_labour_shares makes it source-identified; with neither it is the
+    source-identified); adding source_labour_shares makes it source-identified; without it is
     raw heuristic. This retires the earlier test that expected a blanket 'identified' when source
     shares were absent — exactly the overclaim the reviewer flagged."""
     from cge.contracts.data_objects import Provenance, StructuralTrajectory

@@ -2467,6 +2467,40 @@ def test_labour_augmenting_cd_physical_labour_unchanged_at_fixed_va_payment():
     assert got[cap, 0] == pytest.approx(base[cap, 0], rel=1e-12)
 
 
+def test_va_hicks_neutral_channel_lowers_va_cost_by_1_over_A_at_all_prices():
+    """Engagement-grade CES (2026-09-06): the value-added Hicks-neutral multiplier A_va scales the
+    whole VA aggregate, so the VA unit cost falls by EXACTLY 1/A_va at EVERY factor-price vector —
+    for BOTH Cobb-Douglas and CES nests. This is the property labour-augmentation lacks under CES
+    (its cost effect is price-dependent), so it is the globally-correct home for a VA MFP shift."""
+    for va_elast in (1.0, 0.5, 2.0):  # CD and CES nests
+        cal = calibrate(toy_sam(), sectors=_SECTORS, factors=_FACTORS, va_elast=va_elast)
+        A = np.ones(len(cal.sectors))
+        A[0] = 1.10  # +10% VA productivity on sector 0
+        for w in (np.ones(len(cal.factors)), np.array([1.3, 0.7]), np.array([0.5, 2.0])):
+            pv0 = M._va_unit_cost(cal, w, None, None)
+            pvA = M._va_unit_cost(cal, w, None, A)
+            # pv falls by exactly 1/A_va, at every price vector and for CD and CES alike.
+            assert pvA[0] == pytest.approx(pv0[0] / 1.10, rel=1e-12)
+            assert pvA[1] == pytest.approx(pv0[1], rel=1e-12)  # untouched sector
+
+
+def test_va_hicks_neutral_vs_labour_augmentation_under_ces():
+    """Under CES the VA Hicks-neutral channel and labour-augmentation are DIFFERENT technologies:
+    A_va lowers the VA cost by exactly 1/A at EVERY price, whereas a labour-augmentation φ=A lowers
+    it by a price-dependent amount generally NOT equal to 1/A (moves only the labour term). This is
+    why a CES MFP shift must use the VA channel, not labour-augmentation."""
+    cal = calibrate(toy_sam(), sectors=_SECTORS, factors=_FACTORS, va_elast=0.5)
+    fac = np.ones(len(cal.sectors))
+    fac[0] = 1.10
+    for w in (np.ones(len(cal.factors)), np.array([1.5, 0.6])):
+        base = M._va_unit_cost(cal, w, None, None)[0]
+        pv_va = M._va_unit_cost(cal, w, None, fac)[0]  # VA-channel
+        pv_la = M._va_unit_cost(cal, w, fac, None)[0]  # labour-augmenting φ=A
+        assert pv_va == pytest.approx(base / 1.10, rel=1e-12)  # VA channel: exact 1/A everywhere
+        assert pv_la != pytest.approx(base / 1.10, rel=1e-9)  # labour-aug: not 1/A under CES
+        assert pv_la != pytest.approx(pv_va, rel=1e-9)  # the two channels genuinely differ
+
+
 def test_labour_augmenting_ces_dual_cost_matches_ces_formula():
     """CES VA nest (sigma_va != 1): the augmented VA unit cost matches the CES dual
     pv = (1/av)*[sum_f delta_f^sigma (w_f/phi_LAB)^{1-sigma}]^{1/(1-sigma)} with the labour wage

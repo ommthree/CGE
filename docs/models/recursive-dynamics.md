@@ -101,10 +101,11 @@ productivity** enters as a Hicks-neutral endowment-equivalent scale on both prim
 **Sector-level** productivity is implemented (Phase 7b.2) as a **labour-augmenting** term on each
 sector's labour input — not a Hicks-neutral θ — so the output mix shifts endogenously (§6, equation
 $(5)$). MFP is identified at source (a sourced `mfp` series, or observed labour productivity netted of
-capital deepening using the source-period share $s_L^{src}$) and translated into a labour augmentation
-through the sector's **actual** VA nest (§6, eq $(6)$) — exact for Cobb–Douglas, a
-benchmark-calibrated Harrod-neutral equivalent for CES. Where the identifying inputs are missing it
-falls back to the raw rate as a transparent heuristic composition lever ([Solow1957], [EUKLEMS2023]).
+capital deepening using the source-period share $s_L^{src}$) and applied through the sector's
+**actual** VA nest, routed by nest type (§6, eq $(6)$): Cobb–Douglas via labour augmentation, CES via
+the value-added Hicks-neutral engine channel — both reproduce the MFP cost change at every price
+vector (globally correct). Where the identifying inputs are missing it falls back to the raw rate as
+a transparent heuristic composition lever ([Solow1957], [EUKLEMS2023]).
 
 Concretely, the year-$t$ primary-factor endowment scales fed to the engine's `factor_endowment_scale`
 hook are
@@ -137,34 +138,42 @@ a sourced `mfp` series is used directly, or MFP is netted out of observed labour
 the **source-period** labour share $s_L^{src}$ (`source_labour_shares`, the source economy's factor
 share — *not* the receiving model's benchmark), via the log-change identity
 $g_{MFP}=g_{Y/L}-(1-s_L^{src})\,g_{K/L}$ ([Solow1957], [EUKLEMS2023]; the OECD productivity
-methodology). **Stage 2 — translate MFP into a labour augmentation through the receiving model's
-ACTUAL VA nest.** MFP is Hicks-neutral on value added (it lowers the VA unit cost by $1/(1+g_{MFP})$);
-we solve for the labour augmentation $\varphi_s$ that reproduces that cost change:
+methodology). **Stage 2 — apply MFP through the receiving model's ACTUAL VA nest, ROUTED BY NEST
+TYPE** so it is globally correct (not benchmark-only):
 
-$$ \ln\varphi_s = \frac{\ln(1+g_{MFP})}{s_{L}}\ \text{(Cobb–Douglas)}, \qquad
-   1+g_{MFP} = \Big[\theta_L\,\varphi_s^{-(1-\sigma)} + (1-\theta_L)\Big]^{-1/(1-\sigma)}\ \text{(CES)}
-   \tag{6} $$
+$$ \text{Cobb–Douglas: } \ln\varphi_s = \frac{\ln(1+g_{MFP})}{s_{L}} \ \text{(labour-augmenting)},
+   \qquad \text{CES: } A_{va,s} = 1+g_{MFP} \ \text{(value-added Hicks-neutral)} \tag{6} $$
 
-with $s_L,\theta_L$ the receiving nest's labour (cost) share and $\sigma$ its VA elasticity. The CES
-case has the **closed form** $\ln\varphi_s = -\ln\big[(R-(1-\theta_L))/\theta_L\big]/(1-\sigma)$ with
-$R=(1+g_{MFP})^{-(1-\sigma)}$; it is **feasible only when $R>1-\theta_L$** (capital is essential, so
-the VA cost cannot be pushed past the capital floor by labour augmentation alone) — an infeasible
-target raises rather than emitting a spurious huge shock. Rates are simple proportional annual rates,
-so all of this is a finite-change (log-space) computation; the earlier simple-rate form
-$(g_{Y/L}-s_K g_{K/L})/s_L$ is retracted (only first-order valid, and it drove negative multipliers).
+- A **Cobb–Douglas** sector goes through the **labour-augmenting** channel. There the VA unit cost
+  responds as $pv\propto\varphi^{-s_L}$ **independently of prices**, so $\ln\varphi=\ln(1+g_{MFP})/s_L$
+  reproduces the MFP cost change $1/(1+g_{MFP})$ at *every* price vector — a genuine Harrod-neutral
+  equivalent.
+- A **CES** sector ($\sigma_{va}\neq1$) goes through a dedicated **value-added Hicks-neutral** engine
+  channel (`ProductivityShock(mechanism="va_hicks_neutral")`): a per-sector multiplier $A_{va}$ that
+  scales the *whole* VA aggregate, so the VA unit cost falls by exactly $1/A_{va}$ **at every price
+  vector** (the effective VA scale becomes $av\cdot A_{va}$; see `cge-static` VA cost). Setting
+  $A_{va}=1+g_{MFP}$ therefore reproduces the source MFP shift *globally*, not just at benchmark
+  prices — a genuinely identified value-added technology term for CES, not a calibrated
+  labour-augmentation surrogate. (The earlier benchmark-only labour-augmentation translation for CES,
+  and its feasibility failures, are retired.)
 
-**Exactness / honesty.** Under **Cobb–Douglas** the cost ratio $\varphi^{-s_L}$ is
-**price-independent**, so the translation reproduces the MFP cost change at *every* price vector — a
-genuine Harrod-neutral equivalent. Under **CES** it reproduces the cost change only **at benchmark
-prices**: once equilibrium wages/rentals move, a fixed labour augmentation no longer equals the
-Hicks-neutral MFP shift, so for CES this is a *benchmark-calibrated Harrod-neutral translation*, not a
-globally identified technology term. The manifest reflects this honestly. The per-(region, sector)
-`sector_productivity_mode` (and `..._by_sector`) reports one of: `sourced_mfp` /
-`derived_source_share` (both source-identified), `model_share_approx` (LP+deepening but only the
-model benchmark share was available — an approximation, *not* source-identified), or
-`raw_lp_heuristic`; the summary carries the CES benchmark-equivalence caveat and never blanket-claims
-"identified". Identification needs a usable $s_L>0$ and a known $\sigma$; otherwise the sector falls
-back to the raw heuristic. `source_labour_shares` are part of the run's content hashes and manifest.
+Rates are simple proportional annual rates, so the MFP accumulation is a finite-change (log-space)
+computation; the earlier simple-rate form $(g_{Y/L}-s_K g_{K/L})/s_L$ is retracted (only first-order
+valid, and it drove negative multipliers).
+
+**Neutrality (composition drift only).** The MFP levels are normalised across sectors so the
+composition drift re-imposes NO aggregate value-added cost: the VA-share-weighted aggregate log-cost
+effect $\sum_i v_i\cdot\ln(\text{cost}_i)$ is zeroed — the SAME criterion in MFP terms for both
+channels (for CD the sector cost effect is $s_L\ln\varphi=\ln(1+g_{MFP})$; for the VA channel it is
+$\ln A_{va}=\ln(1+g_{MFP})$), so a mixed CD/CES economy normalises in one consistent currency.
+
+**Manifest honesty.** The per-(region, sector) `sector_productivity_mode` (and `..._by_sector`)
+reports `sourced_mfp` / `derived_source_share` (both source-identified), `model_share_approx`
+(LP+deepening but only the model benchmark share available — an approximation, *not*
+source-identified), or `raw_lp_heuristic`; the summary states the CD/CES routing and, because CES now
+uses the globally-correct VA channel, carries **no** benchmark-only caveat. Identification needs a
+usable $s_L>0$ and a known $\sigma$; otherwise the sector falls back to the raw heuristic.
+`source_labour_shares` are part of the run's content hashes and manifest.
 
 Results are reported per year **relative to the original benchmark**, so capital accumulation and the
 trends are **visible in the level path** (a growing stock raises output vs the benchmark). Two result
@@ -248,10 +257,11 @@ horizon, δ, trends, retirement, K₀, and the capital path.
       result, not an imposed target. **Identification (review P1 2026-08-31 → source-share MFP
       2026-09-06).** MFP is identified at source (a sourced `mfp` series, or observed labour
       productivity netted of capital deepening with the source-period share $s_L^{src}$) and
-      translated into a labour augmentation through the sector's **actual** nest via eq $(6)$ —
-      **exact for Cobb–Douglas, a benchmark-calibrated Harrod-neutral equivalent for CES** (the
-      equivalence holds only at benchmark prices). Where the identifying inputs are missing it falls
-      back to the raw rate — a transparent **heuristic** composition lever — and the manifest's
+      applied through the sector's **actual** nest via eq $(6)$, routed by nest type — Cobb–Douglas
+      via **labour augmentation**, CES via the **value-added Hicks-neutral** engine channel — so the
+      MFP shift is reproduced at **every price vector** (globally correct for both). Where the
+      identifying inputs are missing it falls back to the raw rate — a transparent **heuristic**
+      composition lever — and the manifest's
       `sector_productivity_mode` records the fine-grained mode. Either
       way the per-sector **drift** is each sector's cumulative $\varphi$ level relative to an
       **aggregate-neutral geometric mean** of all sectors' levels. Under Cobb–Douglas the VA unit cost
@@ -302,12 +312,10 @@ horizon, δ, trends, retirement, K₀, and the capital path.
   `RoW_MiddleEast` = 100% S) are coarse single-archetype aggregates. Per-driver, time-varying weights
   are the follow-up (see `data/structural/NOTICE.md`).
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
-- Aggregate productivity is Hicks-neutral on primary factors; the per-sector series is a
-  labour-augmenting term on the sector's labour input (not a TFP transform), recovered by identifying
-  MFP at source and translating it through the sector's actual nest via eq $(6)$ (exact for CD, a
-  benchmark-calibrated Harrod-neutral equivalent for CES), else a raw-rate heuristic. No other
-  factor-biased or vintage-specific technical change (a VA-specific Hicks-neutral channel for
-  engagement-grade CES work is a documented follow-up — see the structural-data pipeline plan).
+- Aggregate productivity is Hicks-neutral on primary factors; the per-sector series is a source-
+  identified MFP applied through the sector's actual nest via eq $(6)$ — Cobb–Douglas via labour
+  augmentation, CES via the value-added Hicks-neutral engine channel, both globally correct at all
+  prices — else a raw-rate heuristic. No other factor-biased or vintage-specific technical change.
 - Magnitudes are illustrative (toy calibration); the value is the **mechanism** — a static CGE turned
   into a capital-carrying dynamic path, the backbone Phase 7.2 (NGFS) and 7.3 (climate) build on.
 
@@ -373,8 +381,9 @@ Standing model-correctness checks live in `src/cge/validation/suites/dynamics.py
   against the base year — including on a **real IO-backed build** (opt-in `exiobase_live` suite,
   intensity engine-derived, not a supplied `carbon_cost_share`).
 - The **source-share MFP identification** eq $(6)$ has known-answer tests: the CD closed form
-  $\ln\varphi=\ln(1+g_{MFP})/s_L$; the CES translation reproduces the target VA-cost ratio at
-  benchmark prices and **raises** on an infeasible target (no equivalent labour augmentation); MFP is
+  $\ln\varphi=\ln(1+g_{MFP})/s_L$; CES sectors route through the **value-added Hicks-neutral** engine
+  channel whose $A_{va}$ delta is $1+g_{MFP}$ independently of the labour share (verified against the
+  engine: $pv(A)/pv(1)=1/A$ at every price vector, unlike labour augmentation under CES); MFP is
   accumulated in log space so a valid-but-extreme rate cannot overflow; the source-side step uses
   $s_L^{src}$ not the model share; an mfp-only trajectory drives the model (not a no-op); and the
   manifest records the fine-grained `sector_productivity_mode` (`sourced_mfp` / `derived_source_share`

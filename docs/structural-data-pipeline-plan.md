@@ -152,17 +152,17 @@ for back-compat, matching how `concordance_v1`→`v2` was handled.
 Until this plan is fully executed, the shipped behaviour is deliberately conservative and honestly
 labelled:
 - MFP is identified at source (a sourced `mfp` series, or LP+deepening netted with a
-  `source_labour_shares` s_L^src) and translated into labour augmentation through the sector's actual
-  nest. The manifest's `sector_productivity_mode` records the fine-grained mode per (region, sector):
+  `source_labour_shares` s_L^src) and applied through the sector's actual nest, routed by nest type.
+  The manifest's `sector_productivity_mode` records the fine-grained mode per (region, sector):
   `sourced_mfp` / `derived_source_share` (source-identified), `model_share_approx` (LP+deepening but
   only the receiving model's benchmark share available — an approximation), or `raw_lp_heuristic`.
-- **For CES sectors the translation is a benchmark-calibrated Harrod-neutral equivalent, NOT a
-  globally identified technology term** (review P1 2026-09-06): the labour augmentation reproduces the
-  Hicks-neutral MFP cost change only at benchmark factor prices; once equilibrium prices move the two
-  no longer coincide. It is exact globally only under Cobb-Douglas (price-independent cost ratio). The
-  manifest summary carries this caveat, and an infeasible CES target (no equivalent labour
-  augmentation exists) raises rather than emitting a spurious huge shock. An engagement-grade
-  alternative — a value-added-specific Hicks-neutral productivity channel — is a documented follow-up.
+- **CES sectors are now GLOBALLY identified** (review P1 2026-09-06, closing the earlier
+  benchmark-only limitation): a CES sector routes through a dedicated **value-added Hicks-neutral
+  engine channel** (`ProductivityShock(mechanism="va_hicks_neutral")`) — a per-sector multiplier
+  A_va = 1+g_MFP that scales the whole VA aggregate, so the VA unit cost falls by exactly 1/A_va at
+  **every** price vector, reproducing the source MFP shift globally (not just at benchmark prices).
+  Cobb-Douglas sectors use the price-independent labour-augmentation map ln φ = ln(1+g_MFP)/s_L. The
+  benchmark-calibrated CES labour-augmentation translation (and its feasibility failures) is retired.
 - The shipped `source_labour_shares` are illustrative headline values (validated finite in (0,1] with
   value-level provenance); the EU KLEMS Törnqvist extraction that replaces them is part of the 1a data
   work.
