@@ -44,6 +44,9 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+# "src" makes the cge package importable; "." puts the repo root on the path so tests can import
+# the top-level scripts/ package (e.g. scripts.extract_structural_sources) regardless of cwd — CI
+# runs from the repo root but does not otherwise have it on sys.path (2026-09-06).
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 addopts = "-q"
