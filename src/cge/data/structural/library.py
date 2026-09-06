@@ -53,6 +53,7 @@ def load_structural_trajectories(path: str | Path | None = None) -> StructuralTr
         sector_rates=_coerce(raw.get("sector_rates", {})),
         sources=raw.get("sources", {}),
         confidence=raw.get("confidence", {}),
+        source_labour_shares={k: float(v) for k, v in raw.get("source_labour_shares", {}).items()},
     )
 
 
@@ -108,35 +109,77 @@ def load_structural_concordance(
 
     # Validate against the trajectory this concordance will be applied to (default artifact if none
     # given), so a custom trajectory's missing archetype is caught here, not silently dropped later.
+    #
+    # PER-DRIVER validation (review P2 2026-09-05). A concordance archetype must be resolvable by
+    # EVERY driver actually present on its axis — an explicit path for that archetype in that
+    # driver, OR that driver's own ``__all__`` fallback. The earlier version validated against the
+    # UNION of archetypes across the axis's drivers, which let a leak through: if ``population``
+    # carried only archetype N and ``productivity`` only S while the concordance mapped a block to
+    # both, {N,S} existed in the union so validation passed — but at blend time each driver silently
+    # DROPS the members whose archetype it lacks and renormalises, so the SAME mixed block became N
+    # 100% for population and 100% S for productivity. Requiring each present driver to resolve
+    # every referenced archetype (via its explicit paths or its own ``__all__``) forbids that silent
+    # divergence. A driver with an ``__all__`` fallback accepts any archetype (it degrades to the
+    # global path for the missing ones), which is an explicit, non-silent fallback. We only
+    # constrain an axis that the trajectory actually carries at least one driver on.
     traj = trajectory if trajectory is not None else load_structural_trajectories()
-    known_region_arch = set(traj.rates.get("productivity", {}))
-    known_sector_arch = set(traj.sector_rates.get("sector_productivity", {}))
-    bad_sec = {
-        s: a
-        for s, a in raw["sector_archetype"].items()
-        if a not in known_sector_arch and a != "__all__"
-    }
-    if bad_sec:
-        raise ValueError(
-            f"sector_archetype targets not among the trajectory's sector paths "
-            f"{sorted(known_sector_arch)}: {bad_sec}"
-        )
+
+    def _check_axis(axis_label: str, drivers: dict, referenced: set) -> None:
+        """Validate the concordance archetypes referenced on one axis against every present driver.
+
+        TWO conditions (review P2 2026-09-05, refined 2026-09-06):
+          1. Each referenced archetype must be REAL — an explicit path in AT LEAST ONE driver on the
+             axis. This catches a typo/unknown archetype (e.g. US→'TYPO'). It is SKIPPED when EVERY
+             driver on the axis supplies only ``__all__`` (a deliberately UNIFORM trajectory): then
+             there are no explicit archetypes to be "unknown" relative to, and every referenced
+             archetype resolves to the global path — rejecting it would forbid the legitimate
+             ``__all__``-only fallback the contract defines (review P2 2026-09-06).
+          2. EVERY present driver must RESOLVE each referenced archetype — an explicit path for it
+             in that driver, OR that driver's own ``__all__`` fallback. This forbids the
+             cross-driver leak where population (only N) and productivity (only S) would each
+             silently drop the other's members and renormalise, so a mixed block becomes 100% N for
+             100% S for productivity.
+        """
+        real = set().union(*(set(t) for t in drivers.values())) - {"__all__"}
+        all_uniform = all("__all__" in t for t in drivers.values()) and not real
+        unknown = referenced - real
+        if unknown and not all_uniform:
+            raise ValueError(
+                f"{axis_label} archetype(s) {sorted(unknown)} are not among the trajectory's "
+                f"{axis_label} paths {sorted(real)} (not defined by any driver) — a typo or an "
+                "archetype the trajectory does not carry."
+            )
+        for driver, table in drivers.items():
+            if "__all__" in table:
+                continue  # explicit global fallback resolves every archetype (non-silent)
+            missing = {a for a in referenced if a not in table}
+            if missing:
+                raise ValueError(
+                    f"{axis_label} driver {driver!r} cannot resolve concordance archetype(s) "
+                    f"{sorted(missing)} (no explicit path and no '__all__' fallback); it has "
+                    f"{sorted(table)}. Every present driver must resolve every mapped archetype, "
+                    "else the blend would silently drop members and renormalise (review P2)."
+                )
 
     is_v2 = "country_archetype" in raw and "block_membership" in raw
+    if traj.rates:
+        if is_v2:
+            referenced = {a for a in raw["country_archetype"].values() if a != "__all__"}
+        elif raw.get("region_archetype"):
+            referenced = {a for a in raw["region_archetype"].values() if a != "__all__"}
+        else:
+            referenced = set()
+        _check_axis("region", traj.rates, referenced)
+
+    if traj.sector_rates:
+        referenced_sec = {a for a in raw["sector_archetype"].values() if a != "__all__"}
+        _check_axis("sector", traj.sector_rates, referenced_sec)
+
+    # Structural v2 checks (block weights sum to 1, members mapped) run regardless of the
+    # trajectory.
     if is_v2:
-        _validate_v2(raw, known_region_arch)
-    elif raw.get("region_archetype"):
-        bad_reg = {
-            r: a
-            for r, a in raw["region_archetype"].items()
-            if a not in known_region_arch and a != "__all__"
-        }
-        if bad_reg:
-            raise ValueError(
-                f"region_archetype targets not among the trajectory's region paths "
-                f"{sorted(known_region_arch)}: {bad_reg}"
-            )
-    else:
+        _validate_v2_structure(raw)
+    elif not raw.get("region_archetype"):
         raise ValueError(
             "structural concordance needs either 'country_archetype'+'block_membership' (v2) or "
             "'region_archetype' (v1)."
@@ -144,20 +187,14 @@ def load_structural_concordance(
     return raw
 
 
-def _validate_v2(raw: dict, known_region_arch: set) -> None:
-    """Validate the v2 country-level concordance (review P2 2026-08-29): every member country has
-    a known archetype, and each block's weights are finite, non-negative and sum to 1."""
+def _validate_v2_structure(raw: dict) -> None:
+    """Validate the v2 country-level concordance's STRUCTURE (review P2 2026-08-29), independent of
+    any trajectory: every ``block_membership`` country has a ``country_archetype``, and each block's
+    weights are finite, non-negative and sum to 1. Archetype-vs-trajectory membership is now checked
+    PER DRIVER by the caller (review P2 2026-09-05), so it is not repeated here."""
     import math
 
     country_arch: dict = raw["country_archetype"]
-    bad_arch = {
-        c: a for c, a in country_arch.items() if a not in known_region_arch and a != "__all__"
-    }
-    if bad_arch:
-        raise ValueError(
-            f"country_archetype targets not among the trajectory's region paths "
-            f"{sorted(known_region_arch)}: {bad_arch}"
-        )
     for block, members in raw["block_membership"].items():
         if not members:
             raise ValueError(f"block_membership[{block!r}] has no member countries")
@@ -398,7 +435,16 @@ def structural_trajectories_for_build(
 
     cp = conc["provenance"]
     conc_hash = content_hash(conc)
-    arch_hash = content_hash({"rates": archetype.rates, "sector_rates": archetype.sector_rates})
+    # Include source_labour_shares in the archetype content hash (review P1 2026-09-06): they set
+    # s_L^src in the source-side MFP identification and materially change the mapped trajectory's
+    # emitted shocks, so an edit to them must move the mapped provenance hash.
+    arch_hash = content_hash(
+        {
+            "rates": archetype.rates,
+            "sector_rates": archetype.sector_rates,
+            "source_labour_shares": archetype.source_labour_shares,
+        }
+    )
     composite = Provenance(
         source=(f"{cp['source']} | archetype paths: {archetype.provenance.source}"),
         source_version=(f"{cp['source_version']}+{archetype.provenance.source_version}"),
@@ -415,10 +461,44 @@ def structural_trajectories_for_build(
             "data/structural/NOTICE.md."
         ),
     )
+    # Remap the archetype SOURCE labour shares onto the real build sectors the same way the sector
+    # rates were remapped (pipeline step 1b): each real sector inherits its archetype's s_L^src (or
+    # the archetype trajectory's __all__), so the mapped trajectory can still run source-share MFP
+    # identification. Carries the archetype __all__ too, as the fallback for unmatched sectors.
+    src_sl = archetype.source_labour_shares or {}
+    mapped_src_sl: dict[str, float] = {}
+    if src_sl:
+        real_sectors = {k for by_key in new_sector_rates.values() for k in by_key}
+
+        def _stamp_share(real_key: str, arch: str) -> None:
+            # Inherit the archetype's per-share provenance/confidence (the contract requires a
+            # source_labour_share:{key} entry for every share, review P2 2026-09-06).
+            a_src = archetype.sources.get(f"source_labour_share:{arch}") or archetype.sources.get(
+                "source_labour_share:__all__"
+            )
+            a_cf = archetype.confidence.get(
+                f"source_labour_share:{arch}"
+            ) or archetype.confidence.get("source_labour_share:__all__")
+            if a_src is not None:
+                sources[f"source_labour_share:{real_key}"] = a_src
+            if a_cf is not None:
+                confidence[f"source_labour_share:{real_key}"] = a_cf
+
+        for k in real_sectors:
+            arch = sector_arch.get(k, "__all__")
+            val = src_sl.get(arch, src_sl.get("__all__"))
+            if val is not None:
+                mapped_src_sl[k] = float(val)
+                _stamp_share(k, arch)
+        if "__all__" in src_sl:
+            mapped_src_sl["__all__"] = float(src_sl["__all__"])
+            _stamp_share("__all__", "__all__")
+
     return StructuralTrajectory(
         provenance=composite,
         rates=new_rates,
         sector_rates=new_sector_rates,
         sources=sources,
         confidence=confidence,
+        source_labour_shares=mapped_src_sl,
     )

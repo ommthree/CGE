@@ -177,11 +177,19 @@ class ProductivityShock(Shock):
       identified channel for a sourced sector LABOUR-productivity series (Phase 7b.2 review
       2026-08-29): applying labour-productivity growth as ``hicks_neutral`` TFP would double-count
       capital deepening, whereas as ``labour_augmenting`` it acts through the labour share by
-      construction (the VA cost falls by φ^{−s_L}), with no ad-hoc exponent."""
+      construction (the VA cost falls by φ^{−s_L}), with no ad-hoc exponent.
+    - ``"va_hicks_neutral"`` — a per-sector VALUE-ADDED Hicks-neutral multiplier A_va[i] that scales
+      the whole value-added (KL) aggregate, so the VA unit cost falls by exactly 1/A_va at EVERY
+      factor-price vector (unlike ``labour_augmenting``, whose cost effect is price-dependent under
+      CES). This is the globally-correct home for a value-added-based MFP shift (Phase 7b.2 CES
+      channel 2026-09-06): value-added growth accounting g_{Y/L}=g_MFP+s_K·g_{K/L} is a VA
+      decomposition, so a sourced sector MFP series enters here — genuinely Hicks-neutral on value
+      added at all prices, not merely benchmark-equivalent. Distinct from ``hicks_neutral``, which
+      also scales the intermediate bundle (whole-output TFP)."""
 
     type: Literal["productivity"] = "productivity"
     delta: float = Field(description="fractional change, e.g. -0.1 for -10%")
-    mechanism: Literal["hicks_neutral", "labour_augmenting"] = "hicks_neutral"
+    mechanism: Literal["hicks_neutral", "labour_augmenting", "va_hicks_neutral"] = "hicks_neutral"
 
     @model_validator(mode="after")
     def _validate_delta(self) -> ProductivityShock:

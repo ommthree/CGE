@@ -6,7 +6,10 @@ productivity**, plus per-sector **sectoral productivity** and **emissions intens
 `(driver, key)` path carries its own citation and confidence in the artifact itself; this file
 records the underlying sources and their licences. The figures are **headline trend rates** taken
 from the published sources below — a compact, review-friendly artifact, not a re-distribution of the
-full source databases. The shipped `N`/`S` region and `BRD`/`MIL` sector keys are development/
+full source databases. **These are illustrative research-scaffold inputs, not an engagement-grade
+consulting baseline** — see `docs/structural-data-pipeline-plan.md` for the reproducible-extraction,
+source-share-identification, per-driver-weighting, scenario-pinning and uncertainty work that
+consulting use requires, and the interim conservative posture until it lands. The shipped `N`/`S` region and `BRD`/`MIL` sector keys are development/
 composition **archetypes**. On a real EXIOBASE build, the provenance-carrying concordance
 `concordance_v2.json` (the default; see below) binds each real coarse-v3 build label to its archetype, and
 `cge.data.structural.structural_trajectories_for_build(regions, sectors)` emits a trajectory keyed by
@@ -98,17 +101,29 @@ vendor):
   **absolute** per-sector rates (see the artifact `sector_productivity`). Value-added growth
   accounting gives `g_{Y/L}=g_MFP+s_K·g_{K/L}` — observed labour productivity is genuine MFP growth
   PLUS capital deepening. Since the recursive model accumulates capital separately, the wrapper
-  **decomposes** the series: with the `capital_deepening` series below it applies the **identified**
-  labour-augmenting technology rate `g_φ=(g_{Y/L}−s_K·g_{K/L})/s_L` (review P1 decomposition
-  2026-09-01), so capital deepening is not double-counted; without a `capital_deepening` series it
-  falls back to the raw rate as a transparent heuristic (deepening not removed), and the run manifest
-  records which mode ran. Either way it is a `ProductivityShock(mechanism="labour_augmenting")` on the
-  sector's labour input. Under a Cobb-Douglas VA nest the sector's VA cost falls by φ^{−s_L} exactly
-  (s_L = labour share of VA); for CES the engine computes the exact cost. The per-sector *drift* is
-  each sector's cumulative φ level relative to the **VA-share-weighted geometric mean** of all
-  sectors' levels — weighted by each sector's SHARE of value added `v_i=VA_i/ΣVA_j` (review P1
-  2026-08-31: previously the labour composition `s_L`, which weighted a 1%-of-economy sector like a
-  99% one). (This replaces the earlier `θ_dev = deviation ** s_L` conversion.) On a real EXIOBASE
+  **decomposes** the series into an identified MFP term (pipeline step 1b, review P2 2026-09-05).
+  **The MFP is identified at SOURCE**, then applied through the receiving model's ACTUAL VA nest,
+  ROUTED BY NEST TYPE so it is globally correct: a Cobb-Douglas sector via labour augmentation
+  (`ln φ = ln(1+g_MFP)/s_L`, price-independent), a CES sector via the **value-added Hicks-neutral**
+  engine channel (`mechanism="va_hicks_neutral"`, A_va = 1+g_MFP scaling the whole VA aggregate so
+  the VA cost falls by 1/A_va at every price — a genuinely identified VA technology term for CES, not
+  a benchmark-only surrogate). Two source-identification routes: (a) a sourced **`mfp`** series in the
+  artifact is used directly; else (b) `g_MFP = g_{Y/L} − (1−s_L^src)·g_{K/L}` from
+  `sector_productivity` + `capital_deepening` using the **source-period labour share**
+  `source_labour_shares` s_L^src (NOT the receiving model's benchmark share — conflating them was a
+  review finding). The shipped `source_labour_shares` (BRD 0.58, MIL 0.62, `__all__` 0.60) are
+  **illustrative headline values**; an EU KLEMS adjacent-period Törnqvist extraction is the
+  consulting-grade follow-up (see `docs/structural-data-pipeline-plan.md`). Without a
+  `capital_deepening`/`mfp` series, or where a labour share or VA elasticity is missing, the sector
+  falls back to the raw rate as a transparent heuristic (deepening not removed); the run manifest
+  records which mode ran per (region, sector). The per-sector *drift* normalises the cumulative MFP
+  levels across sectors so the composition drift re-imposes no aggregate VA cost — the VA-share
+  (`v_i=VA_i/ΣVA_j`) weighted aggregate log-cost effect Σ_i v_i·ln(1+g_MFP,i) is zeroed (the same
+  criterion in MFP terms for both channels, since the CD labour cost effect s_L·ln φ = ln(1+g_MFP)
+  equals the VA-channel ln A_va; the aggregate level is carried separately by the per-region TFP
+  endowment scale). (This replaces the earlier `θ_dev = deviation ** s_L` conversion, the VA-share ×
+  labour-share weighting, the simple-rate `(g_{Y/L}−s_K·g_{K/L})/s_L` arithmetic, and the
+  benchmark-only CES labour-augmentation translation — all retracted.) On a real EXIOBASE
   build these sector keys map to actual industries via the structural concordance
   (`data/structural/concordance_v2.json`).
 
@@ -122,9 +137,9 @@ vendor):
 - **Note:** the shipped `capital_deepening` rates are headline central estimates (goods-producing
   sectors are more capital-intensive and deepen faster ~1.0–1.2%/yr; services ~0.6%/yr). They exist
   to net capital deepening out of observed labour productivity so the sector-productivity driver
-  becomes a genuine labour-augmenting technology term (`g_φ=(g_{Y/L}−s_K·g_{K/L})/s_L`; s_K=1−s_L
-  from the engine's benchmark factor shares) rather than double-counting the capital the recursive
-  model already accumulates. `confidence = low` (illustrative headline rates, not a reproduced
+  becomes a genuine labour-augmenting technology term (CD finite-change mapping
+  `1+g_φ=[(1+g_{Y/L})/(1+g_{K/L})^{s_K}]^{1/s_L}`; s_K=1−s_L from the engine's benchmark factor
+  shares) rather than double-counting the capital the recursive model already accumulates. `confidence = low` (illustrative headline rates, not a reproduced
   extraction — see the reproducibility caveat below).
 
 ## Emissions intensity — IEA WEO 2024 / NGFS Net Zero 2050

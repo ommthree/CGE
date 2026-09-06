@@ -100,12 +100,12 @@ scaling the stock by Kₜ/K₀ scales the services endowment by the same factor 
 productivity** enters as a Hicks-neutral endowment-equivalent scale on both primary factors.
 **Sector-level** productivity is implemented (Phase 7b.2) as a **labour-augmenting** term on each
 sector's labour input — not a Hicks-neutral θ — so the output mix shifts endogenously (§6, equation
-$(5)$). The sourced series is observed labour productivity, which by growth accounting is MFP growth
-PLUS capital deepening; when a sector **`capital_deepening`** series is supplied the wrapper nets the
-deepening out and drives the sector with the **identified** labour-augmenting technology rate
-$g_\varphi=(g_{Y/L}-s_K\,g_{K/L})/s_L$ (§6, equation $(6)$), so the capital deepening the model
-already accumulates is not double-counted. Without that series it falls back to the raw rate as a
-transparent heuristic composition lever ([Solow1957], [EUKLEMS2023]).
+$(5)$). MFP is identified at source (a sourced `mfp` series, or observed labour productivity netted of
+capital deepening using the source-period share $s_L^{src}$) and applied through the sector's
+**actual** VA nest, routed by nest type (§6, eq $(6)$): Cobb–Douglas via labour augmentation, CES via
+the value-added Hicks-neutral engine channel — both reproduce the MFP cost change at every price
+vector (globally correct). Where the identifying inputs are missing it falls back to the raw rate as
+a transparent heuristic composition lever ([Solow1957], [EUKLEMS2023]).
 
 Concretely, the year-$t$ primary-factor endowment scales fed to the engine's `factor_endowment_scale`
 hook are
@@ -132,19 +132,48 @@ is *not* $\varphi_s^{-s_L}$ — it depends on $\sigma_{va}$ and the post-substit
 $(5)$ is then a first-order ($s_L$-weighted) approximation, and the engine computes the exact CES cost
 internally regardless.
 
-**Identifying $\varphi_s$ (growth-accounting decomposition).** The sourced sector series is observed
-labour-productivity growth $g_{Y/L}$, which value-added growth accounting splits as $g_{Y/L}=g_{MFP}+
-s_K\,g_{K/L}$ — MFP growth plus **capital deepening** ([Solow1957], [EUKLEMS2023]). A labour-augmenting
-improvement $a$ contributes $s_L\,a$ to MFP, so the labour-augmenting technology rate is
+**Identifying $\varphi_s$ (two-stage: source MFP → nest-aware translation).** The labour-augmenting
+term is recovered in two stages (review P1 2026-09-06). **Stage 1 — identify MFP at source.** Either
+a sourced `mfp` series is used directly, or MFP is netted out of observed labour productivity using
+the **source-period** labour share $s_L^{src}$ (`source_labour_shares`, the source economy's factor
+share — *not* the receiving model's benchmark), via the log-change identity
+$g_{MFP}=g_{Y/L}-(1-s_L^{src})\,g_{K/L}$ ([Solow1957], [EUKLEMS2023]; the OECD productivity
+methodology). **Stage 2 — apply MFP through the receiving model's ACTUAL VA nest, ROUTED BY NEST
+TYPE** so it is globally correct (not benchmark-only):
 
-$$ g_{\varphi,s} = \frac{g_{Y/L,s} - s_{K,s}\,g_{K/L,s}}{s_{L,s}}, \qquad s_{K,s}=1-s_{L,s} \tag{6} $$
+$$ \text{Cobb–Douglas: } \ln\varphi_s = \frac{\ln(1+g_{MFP})}{s_{L}} \ \text{(labour-augmenting)},
+   \qquad \text{CES: } A_{va,s} = 1+g_{MFP} \ \text{(value-added Hicks-neutral)} \tag{6} $$
 
-When a per-sector $g_{K/L}$ series (`capital_deepening`) is supplied, eq $(6)$ removes the capital
-deepening the recursive model **already** accumulates (§2 loop), so $\varphi_s$ is a genuinely
-identified labour-augmenting term rather than a raw number still containing deepening. $s_L$ (hence
-$s_K$) is the sector's benchmark labour share of value added, stamped by the engine. Without a
-`capital_deepening` series the wrapper falls back to $g_\varphi=g_{Y/L}$ — a transparent heuristic
-composition lever — and the manifest's `sector_productivity_mode` records which ran.
+- A **Cobb–Douglas** sector goes through the **labour-augmenting** channel. There the VA unit cost
+  responds as $pv\propto\varphi^{-s_L}$ **independently of prices**, so $\ln\varphi=\ln(1+g_{MFP})/s_L$
+  reproduces the MFP cost change $1/(1+g_{MFP})$ at *every* price vector — a genuine Harrod-neutral
+  equivalent.
+- A **CES** sector ($\sigma_{va}\neq1$) goes through a dedicated **value-added Hicks-neutral** engine
+  channel (`ProductivityShock(mechanism="va_hicks_neutral")`): a per-sector multiplier $A_{va}$ that
+  scales the *whole* VA aggregate, so the VA unit cost falls by exactly $1/A_{va}$ **at every price
+  vector** (the effective VA scale becomes $av\cdot A_{va}$; see `cge-static` VA cost). Setting
+  $A_{va}=1+g_{MFP}$ therefore reproduces the source MFP shift *globally*, not just at benchmark
+  prices — a genuinely identified value-added technology term for CES, not a calibrated
+  labour-augmentation surrogate. (The earlier benchmark-only labour-augmentation translation for CES,
+  and its feasibility failures, are retired.)
+
+Rates are simple proportional annual rates, so the MFP accumulation is a finite-change (log-space)
+computation; the earlier simple-rate form $(g_{Y/L}-s_K g_{K/L})/s_L$ is retracted (only first-order
+valid, and it drove negative multipliers).
+
+**Neutrality (composition drift only).** The MFP levels are normalised across sectors so the
+composition drift re-imposes NO aggregate value-added cost: the VA-share-weighted aggregate log-cost
+effect $\sum_i v_i\cdot\ln(\text{cost}_i)$ is zeroed — the SAME criterion in MFP terms for both
+channels (for CD the sector cost effect is $s_L\ln\varphi=\ln(1+g_{MFP})$; for the VA channel it is
+$\ln A_{va}=\ln(1+g_{MFP})$), so a mixed CD/CES economy normalises in one consistent currency.
+
+**Manifest honesty.** The per-(region, sector) `sector_productivity_mode` (and `..._by_sector`)
+reports `sourced_mfp` / `derived_source_share` (both source-identified), `model_share_approx`
+(LP+deepening but only the model benchmark share available — an approximation, *not*
+source-identified), or `raw_lp_heuristic`; the summary states the CD/CES routing and, because CES now
+uses the globally-correct VA channel, carries **no** benchmark-only caveat. Identification needs a
+usable $s_L>0$ and a known $\sigma$; otherwise the sector falls back to the raw heuristic.
+`source_labour_shares` are part of the run's content hashes and manifest.
 
 Results are reported per year **relative to the original benchmark**, so capital accumulation and the
 trends are **visible in the level path** (a growing stock raises output vs the benchmark). Two result
@@ -209,30 +238,46 @@ horizon, δ, trends, retirement, K₀, and the capital path.
   two axes, each entry carrying its own citation and confidence (validated on load, like
   `ElasticitySet`); the wrapper compounds the sourced annual rates over the actual solve-year gaps.
   The vendored artifact `data/structural/trajectories_v1.json` (see `data/structural/NOTICE.md`) is
-  real sourced data. Without a trajectory the flat scalars remain the fallback. The four drivers:
+  real sourced data. Without a trajectory the flat scalars remain the fallback. The drivers span two
+  axes — three per-region (`population`, `labour_participation`, `productivity`) and three per-sector
+  (`sector_productivity`, `capital_deepening`, `emissions_intensity`):
     - **Per-region** — labour-supply growth = population growth compounded with labour-force
       participation growth, i.e. the exact multiplicative step (1+pop)(1+part) each year (both are
-      *proportional* annual growth rates, not percentage-point changes), and labour productivity
-      (TFP), applied as endowment scales. *(UN WPP 2024, ILO/World Bank, PWT 10.01.)*
+      *proportional* annual growth rates, not percentage-point changes), and a **`productivity`**
+      endowment scale. That regional `productivity` path is a **total-factor-productivity (TFP)**
+      series (the artifact's N archetype is PWT `rtfpna`); it is **not** the same quantity as the
+      per-sector **labour-productivity** ($g_{Y/L}$) series below — TFP is output per unit of
+      *combined* factor input, labour productivity is output per hour and includes capital deepening,
+      so the two are kept distinct and never used interchangeably. *(UN WPP 2024, ILO/World Bank; PWT
+      10.01 `rtfpna` for TFP.)*
     - **Per-sector `sector_productivity`** (structural composition drift) — a sourced
       **labour-productivity** series applied as a **labour-augmenting** term on the sector's labour
       input (a `ProductivityShock(mechanism="labour_augmenting")`), so the output mix shifts
       **endogenously** (a sector with faster measured productivity gains share); shares are a model
-      result, not an imposed target. **Identification (review P1 2026-08-31 → decomposition
-      2026-09-01).** Observed labour productivity is $g_{Y/L}=g_{MFP}+s_K\,g_{K/L}$ — MFP growth plus
-      capital deepening. When a sector **`capital_deepening`** series $g_{K/L}$ is supplied the wrapper
-      applies eq $(6)$, $g_\varphi=(g_{Y/L}-s_K\,g_{K/L})/s_L$, so the deepening the model already
-      accumulates is removed and $\varphi_s$ is a genuinely **identified** labour-augmenting term.
-      Without that series it falls back to the raw rate — a transparent **heuristic** composition lever
-      (deepening not removed) — and the manifest's `sector_productivity_mode` says which ran. Either
-      way the per-sector **drift** is each sector's cumulative $\varphi$ level relative to the
-      **VA-share-weighted geometric mean** of all sectors' levels — weighted by each sector's **share
-      of value added** $v_i=VA_i/\sum_j VA_j$ (review P1 2026-08-31: previously the labour composition
-      $s_L$, which weighted a 1%-of-economy sector like a 99% one). The VA-weighted geometric mean of
-      the biases is 1 **by construction**, so a large sector's drift dominates and the composition
-      redistributes without re-imposing an aggregate level; a transparent normalisation, not an exact
-      GE cost-neutrality. In **multi** mode the mean is **region-specific**, so an identical sector rate
-      nets to a different bias per region (review P1b). *(EU KLEMS 2023 [EUKLEMS2023] for both the
+      result, not an imposed target. **Identification (review P1 2026-08-31 → source-share MFP
+      2026-09-06).** MFP is identified at source (a sourced `mfp` series, or observed labour
+      productivity netted of capital deepening with the source-period share $s_L^{src}$) and
+      applied through the sector's **actual** nest via eq $(6)$, routed by nest type — Cobb–Douglas
+      via **labour augmentation**, CES via the **value-added Hicks-neutral** engine channel — so the
+      MFP shift is reproduced at **every price vector** (globally correct for both). Where the
+      identifying inputs are missing it falls back to the raw rate — a transparent **heuristic**
+      composition lever — and the manifest's
+      `sector_productivity_mode` records the fine-grained mode. Either
+      way the per-sector **drift** is each sector's cumulative $\varphi$ level relative to an
+      **aggregate-neutral geometric mean** of all sectors' levels. Under Cobb–Douglas the VA unit cost
+      responds as $pv_i\propto\varphi_i^{-s_{L,i}}$, so the aggregate VA-weighted log-cost effect of
+      the drift is $\sum_i v_i\,s_{L,i}\,\ln\varphi_i$; the mean is chosen to zero exactly that, i.e.
+      the levels are weighted by $v_i\,s_{L,i}$ — each sector's **share of value added**
+      $v_i=VA_i/\sum_j VA_j$ **times its labour share** $s_{L,i}$ (review P1 2026-09-03; the
+      2026-08-31 fix corrected the weight from the labour composition $s_L$ to $v_i$, and 2026-09-03
+      added the missing $s_{L,i}$ so the mean is genuinely aggregate-cost-neutral, not merely
+      $\varphi$-geometric-neutral, when labour shares differ across sectors). The $v_i s_{L,i}$-weighted
+      mean of the biases is 1 **by construction**, so a large sector's drift dominates and the
+      composition redistributes without re-imposing an aggregate level. This is the exact first-order
+      neutral criterion for Cobb–Douglas; for CES the unit-cost response is not $\varphi^{-s_L}$, so
+      neutrality there is a local benchmark-share approximation — a transparent normalisation, not an
+      exact GE cost-neutrality claim. In **multi** mode the mean is **region-specific**, so an
+      identical sector rate nets to a different bias per region (review P1b). *(EU KLEMS 2023 [EUKLEMS2023] for both the
       labour-productivity and capital-deepening series; Penn World Table 10.01 [FeenstraPWT] for the
       aggregate reference.)*
     - **Per-sector `emissions_intensity`** (decarbonisation) — a **price-independent** engine hook
@@ -267,10 +312,10 @@ horizon, δ, trends, retirement, K₀, and the capital path.
   `RoW_MiddleEast` = 100% S) are coarse single-archetype aggregates. Per-driver, time-varying weights
   are the follow-up (see `data/structural/NOTICE.md`).
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
-- Aggregate productivity is Hicks-neutral on primary factors; the per-sector series is a
-  labour-augmenting term on the sector's labour input (not a TFP transform), growth-accounting-
-  identified via eq $(6)$ when a `capital_deepening` series is supplied (deepening netted out), else a
-  raw-rate heuristic. No other factor-biased or vintage-specific technical change.
+- Aggregate productivity is Hicks-neutral on primary factors; the per-sector series is a source-
+  identified MFP applied through the sector's actual nest via eq $(6)$ — Cobb–Douglas via labour
+  augmentation, CES via the value-added Hicks-neutral engine channel, both globally correct at all
+  prices — else a raw-rate heuristic. No other factor-biased or vintage-specific technical change.
 - Magnitudes are illustrative (toy calibration); the value is the **mechanism** — a static CGE turned
   into a capital-carrying dynamic path, the backbone Phase 7.2 (NGFS) and 7.3 (climate) build on.
 
@@ -335,10 +380,14 @@ Standing model-correctness checks live in `src/cge/validation/suites/dynamics.py
   per-region in multi mode; a declining `emissions_intensity` path drives **covered emissions down**
   against the base year — including on a **real IO-backed build** (opt-in `exiobase_live` suite,
   intensity engine-derived, not a supplied `carbon_cost_share`).
-- The **growth-accounting decomposition** eq $(6)$ has a known-answer test
-  ($g_\varphi=(g_{Y/L}-s_K\,g_{K/L})/s_L$); a `capital_deepening` series changes the synthesized
-  shocks vs the raw-rate heuristic; a sector with no usable $s_L$ safely stays on the heuristic; and
-  the manifest records the `sector_productivity_mode` (identified vs heuristic).
+- The **source-share MFP identification** eq $(6)$ has known-answer tests: the CD closed form
+  $\ln\varphi=\ln(1+g_{MFP})/s_L$; CES sectors route through the **value-added Hicks-neutral** engine
+  channel whose $A_{va}$ delta is $1+g_{MFP}$ independently of the labour share (verified against the
+  engine: $pv(A)/pv(1)=1/A$ at every price vector, unlike labour augmentation under CES); MFP is
+  accumulated in log space so a valid-but-extreme rate cannot overflow; the source-side step uses
+  $s_L^{src}$ not the model share; an mfp-only trajectory drives the model (not a no-op); and the
+  manifest records the fine-grained `sector_productivity_mode` (`sourced_mfp` / `derived_source_share`
+  / `model_share_approx` / `raw_lp_heuristic`) per (region, sector), never over-claiming "identified".
 - A full **physical `nature_state`** pathway runs end-to-end through `run_recursive` (NatureStress →
   exposure → `ProductivityShock` → CGE), with a deeper degradation producing a larger output loss and
   the water-dependent sector hit harder.

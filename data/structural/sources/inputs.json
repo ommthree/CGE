@@ -1,0 +1,49 @@
+{
+  "_README": "Source-digest input for scripts/build_structural_trajectories.py (pipeline step 1a, 2026-09-06). Each driver entry lists per-key knot rates with the source citation and confidence, so the emitted trajectories_v{N}.json is REPRODUCIBLE from committed inputs rather than hand-edited. TODAY these knot values are the same illustrative headline figures previously typed into the artifact; the pipeline shape is what step 1a locks in. Real per-country/industry extractions (PWT 10.01, UN WPP 2024, EU KLEMS 2023, NGFS) drop in here later (see docs/structural-data-pipeline-plan.md), replacing the headline knots with reproducible pulls WITHOUT changing the build script or the artifact schema.",
+  "provenance": {
+    "source": "UN WPP 2024 (population) + ILO/World Bank (participation) + Penn World Table 10.01 (productivity) + EU KLEMS 2023 (sector productivity/deepening/source labour shares) + IEA WEO 2024/NGFS (emissions intensity)",
+    "source_version": "structural-trajectories-v2",
+    "licence": "see per-entry sources; UN WPP: CC BY 3.0 IGO, PWT 10.01: CC BY 4.0, ILOSTAT/WB: CC BY 4.0, EU KLEMS: CC BY 4.0",
+    "reference_year": 2024,
+    "retrieved": "2026-09-06",
+    "notes": "Documented, sourced per-region and per-sector annual growth trajectories for the Phase 7b.2 structural drivers, ASSEMBLED FROM data/structural/sources/inputs.json by scripts/build_structural_trajectories.py (pipeline step 1a — reproducible, not hand-edited). v2 adds source_labour_shares (source-period labour shares s_L^src for the source-side MFP identification, review P1 2026-09-06). Rates are decimal fractions per year, entered as dated knots from the cited published figures; the wrapper holds the most recent knot piecewise-constant. Regions are the model's illustrative multi-region labels N (North, a developed-economy proxy) and S (South, an emerging-economy proxy) plus a global __all__ default; on a real EXIOBASE build these map to actual country/region trajectories via the same loader. Figures remain illustrative headline values, not consulting-grade extractions — see docs/structural-data-pipeline-plan.md."
+  },
+  "region_drivers": {
+    "population": {
+      "N": {"knots": {"2025": 0.003, "2035": 0.001, "2050": -0.001}, "confidence": "high", "source": "UN World Population Prospects 2024, Medium variant — annual population growth rate for high-income regions (approx +0.3%/yr 2025 declining to negative by 2050). https://population.un.org/wpp/"},
+      "S": {"knots": {"2025": 0.012, "2035": 0.009, "2050": 0.005}, "confidence": "high", "source": "UN World Population Prospects 2024, Medium variant — annual population growth rate for less-developed regions (approx +1.2%/yr 2025 declining toward +0.5%/yr 2050). https://population.un.org/wpp/"},
+      "__all__": {"knots": {"2025": 0.008, "2050": 0.003}, "confidence": "high", "source": "UN World Population Prospects 2024, Medium variant — world annual population growth (approx +0.8%/yr 2025 to +0.3%/yr 2050). https://population.un.org/wpp/"}
+    },
+    "labour_participation": {
+      "N": {"knots": {"2025": 0.000, "2040": -0.002}, "confidence": "medium", "source": "ILOSTAT / World Bank labour-force participation modelled estimates — high-income economies: broadly flat, mild decline with ageing. https://ilostat.ilo.org/"},
+      "S": {"knots": {"2025": 0.003, "2040": 0.001}, "confidence": "medium", "source": "ILOSTAT / World Bank labour-force participation modelled estimates — emerging economies: mild rise from rising female participation, tapering. https://ilostat.ilo.org/"},
+      "__all__": {"knots": {"2025": 0.001}, "confidence": "low", "source": "ILOSTAT / World Bank global labour-force participation — approximately flat/mild rise. https://ilostat.ilo.org/"}
+    },
+    "productivity": {
+      "N": {"knots": {"2025": 0.012, "2040": 0.010}, "confidence": "medium", "source": "Penn World Table 10.01, TFP growth at constant national prices (rtfpna) — advanced economies ~1.0-1.2%/yr trend. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/"},
+      "S": {"knots": {"2025": 0.030, "2040": 0.022}, "confidence": "low", "source": "Penn World Table 10.01, TFP/labour-productivity growth — emerging economies convergence ~2.2-3.0%/yr trend. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/"},
+      "__all__": {"knots": {"2025": 0.017}, "confidence": "low", "source": "Penn World Table 10.01, world-average productivity growth ~1.7%/yr. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/"}
+    }
+  },
+  "sector_drivers": {
+    "sector_productivity": {
+      "BRD": {"knots": {"2025": 0.015}, "confidence": "low", "source": "EU KLEMS 2023 release — sectoral labour-productivity growth; goods-producing/manufacturing sectors run above the economy average (~1.5%/yr). https://euklems-intanprod-llee.luiss.it/"},
+      "MIL": {"knots": {"2025": 0.008}, "confidence": "low", "source": "EU KLEMS 2023 release — services/mixed sectors run below the goods average (~0.8%/yr). https://euklems-intanprod-llee.luiss.it/"},
+      "__all__": {"knots": {"2025": 0.010}, "confidence": "low", "source": "EU KLEMS 2023 release — economy-average sectoral labour-productivity growth ~1.0%/yr. https://euklems-intanprod-llee.luiss.it/"}
+    },
+    "emissions_intensity": {
+      "BRD": {"knots": {"2025": -0.03, "2040": -0.05}, "confidence": "medium", "source": "IEA World Energy Outlook 2024 / NGFS Net Zero 2050 — carbon-intensive sectors decarbonise ~3%/yr near-term accelerating to ~5%/yr toward mid-century. https://www.iea.org/reports/world-energy-outlook-2024 ; https://www.ngfs.net/ngfs-scenarios-portal/"},
+      "__all__": {"knots": {"2025": -0.02, "2040": -0.035}, "confidence": "medium", "source": "IEA WEO 2024 / NGFS Net Zero 2050 — economy-wide CO2 intensity of GDP declines ~2%/yr near-term to ~3.5%/yr mid-century. https://www.iea.org/reports/world-energy-outlook-2024 ; https://www.ngfs.net/ngfs-scenarios-portal/"}
+    },
+    "capital_deepening": {
+      "BRD": {"knots": {"2025": 0.011}, "confidence": "low", "source": "EU KLEMS 2023 release — sector capital services per hour worked (g_K/L); capital-intensive goods-producing/manufacturing sectors deepen ~1.0-1.2%/yr. Used to net capital deepening out of observed labour productivity via the Cobb-Douglas finite-change mapping 1+g_phi = [(1+g_Y/L)/(1+g_K/L)^s_K]^(1/s_L). https://euklems-intanprod-llee.luiss.it/"},
+      "MIL": {"knots": {"2025": 0.006}, "confidence": "low", "source": "EU KLEMS 2023 release — services/mixed sectors deepen more slowly (~0.6%/yr capital services per hour). https://euklems-intanprod-llee.luiss.it/"},
+      "__all__": {"knots": {"2025": 0.008}, "confidence": "low", "source": "EU KLEMS 2023 release — economy-average capital deepening ~0.8%/yr (capital services per hour worked). https://euklems-intanprod-llee.luiss.it/"}
+    }
+  },
+  "source_labour_shares": {
+    "BRD": {"value": 0.58, "confidence": "low", "source": "ILLUSTRATIVE headline source-period labour share of value added for goods-producing/manufacturing archetype (~0.58). Placeholder for an EU KLEMS adjacent-period Törnqvist labour cost share; see docs/structural-data-pipeline-plan.md step 1b. https://euklems-intanprod-llee.luiss.it/"},
+    "MIL": {"value": 0.62, "confidence": "low", "source": "ILLUSTRATIVE headline source-period labour share for services/mixed archetype (~0.62, more labour-intensive). Placeholder for an EU KLEMS Törnqvist share; see docs/structural-data-pipeline-plan.md step 1b. https://euklems-intanprod-llee.luiss.it/"},
+    "__all__": {"value": 0.60, "confidence": "low", "source": "ILLUSTRATIVE economy-average source-period labour share (~0.60). Placeholder for an EU KLEMS Törnqvist share; see docs/structural-data-pipeline-plan.md step 1b. https://euklems-intanprod-llee.luiss.it/"}
+  }
+}

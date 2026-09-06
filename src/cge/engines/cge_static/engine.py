@@ -528,7 +528,13 @@ def _labour_va_shares_manifest(cal) -> dict:
 
     These are genuinely different: s_L is a within-sector ratio, v is a cross-sector share. Single-
     region: ``{sector: value}``. Multi-region: ``{region: {sector: value}}`` (F0 is [f, r, s]).
-    Returns ``{"available": False, ...}`` when the model has no LAB factor."""
+    Returns ``{"available": False, ...}`` when the model has no LAB factor.
+
+    Also stamps ``va_elast`` σ_va[i], the VA-nest substitution elasticity (review P2 2026-09-05):
+    the
+    wrapper's growth-accounting decomposition is a COBB-DOUGLAS mapping, valid only for σ_va = 1, so
+    it uses this to run the identified decomposition ONLY for CD sectors and fall back to the
+    heuristic for CES sectors (rather than mis-applying the CD mapping regardless of σ_va)."""
     factors = list(cal.factors)
     # The base factor label is "LAB" in the single-region variants and "LAB_<r>" in multi; detect
     # the labour factor by its base name so both shapes work.
@@ -536,18 +542,26 @@ def _labour_va_shares_manifest(cal) -> dict:
         return {"available": False, "reason": "no labour factor"}
     F0 = np.asarray(cal.F0, dtype=float)
     sectors = list(cal.sectors)
+    sigma = np.asarray(cal.va_elast, dtype=float)  # [s] single-region or [r, s] multi
     if F0.ndim == 3:  # multi: [f, r, s]
         regions = list(cal.regions)
         lab = factors.index("LAB")
         sl_out: dict = {}
         va_out: dict = {}
+        elast_out: dict = {}
         for ri, r in enumerate(regions):
             va = F0[:, ri, :].sum(axis=0)  # [s] total VA per sector in region r
             sl = np.divide(F0[lab, ri, :], va, out=np.zeros_like(va), where=va > 0)
             v = va / va.sum() if va.sum() > 0 else np.full_like(va, 1.0 / max(len(va), 1))
             sl_out[r] = {s: round(float(sl[si]), 12) for si, s in enumerate(sectors)}
             va_out[r] = {s: round(float(v[si]), 12) for si, s in enumerate(sectors)}
-        return {"available": True, "labour_va_share": sl_out, "va_share": va_out}
+            elast_out[r] = {s: round(float(sigma[ri, si]), 12) for si, s in enumerate(sectors)}
+        return {
+            "available": True,
+            "labour_va_share": sl_out,
+            "va_share": va_out,
+            "va_elast": elast_out,
+        }
     # Single-region: [f, s]
     lab = factors.index("LAB")
     va = F0.sum(axis=0)  # [s] total VA per sector
@@ -557,6 +571,7 @@ def _labour_va_shares_manifest(cal) -> dict:
         "available": True,
         "labour_va_share": {s: round(float(sl[si]), 12) for si, s in enumerate(sectors)},
         "va_share": {s: round(float(v[si]), 12) for si, s in enumerate(sectors)},
+        "va_elast": {s: round(float(sigma[si]), 12) for si, s in enumerate(sectors)},
     }
 
 
@@ -1065,6 +1080,7 @@ class CGEStaticEngine:
         # no productivity shock is present, so the run is byte-identical to a pure carbon run.
         hicks_shocks = [s for s in prod_shocks if s.mechanism == "hicks_neutral"]
         labour_shocks = [s for s in prod_shocks if s.mechanism == "labour_augmenting"]
+        va_shocks = [s for s in prod_shocks if s.mechanism == "va_hicks_neutral"]
         theta_by_year = (
             {y: _productivity_by_sector(hicks_shocks, inp.sectors, y) for y in years}
             if hicks_shocks
@@ -1079,6 +1095,18 @@ class CGEStaticEngine:
                 for y in years
             }
             if labour_shocks
+            else None
+        )
+        # Per-year per-sector VALUE-ADDED Hicks-neutral multiplier A_va (Phase 7b.2 CES channel
+        # 2026-09-06): scales the whole VA nest so a value-added MFP shift is reproduced at EVERY
+        # price vector (the globally-correct home for CES sector MFP; labour-augmentation is only
+        # benchmark-equivalent under CES). None when no such shock → byte-identical.
+        vaprod_by_year = (
+            {
+                y: _productivity_by_sector(va_shocks, inp.sectors, y, "va_hicks_neutral")
+                for y in years
+            }
+            if va_shocks
             else None
         )
         emissions_priced = any(np.any(cc != 0.0) for cc, _ in cc_by_year.values())
@@ -1152,6 +1180,7 @@ class CGEStaticEngine:
             cc, _prov = cc_by_year[year]
             theta = theta_by_year[year] if theta_by_year is not None else None
             lprod = lprod_by_year[year] if lprod_by_year is not None else None
+            vaprod = vaprod_by_year[year] if vaprod_by_year is not None else None
             sol, floor_applied = _solve(
                 cal,
                 carbon_cost=cc,
@@ -1164,6 +1193,7 @@ class CGEStaticEngine:
                 adapt_gamma=adapt_gamma,
                 productivity=theta,
                 labour_productivity=lprod,
+                va_productivity=vaprod,
             )
             floor_ever_bound = floor_ever_bound or floor_applied is not None
             backends.add(sol.backend)
@@ -1186,6 +1216,7 @@ class CGEStaticEngine:
                 adapt_gamma=adapt_gamma,
                 productivity=theta,
                 labour_productivity=lprod,
+                va_productivity=vaprod,
             )
             _emit(
                 records,
@@ -1645,6 +1676,7 @@ def _solve(
     adapt_gamma=None,
     productivity=None,
     labour_productivity=None,
+    va_productivity=None,
 ):
     # prefer='scipy' explicitly: the CGE model residual is numeric-only (it evaluates the Leontief
     # inverse and Cobb-Douglas cost functions with numpy), so it cannot build a symbolic Pyomo
@@ -1673,6 +1705,7 @@ def _solve(
             adapt_gamma=adapt_gamma,
             productivity=productivity,
             labour_productivity=labour_productivity,
+            va_productivity=va_productivity,
         )
 
     sol = solve(lambda z: _resid(z, None), M.initial_guess(cal), prefer="scipy")
@@ -2385,7 +2418,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         lo[-1] = -1.0  # Sf signed, well-scaled floor (a surplus is Sf<0)
         return lo
 
-    def _solve_year(cc, theta=None, cal_override=None, lprod=None):
+    def _solve_year(cc, theta=None, cal_override=None, lprod=None, vaprod=None):
         # cal_override lets the benchmark solve + replication gate run on the PRISTINE cal_benchmark
         # while the scaled cal drives the shock years (Phase 7.1 recursive dynamics).
         c = cal_override if cal_override is not None else cal
@@ -2400,6 +2433,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
                 trade_closure=trade_closure,
                 productivity=theta,
                 labour_productivity=lprod,
+                va_productivity=vaprod,
             ),
             _guess(),
             lower=_lower(),
@@ -2424,6 +2458,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
             foreign_savings=fs,
             productivity=theta,
             labour_productivity=lprod,
+            va_productivity=vaprod,
         )
         return sol, st
 
@@ -2434,6 +2469,7 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     # 2026-08-29).
     hicks_shocks = [s for s in prod_shocks if s.mechanism == "hicks_neutral"]
     labour_shocks = [s for s in prod_shocks if s.mechanism == "labour_augmenting"]
+    va_shocks = [s for s in prod_shocks if s.mechanism == "va_hicks_neutral"]
     theta_by_year = (
         {y: _productivity_by_sector(hicks_shocks, sectors, y) for y in years}
         if hicks_shocks
@@ -2442,6 +2478,12 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
     lprod_by_year = (
         {y: _productivity_by_sector(labour_shocks, sectors, y, "labour_augmenting") for y in years}
         if labour_shocks
+        else None
+    )
+    # VA Hicks-neutral multiplier A_va (Phase 7b.2 CES channel 2026-09-06) — see the closed variant.
+    vaprod_by_year = (
+        {y: _productivity_by_sector(va_shocks, sectors, y, "va_hicks_neutral") for y in years}
+        if va_shocks
         else None
     )
 
@@ -2472,7 +2514,8 @@ def _run_open(meta, data: dict, shocks: list[Shock], years: list[int]) -> Result
         cc_by_year[year] = cc
         theta = theta_by_year[year] if theta_by_year is not None else None
         lprod = lprod_by_year[year] if lprod_by_year is not None else None
-        sol, st = _solve_year(cc, theta, lprod=lprod)
+        vaprod = vaprod_by_year[year] if vaprod_by_year is not None else None
+        sol, st = _solve_year(cc, theta, lprod=lprod, vaprod=vaprod)
         resid_max = max(resid_max, sol.residual_norm)
         backends.add(sol.backend)
         statuses.add(sol.status)
@@ -3011,7 +3054,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
     cal_benchmark = cal  # pristine, for the replication gate (Phase 7.1)
     cal = _apply_factor_scale(cal, data.get("factor_endowment_scale"))  # Phase 7.1 recursive hook
 
-    def _solve_year(cc, theta=None, cal_override=None, lprod=None):
+    def _solve_year(cc, theta=None, cal_override=None, lprod=None, vaprod=None):
         # cal_override runs the benchmark solve + replication gate on the pristine cal_benchmark
         # while the scaled cal drives the shock years (Phase 7.1 recursive dynamics).
         c = cal_override if cal_override is not None else cal
@@ -3024,6 +3067,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
                 inv_closure=inv_closure,
                 productivity=theta,
                 labour_productivity=lprod,
+                va_productivity=vaprod,
             ),
             MM.initial_guess(c),
             prefer="scipy",
@@ -3038,6 +3082,7 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             inv_closure=inv_closure,
             productivity=theta,
             labour_productivity=lprod,
+            va_productivity=vaprod,
         )
         return sol, st
 
@@ -3060,6 +3105,16 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
             for y in years
         }
         if labour_shocks
+        else None
+    )
+    va_shocks = [s for s in prod_shocks if s.mechanism == "va_hicks_neutral"]
+    # VA Hicks-neutral multiplier A_va[r,i] (Phase 7b.2 CES channel 2026-09-06); see closed var.
+    vaprod_by_year = (
+        {
+            y: _productivity_by_region_sector(va_shocks, regions, sectors, y, "va_hicks_neutral")
+            for y in years
+        }
+        if va_shocks
         else None
     )
 
@@ -3086,7 +3141,8 @@ def _run_multi(meta, data: dict, shocks: list[Shock], years: list[int]) -> Resul
         cc_by_year[year] = cc
         theta = theta_by_year[year] if theta_by_year is not None else None
         lprod = lprod_by_year[year] if lprod_by_year is not None else None
-        sol, st = _solve_year(cc, theta, lprod=lprod)
+        vaprod = vaprod_by_year[year] if vaprod_by_year is not None else None
+        sol, st = _solve_year(cc, theta, lprod=lprod, vaprod=vaprod)
         resid_max = max(resid_max, sol.residual_norm)
         backends.add(sol.backend)
         statuses.add(sol.status)

@@ -1,0 +1,42 @@
+# ISO3 country code -> region archetype (N = advanced / high-income, S = emerging/developing).
+# Basis: World Bank income groups (FY2025) — High income -> N, all others -> S. This is the same
+# N/S archetype split the structural concordance uses; extend as needed. Countries absent here fall
+# back to S (the conservative default for an unlisted, typically developing, economy).
+iso3,archetype
+USA,N
+CAN,N
+GBR,N
+DEU,N
+FRA,N
+ITA,N
+ESP,N
+NLD,N
+BEL,N
+AUT,N
+CHE,N
+SWE,N
+NOR,N
+DNK,N
+FIN,N
+IRL,N
+JPN,N
+KOR,N
+AUS,N
+NZL,N
+SGP,N
+ISR,N
+CHN,S
+IND,S
+IDN,S
+BRA,S
+MEX,S
+RUS,S
+ZAF,S
+TUR,S
+THA,S
+VNM,S
+PHL,S
+EGY,S
+NGA,S
+PAK,S
+BGD,S

@@ -20,10 +20,10 @@ jobs:
         # The floor (3.11, the requires-python minimum) and a current interpreter.
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -45,6 +45,14 @@ jobs:
       - name: Ruff format check
         run: ruff format --check src tests scripts
 
+      - name: Structural artifact reproduces from source digest (pipeline step 1a)
+        run: python scripts/build_structural_trajectories.py --check
+
+      - name: Structural source digest matches raw extraction (pipeline step 1a-data)
+        # No-op (exit 0) when the raw source files are absent, as they are in CI (large, separately
+        # licensed — see data/structural/sources/raw/README.md); when present it fails on drift.
+        run: python scripts/extract_structural_sources.py --check
+
       - name: Pytest
         run: pytest -q
 
@@ -58,18 +66,54 @@ jobs:
   reproducible:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.12"
           cache: pip
 
-      - name: Install (pinned via constraints.txt)
+      - name: Install pinned pip + uv (the resolver)
+        # pip is pinned in constraints.txt; uv provides the hash-pinned resolver for the lock.
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[cge,dev,data]" "streamlit>=1.33" -c constraints.txt
+          python -m pip install --upgrade "pip==24.3.1"
+          python -m pip install "uv==0.9.6"
+
+      - name: Verify requirements.lock is up to date
+        # Recompiles the hash-pinned, resolver-complete lock from pyproject + constraints.txt and
+        # fails if the committed requirements.lock drifts. Upload the artifact below so a drifted lock
+        # can be committed. Makes "reproducible" a TESTED lock, not an assertion (review P2
+        # 2026-09-05: pip freeze was neither hash-pinned nor resolver-complete).
+        run: |
+          if ! git ls-files --error-unmatch requirements.lock >/dev/null 2>&1; then
+            echo "requirements.lock is not committed — run scripts/gen_lock.py and commit it."
+            exit 1
+          fi
+          python scripts/gen_lock.py --check
+
+      - name: Regenerate lock for the artifact (on failure, to commit)
+        if: failure()
+        run: python scripts/gen_lock.py || true
+
+      - name: Upload the (re)generated lock
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: requirements-lock
+          path: requirements.lock
+
+      - name: Prove a clean install FROM the lock (hashes enforced) + pip check
+        # The reviewer's key requirement: prove a FRESH environment installs from the lock alone,
+        # with hashes enforced, and has a consistent dependency graph (review P2 2026-09-05).
+        run: |
+          python -m venv /tmp/lockenv
+          /tmp/lockenv/bin/python -m pip install --upgrade "pip==24.3.1"
+          /tmp/lockenv/bin/pip install --require-hashes -r requirements.lock
+          /tmp/lockenv/bin/pip check
+
+      - name: Install the project under constraints (for the gates below)
+        run: pip install -e ".[cge,dev,data,gui]" -c constraints.txt
 
       - name: Ruff lint
         run: ruff check src tests scripts
