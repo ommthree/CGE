@@ -71,6 +71,164 @@ def _weighted_mean(values: dict[str, float], weights: dict[str, float] | None) -
 
 
 # --------------------------------------------------------------------------------------------------
+# Raw-layout normalisers (review 2026-09-06 — accept the ACTUAL published downloads, not just the
+# already-tidy fixture columns). Each maps the source's real column names / long-vs-wide shape /
+# aggregate rows onto the tidy columns the extractor expects, so the user drops in the ORIGINAL
+# file. A tidy-shape frame passes through unchanged (idempotent) — what the fixtures feed.
+# --------------------------------------------------------------------------------------------------
+def _rename_first_present(df: pd.DataFrame, aliases: dict[str, list[str]]) -> pd.DataFrame:
+    """Return ``df`` with columns renamed to each canonical name using the first matching alias
+    present (case-insensitive). Canonical columns already present are left as-is."""
+    lower = {c.lower(): c for c in df.columns}
+    rename: dict[str, str] = {}
+    for canonical, names in aliases.items():
+        if canonical in df.columns:
+            continue
+        for a in names:
+            if a.lower() in lower:
+                rename[lower[a.lower()]] = canonical
+                break
+    return df.rename(columns=rename)
+
+
+def normalise_wpp(df: pd.DataFrame) -> pd.DataFrame:
+    """WPP 2024 "Total Population" export → tidy ``iso3``/``year``/``population``. The raw CSV has
+    ``ISO3_code`` / ``Time`` / ``PopTotal``, carries a ``Variant`` column (keep ``Medium``), and
+    mixes country + region rows (kept only when ``ISO3_code`` is a real 3-letter code)."""
+    df = _rename_first_present(
+        df, {"iso3": ["ISO3_code", "iso3_code"], "year": ["Time"], "population": ["PopTotal"]}
+    )
+    if "Variant" in df.columns:
+        df = df[df["Variant"].astype(str).str.strip().str.lower() == "medium"]
+    df = df[df["iso3"].notna()]
+    df = df[df["iso3"].astype(str).str.fullmatch(r"[A-Za-z]{3}")]
+    df = df.copy()
+    df["year"] = df["year"].astype(int)
+    return df[["iso3", "year", "population"]]
+
+
+def normalise_euklems(
+    df: pd.DataFrame,
+    *,
+    country: str | None = None,
+    var_codes: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """EU KLEMS 2023 growth-accounts long export → tidy per-ISIC-section rows with ``isic_section``,
+    ``lp_growth``, ``k_deepening``, ``labour_cost_share``, ``va_weight``. The raw file is long
+    (``geo_code`` / ``nace_r2_code`` / ``var`` / ``year`` / ``value``, latest year); this picks one
+    ``country`` (default: the first present), pivots the growth-account variables named in
+    ``var_codes`` (defaults to the EU KLEMS statistical codes), maps the NACE industry code to its
+    ISIC section letter, and averages within a section (VA-weighted if a VA variable is present).
+
+    Because EU KLEMS variable codes vary by release, ``var_codes`` is overridable; if the expected
+    variables are absent this raises with the codes it DID find, so the mismatch is explicit rather
+    than silently producing empties. A frame already in the tidy fixture shape passes through."""
+    if "isic_section" in df.columns and "lp_growth" in df.columns:
+        return df  # already tidy (the fixture / a hand-prepared file)
+    df = _rename_first_present(
+        df,
+        {
+            "geo_code": ["geo_code", "geo", "country", "country_code"],
+            "nace": ["nace_r2_code", "nace_r2", "nace", "industry", "code"],
+            "var": ["var", "variable", "measure", "var_code"],
+            "year": ["year", "time"],
+            "value": ["value", "obs_value", "val"],
+        },
+    )
+    codes = var_codes or {
+        # EU KLEMS 2023 growth-accounts statistical variables (overridable per release).
+        "lp_growth": "VA_QI_growth",  # value-added-volume-per-hour growth
+        "k_deepening": "CAP_QI_growth",  # capital-services-per-hour growth
+        "labour_cost_share": "LAB_share",  # labour compensation share of value added
+        "va_weight": "VA_CP",  # value added at current prices (aggregation weight)
+    }
+    if country is None and "geo_code" in df.columns:
+        country = str(df["geo_code"].iloc[0])
+    if "geo_code" in df.columns:
+        df = df[df["geo_code"].astype(str) == str(country)]
+    if "year" in df.columns:  # keep the latest year of each (industry, variable)
+        df = df.sort_values("year").groupby(["nace", "var"], as_index=False).last()
+    present = set(df["var"].astype(str).unique())
+    missing = [c for c in codes.values() if c not in present]
+    if missing:
+        raise ValueError(
+            f"EU KLEMS export is missing expected variable code(s) {missing}; present codes are "
+            f"{sorted(present)}. Pass var_codes={{...}} matching this release (see the README)."
+        )
+    wide = df.pivot_table(index="nace", columns="var", values="value", aggfunc="last")
+    rows = []
+    for nace, r in wide.iterrows():
+        section = str(nace).strip()[0].upper() if str(nace).strip() else ""
+        rows.append(
+            {
+                "isic_section": section,
+                "lp_growth": r.get(codes["lp_growth"]),
+                "k_deepening": r.get(codes["k_deepening"]),
+                "labour_cost_share": r.get(codes["labour_cost_share"]),
+                "va_weight": r.get(codes["va_weight"], 1.0),
+            }
+        )
+    out = pd.DataFrame(rows).dropna(subset=["lp_growth", "k_deepening", "labour_cost_share"])
+    # Collapse detailed industries that share a section into one VA-weighted row.
+    agg = []
+    for section, g in out.groupby("isic_section"):
+        w = g["va_weight"].fillna(1.0)
+        wsum = w.sum() or 1.0
+        agg.append(
+            {
+                "isic_section": section,
+                "lp_growth": float((g["lp_growth"] * w).sum() / wsum),
+                "k_deepening": float((g["k_deepening"] * w).sum() / wsum),
+                "labour_cost_share": float((g["labour_cost_share"] * w).sum() / wsum),
+                "va_weight": float(wsum),
+            }
+        )
+    return pd.DataFrame(agg)
+
+
+def normalise_ngfs(df: pd.DataFrame) -> pd.DataFrame:
+    """NGFS / IIASA scenario-explorer export → tidy long ``model``, ``scenario``, ``region``,
+    ``variable``, ``year``, ``value``. Accepts the IIASA IAMC WIDE format (a column per year) by
+    melting it, and normalises the capitalised column names. A long frame passes through."""
+    df = _rename_first_present(
+        df,
+        {
+            "model": ["Model"],
+            "scenario": ["Scenario"],
+            "region": ["Region"],
+            "variable": ["Variable"],
+            "value": ["Value"],
+            "year": ["Year"],
+        },
+    )
+    if "year" in df.columns and "value" in df.columns:
+        return df  # already long
+    id_cols = [c for c in ("model", "scenario", "region", "variable", "unit", "Unit") if c in df]
+    year_cols = [c for c in df.columns if str(c).isdigit()]
+    if not year_cols:
+        return df  # nothing to melt; let the extractor validate downstream
+    melted = df.melt(id_vars=id_cols, value_vars=year_cols, var_name="year", value_name="value")
+    melted["year"] = melted["year"].astype(int)
+    return melted
+
+
+def normalise_ilostat(df: pd.DataFrame) -> pd.DataFrame:
+    """ILOSTAT labour-force-participation-rate bulk CSV → tidy ``iso3``, ``year``, ``lfpr``. The raw
+    file uses ``ref_area`` / ``time`` / ``obs_value`` with ``sex`` and ``classif1`` breakdowns; we
+    keep the total (``sex`` = ``SEX_T`` and the aggregate age band when those columns exist)."""
+    df = _rename_first_present(
+        df, {"iso3": ["ref_area", "iso3"], "year": ["time", "year"], "lfpr": ["obs_value", "lfpr"]}
+    )
+    if "sex" in df.columns:
+        df = df[df["sex"].astype(str).str.upper().str.contains("SEX_T|TOTAL|_T")]
+    if "classif1" in df.columns:  # keep the aggregate age band (…AGGREGATE_TOTAL / _T)
+        df = df[df["classif1"].astype(str).str.upper().str.contains("TOTAL|_T")]
+    df = df[df["iso3"].astype(str).str.fullmatch(r"[A-Za-z]{3}")].copy()
+    df["year"] = df["year"].astype(int)
+    return df[["iso3", "year", "lfpr"]]
+
+
+# --------------------------------------------------------------------------------------------------
 # PWT 10.01 — aggregate TFP (rtfpna, an index → log-growth), per region archetype
 # --------------------------------------------------------------------------------------------------
 def extract_pwt_productivity(
@@ -112,7 +270,9 @@ def extract_wpp_population(
     """Per-archetype population growth from WPP totals (columns ``iso3``, ``year``, ``population``).
     For each knot year the growth rate is population[y+1]/population[y] − 1 per country, aggregated
     to the archetype weighted by that country's population (the per-driver weight for a
-    population aggregate). Returns ``{archetype: {knot: rate}}``."""
+    population aggregate). Returns ``{archetype: {knot: rate}}``. Accepts the raw WPP export
+    (``ISO3_code``/``Time``/``PopTotal`` + a Medium-variant filter) via :func:`normalise_wpp`."""
+    data = normalise_wpp(data)
     out: dict[str, dict[int, float]] = {}
     for y in knots:
         rates: dict[str, dict[str, float]] = {}
@@ -146,7 +306,8 @@ def extract_euklems(
     ``va_weight`` (industry value added, for the output-weighted aggregate). Returns
     ``{"sector_productivity": {...}, "capital_deepening": {...}, "source_labour_shares": {...}}``,
     each ``{archetype: value_or_{knot: rate}}``, aggregated over each archetype's industries by
-    value added."""
+    value added. Accepts the raw EU KLEMS long export via :func:`normalise_euklems`."""
+    data = normalise_euklems(data)
     lp: dict[str, dict[str, float]] = {}
     kd: dict[str, dict[str, float]] = {}
     sl: dict[str, dict[str, float]] = {}
@@ -188,7 +349,9 @@ def extract_ngfs_emissions(
     Filters to the PINNED ``model``/``scenario`` + emissions-intensity variable, and returns the
     annualised decline over each knot interval as ``{"__all__": {knot: rate}}`` (negative =
     decarbonisation). A per-sector split needs a sectoral NGFS variable; the economy-wide path is
-    the documented default until then."""
+    the documented default until then. Accepts the IIASA IAMC WIDE (year-columns) export via
+    :func:`normalise_ngfs`."""
+    data = normalise_ngfs(data)
     sub = data[(data["model"] == model) & (data["scenario"] == scenario)]
     var = sub[sub["variable"].str.contains("Intensity", case=False, na=False)]
     if var.empty:
@@ -202,6 +365,55 @@ def extract_ngfs_emissions(
             y2 = later[0]
             out[y] = round((series[y2] / series[y]) ** (1.0 / (y2 - y)) - 1.0, 4)
     return {"__all__": out} if out else {}
+
+
+# --------------------------------------------------------------------------------------------------
+# ILOSTAT — labour-force participation growth per region archetype
+# --------------------------------------------------------------------------------------------------
+def extract_ilo_participation(
+    data: pd.DataFrame,
+    cmap: dict[str, str],
+    *,
+    knots: tuple[int, ...] = (2025, 2040),
+) -> dict[str, dict[int, float]]:
+    """Per-archetype labour-force-participation growth from ILOSTAT LFPR. The driver is a
+    *proportional* annual growth rate of the participation RATE, so for each knot the per-country
+    rate is ``lfpr[y+1]/lfpr[y] − 1`` (the rate is in %, so the ratio is unit-free), aggregated to
+    archetype weighted by the country's labour force ≈ its participation rate as a proxy (population
+    weights are not in this file; the rate itself is the best available within-source weight). Falls
+    back to the latest consecutive pair at/just before a knot when the exact knot year is absent
+    (ILOSTAT is historical/short-horizon). Accepts the raw ILOSTAT CSV via ``normalise_ilostat``.
+    Returns ``{archetype: {knot: rate}}``."""
+    data = normalise_ilostat(data)
+    out: dict[str, dict[int, float]] = {}
+    for y in knots:
+        rates: dict[str, dict[str, float]] = {}
+        wts: dict[str, dict[str, float]] = {}
+        for code, g in data.groupby("iso3"):
+            gy = g.set_index("year")["lfpr"].sort_index()
+            # exact consecutive pair at the knot, else the latest consecutive pair before it.
+            pair = None
+            if y in gy.index and (y + 1) in gy.index:
+                pair = (y, y + 1)
+            else:
+                usable = [yy for yy in gy.index if (yy + 1) in gy.index and yy <= y]
+                if usable:
+                    yy = max(usable)
+                    pair = (yy, yy + 1)
+            if pair and gy[pair[0]] > 0:
+                a = country_archetype(str(code), cmap)
+                rates.setdefault(a, {})[str(code)] = gy[pair[1]] / gy[pair[0]] - 1.0
+                wts.setdefault(a, {})[str(code)] = float(gy[pair[0]])
+        for a in rates:
+            out.setdefault(a, {})[y] = round(_weighted_mean(rates[a], wts[a]), 4)
+    if out:
+        allk = {
+            y: round(sum(out[a][y] for a in out if y in out[a]) / len(out), 4)
+            for y in knots
+            if any(y in out[a] for a in out)
+        }
+        out["__all__"] = allk
+    return out
 
 
 # --------------------------------------------------------------------------------------------------
@@ -227,6 +439,13 @@ def _rebuild_digest() -> tuple[dict, list[str]]:
         _apply_region(digest, "population", rates, source="UN WPP 2024 (extracted)")
     else:
         missing.append("wpp2024_population.csv (population)")
+
+    ilo = _RAW / "ilostat_lfpr.csv"
+    if ilo.exists():
+        rates = extract_ilo_participation(pd.read_csv(ilo), cmap)
+        _apply_region(digest, "labour_participation", rates, source="ILOSTAT LFPR (extracted)")
+    else:
+        missing.append("ilostat_lfpr.csv (labour participation)")
 
     klems = _RAW / "euklems_2023_growth_accounts.xlsx"
     if klems.exists():
