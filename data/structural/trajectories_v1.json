@@ -10,44 +10,44 @@
   "rates": {
     "population": {
       "N": {
-        "2025": 0.003,
-        "2035": 0.001,
-        "2050": -0.001
+        "2025": 0.002,
+        "2035": 0.0009,
+        "2050": -0.0004
       },
       "S": {
-        "2025": 0.012,
-        "2035": 0.009,
-        "2050": 0.005
+        "2025": 0.0095,
+        "2035": 0.0078,
+        "2050": 0.0048
       },
       "__all__": {
-        "2025": 0.008,
-        "2050": 0.003
+        "2025": 0.0058,
+        "2035": 0.0044,
+        "2050": 0.0022
       }
     },
     "labour_participation": {
       "N": {
-        "2025": 0.0,
-        "2040": -0.002
+        "2025": -0.0001,
+        "2040": -0.0001
       },
       "S": {
-        "2025": 0.003,
-        "2040": 0.001
+        "2025": 0.0004,
+        "2040": 0.0004
       },
       "__all__": {
-        "2025": 0.001
+        "2025": 0.0002,
+        "2040": 0.0002
       }
     },
     "productivity": {
       "N": {
-        "2025": 0.012,
-        "2040": 0.01
+        "2019": 0.0014
       },
       "S": {
-        "2025": 0.03,
-        "2040": 0.022
+        "2019": 0.0078
       },
       "__all__": {
-        "2025": 0.017
+        "2019": 0.0047
       }
     }
   },
@@ -91,15 +91,15 @@
     "__all__": 0.6
   },
   "sources": {
-    "population:N": "UN World Population Prospects 2024, Medium variant — annual population growth rate for high-income regions (approx +0.3%/yr 2025 declining to negative by 2050). https://population.un.org/wpp/",
-    "population:S": "UN World Population Prospects 2024, Medium variant — annual population growth rate for less-developed regions (approx +1.2%/yr 2025 declining toward +0.5%/yr 2050). https://population.un.org/wpp/",
-    "population:__all__": "UN World Population Prospects 2024, Medium variant — world annual population growth (approx +0.8%/yr 2025 to +0.3%/yr 2050). https://population.un.org/wpp/",
-    "labour_participation:N": "ILOSTAT / World Bank labour-force participation modelled estimates — high-income economies: broadly flat, mild decline with ageing. https://ilostat.ilo.org/",
-    "labour_participation:S": "ILOSTAT / World Bank labour-force participation modelled estimates — emerging economies: mild rise from rising female participation, tapering. https://ilostat.ilo.org/",
-    "labour_participation:__all__": "ILOSTAT / World Bank global labour-force participation — approximately flat/mild rise. https://ilostat.ilo.org/",
-    "productivity:N": "Penn World Table 10.01, TFP growth at constant national prices (rtfpna) — advanced economies ~1.0-1.2%/yr trend. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/",
-    "productivity:S": "Penn World Table 10.01, TFP/labour-productivity growth — emerging economies convergence ~2.2-3.0%/yr trend. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/",
-    "productivity:__all__": "Penn World Table 10.01, world-average productivity growth ~1.7%/yr. Feenstra, Inklaar & Timmer (2015), AER; https://www.rug.nl/ggdc/productivity/pwt/",
+    "population:N": "UN WPP 2024 (extracted)",
+    "population:S": "UN WPP 2024 (extracted)",
+    "population:__all__": "UN WPP 2024 (extracted)",
+    "labour_participation:N": "ILOSTAT LFPR (extracted)",
+    "labour_participation:S": "ILOSTAT LFPR (extracted)",
+    "labour_participation:__all__": "ILOSTAT LFPR (extracted)",
+    "productivity:N": "PWT 10.01 rtfpna (extracted)",
+    "productivity:S": "PWT 10.01 rtfpna (extracted)",
+    "productivity:__all__": "PWT 10.01 rtfpna (extracted)",
     "sector_productivity:BRD": "EU KLEMS 2023 release — sectoral labour-productivity growth; goods-producing/manufacturing sectors run above the economy average (~1.5%/yr). https://euklems-intanprod-llee.luiss.it/",
     "sector_productivity:MIL": "EU KLEMS 2023 release — services/mixed sectors run below the goods average (~0.8%/yr). https://euklems-intanprod-llee.luiss.it/",
     "sector_productivity:__all__": "EU KLEMS 2023 release — economy-average sectoral labour-productivity growth ~1.0%/yr. https://euklems-intanprod-llee.luiss.it/",
@@ -113,15 +113,15 @@
     "source_labour_share:__all__": "ILLUSTRATIVE economy-average source-period labour share (~0.60). Placeholder for an EU KLEMS Törnqvist share; see docs/structural-data-pipeline-plan.md step 1b. https://euklems-intanprod-llee.luiss.it/"
   },
   "confidence": {
-    "population:N": "high",
-    "population:S": "high",
-    "population:__all__": "high",
+    "population:N": "medium",
+    "population:S": "medium",
+    "population:__all__": "medium",
     "labour_participation:N": "medium",
     "labour_participation:S": "medium",
-    "labour_participation:__all__": "low",
+    "labour_participation:__all__": "medium",
     "productivity:N": "medium",
-    "productivity:S": "low",
-    "productivity:__all__": "low",
+    "productivity:S": "medium",
+    "productivity:__all__": "medium",
     "sector_productivity:BRD": "low",
     "sector_productivity:MIL": "low",
     "sector_productivity:__all__": "low",
