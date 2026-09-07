@@ -36,6 +36,7 @@ numpy==2.3.3
 pymrio==0.6.3
 duckdb==1.5.5
 pyarrow==24.0.0
+openpyxl==3.1.0  # structural-data extractors read PWT/EU KLEMS xlsx (pymrio caps openpyxl <3.1.1)
 
 # --- cge extra ([cge]) ---
 # pyomo is used by the optional Pyomo-backed solver path AND installed by the CI reproducible job

@@ -896,7 +896,10 @@ numpy==2.3.3 \
 openpyxl==3.1.0 \
     --hash=sha256:24d7d361025d186ba91eff58135d50855cf035a84371b891e58fb6eb5125660f \
     --hash=sha256:eccedbe1cdd8b2494057e73959b496821141038dbb7eb9266ea59e3f34208231
-    # via pymrio
+    # via
+    #   -c constraints.txt
+    #   cge (pyproject.toml)
+    #   pymrio
 packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
