@@ -1,8 +1,10 @@
 # Plan — consulting-grade structural-data pipeline (Phase 7b.2 readiness)
 
-**Status: IN PROGRESS (2026-09-06). Steps 1a and 1b BUILT (mechanism + reproducible-build shape);
-real source extractions (1a data), per-driver/time-varying weights (1c), scenario pinning (1d) and
-uncertainty sets (1e) remain.** This document scopes the work needed to move
+**Status: IN PROGRESS (2026-09-07). Steps 1a + 1b DONE and the digest is now EXTRACTED FROM REAL
+DATA for all six drivers (PWT / WPP / ILOSTAT / EU KLEMS / NGFS). Remaining: broaden EU KLEMS beyond
+the single supplied country + add a per-sector NGFS split (1a-data breadth), per-driver/time-varying
+weights (1c), fuller scenario pinning (1d), and uncertainty sets (1e).** This document scopes the
+work needed to move
 the Phase 7b.2 structural trajectories from an *illustrative research scaffold* to an
 *engagement-grade baseline* fit for climate-risk consulting. It is the response to the standing
 **P1-readiness** finding raised across reviews 4–6: the shipped `data/structural/trajectories_v1.json`
@@ -61,15 +63,19 @@ real per-country/industry pulls now drop into the digest without touching the bu
   principally the EU, UK, US and Japan through ~2020**; applying its archetype rates to every model
   region is an assumption that must be labelled per region (see 1c).
 
-**Extractors BUILT 2026-09-06** (`scripts/extract_structural_sources.py`): real parsers for PWT
-10.01 (`rtfpna` → annualised log-growth), UN WPP 2024 (population-weighted growth), EU KLEMS 2023
-(VA-weighted LP / capital deepening / source labour share), and NGFS Phase 5 (annualised
-emissions-intensity decline of a pinned model+scenario), each mapping source countries/industries to
-the N/S and BRD/MIL archetypes via committed `archetype_maps/`. They read `data/structural/sources/
-raw/` (git-ignored, separately licensed; see its README for downloads) and rebuild the digest;
-sources still absent keep their illustrative value and are reported. The parsing is covered by
-byte-level fixtures in `tests/test_structural_extractors.py`. **What remains** is placing the actual
-raw files and re-running — the digest values are illustrative until then.
+**EXTRACTED FROM REAL DATA 2026-09-07** (`scripts/extract_structural_sources.py`): all six drivers
+in the committed digest are now real extractions — PWT 10.01 (`rtfpna`, GDP-weighted, 2000–2019
+window), UN WPP 2024 (population-weighted growth), ILOSTAT LFPR (recent trend, `EAP_DWAP_SEX_AGE_RT`,
+15+ band), EU KLEMS 2024 growth-accounts workbook (per-ISIC-section LP growth `LP2_G`, capital
+deepening `CAP_QI`, source labour share `LAB/VA_CP`, VA weight — Austria, the supplied country), and
+NGFS REMIND-MAgPIE 3.3-4.8 / Below 2°C (emissions intensity **derived as CO2/GDP**). Each maps source
+countries/industries to the N/S and BRD/MIL archetypes via committed `archetype_maps/` and aggregates
+with the documented per-driver weights. Raw files live in `data/structural/sources/raw/` (git-ignored,
+separately licensed; see its README). Parsing is covered by byte-level fixtures in
+`tests/test_structural_extractors.py`. **Known scope of THIS extraction:** EU KLEMS is a single
+country (Austria — the only geo in the supplied file); NGFS gives an economy-wide intensity path (no
+per-sector split); the productivity/participation forward knots hold a recent historical trend. These
+are the honest limits of the supplied data, tracked as 1c–1e below.
 
 **Acceptance:** re-running the build reproduces the committed artifact; the extractor's `--check`
 diffs a fresh extraction against the committed digest once raw files are present.
@@ -82,9 +88,8 @@ used directly; then MFP is applied through the receiving model's **actual** VA n
 type — Cobb-Douglas via labour augmentation (`ln φ = ln(1+g_MFP)/s_L`, price-independent), CES via a
 **value-added Hicks-neutral engine channel** (`va_hicks_neutral`, A_va = 1+g_MFP scaling the whole VA
 aggregate so the VA cost falls by 1/A_va at ALL prices — globally identified, not benchmark-only).
-CES sectors are now GLOBALLY identified. The shipped `source_labour_shares` (BRD
-0.58 / MIL 0.62 / __all__ 0.60) are illustrative headline values; the EU KLEMS Törnqvist extraction
-that replaces them is part of the 1a data work.
+CES sectors are now GLOBALLY identified. The `source_labour_shares` are now EXTRACTED from EU KLEMS
+(LAB/VA_CP per section: BRD ≈ 0.61, MIL ≈ 0.65, Austria), no longer illustrative.
 **Was (review-6 P1):** the wrapper netted capital deepening out with the CD mapping
 `1+g_φ = [(1+g_{Y/L})/(1+g_{K/L})^{s_K}]^{1/s_L}`, using the **receiving model's benchmark share**
 for the source-side step and applying it **only to σ_va=1 sectors** (CES fell back to heuristic).
@@ -175,8 +180,8 @@ labelled:
   **every** price vector, reproducing the source MFP shift globally (not just at benchmark prices).
   Cobb-Douglas sectors use the price-independent labour-augmentation map ln φ = ln(1+g_MFP)/s_L. The
   benchmark-calibrated CES labour-augmentation translation (and its feasibility failures) is retired.
-- The shipped `source_labour_shares` are illustrative headline values (validated finite in (0,1] with
-  value-level provenance); the EU KLEMS Törnqvist extraction that replaces them is part of the 1a data
-  work.
+- The `source_labour_shares` are now EXTRACTED from EU KLEMS (LAB/VA_CP per ISIC section, Austria),
+  validated finite in (0,1] with value-level provenance; broadening beyond the single supplied country
+  is part of the 1a-data breadth follow-up.
 - The bundled trajectory must not be represented to a client as an engagement-grade baseline; it is a
   scenario-experimentation scaffold.

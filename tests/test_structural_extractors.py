@@ -20,6 +20,7 @@ from scripts.extract_structural_sources import (
     extract_pwt_productivity,
     extract_wpp_population,
     industry_archetype,
+    load_euklems_workbook,
     normalise_euklems,
     normalise_ilostat,
     normalise_wpp,
@@ -242,3 +243,89 @@ def test_ilo_participation_is_recent_trend_held_forward():
     expected = round(math.log(60.0 / 58.0) / 5, 4)
     assert out["N"][2025] == pytest.approx(expected)
     assert out["N"][2040] == pytest.approx(expected)  # single recent trend held forward
+
+
+def test_ngfs_derives_intensity_from_co2_over_gdp():
+    """When the NGFS export has no ready-made intensity variable, extract_ngfs_emissions derives it
+    as Emissions|CO2 / GDP per year (review 2026-09-07). Model/scenario match by SUBSTRING so
+    'Below 2' matches 'Below 2?C (version: 1)'. CO2 100→50 and GDP 100→200 over 2025→2040 →
+    intensity 1.0→0.25 → annualised (0.25)^(1/15)−1."""
+    df = pd.DataFrame(
+        {
+            "Model": ["REMIND-MAgPIE 3.3-4.8"] * 4,
+            "Scenario": ["Below 2?C (version: 1)"] * 4,
+            "Region": ["World"] * 4,
+            "Variable": ["Emissions|CO2", "Emissions|CO2", "GDP|PPP", "GDP|PPP"],
+            "2025": [100.0, None, 100.0, None],
+            "2040": [None, 50.0, None, 200.0],
+        }
+    )
+    # melt-friendly: one row per (var, year); build long directly to avoid None cells
+    df = pd.DataFrame(
+        {
+            "Model": ["REMIND-MAgPIE 3.3-4.8"] * 4,
+            "Scenario": ["Below 2?C (version: 1)"] * 4,
+            "Region": ["World"] * 4,
+            "Variable": ["Emissions|CO2", "Emissions|CO2", "GDP|PPP", "GDP|PPP"],
+            "year": [2025, 2040, 2025, 2040],
+            "value": [100.0, 50.0, 100.0, 200.0],
+        }
+    )
+    out = extract_ngfs_emissions(
+        df, model="REMIND-MAgPIE 3.3-4.8", scenario="Below 2", knots=(2025,)
+    )
+    intensity_decline = (0.25) ** (1 / 15) - 1  # (50/200)/(100/100) = 0.25 over 15y
+    assert out["__all__"][2025] == pytest.approx(round(intensity_decline, 4))
+    assert out["__all__"][2025] < 0  # decarbonisation
+
+
+def test_ngfs_raises_when_neither_intensity_nor_co2_and_gdp():
+    """If the pinned scenario has neither an intensity variable nor both CO2 and GDP, the derivation
+    raises rather than silently emitting nothing."""
+    df = pd.DataFrame(
+        {
+            "model": ["M"],
+            "scenario": ["S"],
+            "region": ["World"],
+            "variable": ["Population"],
+            "year": [2025],
+            "value": [100.0],
+        }
+    )
+    with pytest.raises(ValueError, match="cannot derive"):
+        extract_ngfs_emissions(df, model="M", scenario="S", knots=(2025,))
+
+
+def test_load_euklems_workbook_reads_multisheet_layout(tmp_path):
+    """The REAL EU KLEMS workbook has one sheet per variable (LP2_G/CAP_QI/LAB/VA_CP), each a matrix
+    of nace_r2_code/geo_code/var + a column per year. load_euklems_workbook reads the section-letter
+    rows and reduces them: LP2_G mean over the recent window /100; CAP_QI annualised index growth;
+    labour_cost_share = LAB/VA_CP; va_weight = VA_CP (review 2026-09-07)."""
+    import openpyxl  # noqa: F401 — ensures the Excel engine is present
+
+    def sheet(var, val19, val18=None):
+        return pd.DataFrame(
+            {
+                "nace_r2_code": ["C", "C10-C12"],  # section + a detailed row (detailed is ignored)
+                "geo_code": ["AT", "AT"],
+                "var": [var, var],
+                "2018": [val18 if val18 is not None else val19, val18 or val19],
+                "2019": [val19, val19],
+            }
+        )
+
+    p = tmp_path / "euklems.xlsx"
+    with pd.ExcelWriter(p) as w:
+        sheet("LP2_G", 2.0, 1.0).to_excel(
+            w, sheet_name="LP2_G", index=False
+        )  # % → mean 1.5 → 0.015
+        sheet("CAP_QI", 110.0, 100.0).to_excel(w, sheet_name="CAP_QI", index=False)  # +10%/1yr
+        sheet("LAB", 55.0).to_excel(w, sheet_name="LAB", index=False)
+        sheet("VA_CP", 100.0).to_excel(w, sheet_name="VA_CP", index=False)
+    tidy = load_euklems_workbook(p, trend_window=2)
+    row = tidy[tidy["isic_section"] == "C"].iloc[0]
+    assert row["lp_growth"] == pytest.approx((2.0 + 1.0) / 2 / 100)  # mean of recent %, /100
+    assert row["k_deepening"] == pytest.approx(110.0 / 100.0 - 1.0)  # 1-year index growth
+    assert row["labour_cost_share"] == pytest.approx(0.55)  # LAB/VA_CP
+    assert row["va_weight"] == pytest.approx(100.0)
+    assert set(tidy["isic_section"]) == {"C"}  # only the single-letter section row
