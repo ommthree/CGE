@@ -40,11 +40,11 @@
       }
     },
     "productivity": {
-      "N": {
-        "2019": 0.0014
-      },
       "S": {
         "2019": 0.0078
+      },
+      "N": {
+        "2019": 0.0014
       },
       "__all__": {
         "2019": 0.0047
@@ -54,41 +54,37 @@
   "sector_rates": {
     "sector_productivity": {
       "BRD": {
-        "2025": 0.015
+        "2025": 0.0018
       },
       "MIL": {
-        "2025": 0.008
+        "2025": -0.0024
       },
       "__all__": {
-        "2025": 0.01
+        "2025": -0.0003
       }
     },
     "emissions_intensity": {
-      "BRD": {
-        "2025": -0.03,
-        "2040": -0.05
-      },
       "__all__": {
-        "2025": -0.02,
-        "2040": -0.035
+        "2025": -0.0654,
+        "2040": -0.0864
       }
     },
     "capital_deepening": {
       "BRD": {
-        "2025": 0.011
+        "2025": 0.0201
       },
       "MIL": {
-        "2025": 0.006
+        "2025": 0.0241
       },
       "__all__": {
-        "2025": 0.008
+        "2025": 0.0221
       }
     }
   },
   "source_labour_shares": {
-    "BRD": 0.58,
-    "MIL": 0.62,
-    "__all__": 0.6
+    "BRD": 0.613,
+    "MIL": 0.653,
+    "__all__": 0.633
   },
   "sources": {
     "population:N": "UN WPP 2024 (extracted)",
@@ -97,20 +93,19 @@
     "labour_participation:N": "ILOSTAT LFPR (extracted)",
     "labour_participation:S": "ILOSTAT LFPR (extracted)",
     "labour_participation:__all__": "ILOSTAT LFPR (extracted)",
-    "productivity:N": "PWT 10.01 rtfpna (extracted)",
     "productivity:S": "PWT 10.01 rtfpna (extracted)",
+    "productivity:N": "PWT 10.01 rtfpna (extracted)",
     "productivity:__all__": "PWT 10.01 rtfpna (extracted)",
-    "sector_productivity:BRD": "EU KLEMS 2023 release — sectoral labour-productivity growth; goods-producing/manufacturing sectors run above the economy average (~1.5%/yr). https://euklems-intanprod-llee.luiss.it/",
-    "sector_productivity:MIL": "EU KLEMS 2023 release — services/mixed sectors run below the goods average (~0.8%/yr). https://euklems-intanprod-llee.luiss.it/",
-    "sector_productivity:__all__": "EU KLEMS 2023 release — economy-average sectoral labour-productivity growth ~1.0%/yr. https://euklems-intanprod-llee.luiss.it/",
-    "emissions_intensity:BRD": "IEA World Energy Outlook 2024 / NGFS Net Zero 2050 — carbon-intensive sectors decarbonise ~3%/yr near-term accelerating to ~5%/yr toward mid-century. https://www.iea.org/reports/world-energy-outlook-2024 ; https://www.ngfs.net/ngfs-scenarios-portal/",
-    "emissions_intensity:__all__": "IEA WEO 2024 / NGFS Net Zero 2050 — economy-wide CO2 intensity of GDP declines ~2%/yr near-term to ~3.5%/yr mid-century. https://www.iea.org/reports/world-energy-outlook-2024 ; https://www.ngfs.net/ngfs-scenarios-portal/",
-    "capital_deepening:BRD": "EU KLEMS 2023 release — sector capital services per hour worked (g_K/L); capital-intensive goods-producing/manufacturing sectors deepen ~1.0-1.2%/yr. Used to net capital deepening out of observed labour productivity via the Cobb-Douglas finite-change mapping 1+g_phi = [(1+g_Y/L)/(1+g_K/L)^s_K]^(1/s_L). https://euklems-intanprod-llee.luiss.it/",
-    "capital_deepening:MIL": "EU KLEMS 2023 release — services/mixed sectors deepen more slowly (~0.6%/yr capital services per hour). https://euklems-intanprod-llee.luiss.it/",
-    "capital_deepening:__all__": "EU KLEMS 2023 release — economy-average capital deepening ~0.8%/yr (capital services per hour worked). https://euklems-intanprod-llee.luiss.it/",
-    "source_labour_share:BRD": "ILLUSTRATIVE headline source-period labour share of value added for goods-producing/manufacturing archetype (~0.58). Placeholder for an EU KLEMS adjacent-period Törnqvist labour cost share; see docs/structural-data-pipeline-plan.md step 1b. https://euklems-intanprod-llee.luiss.it/",
-    "source_labour_share:MIL": "ILLUSTRATIVE headline source-period labour share for services/mixed archetype (~0.62, more labour-intensive). Placeholder for an EU KLEMS Törnqvist share; see docs/structural-data-pipeline-plan.md step 1b. https://euklems-intanprod-llee.luiss.it/",
-    "source_labour_share:__all__": "ILLUSTRATIVE economy-average source-period labour share (~0.60). Placeholder for an EU KLEMS Törnqvist share; see docs/structural-data-pipeline-plan.md step 1b. https://euklems-intanprod-llee.luiss.it/"
+    "sector_productivity:BRD": "EU KLEMS 2023 (ext)",
+    "sector_productivity:MIL": "EU KLEMS 2023 (ext)",
+    "sector_productivity:__all__": "EU KLEMS 2023 (ext)",
+    "emissions_intensity:__all__": "NGFS REMIND-MAgPIE 3.3-4.8 / Below 2°C, intensity=CO2/GDP (extracted)",
+    "capital_deepening:BRD": "EU KLEMS 2023 (ext)",
+    "capital_deepening:MIL": "EU KLEMS 2023 (ext)",
+    "capital_deepening:__all__": "EU KLEMS 2023 (ext)",
+    "source_labour_share:BRD": "EU KLEMS 2023 (ext)",
+    "source_labour_share:MIL": "EU KLEMS 2023 (ext)",
+    "source_labour_share:__all__": "EU KLEMS 2023 (ext)"
   },
   "confidence": {
     "population:N": "medium",
@@ -119,19 +114,18 @@
     "labour_participation:N": "medium",
     "labour_participation:S": "medium",
     "labour_participation:__all__": "medium",
-    "productivity:N": "medium",
     "productivity:S": "medium",
+    "productivity:N": "medium",
     "productivity:__all__": "medium",
-    "sector_productivity:BRD": "low",
-    "sector_productivity:MIL": "low",
-    "sector_productivity:__all__": "low",
-    "emissions_intensity:BRD": "medium",
+    "sector_productivity:BRD": "medium",
+    "sector_productivity:MIL": "medium",
+    "sector_productivity:__all__": "medium",
     "emissions_intensity:__all__": "medium",
-    "capital_deepening:BRD": "low",
-    "capital_deepening:MIL": "low",
-    "capital_deepening:__all__": "low",
-    "source_labour_share:BRD": "low",
-    "source_labour_share:MIL": "low",
-    "source_labour_share:__all__": "low"
+    "capital_deepening:BRD": "medium",
+    "capital_deepening:MIL": "medium",
+    "capital_deepening:__all__": "medium",
+    "source_labour_share:BRD": "medium",
+    "source_labour_share:MIL": "medium",
+    "source_labour_share:__all__": "medium"
   }
 }

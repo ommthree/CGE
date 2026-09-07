@@ -235,6 +235,68 @@ def normalise_ilostat(df: pd.DataFrame) -> pd.DataFrame:
     return df[["iso3", "year", "lfpr"]].drop_duplicates(["iso3", "year"], keep="last")
 
 
+def load_euklems_workbook(path, *, trend_window: int = 5) -> pd.DataFrame:
+    """Read the REAL EU KLEMS 2023/24 growth-accounts WORKBOOK into the tidy per-ISIC-section frame
+    ``extract_euklems`` consumes (``isic_section``, ``lp_growth``, ``k_deepening``,
+    ``labour_cost_share``, ``va_weight``). The workbook has ONE SHEET PER VARIABLE, each a matrix of
+    ``nace_r2_code`` / ``geo_code`` / ``var`` + a column PER YEAR (1995…), so we read the sheets we
+    need and reduce them per section-letter industry (review 2026-09-07):
+
+    - ``LP2_G`` — labour-productivity (value added per hour) growth, in PERCENT → ``lp_growth`` is
+      the mean over the most recent ``trend_window`` years, /100 to a fraction.
+    - ``CAP_QI`` — capital-services quantity INDEX → ``k_deepening`` is its annualised growth over
+      the recent window (a capital-services growth proxy for capital deepening), as a fraction.
+    - ``LAB`` / ``VA_CP`` — labour compensation and value added at current prices →
+      ``labour_cost_share`` is ``LAB/VA_CP`` at the latest common year.
+    - ``VA_CP`` at the latest year → ``va_weight`` (the VA-weighted-aggregation weight).
+
+    Uses only the single-letter section rows (A…U), which EU KLEMS already provides as aggregates,
+    so no detailed-industry roll-up is needed. All ``geo_code``s present are pooled (the supplied
+    file is a single country); if several are present they are VA-weighted together per section."""
+    lp = pd.read_excel(path, sheet_name="LP2_G")
+    cap = pd.read_excel(path, sheet_name="CAP_QI")
+    lab = pd.read_excel(path, sheet_name="LAB")
+    va = pd.read_excel(path, sheet_name="VA_CP")
+
+    def _year_cols(frame: pd.DataFrame) -> list[str]:
+        return [c for c in frame.columns if str(c).isdigit()]
+
+    def _sections(frame: pd.DataFrame) -> pd.DataFrame:
+        return frame[frame["nace_r2_code"].astype(str).str.fullmatch(r"[A-Za-z]")]
+
+    lp, cap, lab, va = (_sections(f) for f in (lp, cap, lab, va))
+    years = sorted(int(y) for y in _year_cols(lp))
+    recent = [str(y) for y in years[-trend_window:]]
+    last = str(years[-1])
+    rows = []
+    for section in sorted(lp["nace_r2_code"].astype(str).unique()):
+
+        def _pick(frame: pd.DataFrame, col: str, sec: str = section) -> float | None:
+            r = frame[frame["nace_r2_code"].astype(str) == sec]
+            if r.empty or col not in frame.columns:
+                return None
+            v = pd.to_numeric(r[col], errors="coerce").mean()
+            return None if pd.isna(v) else float(v)
+
+        lp_pct = [_pick(lp, y) for y in recent]
+        lp_pct = [x for x in lp_pct if x is not None]
+        cap0, cap1 = _pick(cap, recent[0]), _pick(cap, last)
+        lab1, va1 = _pick(lab, last), _pick(va, last)
+        if not lp_pct or cap0 in (None, 0) or cap1 is None or not lab1 or not va1:
+            continue
+        n = max(int(last) - int(recent[0]), 1)
+        rows.append(
+            {
+                "isic_section": section,
+                "lp_growth": sum(lp_pct) / len(lp_pct) / 100.0,
+                "k_deepening": (cap1 / cap0) ** (1.0 / n) - 1.0,
+                "labour_cost_share": max(min(lab1 / va1, 1.0), 1e-6),
+                "va_weight": va1,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 # --------------------------------------------------------------------------------------------------
 # PWT 10.01 — aggregate TFP (rtfpna, an index → log-growth), per region archetype
 # --------------------------------------------------------------------------------------------------
@@ -374,18 +436,41 @@ def extract_ngfs_emissions(
     knots: tuple[int, ...] = (2025, 2040),
 ) -> dict[str, dict[int, float]]:
     """Economy-wide emissions-intensity decarbonisation from an NGFS scenario-explorer export
-    (long format: columns ``model``, ``scenario``, ``region``, ``variable``, ``year``, ``value``).
-    Filters to the PINNED ``model``/``scenario`` + emissions-intensity variable, and returns the
-    annualised decline over each knot interval as ``{"__all__": {knot: rate}}`` (negative =
-    decarbonisation). A per-sector split needs a sectoral NGFS variable; the economy-wide path is
-    the documented default until then. Accepts the IIASA IAMC WIDE (year-columns) export via
-    :func:`normalise_ngfs`."""
+    (columns ``model``, ``scenario``, ``region``, ``variable``, ``year``, ``value``). ``model`` and
+    ``scenario`` match by SUBSTRING (case-insensitive), so ``"Below 2C"`` matches the raw
+    ``"Below 2?C (version: 1)"`` (the ``°`` is mangled to ``?`` in the export and a ``(version: n)``
+    suffix is appended).
+
+    The driver needs emissions INTENSITY (emissions per unit output). If the export carries an
+    intensity variable it is used directly; otherwise intensity is DERIVED as
+    ``Emissions|CO2 / GDP`` per year (review 2026-09-07 — the NGFS explorer ships CO2 and GDP as
+    separate variables). Returns the annualised decline over each knot interval as
+    ``{"__all__": {knot: rate}}`` (negative = decarbonisation). A per-sector split needs a sectoral
+    NGFS variable; the economy-wide path is the documented default until then. Accepts the IAMC
+    WIDE (year-columns) export via :func:`normalise_ngfs`."""
     data = normalise_ngfs(data)
-    sub = data[(data["model"] == model) & (data["scenario"] == scenario)]
-    var = sub[sub["variable"].str.contains("Intensity", case=False, na=False)]
-    if var.empty:
-        var = sub[sub["variable"].str.contains("Emissions|CO2", case=False, na=False)]
-    series = var.groupby("year")["value"].mean().sort_index()
+    m, s = model.lower(), scenario.lower()
+    sub = data[
+        data["model"].astype(str).str.lower().str.contains(m, regex=False, na=False)
+        & data["scenario"].astype(str).str.lower().str.contains(s, regex=False, na=False)
+    ]
+    direct = sub[sub["variable"].str.contains("Intensity", case=False, na=False)]
+    if not direct.empty:
+        series = direct.groupby("year")["value"].mean().sort_index()
+    else:
+        # Derive intensity = CO2 / GDP per year (both economy-wide, World region).
+        co2 = sub[sub["variable"].str.contains("Emissions|CO2", case=False, na=False, regex=True)]
+        gdp = sub[sub["variable"].str.contains("GDP", case=False, na=False)]
+        if co2.empty or gdp.empty:
+            raise ValueError(
+                f"NGFS export for model~{model!r}/scenario~{scenario!r} lacks an intensity variable"
+                f" and cannot derive one: found CO2={not co2.empty}, GDP={not gdp.empty}. Variables"
+                f" present: {sorted(sub['variable'].unique())}."
+            )
+        c = co2.groupby("year")["value"].mean().sort_index()
+        g = gdp.groupby("year")["value"].mean().sort_index()
+        common = c.index.intersection(g.index)
+        series = (c[common] / g[common]).sort_index()
     out: dict[int, float] = {}
     yrs = list(series.index)
     for y in knots:
@@ -483,7 +568,7 @@ def _rebuild_digest() -> tuple[dict, list[str]]:
 
     klems = _RAW / "euklems_2023_growth_accounts.xlsx"
     if klems.exists():
-        out = extract_euklems(pd.read_excel(klems), imap)
+        out = extract_euklems(load_euklems_workbook(klems), imap)
         _apply_sector(
             digest, "sector_productivity", out["sector_productivity"], "EU KLEMS 2023 (ext)"
         )
@@ -494,11 +579,17 @@ def _rebuild_digest() -> tuple[dict, list[str]]:
 
     ngfs = _RAW / "ngfs_phase5.csv"
     if ngfs.exists():
+        # Pinned tuple (review 2026-09-07): the supplied export is REMIND-MAgPIE 3.3-4.8, and its
+        # most ambitious mitigation scenario is "Below 2°C" (mangled to "Below 2?C (version: 1)" —
+        # matched by substring). Intensity is derived CO2/GDP (no ready-made intensity variable).
         rates = extract_ngfs_emissions(
-            pd.read_csv(ngfs), model="REMIND-MAgPIE 3.4-4.8", scenario="Net Zero 2050"
+            pd.read_csv(ngfs), model="REMIND-MAgPIE 3.3-4.8", scenario="Below 2"
         )
         _apply_sector(
-            digest, "emissions_intensity", {k: v for k, v in rates.items()}, "NGFS Phase 5 (ext)"
+            digest,
+            "emissions_intensity",
+            {k: v for k, v in rates.items()},
+            "NGFS REMIND-MAgPIE 3.3-4.8 / Below 2°C, intensity=CO2/GDP (extracted)",
         )
     else:
         missing.append("ngfs_phase5.csv (emissions intensity)")
@@ -509,25 +600,31 @@ def _rebuild_digest() -> tuple[dict, list[str]]:
 def _apply_region(digest: dict, driver: str, rates: dict, *, source: str) -> None:
     if not rates:
         return
-    entry = digest["region_drivers"].setdefault(driver, {})
-    for key, knots in rates.items():
-        entry[key] = {
+    # REPLACE the driver's whole entry (clear stale illustrative keys first) so an extracted driver
+    # never leaves a mixed real+illustrative state under one source (review 2026-09-07).
+    digest["region_drivers"][driver] = {
+        key: {
             "knots": {str(y): v for y, v in knots.items()},
             "confidence": "medium",
             "source": source,
         }
+        for key, knots in rates.items()
+    }
 
 
 def _apply_sector(digest: dict, driver: str, rates: dict, source: str) -> None:
     if not rates:
         return
-    entry = digest["sector_drivers"].setdefault(driver, {})
-    for key, knots in rates.items():
-        entry[key] = {
+    # REPLACE wholesale (see _apply_region): an economy-wide-only extraction (e.g. NGFS gives only
+    # __all__) must not leave a stale illustrative per-sector key mixed under the real source.
+    digest["sector_drivers"][driver] = {
+        key: {
             "knots": {str(y): v for y, v in knots.items()},
             "confidence": "medium",
             "source": source,
         }
+        for key, knots in rates.items()
+    }
 
 
 def _apply_source_shares(digest: dict, shares: dict, source: str) -> None:
