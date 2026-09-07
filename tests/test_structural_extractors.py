@@ -38,20 +38,26 @@ def test_archetype_maps_default_conservatively():
     assert industry_archetype("Q", _IMAP) == "MIL"  # unlisted → services residual
 
 
-def test_pwt_productivity_is_annualised_log_growth_of_rtfpna():
-    """rtfpna is an index; the trend is the annualised log-change over the window, aggregated per
-    archetype. USA index 1.0→1.10 over 2010–2019 → ln(1.1)/9; CHN 1.0→1.30 → ln(1.3)/9."""
+def test_pwt_productivity_is_gdp_weighted_annualised_log_growth():
+    """rtfpna is an index; each country's trend is the annualised log-change over the window, and
+    the archetype/world aggregate is GDP-WEIGHTED by rgdpo at the window end (2026-09-06). USA
+    1.0→1.10 (N), CHN 1.0→1.30 (S), each alone in its bucket; the world figure is GDP-weighted over
+    both. An unmapped country (ZZZ, not in _CMAP) is EXCLUDED, not defaulted to S."""
     df = pd.DataFrame(
         {
-            "countrycode": ["USA", "USA", "CHN", "CHN"],
-            "year": [2010, 2019, 2010, 2019],
-            "rtfpna": [1.0, 1.10, 1.0, 1.30],
+            "countrycode": ["USA", "USA", "CHN", "CHN", "ZZZ", "ZZZ"],
+            "year": [2010, 2019, 2010, 2019, 2010, 2019],
+            "rtfpna": [1.0, 1.10, 1.0, 1.30, 1.0, 0.5],  # ZZZ crashes but must be ignored
+            "rgdpo": [200.0, 200.0, 100.0, 100.0, 999.0, 999.0],  # USA weight 2× CHN
         }
     )
     out = extract_pwt_productivity(df, _CMAP, window=(2010, 2019))
     assert out["N"][2019] == pytest.approx(round(math.log(1.10) / 9, 4))
     assert out["S"][2019] == pytest.approx(round(math.log(1.30) / 9, 4))
-    assert "__all__" in out
+    # world = GDP-weighted (200·ln1.10 + 100·ln1.30)/(300·9); NOT the (−huge) ZZZ default, nor a
+    # simple mean of the two buckets.
+    world = (200 * math.log(1.10) + 100 * math.log(1.30)) / (300 * 9)
+    assert out["__all__"][2019] == pytest.approx(round(world, 4))
 
 
 def test_wpp_population_growth_is_population_weighted_over_archetype():
@@ -198,21 +204,41 @@ def test_normalise_ngfs_melts_iamc_wide_format():
     assert out["__all__"][2025] == pytest.approx(round((60 / 100) ** (1 / 15) - 1, 4))
 
 
-def test_ilo_participation_growth_from_raw_lfpr():
-    """ILOSTAT LFPR raw uses ref_area/time/obs_value with sex/classif1 breakdowns; normalise keeps
-    the total and extract computes the proportional change of the rate per archetype. USA rate
-    60→60.6 (2025→2026) = +1%."""
+def test_normalise_ilostat_keeps_only_total_sex_and_15plus_band():
+    """normalise_ilostat keeps ONLY the SEX_T total and the 15+ aggregate band
+    (AGE_AGGREGATE_YGE15 — ILOSTAT has no _TOTAL age band), so overlapping bands / other sexes on
+    the same country-year are not double-counted (review 2026-09-06)."""
     raw = pd.DataFrame(
         {
             "ref_area": ["USA", "USA", "USA"],
-            "time": [2025, 2026, 2025],
-            "obs_value": [60.0, 60.6, 40.0],
-            "sex": ["SEX_T", "SEX_T", "SEX_M"],  # the SEX_M row is dropped
-            "classif1": ["AGE_AGGREGATE_TOTAL"] * 3,
+            "time": [2020, 2020, 2020],
+            "obs_value": [60.0, 40.0, 55.0],
+            "sex": ["SEX_T", "SEX_M", "SEX_T"],  # SEX_M dropped
+            "classif1": ["AGE_AGGREGATE_YGE15", "AGE_AGGREGATE_YGE15", "AGE_AGGREGATE_Y15-24"],
         }
     )
     tidy = normalise_ilostat(raw)
     assert list(tidy.columns) == ["iso3", "year", "lfpr"]
-    assert len(tidy) == 2  # SEX_M dropped
-    out = extract_ilo_participation(raw, {"USA": "N"}, knots=(2025,))
-    assert out["N"][2025] == pytest.approx(0.01)
+    assert len(tidy) == 1 and float(tidy["lfpr"].iloc[0]) == 60.0  # only SEX_T + 15+ band
+
+
+def test_ilo_participation_is_recent_trend_held_forward():
+    """extract_ilo_participation computes each country's annualised log-trend of the LFPR over the
+    recent window, then HOLDS it forward at every knot (review 2026-09-06 — more stable than a
+    single year-on-year step frozen). USA rate 58→60 over 2018→2023 → ln(60/58)/5 per year, held at
+    knots. Mapped countries only."""
+    years = list(range(2018, 2024))
+    rate = [58.0, 58.5, 59.0, 59.3, 59.7, 60.0]
+    raw = pd.DataFrame(
+        {
+            "ref_area": ["USA"] * 6,
+            "time": years,
+            "obs_value": rate,
+            "sex": ["SEX_T"] * 6,
+            "classif1": ["AGE_AGGREGATE_YGE15"] * 6,
+        }
+    )
+    out = extract_ilo_participation(raw, {"USA": "N"}, knots=(2025, 2040))
+    expected = round(math.log(60.0 / 58.0) / 5, 4)
+    assert out["N"][2025] == pytest.approx(expected)
+    assert out["N"][2040] == pytest.approx(expected)  # single recent trend held forward

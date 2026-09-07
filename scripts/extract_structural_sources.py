@@ -214,18 +214,25 @@ def normalise_ngfs(df: pd.DataFrame) -> pd.DataFrame:
 
 def normalise_ilostat(df: pd.DataFrame) -> pd.DataFrame:
     """ILOSTAT labour-force-participation-rate bulk CSV → tidy ``iso3``, ``year``, ``lfpr``. The raw
-    file uses ``ref_area`` / ``time`` / ``obs_value`` with ``sex`` and ``classif1`` breakdowns; we
-    keep the total (``sex`` = ``SEX_T`` and the aggregate age band when those columns exist)."""
+    file (indicator ``EAP_DWAP_SEX_AGE_RT``) uses ``ref_area`` / ``time`` / ``obs_value`` with a
+    ``sex`` breakdown (keep the total ``SEX_T``) and a ``classif1`` age band. The headline
+    working-age total is the **15+** aggregate band ``AGE_AGGREGATE_YGE15`` (ILOSTAT does NOT emit a
+    ``_TOTAL`` age band — the age dimension is always a specific band), so we select exactly that
+    band, falling back to ``AGE_YTHADULT_YGE15`` if the AGGREGATE variant is absent. Selecting ONE
+    band avoids double-counting a country-year across overlapping bands (review 2026-09-06)."""
     df = _rename_first_present(
         df, {"iso3": ["ref_area", "iso3"], "year": ["time", "year"], "lfpr": ["obs_value", "lfpr"]}
     )
     if "sex" in df.columns:
-        df = df[df["sex"].astype(str).str.upper().str.contains("SEX_T|TOTAL|_T")]
-    if "classif1" in df.columns:  # keep the aggregate age band (…AGGREGATE_TOTAL / _T)
-        df = df[df["classif1"].astype(str).str.upper().str.contains("TOTAL|_T")]
+        df = df[df["sex"].astype(str).str.upper() == "SEX_T"]
+    if "classif1" in df.columns:
+        c = df["classif1"].astype(str).str.upper()
+        band = "AGE_AGGREGATE_YGE15" if (c == "AGE_AGGREGATE_YGE15").any() else "AGE_YTHADULT_YGE15"
+        df = df[c == band]
     df = df[df["iso3"].astype(str).str.fullmatch(r"[A-Za-z]{3}")].copy()
     df["year"] = df["year"].astype(int)
-    return df[["iso3", "year", "lfpr"]]
+    # One row per (country, year): if bands/sources still overlap, keep the last (latest source).
+    return df[["iso3", "year", "lfpr"]].drop_duplicates(["iso3", "year"], keep="last")
 
 
 # --------------------------------------------------------------------------------------------------
@@ -235,26 +242,48 @@ def extract_pwt_productivity(
     data: pd.DataFrame,
     cmap: dict[str, str],
     *,
-    window: tuple[int, int] = (2010, 2019),
+    window: tuple[int, int] = (2000, 2019),
 ) -> dict[str, dict[int, float]]:
     """Per-archetype trend TFP growth from PWT's ``rtfpna`` index (cols ``countrycode``, ``year``,
-    ``rtfpna``). For each country the trend growth over ``window`` is the annualised log-change of
-    the index between the window endpoints; the archetype rate is the unweighted mean of members'
-    trends. PWT 10.01 ends in 2019, so this is a HISTORICAL trend — the caller marks the forward
-    knot as an assumption. Returns ``{archetype: {knot_year: rate}}`` keyed at the window's end."""
+    ``rtfpna``, ``rgdpo``). For each country the trend growth over ``window`` is the annualised
+    log-change of the index between the window endpoints; the archetype rate is the **GDP-weighted**
+    mean of its members' trends (weight = the country's ``rgdpo`` at the window's end), so a large
+    economy dominates and dozens of small volatile economies do not (review 2026-09-06). Countries
+    NOT in the archetype map are EXCLUDED (not defaulted to S) so an unmapped economy cannot skew a
+    bucket. PWT 10.01 ends in 2019, so this is a HISTORICAL trend — the caller marks the forward
+    knot as an assumption. The default window is **2000–2019** (not a single decade): the 2010–2019
+    window alone captures the post-GFC emerging-market slowdown and shows advanced>emerging TFP,
+    whereas every window back to ~1990 shows the expected emerging>advanced convergence; 2000–2019
+    spans full cycles and is the defensible default (review 2026-09-07). Returns
+    ``{archetype: {knot_year: rate}}`` keyed at the window's end."""
     lo, hi = window
     per_country: dict[str, float] = {}
+    gdp: dict[str, float] = {}
+    has_gdp = "rgdpo" in data.columns
     for code, g in data.dropna(subset=["rtfpna"]).groupby("countrycode"):
+        code = str(code)
+        if code not in cmap:  # only aggregate mapped countries (no silent default-to-S, review P)
+            continue
         gy = g.set_index("year")["rtfpna"]
         if lo in gy.index and hi in gy.index and gy[lo] > 0 and gy[hi] > 0:
-            per_country[str(code)] = math.log(gy[hi] / gy[lo]) / (hi - lo)
+            per_country[code] = math.log(gy[hi] / gy[lo]) / (hi - lo)
+            if has_gdp:
+                gr = g.set_index("year")["rgdpo"]
+                if hi in gr.index and gr[hi] > 0:
+                    gdp[code] = float(gr[hi])
     by_arch: dict[str, dict[str, float]] = {}
+    by_gdp: dict[str, dict[str, float]] = {}
     for code, rate in per_country.items():
-        by_arch.setdefault(country_archetype(code, cmap), {})[code] = rate
-    # No GDP weights in PWT alone → unweighted archetype mean (documented confidence downgrade).
-    out = {a: {hi: round(_weighted_mean(v, None), 4)} for a, v in by_arch.items()}
+        a = country_archetype(code, cmap)
+        by_arch.setdefault(a, {})[code] = rate
+        by_gdp.setdefault(a, {})[code] = gdp.get(code, 0.0)
+    # GDP-weighted archetype mean (falls back to unweighted in _weighted_mean if no GDP present).
+    out = {a: {hi: round(_weighted_mean(v, by_gdp.get(a)), 4)} for a, v in by_arch.items()}
     if out:
-        out["__all__"] = {hi: round(sum(r[hi] for r in out.values()) / len(out), 4)}
+        # World aggregate: GDP-weighted across ALL mapped countries, not a mean of the two buckets.
+        allv = {c: r for a in by_arch for c, r in by_arch[a].items()}
+        allw = {c: w for a in by_gdp for c, w in by_gdp[a].items()}
+        out["__all__"] = {hi: round(_weighted_mean(allv, allw), 4)}
     return out
 
 
@@ -375,44 +404,47 @@ def extract_ilo_participation(
     cmap: dict[str, str],
     *,
     knots: tuple[int, ...] = (2025, 2040),
+    trend_window: int = 10,
 ) -> dict[str, dict[int, float]]:
     """Per-archetype labour-force-participation growth from ILOSTAT LFPR. The driver is a
-    *proportional* annual growth rate of the participation RATE, so for each knot the per-country
-    rate is ``lfpr[y+1]/lfpr[y] − 1`` (the rate is in %, so the ratio is unit-free), aggregated to
-    archetype weighted by the country's labour force ≈ its participation rate as a proxy (population
-    weights are not in this file; the rate itself is the best available within-source weight). Falls
-    back to the latest consecutive pair at/just before a knot when the exact knot year is absent
-    (ILOSTAT is historical/short-horizon). Accepts the raw ILOSTAT CSV via ``normalise_ilostat``.
-    Returns ``{archetype: {knot: rate}}``."""
+    *proportional* annual growth rate of the participation RATE. ILOSTAT is historical (ends well
+    before the knots), so rather than freeze a single year-on-year change we compute each country's
+    **annualised trend over the most recent ``trend_window`` years available** — the log-change of
+    the rate between the first and last year in the window, per year — far more stable than
+    one noisy year-to-year step (review 2026-09-06). That single recent trend is held FORWARD at
+    every knot (a documented no-further-information assumption). Countries are aggregated to their
+    archetype weighted by the participation rate (a labour-force proxy; population weights aren't in
+    this file), and only MAPPED countries are included (no silent default-to-S). Accepts the raw
+    ILOSTAT CSV via ``normalise_ilostat``. Returns ``{archetype: {knot: rate}}``."""
     data = normalise_ilostat(data)
+    trends: dict[str, dict[str, float]] = {}
+    wts: dict[str, dict[str, float]] = {}
+    for code, g in data.groupby("iso3"):
+        code = str(code)
+        if code not in cmap:  # mapped countries only (no silent default-to-S)
+            continue
+        gy = g.set_index("year")["lfpr"].sort_index()
+        gy = gy[gy > 0]
+        if len(gy) < 2:
+            continue
+        last = int(gy.index.max())
+        recent = gy[gy.index >= last - trend_window]
+        if len(recent) < 2:
+            recent = gy
+        y0, y1 = int(recent.index.min()), int(recent.index.max())
+        trend = math.log(recent[y1] / recent[y0]) / (y1 - y0)
+        a = country_archetype(code, cmap)
+        trends.setdefault(a, {})[code] = trend
+        wts.setdefault(a, {})[code] = float(recent[y1])  # participation-rate weight
+    per_arch = {a: round(_weighted_mean(trends[a], wts[a]), 4) for a in trends}
+    allv = {c: r for a in trends for c, r in trends[a].items()}
+    allw = {c: w for a in wts for c, w in wts[a].items()}
+    world = round(_weighted_mean(allv, allw), 4) if allv else None
     out: dict[str, dict[int, float]] = {}
-    for y in knots:
-        rates: dict[str, dict[str, float]] = {}
-        wts: dict[str, dict[str, float]] = {}
-        for code, g in data.groupby("iso3"):
-            gy = g.set_index("year")["lfpr"].sort_index()
-            # exact consecutive pair at the knot, else the latest consecutive pair before it.
-            pair = None
-            if y in gy.index and (y + 1) in gy.index:
-                pair = (y, y + 1)
-            else:
-                usable = [yy for yy in gy.index if (yy + 1) in gy.index and yy <= y]
-                if usable:
-                    yy = max(usable)
-                    pair = (yy, yy + 1)
-            if pair and gy[pair[0]] > 0:
-                a = country_archetype(str(code), cmap)
-                rates.setdefault(a, {})[str(code)] = gy[pair[1]] / gy[pair[0]] - 1.0
-                wts.setdefault(a, {})[str(code)] = float(gy[pair[0]])
-        for a in rates:
-            out.setdefault(a, {})[y] = round(_weighted_mean(rates[a], wts[a]), 4)
-    if out:
-        allk = {
-            y: round(sum(out[a][y] for a in out if y in out[a]) / len(out), 4)
-            for y in knots
-            if any(y in out[a] for a in out)
-        }
-        out["__all__"] = allk
+    for a, rate in per_arch.items():
+        out[a] = {y: rate for y in knots}  # single recent trend held forward at every knot
+    if world is not None:
+        out["__all__"] = {y: world for y in knots}
     return out
 
 
@@ -435,7 +467,9 @@ def _rebuild_digest() -> tuple[dict, list[str]]:
 
     wpp = _RAW / "wpp2024_population.csv"
     if wpp.exists():
-        rates = extract_wpp_population(pd.read_csv(wpp), cmap)
+        # low_memory=False: the WPP CSV mixes numeric country rows with blank-field region rows, so
+        # a chunked read infers mixed dtypes and warns; read it whole (it is ~85MB, fits in memory).
+        rates = extract_wpp_population(pd.read_csv(wpp, low_memory=False), cmap)
         _apply_region(digest, "population", rates, source="UN WPP 2024 (extracted)")
     else:
         missing.append("wpp2024_population.csv (population)")
