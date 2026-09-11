@@ -95,8 +95,9 @@ concordance (see `data/structural/NOTICE.md` for licences and the reproducibilit
   `LP2_G`/`CAP_QI` capital-deepening decomposition was dimensionally wrong and is retired.)
 - **[UNWPP2024]** United Nations DESA, Population Division (2024). *World Population Prospects 2024*,
   Medium variant. — Per-region population growth.
-- **[ILOSTAT]** International Labour Organization, *ILOSTAT* modelled estimates, and World Bank
-  *World Development Indicators*. — Labour-force participation rates.
+- **[ILOSTAT]** International Labour Organization, *ILOSTAT*, indicator `EAP_DWAP_SEX_AGE_RT`
+  (labour-force participation rate, SEX_T total, 15+ band). — Labour-force participation rates. (The
+  implemented extraction uses ILOSTAT only; no World Bank series is read.)
 - **[WorldBankIncome]** World Bank country and lending groups (income classification, FY2025). —
   The country → N/S archetype rule underpinning `concordance_v2.json`.
 - **[NGFS_B2C]** NGFS Phase 5 scenario explorer (see [NGFS]), model *REMIND-MAgPIE 3.3-4.8*,

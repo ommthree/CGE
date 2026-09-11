@@ -82,8 +82,10 @@ estimates. The forward-window handling below still applies:
   hour) and is retired.
 - **NGFS Phase 5** REMIND-MAgPIE 3.3-4.8 / **Below 2°C** / World — emissions intensity **derived** as
   `Emissions|CO2 / GDP|PPP|Counterfactual without damage`, selected by an **explicit validated tuple**
-  (`_NGFS`, exact region + single-series variables, resolve-to-exactly-one scenario/model), rate
-  annualised over the **knot interval**.
+  (`_NGFS`, exact region + single-series variables, resolve-to-exactly-one scenario/model). A knot is
+  emitted at **every source year** (each the CAGR to the next), so the path reproduces the source
+  intensity at every source year (review-9 P1 — the earlier sparse 2025/2040 pair annualised the
+  2040→2100 tail and overstated 2050 intensity ~30%); endpoints validated finite/positive.
 
 All rates are **proportional** annual growth (log/delta-log sources converted with `expm1`, review-8
 P3). Each maps source countries/industries to the N/S and BRD/MIL archetypes via committed
@@ -144,12 +146,17 @@ per-driver validation added in review-6 (each present driver must resolve every 
 already guards the artifact against silent cross-driver divergence.
 
 ### 1d. Pinned emissions-intensity scenario
-**SCENARIO PINNED 2026-09-09 (review-8); per-sector split still open.** The extraction pins an
-**explicit validated tuple** (`_NGFS` in `scripts/extract_structural_sources.py`): NGFS Phase 5,
-model `REMIND-MAgPIE 3.3-4.8`, scenario `Below 2°C`, region `World`, intensity **derived** as
-`Emissions|CO2 / GDP|PPP|Counterfactual without damage`, annualised over the knot interval. Selection
-resolves the scenario/model to exactly one published value (raises on none/ambiguous) and requires
-the CO₂/GDP series each as a single series — no silent cross-region/variable averaging.
+**SCENARIO PINNED 2026-09-09 (review-8); PATH FIDELITY FIXED 2026-09-15 (review-9); per-sector split
+still open.** The extraction pins an **explicit validated tuple** (`_NGFS` in
+`scripts/extract_structural_sources.py`): NGFS Phase 5, model `REMIND-MAgPIE 3.3-4.8`, scenario
+`Below 2°C`, region `World`, intensity **derived** as `Emissions|CO2 / GDP|PPP|Counterfactual without
+damage`. A knot is emitted at every source year (each the CAGR to the next), so the piecewise path
+reproduces the source intensity at every source year — the earlier sparse 2025/2040 pair annualised
+the 2040→2100 tail and held that gentle average from 2040, overstating 2050 intensity ~30% (review-9
+P1). Endpoints are validated finite/positive before exponentiation (a net-negative-emissions scenario
+raises rather than emitting a negative/NaN scale). Selection resolves the scenario/model to exactly
+one published value (raises on none/ambiguous) and requires the CO₂/GDP series each as a single
+series — no silent cross-region/variable averaging.
 **Still open:** it is a single **economy-wide** intensity path applied to every sector; a per-sector
 NGFS split (energy-supply / industry / transport / buildings variables mapped to BRD/MIL) would give
 sector-specific decarbonisation. Also possible: a named alternative-scenario set for sensitivity (1e).
