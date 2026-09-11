@@ -8,12 +8,13 @@ Pipeline step 1a (see ``docs/structural-data-pipeline-plan.md``). Reads the stru
 ``data/structural/sources/inputs.json`` — per-driver, per-key knot rates each carrying a source
 citation and confidence — and assembles ``data/structural/trajectories_v1.json`` (the shape the
 loader + wrapper consume). This makes the artifact REPRODUCIBLE from committed inputs rather than
-hand-edited, and locks the pipeline shape so real per-country/industry extractions (PWT 10.01, UN
-WPP 2024, EU KLEMS 2023, NGFS) drop into the digest later without touching this script or schema.
+hand-edited.
 
-Today the digest holds the same illustrative headline figures the artifact previously carried, so
-this build is a NO-OP on the numbers — it introduces the reproducible path, not new data. CI runs
-``--check`` so the committed artifact can never drift from the digest.
+The digest holds REAL extractions (PWT 10.01, UN WPP 2024, ILOSTAT, EU KLEMS & INTANProd 2024, NGFS
+Phase 5), produced by ``scripts/extract_structural_sources.py`` from the raw files in
+``data/structural/sources/raw/``. CI runs ``--check`` on digest→artifact (fully gated) and on
+raw→digest (a no-op in CI, which lacks the git-ignored raw files — it validates locally when they
+are present); see ``data/structural/NOTICE.md`` for the precise reproducibility scope.
 """
 
 from __future__ import annotations

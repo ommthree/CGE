@@ -74,12 +74,17 @@ vendor):
 - **Retrieved:** 2026-08-16.
 - **Licence:** CC BY 3.0 IGO.
 
-## Labour-force participation — ILOSTAT / World Bank
+## Labour-force participation — ILOSTAT
 
-- **Source:** ILO modelled estimates (ILOSTAT) and World Bank World Development Indicators —
-  labour-force participation rate. <https://ilostat.ilo.org/>
-- **Retrieved:** 2026-08-16.
+- **Source:** ILOSTAT indicator `EAP_DWAP_SEX_AGE_RT` (labour-force participation rate, SEX_T total,
+  15+ band). The implemented extraction reads **ILOSTAT only** — no World Bank series is used
+  (review P3 2026-09-15). <https://ilostat.ilo.org/>
+- **Retrieved:** 2026-09-09.
 - **Licence:** CC BY 4.0.
+- **Confidence: LOW.** Historical recent-window trend held flat; ±1%/yr outlier clip; a country
+  needs ≥2 observations inside the recent ≤10-year window (else dropped, not back-filled from decades
+  of history); unweighted archetype mean (no labour-force size weights in this file). Sensitivity-
+  grade, not a central consulting input.
 
 ## Labour productivity / TFP — Penn World Table 10.01
 
@@ -157,21 +162,30 @@ shipped. The identity and CES/CD routing above still apply; only the source of t
   tuple** (`_NGFS` in `scripts/extract_structural_sources.py`), not a loose substring filter. The
   scenario name is matched after stripping the `(version: n)` suffix and the `°`→`?` header mangling
   but must resolve to exactly one published value (raises on none/ambiguous), the region must equal
-  `World`, and the CO₂ and GDP series must each be present as a single series. The per-knot rate is
-  annualised over the **knot interval** (2025→2040, then held), not to the next source year, so the
-  piecewise-constant trajectory reproduces the source intensity path at the knots. This is a
-  **single economy-wide path** applied to every sector — a per-sector split is a documented follow-up
+  `World`, and the CO₂ and GDP series must each be present as a single series. A knot is emitted at
+  **every source year** (from 2025), each the CAGR to the next source year, so the piecewise-constant
+  trajectory reproduces the source intensity at every source year (review P1 2026-09-15 — the earlier
+  sparse 2025/2040 pair annualised the 2040→2100 tail and held that gentle average from 2040,
+  overstating 2050 intensity ~30%). Endpoints are validated finite with positive GDP and positive
+  intensity before exponentiation, so a net-negative-emissions scenario (e.g. Net Zero after ~2050)
+  fails loudly rather than emitting a negative/NaN scale. This is a **single economy-wide path**
+  applied to every sector — a per-sector split is a documented follow-up
   (`docs/structural-data-pipeline-plan.md`, 1d). `confidence = medium`.
 
-## Reproducibility (review 2026-09-09 — the transcription caveat is retired)
+## Reproducibility (review 2026-09-09 / 2026-09-15 — the transcription caveat is retired)
 
-The shipped figures are now the **output of a committed extraction pipeline**, not hand-transcribed
+The shipped figures are the **output of a committed extraction pipeline**, not hand-transcribed
 headline rates. `scripts/extract_structural_sources.py` reads the raw published files
 (`data/structural/sources/raw/`, git-ignored) and writes `data/structural/sources/inputs.json`
 (source digest); `scripts/build_structural_trajectories.py` assembles `trajectories_v1.json` from
-that digest. Both carry a `--check` gate run in CI, so the vendored artifacts cannot drift from the
-sources. Rates are **proportional** annual growth (log/delta-log sources are converted with
-`expm1`). PWT 10.01 ends in **2019**, so the productivity knots are an explicit historical trend held
+that digest. **Scope of the CI gate (stated precisely):** CI runs `--check` on **digest→artifact**
+(fully validated in CI) and on **raw→digest** — but the raw files are NOT in CI (large, separately
+licensed), so that second check is a no-op there and only validates locally when the raw files are
+present. So the pipeline is **locally reproducible from separately-acquired inputs**; it is not a
+claim that CI re-derives the digest from raw sources. To make the raw→digest step auditable without
+redistributing the files, `sources/raw_manifest.json` records each raw file's SHA-256 + byte size —
+re-acquire the cited releases and compare. Rates are **proportional** annual growth (log/delta-log
+sources are converted with `expm1`). PWT 10.01 ends in **2019**, so the productivity knots are held
 forward (an assumption, flagged as such per-entry); WPP/NGFS supply genuinely forward-looking values.
 **Documented limitations** (not defects): EU KLEMS is single-country (Austria); NGFS intensity is
 economy-wide; forward participation/productivity knots hold the recent trend flat; the region/sector

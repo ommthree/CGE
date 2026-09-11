@@ -108,33 +108,75 @@ def test_euklems_va_weights_mfp_lp_and_source_share_and_drops_capital_deepening(
     )
 
 
-def test_ngfs_emissions_is_annualised_decline_of_the_pinned_scenario():
-    """Selects the pinned model/scenario/region, derives intensity = CO2/GDP, then annualises the
-    decline over the knot interval. CO2 100→60 with GDP flat at 100 over 2025→2040 → intensity
-    1.0→0.6 → (0.6)^(1/15)−1 (negative). Rows for another model/region must be EXCLUDED, not
-    mixed."""
+def test_ngfs_emits_a_knot_per_source_year_and_reproduces_the_path():
+    """A knot is emitted at every source year ≥ start_year, each the CAGR to the NEXT source year,
+    so the piecewise-constant path reproduces the source intensity at every source year (review P1
+    2026-09-15). Source intensity (CO2/GDP, GDP flat at 100): 2025=1.0, 2030=0.7, 2040=0.3 → the
+    2030 knot spans 2030→2040 (a decade). Rows for another model/region are EXCLUDED, not mixed. The
+    final source year holds flat (rate 0.0)."""
     df = pd.DataFrame(
         {
-            "model": ["M", "M", "M", "M", "OTHER", "M"],
-            "scenario": ["NZ"] * 6,
-            "region": ["World", "World", "World", "World", "World", "Europe"],
-            "variable": [
-                "Emissions|CO2",
-                "Emissions|CO2",
-                "GDP|PPP",
-                "GDP|PPP",
-                "Emissions|CO2",  # wrong model → excluded
-                "Emissions|CO2",  # wrong region → excluded
-            ],
-            "year": [2025, 2040, 2025, 2040, 2025, 2025],
-            "value": [100.0, 60.0, 100.0, 100.0, 999.0, 999.0],
+            "model": ["M", "M", "M", "M", "M", "M", "OTHER", "M"],
+            "scenario": ["NZ"] * 8,
+            "region": ["World"] * 6 + ["World", "Europe"],
+            "variable": ["Emissions|CO2"] * 3 + ["GDP|PPP"] * 3 + ["Emissions|CO2"] * 2,
+            "year": [2025, 2030, 2040, 2025, 2030, 2040, 2025, 2025],
+            "value": [100.0, 70.0, 30.0, 100.0, 100.0, 100.0, 999.0, 999.0],
         }
     )
     out = extract_ngfs_emissions(
-        df, model="M", scenario="NZ", co2_var="Emissions|CO2", gdp_var="GDP|PPP", knots=(2025,)
+        df, model="M", scenario="NZ", co2_var="Emissions|CO2", gdp_var="GDP|PPP"
+    )["__all__"]
+    assert sorted(out) == [2025, 2030, 2040]  # a knot at every source year
+    assert out[2025] == pytest.approx(round((0.70 / 1.0) ** (1 / 5) - 1, 4))  # 2025→2030
+    assert out[2030] == pytest.approx(round((0.30 / 0.70) ** (1 / 10) - 1, 4))  # 2030→2040 (decade)
+    assert out[2040] == 0.0  # final source year holds flat
+    # holding piecewise-constant reproduces the source at 2040: 1.0·(1+r25)^5·(1+r30)^10 == 0.30
+    level = (1 + out[2025]) ** 5 * (1 + out[2030]) ** 10
+    assert level == pytest.approx(0.30, rel=1e-3)
+
+
+def test_ngfs_rejects_negative_emissions_and_bad_gdp():
+    """A multiplicative intensity SCALE cannot represent net-negative emissions (e.g. Net Zero after
+    ~2050) or a zero/non-finite GDP endpoint — the engine forbids non-positive scales. Each case
+    raises before exponentiation (review P1 2026-09-15), naming the offending year."""
+    base = {
+        "model": ["M"] * 4,
+        "scenario": ["NZ"] * 4,
+        "region": ["World"] * 4,
+        "variable": ["Emissions|CO2", "Emissions|CO2", "GDP|PPP", "GDP|PPP"],
+        "year": [2025, 2050, 2025, 2050],
+    }
+    neg = pd.DataFrame({**base, "value": [100.0, -20.0, 100.0, 100.0]})  # CO2 net-negative by 2050
+    with pytest.raises(ValueError, match="intensity is non-positive"):
+        extract_ngfs_emissions(neg, model="M", scenario="NZ", gdp_var="GDP|PPP")
+    zero_gdp = pd.DataFrame({**base, "value": [100.0, 50.0, 100.0, 0.0]})  # GDP → 0
+    with pytest.raises(ValueError, match="non-positive"):
+        extract_ngfs_emissions(zero_gdp, model="M", scenario="NZ", gdp_var="GDP|PPP")
+    inf_gdp = pd.DataFrame({**base, "value": [100.0, 50.0, 100.0, float("inf")]})
+    with pytest.raises(ValueError, match="non-finite"):
+        extract_ngfs_emissions(inf_gdp, model="M", scenario="NZ", gdp_var="GDP|PPP")
+
+
+def test_ngfs_excludes_wrong_region_rows_from_the_intensity():
+    """A wrong-region row with a DIFFERENT value must not perturb the World intensity (the earlier
+    test only checked it didn't error). World CO2 100→50, GDP flat; a Europe row with wildly
+    different CO2 must be ignored."""
+    df = pd.DataFrame(
+        {
+            "model": ["M"] * 5,
+            "scenario": ["NZ"] * 5,
+            "region": ["World", "World", "World", "World", "Europe"],
+            "variable": ["Emissions|CO2", "Emissions|CO2", "GDP|PPP", "GDP|PPP", "Emissions|CO2"],
+            "year": [2025, 2040, 2025, 2040, 2025],
+            "value": [100.0, 50.0, 100.0, 100.0, 5.0],  # Europe CO2=5 must not enter World
+        }
     )
-    assert out["__all__"][2025] == pytest.approx(round((60 / 100) ** (1 / 15) - 1, 4))
-    assert out["__all__"][2025] < 0  # decarbonisation
+    out = extract_ngfs_emissions(df, model="M", scenario="NZ", region="World", gdp_var="GDP|PPP")[
+        "__all__"
+    ]
+    # unaffected by the Europe row:
+    assert out[2025] == pytest.approx(round((0.50 / 1.0) ** (1 / 15) - 1, 4))
 
 
 def test_extractor_no_op_when_no_raw_files(monkeypatch, capsys):
@@ -168,8 +210,30 @@ def test_normalise_wpp_maps_raw_columns_and_drops_aggregates():
     assert list(tidy.columns) == ["iso3", "year", "population"]
     assert set(tidy["iso3"]) == {"USA"}
     assert len(tidy) == 2  # the blank-ISO3 and the High-variant rows are gone
+    # single knot 2025 (no successor) → the instantaneous one-year rate 1010/1000−1.
     out = extract_wpp_population(raw, {"USA": "N"}, knots=(2025,))
     assert out["N"][2025] == pytest.approx(0.01)
+
+
+def test_wpp_knot_is_interval_cagr_that_reproduces_the_level():
+    """Each knot's rate is the interval CAGR of the summed member total to the next knot, so holding
+    it reproduces the WPP LEVEL at the next knot (review P2 2026-09-15). Two N countries; the N
+    total goes 1500 (2025) → 1650 (2035), a decade → CAGR (1650/1500)^(1/10)−1; the __all__ over the
+    same members reproduces the summed level. Aggregation is by SUMMING members (populous members
+    dominate), not a mean of per-country rates."""
+    raw = pd.DataFrame(
+        {
+            "iso3": ["USA", "USA", "DEU", "DEU"],
+            "year": [2025, 2035, 2025, 2035],
+            "population": [1000.0, 1100.0, 500.0, 550.0],  # N total 1500 → 1650 over 2025→2035
+        }
+    )
+    out = extract_wpp_population(raw, {"USA": "N", "DEU": "N"}, knots=(2025, 2035))
+    cagr = (1650.0 / 1500.0) ** (1 / 10) - 1
+    assert out["N"][2025] == pytest.approx(round(cagr, 4))
+    assert out["__all__"][2025] == pytest.approx(round(cagr, 4))
+    # holding the 2025 rate for the decade reproduces the WPP level at 2035:
+    assert 1500.0 * (1 + out["N"][2025]) ** 10 == pytest.approx(1650.0, rel=1e-3)
 
 
 def test_normalise_euklems_pivots_long_export_to_isic_sections():
@@ -223,7 +287,7 @@ def test_normalise_ngfs_melts_iamc_wide_format():
         }
     )
     out = extract_ngfs_emissions(
-        wide, model="M", scenario="NZ", co2_var="Emissions|CO2", gdp_var="GDP|PPP", knots=(2025,)
+        wide, model="M", scenario="NZ", co2_var="Emissions|CO2", gdp_var="GDP|PPP"
     )
     assert out["__all__"][2025] == pytest.approx(round((60 / 100) ** (1 / 15) - 1, 4))
 
@@ -289,7 +353,6 @@ def test_ngfs_derives_intensity_from_co2_over_gdp():
         model="REMIND-MAgPIE 3.3-4.8",
         scenario="Below 2°C",
         gdp_var="GDP|PPP",
-        knots=(2025,),
     )
     intensity_decline = (0.25) ** (1 / 15) - 1  # (50/200)/(100/100) = 0.25 over 15y
     assert out["__all__"][2025] == pytest.approx(round(intensity_decline, 4))
@@ -314,9 +377,7 @@ def test_ngfs_rejects_ambiguous_scenario_and_wrong_region():
     )
     # Two raw names collapse to the same normalised key → not exactly one → reject (no silent pick).
     with pytest.raises(ValueError, match="did not resolve to exactly one"):
-        extract_ngfs_emissions(
-            df, model="M", scenario="Below 2°C", gdp_var="GDP|PPP", knots=(2025,)
-        )
+        extract_ngfs_emissions(df, model="M", scenario="Below 2°C", gdp_var="GDP|PPP")
 
 
 def test_ngfs_raises_when_co2_or_gdp_variable_absent():
@@ -334,7 +395,7 @@ def test_ngfs_raises_when_co2_or_gdp_variable_absent():
     )
     with pytest.raises(ValueError, match="not present for the selected"):
         extract_ngfs_emissions(
-            df, model="M", scenario="S", co2_var="Emissions|CO2", gdp_var="GDP|PPP", knots=(2025,)
+            df, model="M", scenario="S", co2_var="Emissions|CO2", gdp_var="GDP|PPP"
         )
 
 
@@ -374,3 +435,36 @@ def test_load_euklems_workbook_reads_multisheet_layout(tmp_path):
     assert row["labour_cost_share"] == pytest.approx(0.55)  # LAB/VA_CP
     assert row["va_weight"] == pytest.approx(100.0)
     assert set(tidy["isic_section"]) == {"C"}  # only the single-letter section row
+
+
+def test_load_euklems_workbook_va_weights_across_geographies(tmp_path):
+    """A multi-country workbook must VA-WEIGHT country growth per section, not equal-average it
+    (review P2 2026-09-15). Section C in two countries: AT mfp 1.0 p.p. / VA 100, DE mfp 4.0 p.p. /
+    VA 300 → VA-weighted mfp = (1·100+4·300)/400 = 3.25 p.p. (an equal average would give 2.5)."""
+    import math
+
+    import openpyxl  # noqa: F401
+
+    def sheet(var, at_val, de_val):
+        return pd.DataFrame(
+            {
+                "nace_r2_code": ["C", "C"],
+                "geo_code": ["AT", "DE"],
+                "var": [var, var],
+                "2018": [at_val, de_val],
+                "2019": [at_val, de_val],
+            }
+        )
+
+    p = tmp_path / "euklems_multi.xlsx"
+    with pd.ExcelWriter(p) as w:
+        sheet("LP1ConTFP", 1.0, 4.0).to_excel(w, sheet_name="LP1ConTFP", index=False)
+        sheet("LP1_G", 1.0, 4.0).to_excel(w, sheet_name="LP1_G", index=False)
+        sheet("LAB", 50.0, 150.0).to_excel(w, sheet_name="LAB", index=False)  # share 0.5 both
+        sheet("VA_CP", 100.0, 300.0).to_excel(w, sheet_name="VA_CP", index=False)  # weights 100/300
+    tidy = load_euklems_workbook(p, trend_window=2)
+    row = tidy[tidy["isic_section"] == "C"].iloc[0]
+    assert row["mfp"] == pytest.approx(
+        (math.expm1(1.0 / 100) * 100 + math.expm1(4.0 / 100) * 300) / 400
+    )
+    assert row["va_weight"] == pytest.approx(400.0)  # summed across geographies

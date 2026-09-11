@@ -277,9 +277,10 @@ horizon, δ, trends, retirement, K₀, and the capital path.
       neutral criterion for Cobb–Douglas; for CES the unit-cost response is not $\varphi^{-s_L}$, so
       neutrality there is a local benchmark-share approximation — a transparent normalisation, not an
       exact GE cost-neutrality claim. In **multi** mode the mean is **region-specific**, so an
-      identical sector rate nets to a different bias per region (review P1b). *(EU KLEMS 2023 [EUKLEMS2024] for both the
-      labour-productivity and capital-deepening series; Penn World Table 10.01 [FeenstraPWT] for the
-      aggregate reference.)*
+      identical sector rate nets to a different bias per region (review P1b). *(EU KLEMS & INTANProd
+      2024 [EUKLEMS2024] — the sourced MFP driver is the workbook's per-hour TFP contribution
+      `LP1ConTFP` used directly, with per-hour LP `LP1_G` as context; there is no separate
+      capital-deepening series. Penn World Table 10.01 [FeenstraPWT] for the aggregate reference.)*
     - **Per-sector `emissions_intensity`** (decarbonisation) — a **price-independent** engine hook
       (`emissions_intensity_scale`) that multiplies the sector's physical emission intensity (so
       covered emissions fall) AND its priced carbon wedge. Because it acts on the intensity the engine
@@ -360,9 +361,11 @@ reported. The hot path is the per-year static CGE solve; the wrapper itself is c
 | region/sector concordance | GDP-weighted, country-level | [WorldBankIncome] |
 
 The vendored trajectory (`data/structural/trajectories_v1.json`) and concordance
-(`data/structural/concordance_v2.json`) are documented, sourced, per-entry-cited artifacts; see
-`data/structural/NOTICE.md` for licences and the reproducibility caveat (headline transcribed rates,
-not a committed extraction pipeline).
+(`data/structural/concordance_v2.json`) are documented, sourced, per-entry-cited artifacts produced
+by a committed extraction pipeline (`scripts/extract_structural_sources.py` →
+`scripts/build_structural_trajectories.py`, both `--check`-gated); see `data/structural/NOTICE.md`
+for licences and the precise reproducibility scope (locally reproducible from separately-acquired
+raw inputs; the digest→artifact step is CI-gated).
 
 ## 9. Validation
 
