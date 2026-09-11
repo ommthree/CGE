@@ -105,7 +105,7 @@ capital deepening using the source-period share $s_L^{src}$) and applied through
 **actual** VA nest, routed by nest type (§6, eq $(6)$): Cobb–Douglas via labour augmentation, CES via
 the value-added Hicks-neutral engine channel — both reproduce the MFP cost change at every price
 vector (globally correct). Where the identifying inputs are missing it falls back to the raw rate as
-a transparent heuristic composition lever ([Solow1957], [EUKLEMS2023]).
+a transparent heuristic composition lever ([Solow1957], [EUKLEMS2024]).
 
 Concretely, the year-$t$ primary-factor endowment scales fed to the engine's `factor_endowment_scale`
 hook are
@@ -137,7 +137,7 @@ term is recovered in two stages (review P1 2026-09-06). **Stage 1 — identify M
 a sourced `mfp` series is used directly, or MFP is netted out of observed labour productivity using
 the **source-period** labour share $s_L^{src}$ (`source_labour_shares`, the source economy's factor
 share — *not* the receiving model's benchmark), via the log-change identity
-$g_{MFP}=g_{Y/L}-(1-s_L^{src})\,g_{K/L}$ ([Solow1957], [EUKLEMS2023]; the OECD productivity
+$g_{MFP}=g_{Y/L}-(1-s_L^{src})\,g_{K/L}$ ([Solow1957], [EUKLEMS2024]; the OECD productivity
 methodology). **Stage 2 — apply MFP through the receiving model's ACTUAL VA nest, ROUTED BY NEST
 TYPE** so it is globally correct (not benchmark-only):
 
@@ -277,7 +277,7 @@ horizon, δ, trends, retirement, K₀, and the capital path.
       neutral criterion for Cobb–Douglas; for CES the unit-cost response is not $\varphi^{-s_L}$, so
       neutrality there is a local benchmark-share approximation — a transparent normalisation, not an
       exact GE cost-neutrality claim. In **multi** mode the mean is **region-specific**, so an
-      identical sector rate nets to a different bias per region (review P1b). *(EU KLEMS 2023 [EUKLEMS2023] for both the
+      identical sector rate nets to a different bias per region (review P1b). *(EU KLEMS 2023 [EUKLEMS2024] for both the
       labour-productivity and capital-deepening series; Penn World Table 10.01 [FeenstraPWT] for the
       aggregate reference.)*
     - **Per-sector `emissions_intensity`** (decarbonisation) — a **price-independent** engine hook
@@ -288,7 +288,7 @@ horizon, δ, trends, retirement, K₀, and the capital path.
       the wrapper feeds the engine (all three variants; a **per-region** reference for the multi CGE,
       where an **uncovered** region carries a zero reference without invalidating the covered
       regions), a decarbonising sector shows falling covered emissions measured against the base year.
-      *(IEA WEO 2024 [IEA_WEO2024] / NGFS Net Zero 2050 [NGFS].)*
+      *(NGFS Phase 5, REMIND-MAgPIE 3.3-4.8 / Below 2°C [NGFS_B2C], [NGFS].)*
       **One limitation to state plainly.** With **no `CarbonPrice`** in the scenario there is no
       priced carbon and no covered-emissions output at all, so an `emissions_intensity` trajectory has
       **no observable effect** — pair it with a `CarbonPrice`.
@@ -354,9 +354,9 @@ reported. The hot path is the per-year static CGE solve; the wrapper itself is c
 | $K_0$ (services→stock) | derived, eq $(2)$ | [Jorgenson1963] |
 | labour / participation paths | sourced per region | [UNWPP2024], [ILOSTAT] |
 | aggregate TFP path | sourced per region | [FeenstraPWT] |
-| sectoral labour productivity $g_{Y/L}$ | sourced per sector | [EUKLEMS2023] |
-| sectoral capital deepening $g_{K/L}$ | sourced per sector (enables eq $(6)$) | [EUKLEMS2023] |
-| emissions-intensity path | illustrative central path | [IEA_WEO2024], [NGFS] |
+| sector MFP $g_{MFP}$ (the driver) | sourced per sector (`LP1ConTFP`, direct) | [EUKLEMS2024] |
+| sector labour productivity $g_{Y/L}$ | sourced per sector (`LP1_G`, context) | [EUKLEMS2024] |
+| emissions-intensity path | NGFS Below 2°C, CO₂/GDP | [NGFS_B2C], [NGFS] |
 | region/sector concordance | GDP-weighted, country-level | [WorldBankIncome] |
 
 The vendored trajectory (`data/structural/trajectories_v1.json`) and concordance
@@ -395,8 +395,8 @@ Standing model-correctness checks live in `src/cge/validation/suites/dynamics.py
 ## 10. References
 
 Cited inline by key; full entries in [`docs/references.md`](../references.md): [MillerBlair2009],
-[Jorgenson1963], [KingRebelo1999], [Solow1957], [FeenstraPWT], [EUKLEMS2023], [UNWPP2024], [ILOSTAT],
-[WorldBankIncome], [IEA_WEO2024], [NGFS].
+[Jorgenson1963], [KingRebelo1999], [Solow1957], [FeenstraPWT], [EUKLEMS2024], [UNWPP2024], [ILOSTAT],
+[WorldBankIncome], [NGFS_B2C], [NGFS].
 
 See `docs/models/macro-aggregates.md` for the GDP/GVA reporting and
 [`roadmap.md`](../../roadmap.md) Phase 7 for the pathway stack this unblocks.

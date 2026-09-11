@@ -90,11 +90,13 @@ vendor):
 - **Retrieved:** 2026-08-16.
 - **Licence:** CC BY 4.0.
 
-## Sectoral productivity — EU KLEMS 2023 release
+## Sectoral productivity / MFP — EU KLEMS & INTANProd 2024 release
 
-- **Source:** EU KLEMS & INTANProd 2023 release — sectoral labour-productivity growth by industry.
+- **Source:** EU KLEMS & INTANProd 2024 growth-accounts release — per-hour TFP contribution
+  (`LP1ConTFP`, the sourced `mfp` driver) and per-hour value-added growth (`LP1_G`,
+  `sector_productivity`), by industry, **Austria** (the sole geography in the supplied workbook).
   <https://euklems-intanprod-llee.luiss.it/>
-- **Retrieved:** 2026-08-16.
+- **Retrieved:** 2026-09-09.
 - **Licence:** CC BY 4.0 (EU KLEMS/INTANProd public release).
 - **Note:** the shipped `BRD`/`MIL` sector keys are the toy model's illustrative sectors; the rates
   are headline goods-vs-services **labour-productivity** growth central estimates (output per hour),
@@ -111,12 +113,17 @@ vendor):
   artifact is used directly; else (b) `g_MFP = g_{Y/L} − (1−s_L^src)·g_{K/L}` from
   `sector_productivity` + `capital_deepening` using the **source-period labour share**
   `source_labour_shares` s_L^src (NOT the receiving model's benchmark share — conflating them was a
-  review finding). The shipped `source_labour_shares` (BRD 0.58, MIL 0.62, `__all__` 0.60) are
-  **illustrative headline values**; an EU KLEMS adjacent-period Törnqvist extraction is the
-  consulting-grade follow-up (see `docs/structural-data-pipeline-plan.md`). Without a
-  `capital_deepening`/`mfp` series, or where a labour share or VA elasticity is missing, the sector
-  falls back to the raw rate as a transparent heuristic (deepening not removed); the run manifest
-  records which mode ran per (region, sector). The per-sector *drift* normalises the cumulative MFP
+  review finding). **As shipped, route (a) is active:** the `mfp` series is EXTRACTED from EU KLEMS —
+  the workbook's own per-hour TFP contribution `LP1ConTFP` — so no capital-deepening subtraction is
+  needed (review P1 2026-09-09; the earlier `LP2_G`/`CAP_QI` decomposition was dimensionally wrong —
+  `LP2_G` is VA per *person*, not per hour — and is retired). The `source_labour_shares` (BRD 0.613,
+  MIL 0.653) are the EU KLEMS latest-year LAB/VA_CP ratio — an APPROXIMATE source labour share, not
+  yet an adjacent-period Törnqvist share (the consulting-grade refinement, see
+  `docs/structural-data-pipeline-plan.md`). EU KLEMS here is **Austria only** (the sole geography in
+  the supplied file), a single-country proxy for the sector archetypes. Without an `mfp` (or
+  `capital_deepening`) series, or where a labour share or VA elasticity is missing, the sector falls
+  back to the raw rate as a transparent heuristic; the run manifest records which mode ran per
+  (region, sector). The per-sector *drift* normalises the cumulative MFP
   levels across sectors so the composition drift re-imposes no aggregate VA cost — the VA-share
   (`v_i=VA_i/ΣVA_j`) weighted aggregate log-cost effect Σ_i v_i·ln(1+g_MFP,i) is zeroed (the same
   criterion in MFP terms for both channels, since the CD labour cost effect s_L·ln φ = ln(1+g_MFP)
@@ -127,50 +134,55 @@ vendor):
   build these sector keys map to actual industries via the structural concordance
   (`data/structural/concordance_v2.json`).
 
-## Sectoral capital deepening — EU KLEMS 2023 release
+## Sectoral capital deepening — RETIRED (review P1 2026-09-09)
 
-- **Source:** EU KLEMS & INTANProd 2023 release — sector **capital services per hour worked** growth
-  (`g_{K/L}`), from the capital-services and hours-worked accounts by industry.
-  <https://euklems-intanprod-llee.luiss.it/>
-- **Retrieved:** 2026-08-16.
-- **Licence:** CC BY 4.0 (EU KLEMS/INTANProd public release).
-- **Note:** the shipped `capital_deepening` rates are headline central estimates (goods-producing
-  sectors are more capital-intensive and deepen faster ~1.0–1.2%/yr; services ~0.6%/yr). They exist
-  to net capital deepening out of observed labour productivity so the sector-productivity driver
-  becomes a genuine labour-augmenting technology term (CD finite-change mapping
-  `1+g_φ=[(1+g_{Y/L})/(1+g_{K/L})^{s_K}]^{1/s_L}`; s_K=1−s_L from the engine's benchmark factor
-  shares) rather than double-counting the capital the recursive model already accumulates. `confidence = low` (illustrative headline rates, not a reproduced
-  extraction — see the reproducibility caveat below).
+The EU KLEMS `capital_deepening` driver has been **removed**. It existed only to net capital
+deepening out of observed labour productivity via `g_MFP = g_{Y/L} − s_K·g_{K/L}`, but the earlier
+extraction used `LP2_G` (value added per *person* employed) and `CAP_QI` in a way that was
+dimensionally inconsistent (mixing a per-person LP with a per-hour capital-services index) and
+produced the wrong goods-vs-services ordering. The sourced MFP is now taken **directly** from the EU
+KLEMS workbook's own per-hour TFP-contribution series `LP1ConTFP` (route (a) above), which already
+nets out capital deepening at source — so no separate `capital_deepening` series is needed or
+shipped. The identity and CES/CD routing above still apply; only the source of the MFP term changed.
 
-## Emissions intensity — IEA WEO 2024 / NGFS Net Zero 2050
+## Emissions intensity — NGFS Phase 5, REMIND-MAgPIE 3.3-4.8 / Below 2°C
 
-- **Source:** IEA *World Energy Outlook 2024* and NGFS *Net Zero 2050* scenario — CO₂-intensity of
-  output decline. <https://www.iea.org/reports/world-energy-outlook-2024> ;
-  <https://www.ngfs.net/ngfs-scenarios-portal/>
-- **Retrieved:** 2026-08-16.
-- **Licence:** IEA terms of use (WEO figures cited, not redistributed); NGFS scenario data resources
-  (open, cited).
-- **Caveat (review 2026-08-23):** the shipped rates are a **single headline decarbonisation path**
-  synthesised from these sources. WEO contains **multiple scenarios** (STEPS, APS, NZE) and NGFS
-  spans multiple models/regions/variables; this artifact does **not** yet pin a specific IEA
-  scenario / NGFS model / region / variable / aggregation. It is an illustrative-of-method central
-  path, `confidence = medium`; a reproducible transform selecting one scenario+model+variable is a
-  documented follow-up.
+- **Source:** NGFS Phase 5 scenario explorer — economy-wide CO₂ **intensity of GDP** decline,
+  **derived** as `Emissions|CO2 / GDP|PPP|Counterfactual without damage` for model
+  `REMIND-MAgPIE 3.3-4.8`, scenario **`Below 2°C`**, region `World`.
+  <https://data.ece.iiasa.ac.at/ngfs/>
+- **Retrieved:** 2026-09-09.
+- **Licence:** NGFS scenario data terms (cited, not redistributed).
+- **Selection (review P1/P2 2026-09-09):** the model/scenario/region are an **explicit validated
+  tuple** (`_NGFS` in `scripts/extract_structural_sources.py`), not a loose substring filter. The
+  scenario name is matched after stripping the `(version: n)` suffix and the `°`→`?` header mangling
+  but must resolve to exactly one published value (raises on none/ambiguous), the region must equal
+  `World`, and the CO₂ and GDP series must each be present as a single series. The per-knot rate is
+  annualised over the **knot interval** (2025→2040, then held), not to the next source year, so the
+  piecewise-constant trajectory reproduces the source intensity path at the knots. This is a
+  **single economy-wide path** applied to every sector — a per-sector split is a documented follow-up
+  (`docs/structural-data-pipeline-plan.md`, 1d). `confidence = medium`.
 
-## Reproducibility caveat (review 2026-08-23)
+## Reproducibility (review 2026-09-09 — the transcription caveat is retired)
 
-These figures are **headline trend rates transcribed from the cited sources**, not the output of a
-committed extraction/aggregation pipeline. In particular PWT 10.01 covers **1950–2019**, so the
-2025/2040 productivity knots rest on an (unstated) extrapolation of the historical trend rather than
-a direct source value. WPP 2024, ILOSTAT and NGFS do publish explicit forward-looking versioned
-datasets that could support a fully reproducible transform (region aggregation → sector mapping →
-rate calculation). Treat the shipped `v1` artifact as a **documented, review-friendly illustrative
-central path**, not a reproducibly-derived projection; the per-entry `confidence` reflects this.
+The shipped figures are now the **output of a committed extraction pipeline**, not hand-transcribed
+headline rates. `scripts/extract_structural_sources.py` reads the raw published files
+(`data/structural/sources/raw/`, git-ignored) and writes `data/structural/sources/inputs.json`
+(source digest); `scripts/build_structural_trajectories.py` assembles `trajectories_v1.json` from
+that digest. Both carry a `--check` gate run in CI, so the vendored artifacts cannot drift from the
+sources. Rates are **proportional** annual growth (log/delta-log sources are converted with
+`expm1`). PWT 10.01 ends in **2019**, so the productivity knots are an explicit historical trend held
+forward (an assumption, flagged as such per-entry); WPP/NGFS supply genuinely forward-looking values.
+**Documented limitations** (not defects): EU KLEMS is single-country (Austria); NGFS intensity is
+economy-wide; forward participation/productivity knots hold the recent trend flat; the region/sector
+archetypes are N/S and BRD/MIL. See `docs/structural-data-pipeline-plan.md` (1a-breadth, 1c–1e).
 
 ## Reproducing / updating
 
-The vendored artifact is the small derived object the code and tests consume. To refresh it against
-a new data vintage, edit `trajectories_v1.json` with the updated headline rates and their citations
-(bump `source_version` and `retrieved`), or point the loader at a build-specific artifact. The
-`StructuralTrajectory` contract validates every entry on load (finite rates in a plausible band,
-known drivers, per-entry source + confidence), so a malformed or unsourced trajectory fails loudly.
+To refresh against a new data vintage: drop the updated raw files into
+`data/structural/sources/raw/` (see its README for exact downloads/filenames) and run
+`python scripts/extract_structural_sources.py` then `python scripts/build_structural_trajectories.py`
+(bump `source_version`/`retrieved` in the digest provenance). The `--check` mode of each script
+fails if the committed artifact is stale versus the raw sources. The `StructuralTrajectory` contract
+validates every entry on load (finite rates in a plausible band, known drivers, per-entry source +
+confidence), so a malformed or unsourced trajectory fails loudly.

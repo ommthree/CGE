@@ -36,46 +36,63 @@ A trajectory artifact is engagement-grade when every number in it is:
 6. **Scenario-pinned** — the emissions-intensity path names a specific NGFS/IEA model, scenario,
    region, variable and aggregation, versioned to a release.
 
-The current artifact meets (2) partially (per-entry citation prose + confidence) and none of
-(1),(3),(4),(5),(6) rigorously. The gaps below are ordered by how much they change a client answer.
+**Current state (2026-09-09):** the artifact now meets **(1)** (committed extraction scripts, both
+`--check`-gated in CI), **(2)** (value-level provenance: dataset/release/table/geography/window/
+transform per rate), **(6)** (NGFS scenario pinned to an explicit validated tuple), and **(3)/(4)**
+partially (MFP taken directly from EU KLEMS `LP1ConTFP` so no benchmark-share step is used for the
+sourced sectors; aggregations are member-weighted with each driver's own weight — but weights are
+static and the source labour share is an approximate LAB/VA ratio, not an adjacent-period Törnqvist
+share). **(5)** (low/central/high uncertainty bands) is not yet built. The remaining gaps below —
+breadth (EU KLEMS single-country, NGFS economy-wide), time-varying weights, Törnqvist shares, and
+uncertainty sets — are ordered by how much they change a client answer.
 
 ## 1. Gaps and the concrete remediation
 
 ### 1a. Reproducible extraction (replaces hand-entered headline rates)
-**PARTIALLY DONE — build shape landed 2026-09-06; real extractions still to come.** The reproducible
-*path* now exists: `data/structural/sources/inputs.json` is a structured source digest (per-driver,
-per-key knot rates each with source + confidence), and `scripts/build_structural_trajectories.py`
-assembles `trajectories_v1.json` from it (`--check` gates drift; wired into CI). Today the digest
-holds the same illustrative headline figures, so the build is numerically a no-op — the point is that
-real per-country/industry pulls now drop into the digest without touching the build or the schema.
-**Now (data):** the digest values are still headline central estimates, not reproducible pulls.
-**Target (data):** replace each digest entry with a committed extraction from a pinned source release:
-- **Population** — UN WPP 2024, Medium variant, per-region population growth by 5-year period,
-  interpolated to annual. Vendored input digest + release id.
-- **Participation** — ILOSTAT modelled estimates + World Bank labour-force participation, per region.
+**DONE — build shape landed 2026-09-06; real extractions landed 2026-09-07 and were hardened
+2026-09-09 (review-8).** The reproducible *path*: `data/structural/sources/inputs.json` is a
+structured source digest (per-driver, per-key knot rates each with a value-level source + confidence),
+and `scripts/build_structural_trajectories.py` assembles `trajectories_v1.json` from it (`--check`
+gates drift; wired into CI). `scripts/extract_structural_sources.py` (also `--check`-gated in CI)
+rebuilds the digest from the raw files. The digest values are **real extractions**, not headline
+estimates. The forward-window handling below still applies:
 - **Aggregate TFP** — PWT 10.01 `rtfpna`. **PWT 10.01 ends in 2019**, so any 2025–2040 value is an
-  *extrapolation assumption*, not an observation. The build must (i) mark the historical window vs
-  the assumption window explicitly in provenance, and (ii) take the forward assumption from a named,
-  defensible convergence rule (e.g. conditional convergence to a frontier growth rate), not an
-  unlabelled hand number.
-- **Sector labour productivity & capital deepening** — EU KLEMS & INTANProd 2023 release, per
-  country-industry: output-per-hour growth and capital-services-per-hour growth. **EU KLEMS covers
-  principally the EU, UK, US and Japan through ~2020**; applying its archetype rates to every model
-  region is an assumption that must be labelled per region (see 1c).
+  *extrapolation assumption*, not an observation; the per-entry provenance marks the historical
+  window and the forward knot as a held-trend assumption. A named convergence rule for the forward
+  knot (conditional convergence to a frontier rate) remains a possible refinement.
+- **Sector productivity / MFP** — EU KLEMS & INTANProd 2024 release, per country-industry. **EU KLEMS
+  covers principally the EU, UK, US and Japan** and the supplied file is Austria only; applying its
+  archetype rates to every model region is an assumption labelled per region (see 1c).
 
-**EXTRACTED FROM REAL DATA 2026-09-07** (`scripts/extract_structural_sources.py`): all six drivers
-in the committed digest are now real extractions — PWT 10.01 (`rtfpna`, GDP-weighted, 2000–2019
-window), UN WPP 2024 (population-weighted growth), ILOSTAT LFPR (recent trend, `EAP_DWAP_SEX_AGE_RT`,
-15+ band), EU KLEMS 2024 growth-accounts workbook (per-ISIC-section LP growth `LP2_G`, capital
-deepening `CAP_QI`, source labour share `LAB/VA_CP`, VA weight — Austria, the supplied country), and
-NGFS REMIND-MAgPIE 3.3-4.8 / Below 2°C (emissions intensity **derived as CO2/GDP**). Each maps source
-countries/industries to the N/S and BRD/MIL archetypes via committed `archetype_maps/` and aggregates
-with the documented per-driver weights. Raw files live in `data/structural/sources/raw/` (git-ignored,
-separately licensed; see its README). Parsing is covered by byte-level fixtures in
-`tests/test_structural_extractors.py`. **Known scope of THIS extraction:** EU KLEMS is a single
-country (Austria — the only geo in the supplied file); NGFS gives an economy-wide intensity path (no
-per-sector split); the productivity/participation forward knots hold a recent historical trend. These
-are the honest limits of the supplied data, tracked as 1c–1e below.
+**EXTRACTED FROM REAL DATA 2026-09-07, HARDENED 2026-09-09 (review-8)**
+(`scripts/extract_structural_sources.py`): every driver in the committed digest is a real extraction:
+- **PWT 10.01** `rtfpna` — GDP-weighted (rgdpo) over mapped countries per archetype, annualised
+  log-change over the 2000–2019 window, `expm1`→proportional; mapped countries only (no default-to-S).
+- **UN WPP 2024** — per-country population growth at each knot, **population-weighted** to the
+  archetype AND the `__all__` aggregate (not a mean of the archetypes).
+- **ILOSTAT LFPR** (`EAP_DWAP_SEX_AGE_RT`, SEX_T, 15+ band) — recent-window annualised trend,
+  `expm1`→proportional, **±1%/yr outlier clip**, **≥2015 common-vintage cutoff** (stale series
+  dropped, not projected forward decades), UNWEIGHTED archetype mean, held forward, **`confidence
+  = low`**.
+- **EU KLEMS & INTANProd 2024** growth-accounts workbook (Austria — the sole geography supplied):
+  the sourced `mfp` driver is the workbook's own **per-hour TFP contribution `LP1ConTFP`** (used
+  directly, review-8 P1); `sector_productivity` is per-hour VA growth `LP1_G` (context); labour share
+  is `LAB/VA_CP`; VA weight is `VA_CP`; VA-weighted to archetypes and `__all__`. **No `LP2_G`/`CAP_QI`
+  capital-deepening decomposition** — it was dimensionally wrong (`LP2_G` is VA per *person*, not per
+  hour) and is retired.
+- **NGFS Phase 5** REMIND-MAgPIE 3.3-4.8 / **Below 2°C** / World — emissions intensity **derived** as
+  `Emissions|CO2 / GDP|PPP|Counterfactual without damage`, selected by an **explicit validated tuple**
+  (`_NGFS`, exact region + single-series variables, resolve-to-exactly-one scenario/model), rate
+  annualised over the **knot interval**.
+
+All rates are **proportional** annual growth (log/delta-log sources converted with `expm1`, review-8
+P3). Each maps source countries/industries to the N/S and BRD/MIL archetypes via committed
+`archetype_maps/` and aggregates with the documented per-driver weights. Raw files live in
+`data/structural/sources/raw/` (git-ignored, separately licensed; see its README). Parsing is covered
+by byte-level fixtures in `tests/test_structural_extractors.py`. **Known scope of THIS extraction
+(honest limits, tracked as 1c–1e below):** EU KLEMS is a single country (Austria); NGFS gives an
+economy-wide intensity path (no per-sector split); the productivity/participation forward knots hold a
+recent historical trend flat.
 
 **Acceptance:** re-running the build reproduces the committed artifact; the extractor's `--check`
 diffs a fresh extraction against the committed digest once raw files are present.
@@ -127,13 +144,18 @@ per-driver validation added in review-6 (each present driver must resolve every 
 already guards the artifact against silent cross-driver divergence.
 
 ### 1d. Pinned emissions-intensity scenario
-**Now:** `emissions_intensity` rates cite "IEA WEO 2024 / NGFS Net Zero 2050" in prose without an
-exact model/scenario/variable/region/aggregation.
-**Target:** pin a specific NGFS phase + model (e.g. `NGFS Phase 5, REMIND-MAgPIE, Net Zero 2050`),
-the exact variable (e.g. `Emissions|CO2|Energy` intensity per output), region mapping and temporal
-aggregation, versioned to the NGFS release, with the extraction in the build script.
+**SCENARIO PINNED 2026-09-09 (review-8); per-sector split still open.** The extraction pins an
+**explicit validated tuple** (`_NGFS` in `scripts/extract_structural_sources.py`): NGFS Phase 5,
+model `REMIND-MAgPIE 3.3-4.8`, scenario `Below 2°C`, region `World`, intensity **derived** as
+`Emissions|CO2 / GDP|PPP|Counterfactual without damage`, annualised over the knot interval. Selection
+resolves the scenario/model to exactly one published value (raises on none/ambiguous) and requires
+the CO₂/GDP series each as a single series — no silent cross-region/variable averaging.
+**Still open:** it is a single **economy-wide** intensity path applied to every sector; a per-sector
+NGFS split (energy-supply / industry / transport / buildings variables mapped to BRD/MIL) would give
+sector-specific decarbonisation. Also possible: a named alternative-scenario set for sensitivity (1e).
 
-**Acceptance:** manifest names the full scenario tuple; a reader can re-pull the same series.
+**Acceptance:** manifest names the full scenario tuple (done); a reader can re-pull the same series
+(done). Per-sector split: outstanding.
 
 ### 1e. Uncertainty / sensitivity sets
 **Now:** a per-entry `confidence` string (low/medium/high), no quantified band.

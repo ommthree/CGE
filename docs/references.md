@@ -88,19 +88,20 @@ concordance (see `data/structural/NOTICE.md` for licences and the reproducibilit
 - **[FeenstraPWT]** Feenstra, R. C., Inklaar, R. & Timmer, M. P. (2015). The next generation of the
   Penn World Table. *American Economic Review*, 105(10), 3150–3182. — *Penn World Table 10.01*
   (`rtfpna`), the per-region aggregate-TFP growth series.
-- **[EUKLEMS2023]** EU KLEMS & INTANProd (2023 release). — Sectoral labour-productivity (output per
-  hour) growth by industry (`sector_productivity`) AND sector capital services per hour worked
-  (`capital_deepening`, g_{K/L}), the two series the growth-accounting decomposition needs — netted
-  via the Cobb-Douglas finite-change mapping 1+g_φ=[(1+g_{Y/L})/(1+g_{K/L})^{s_K}]^{1/s_L}.
+- **[EUKLEMS2024]** EU KLEMS & INTANProd (2024 release), Austria. — The sourced sector `mfp` driver
+  is the workbook's per-hour TFP contribution to VA growth (`LP1ConTFP`), used directly (it already
+  nets out capital deepening at source); per-hour value-added growth (`LP1_G`) is emitted as observed
+  `sector_productivity` context, and `LAB/VA_CP` gives the source labour share. (The earlier
+  `LP2_G`/`CAP_QI` capital-deepening decomposition was dimensionally wrong and is retired.)
 - **[UNWPP2024]** United Nations DESA, Population Division (2024). *World Population Prospects 2024*,
   Medium variant. — Per-region population growth.
 - **[ILOSTAT]** International Labour Organization, *ILOSTAT* modelled estimates, and World Bank
   *World Development Indicators*. — Labour-force participation rates.
 - **[WorldBankIncome]** World Bank country and lending groups (income classification, FY2025). —
   The country → N/S archetype rule underpinning `concordance_v2.json`.
-- **[IEA_WEO2024]** International Energy Agency (2024). *World Energy Outlook 2024*, and NGFS
-  *Net Zero 2050* (see [NGFS]). — The illustrative CO₂-intensity-of-output decline path
-  (`emissions_intensity`).
+- **[NGFS_B2C]** NGFS Phase 5 scenario explorer (see [NGFS]), model *REMIND-MAgPIE 3.3-4.8*,
+  scenario *Below 2°C*, region World. — The CO₂-intensity-of-GDP decline path (`emissions_intensity`),
+  derived as `Emissions|CO2 / GDP|PPP|Counterfactual without damage`.
 
 ## Energy prices & pass-through
 
