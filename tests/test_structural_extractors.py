@@ -53,11 +53,15 @@ def test_pwt_productivity_is_gdp_weighted_annualised_log_growth():
         }
     )
     out = extract_pwt_productivity(df, _CMAP, window=(2010, 2019))
-    assert out["N"][2019] == pytest.approx(round(math.log(1.10) / 9, 4))
-    assert out["S"][2019] == pytest.approx(round(math.log(1.30) / 9, 4))
-    # world = GDP-weighted (200·ln1.10 + 100·ln1.30)/(300·9); NOT the (−huge) ZZZ default, nor a
-    # simple mean of the two buckets.
-    world = (200 * math.log(1.10) + 100 * math.log(1.30)) / (300 * 9)
+    # PROPORTIONAL annual rate: expm1(annualised log-change) — the digest/wrapper compound (1+rate),
+    # so the stored rate is proportional, not the log rate (review P3 2026-09-09).
+    n_rate = math.expm1(math.log(1.10) / 9)
+    s_rate = math.expm1(math.log(1.30) / 9)
+    assert out["N"][2019] == pytest.approx(round(n_rate, 4))
+    assert out["S"][2019] == pytest.approx(round(s_rate, 4))
+    # world = GDP-weighted mean of the per-country PROPORTIONAL rates (weights 200 vs 100 at 2019);
+    # NOT the (−huge) ZZZ default, nor a simple mean of the two buckets.
+    world = (200 * n_rate + 100 * s_rate) / 300
     assert out["__all__"][2019] == pytest.approx(round(world, 4))
 
 
@@ -76,43 +80,59 @@ def test_wpp_population_growth_is_population_weighted_over_archetype():
     assert out["N"][2025] == pytest.approx(expected)
 
 
-def test_euklems_aggregates_lp_deepening_and_source_share_by_va_weight():
-    """Value-added-weighted aggregation over an archetype's industries. BRD={C,D}; va_weights
-    3 and 1, LP {0.02,0.01} → (3·0.02+0.01)/4 = 0.0175; likewise deepening and the labour share."""
+def test_euklems_va_weights_mfp_lp_and_source_share_and_drops_capital_deepening():
+    """Value-added-weighted aggregation over an archetype's industries. BRD={C,D}; va_weights 3 and
+    1. The sourced ``mfp`` driver (LP1ConTFP, the per-hour TFP contribution) is VA-weighted:
+    (3·0.006+0.004)/4. ``sector_productivity`` is the observed per-hour LP (LP1_G) for context.
+    ``source_labour_shares`` is the VA-weighted labour share. capital_deepening is NO LONGER emitted
+    (review P1 2026-09-09 — the LP2_G/CAP_QI decomposition was dimensionally wrong). The world
+    ``__all__`` is VA-weighted over ALL members, not a mean of the archetypes."""
     df = pd.DataFrame(
         {
             "isic_section": ["C", "D", "G"],
-            "lp_growth": [0.02, 0.01, 0.008],
-            "k_deepening": [0.012, 0.008, 0.005],
+            "mfp": [0.006, 0.004, 0.005],  # LP1ConTFP — the driver the wrapper uses
+            "lp_growth": [0.02, 0.01, 0.008],  # LP1_G — observed per-hour LP, context only
             "labour_cost_share": [0.55, 0.60, 0.70],
             "va_weight": [3.0, 1.0, 5.0],
         }
     )
     out = extract_euklems(df, _IMAP, knot=2025)
+    assert "capital_deepening" not in out
+    assert out["mfp"]["BRD"][2025] == pytest.approx(round((3 * 0.006 + 0.004) / 4, 4))
     assert out["sector_productivity"]["BRD"][2025] == pytest.approx(round((3 * 0.02 + 0.01) / 4, 4))
-    assert out["capital_deepening"]["BRD"][2025] == pytest.approx(round((3 * 0.012 + 0.008) / 4, 4))
     assert out["source_labour_shares"]["BRD"] == pytest.approx(round((3 * 0.55 + 0.60) / 4, 3))
     assert out["source_labour_shares"]["MIL"] == pytest.approx(0.70, abs=1e-9)  # single G industry
+    # world __all__ over C,D,G VA-weighted (3,1,5), not mean of BRD/MIL:
+    assert out["mfp"]["__all__"][2025] == pytest.approx(
+        round((3 * 0.006 + 1 * 0.004 + 5 * 0.005) / 9, 4)
+    )
 
 
 def test_ngfs_emissions_is_annualised_decline_of_the_pinned_scenario():
-    """Filters to the pinned model/scenario + intensity variable, then annualises the decline over
-    each knot interval. Intensity 100→60 over 2025→2040 → (60/100)^(1/15)−1 (negative)."""
+    """Selects the pinned model/scenario/region, derives intensity = CO2/GDP, then annualises the
+    decline over the knot interval. CO2 100→60 with GDP flat at 100 over 2025→2040 → intensity
+    1.0→0.6 → (0.6)^(1/15)−1 (negative). Rows for another model/region must be EXCLUDED, not
+    mixed."""
     df = pd.DataFrame(
         {
-            "model": ["M", "M", "OTHER"],
-            "scenario": ["NZ", "NZ", "NZ"],
-            "region": ["World", "World", "World"],
+            "model": ["M", "M", "M", "M", "OTHER", "M"],
+            "scenario": ["NZ"] * 6,
+            "region": ["World", "World", "World", "World", "World", "Europe"],
             "variable": [
-                "Emissions|CO2 Intensity",
-                "Emissions|CO2 Intensity",
-                "Emissions|CO2 Intensity",
+                "Emissions|CO2",
+                "Emissions|CO2",
+                "GDP|PPP",
+                "GDP|PPP",
+                "Emissions|CO2",  # wrong model → excluded
+                "Emissions|CO2",  # wrong region → excluded
             ],
-            "year": [2025, 2040, 2025],
-            "value": [100.0, 60.0, 999.0],
+            "year": [2025, 2040, 2025, 2040, 2025, 2025],
+            "value": [100.0, 60.0, 100.0, 100.0, 999.0, 999.0],
         }
     )
-    out = extract_ngfs_emissions(df, model="M", scenario="NZ", knots=(2025,))
+    out = extract_ngfs_emissions(
+        df, model="M", scenario="NZ", co2_var="Emissions|CO2", gdp_var="GDP|PPP", knots=(2025,)
+    )
     assert out["__all__"][2025] == pytest.approx(round((60 / 100) ** (1 / 15) - 1, 4))
     assert out["__all__"][2025] < 0  # decarbonisation
 
@@ -190,18 +210,21 @@ def test_normalise_euklems_raises_on_missing_variable_codes():
 
 def test_normalise_ngfs_melts_iamc_wide_format():
     """The IIASA IAMC WIDE export has a column per year; normalise_ngfs melts it to long and
-    normalises the capitalised headers, so extract_ngfs_emissions consumes it directly."""
+    normalises the capitalised headers, so extract_ngfs_emissions consumes it directly. CO2 100→60,
+    GDP flat → intensity decline (60/100)^(1/15)−1."""
     wide = pd.DataFrame(
         {
-            "Model": ["M"],
-            "Scenario": ["NZ"],
-            "Region": ["World"],
-            "Variable": ["Emissions|CO2 Intensity"],
-            "2025": [100.0],
-            "2040": [60.0],
+            "Model": ["M", "M"],
+            "Scenario": ["NZ", "NZ"],
+            "Region": ["World", "World"],
+            "Variable": ["Emissions|CO2", "GDP|PPP"],
+            "2025": [100.0, 100.0],
+            "2040": [60.0, 100.0],
         }
     )
-    out = extract_ngfs_emissions(wide, model="M", scenario="NZ", knots=(2025,))
+    out = extract_ngfs_emissions(
+        wide, model="M", scenario="NZ", co2_var="Emissions|CO2", gdp_var="GDP|PPP", knots=(2025,)
+    )
     assert out["__all__"][2025] == pytest.approx(round((60 / 100) ** (1 / 15) - 1, 4))
 
 
@@ -246,21 +269,11 @@ def test_ilo_participation_is_recent_trend_held_forward():
 
 
 def test_ngfs_derives_intensity_from_co2_over_gdp():
-    """When the NGFS export has no ready-made intensity variable, extract_ngfs_emissions derives it
-    as Emissions|CO2 / GDP per year (review 2026-09-07). Model/scenario match by SUBSTRING so
-    'Below 2' matches 'Below 2?C (version: 1)'. CO2 100→50 and GDP 100→200 over 2025→2040 →
+    """extract_ngfs_emissions derives intensity as Emissions|CO2 / GDP per year. Scenario/model
+    match after stripping the '(version: n)' suffix and the °→? mangling, but must resolve to
+    EXACTLY the normalised published name (review P1 2026-09-09 — not a loose substring). Here
+    'Below 2°C' matches 'Below 2?C (version: 1)'. CO2 100→50 and GDP 100→200 over 2025→2040 →
     intensity 1.0→0.25 → annualised (0.25)^(1/15)−1."""
-    df = pd.DataFrame(
-        {
-            "Model": ["REMIND-MAgPIE 3.3-4.8"] * 4,
-            "Scenario": ["Below 2?C (version: 1)"] * 4,
-            "Region": ["World"] * 4,
-            "Variable": ["Emissions|CO2", "Emissions|CO2", "GDP|PPP", "GDP|PPP"],
-            "2025": [100.0, None, 100.0, None],
-            "2040": [None, 50.0, None, 200.0],
-        }
-    )
-    # melt-friendly: one row per (var, year); build long directly to avoid None cells
     df = pd.DataFrame(
         {
             "Model": ["REMIND-MAgPIE 3.3-4.8"] * 4,
@@ -272,60 +285,92 @@ def test_ngfs_derives_intensity_from_co2_over_gdp():
         }
     )
     out = extract_ngfs_emissions(
-        df, model="REMIND-MAgPIE 3.3-4.8", scenario="Below 2", knots=(2025,)
+        df,
+        model="REMIND-MAgPIE 3.3-4.8",
+        scenario="Below 2°C",
+        gdp_var="GDP|PPP",
+        knots=(2025,),
     )
     intensity_decline = (0.25) ** (1 / 15) - 1  # (50/200)/(100/100) = 0.25 over 15y
     assert out["__all__"][2025] == pytest.approx(round(intensity_decline, 4))
     assert out["__all__"][2025] < 0  # decarbonisation
 
 
-def test_ngfs_raises_when_neither_intensity_nor_co2_and_gdp():
-    """If the pinned scenario has neither an intensity variable nor both CO2 and GDP, the derivation
-    raises rather than silently emitting nothing."""
+def test_ngfs_rejects_ambiguous_scenario_and_wrong_region():
+    """The explicit tuple is strict: a scenario that normalises to two DISTINCT published names is
+    ambiguous and rejected (raises), and a region with no rows raises rather than silently emitting
+    nothing. Two raw scenarios 'Below 2°C (version: 1)' and 'Below 2°C v2' both requested as
+    'Below 2°C' would resolve to two values → rejected."""
+    df = pd.DataFrame(
+        {
+            "Model": ["M"] * 2,
+            # both normalise-collide onto 'below 2c' once the version suffix is stripped:
+            "Scenario": ["Below 2°C (version: 1)", "Below 2°C (version: 2)"],
+            "Region": ["World"] * 2,
+            "Variable": ["Emissions|CO2", "Emissions|CO2"],
+            "year": [2025, 2025],
+            "value": [100.0, 90.0],
+        }
+    )
+    # Two raw names collapse to the same normalised key → not exactly one → reject (no silent pick).
+    with pytest.raises(ValueError, match="did not resolve to exactly one"):
+        extract_ngfs_emissions(
+            df, model="M", scenario="Below 2°C", gdp_var="GDP|PPP", knots=(2025,)
+        )
+
+
+def test_ngfs_raises_when_co2_or_gdp_variable_absent():
+    """If the pinned scenario is missing the exact CO2 (or GDP) variable needed to derive intensity,
+    extract_ngfs_emissions raises naming the variable rather than silently emitting nothing."""
     df = pd.DataFrame(
         {
             "model": ["M"],
             "scenario": ["S"],
             "region": ["World"],
-            "variable": ["Population"],
+            "variable": ["Population"],  # neither the CO2 nor the GDP series is present
             "year": [2025],
             "value": [100.0],
         }
     )
-    with pytest.raises(ValueError, match="cannot derive"):
-        extract_ngfs_emissions(df, model="M", scenario="S", knots=(2025,))
+    with pytest.raises(ValueError, match="not present for the selected"):
+        extract_ngfs_emissions(
+            df, model="M", scenario="S", co2_var="Emissions|CO2", gdp_var="GDP|PPP", knots=(2025,)
+        )
 
 
 def test_load_euklems_workbook_reads_multisheet_layout(tmp_path):
-    """The REAL EU KLEMS workbook has one sheet per variable (LP2_G/CAP_QI/LAB/VA_CP), each a matrix
-    of nace_r2_code/geo_code/var + a column per year. load_euklems_workbook reads the section-letter
-    rows and reduces them: LP2_G mean over the recent window /100; CAP_QI annualised index growth;
-    labour_cost_share = LAB/VA_CP; va_weight = VA_CP (review 2026-09-07)."""
+    """The REAL EU KLEMS workbook has one sheet per variable (LP1ConTFP/LP1_G/LAB/VA_CP), each a
+    matrix of nace_r2_code/geo_code/var + a column per year. load_euklems_workbook reads the
+    section-letter rows and reduces them (review P1 2026-09-09): ``mfp`` = the per-hour TFP
+    contribution LP1ConTFP (delta-log p.p.) → expm1(recent-window mean/100); ``lp_growth`` =
+    VA growth LP1_G likewise; ``labour_cost_share`` = LAB/VA_CP; ``va_weight`` = VA_CP. NO CAP_QI /
+    k_deepening (the old LP2_G/CAP_QI decomposition was dimensionally wrong)."""
+    import math
+
     import openpyxl  # noqa: F401 — ensures the Excel engine is present
 
-    def sheet(var, val19, val18=None):
+    def sheet(var, val19, val18):
         return pd.DataFrame(
             {
                 "nace_r2_code": ["C", "C10-C12"],  # section + a detailed row (detailed is ignored)
                 "geo_code": ["AT", "AT"],
                 "var": [var, var],
-                "2018": [val18 if val18 is not None else val19, val18 or val19],
+                "2018": [val18, val18],
                 "2019": [val19, val19],
             }
         )
 
     p = tmp_path / "euklems.xlsx"
     with pd.ExcelWriter(p) as w:
-        sheet("LP2_G", 2.0, 1.0).to_excel(
-            w, sheet_name="LP2_G", index=False
-        )  # % → mean 1.5 → 0.015
-        sheet("CAP_QI", 110.0, 100.0).to_excel(w, sheet_name="CAP_QI", index=False)  # +10%/1yr
-        sheet("LAB", 55.0).to_excel(w, sheet_name="LAB", index=False)
-        sheet("VA_CP", 100.0).to_excel(w, sheet_name="VA_CP", index=False)
+        sheet("LP1ConTFP", 0.6, 0.4).to_excel(w, sheet_name="LP1ConTFP", index=False)  # p.p. TFP
+        sheet("LP1_G", 2.0, 1.0).to_excel(w, sheet_name="LP1_G", index=False)  # p.p. per-hour LP
+        sheet("LAB", 55.0, 55.0).to_excel(w, sheet_name="LAB", index=False)
+        sheet("VA_CP", 100.0, 100.0).to_excel(w, sheet_name="VA_CP", index=False)
     tidy = load_euklems_workbook(p, trend_window=2)
     row = tidy[tidy["isic_section"] == "C"].iloc[0]
-    assert row["lp_growth"] == pytest.approx((2.0 + 1.0) / 2 / 100)  # mean of recent %, /100
-    assert row["k_deepening"] == pytest.approx(110.0 / 100.0 - 1.0)  # 1-year index growth
+    assert "k_deepening" not in tidy.columns
+    assert row["mfp"] == pytest.approx(math.expm1((0.6 + 0.4) / 2 / 100))  # recent-mean p.p. → prop
+    assert row["lp_growth"] == pytest.approx(math.expm1((2.0 + 1.0) / 2 / 100))
     assert row["labour_cost_share"] == pytest.approx(0.55)  # LAB/VA_CP
     assert row["va_weight"] == pytest.approx(100.0)
     assert set(tidy["isic_section"]) == {"C"}  # only the single-letter section row

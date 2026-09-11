@@ -231,7 +231,9 @@ def test_concordance_v2_carries_composite_provenance():
     t = structural_trajectories_for_build(["US", "CN"], ["manufacturing", "services"])
     assert "concordance" in t.provenance.source.lower()
     assert "structural-concordance-v2" in t.provenance.source_version
-    assert "structural-trajectories-v2" in t.provenance.source_version
+    # v3 (review-8 2026-09-09): EU KLEMS mfp=LP1ConTFP, capital_deepening retired, member-weighted
+    # aggregates, proportional rates.
+    assert "structural-trajectories-v3" in t.provenance.source_version
 
 
 def test_mapped_trajectory_stamps_the_weighting_caveat():
