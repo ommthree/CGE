@@ -1,11 +1,11 @@
 {
   "provenance": {
-    "source": "UN WPP 2024 (population) + ILO/World Bank (participation) + Penn World Table 10.01 (productivity) + EU KLEMS 2023 (sector productivity/deepening/source labour shares) + IEA WEO 2024/NGFS (emissions intensity)",
-    "source_version": "structural-trajectories-v2",
-    "licence": "see per-entry sources; UN WPP: CC BY 3.0 IGO, PWT 10.01: CC BY 4.0, ILOSTAT/WB: CC BY 4.0, EU KLEMS: CC BY 4.0",
+    "source": "PWT 10.01 (productivity) + UN WPP 2024 (population) + ILOSTAT LFPR (participation) + EU KLEMS & INTANProd 2024 release (sector MFP via LP1ConTFP, per-hour LP, labour share) + NGFS Phase 5 REMIND-MAgPIE 3.3-4.8 / Below 2C (emissions intensity = CO2/GDP)",
+    "source_version": "structural-trajectories-v3",
+    "licence": "see per-entry sources; UN WPP: CC BY 3.0 IGO, PWT 10.01: CC BY 4.0, ILOSTAT: CC BY 4.0, EU KLEMS: CC BY 4.0, NGFS: see NGFS terms",
     "reference_year": 2024,
-    "retrieved": "2026-09-06",
-    "notes": "Documented, sourced per-region and per-sector annual growth trajectories for the Phase 7b.2 structural drivers, ASSEMBLED FROM data/structural/sources/inputs.json by scripts/build_structural_trajectories.py (pipeline step 1a — reproducible, not hand-edited). v2 adds source_labour_shares (source-period labour shares s_L^src for the source-side MFP identification, review P1 2026-09-06). Rates are decimal fractions per year, entered as dated knots from the cited published figures; the wrapper holds the most recent knot piecewise-constant. Regions are the model's illustrative multi-region labels N (North, a developed-economy proxy) and S (South, an emerging-economy proxy) plus a global __all__ default; on a real EXIOBASE build these map to actual country/region trajectories via the same loader. Figures remain illustrative headline values, not consulting-grade extractions — see docs/structural-data-pipeline-plan.md."
+    "retrieved": "2026-09-09",
+    "notes": "Per-region and per-sector annual growth trajectories for the Phase 7b.2 structural drivers, EXTRACTED FROM REAL SOURCES by scripts/extract_structural_sources.py and assembled by scripts/build_structural_trajectories.py (both have --check gates in CI). v3 (review-8 2026-09-09): EU KLEMS uses the workbook's per-hour TFP contribution LP1ConTFP directly as the sourced 'mfp' driver (was a dimensionally-wrong LP2_G/CAP_QI decomposition — LP2_G is VA per PERSON, not per hour; capital_deepening driver retired for EU KLEMS); NGFS scenario is an explicit validated tuple (Below 2C); global __all__ aggregates are member-weighted (not means of archetypes); rates are proportional (log/delta-log sources converted via expm1). Rates are decimal fractions per year; the wrapper holds the most recent knot piecewise-constant. N (advanced) / S (emerging) region + BRD (goods) / MIL (services) sector archetypes, plus a global __all__. Per-value source strings carry geography/release/sheet/window/transform. Known limits (single-country EU KLEMS, NGFS economy-wide, held-flat forward knots, participation LOW confidence) are documented in docs/structural-data-pipeline-plan.md."
   },
   "rates": {
     "population": {
@@ -15,36 +15,36 @@
         "2050": -0.0004
       },
       "S": {
-        "2025": 0.0095,
-        "2035": 0.0078,
-        "2050": 0.0048
+        "2025": 0.0094,
+        "2035": 0.0076,
+        "2050": 0.0046
       },
       "__all__": {
-        "2025": 0.0058,
-        "2035": 0.0044,
-        "2050": 0.0022
+        "2025": 0.0082,
+        "2035": 0.0066,
+        "2050": 0.004
       }
     },
     "labour_participation": {
-      "N": {
-        "2025": -0.0001,
-        "2040": -0.0001
-      },
       "S": {
-        "2025": 0.0004,
-        "2040": 0.0004
+        "2025": -0.0003,
+        "2040": -0.0003
+      },
+      "N": {
+        "2025": 0.0009,
+        "2040": 0.0009
       },
       "__all__": {
-        "2025": 0.0002,
-        "2040": 0.0002
+        "2025": 0.0001,
+        "2040": 0.0001
       }
     },
     "productivity": {
       "S": {
-        "2019": 0.0078
+        "2019": 0.0079
       },
       "N": {
-        "2019": 0.0014
+        "2019": 0.0015
       },
       "__all__": {
         "2019": 0.0047
@@ -54,66 +54,66 @@
   "sector_rates": {
     "sector_productivity": {
       "BRD": {
-        "2025": 0.0018
+        "2025": 0.0038
       },
       "MIL": {
-        "2025": -0.0024
+        "2025": 0.0082
       },
       "__all__": {
-        "2025": -0.0003
+        "2025": 0.0069
       }
     },
     "emissions_intensity": {
       "__all__": {
-        "2025": -0.0654,
-        "2040": -0.0864
+        "2025": -0.0757,
+        "2040": -0.058
       }
     },
-    "capital_deepening": {
+    "mfp": {
       "BRD": {
-        "2025": 0.0201
+        "2025": -0.0003
       },
       "MIL": {
-        "2025": 0.0241
+        "2025": 0.0049
       },
       "__all__": {
-        "2025": 0.0221
+        "2025": 0.0033
       }
     }
   },
   "source_labour_shares": {
     "BRD": 0.613,
     "MIL": 0.653,
-    "__all__": 0.633
+    "__all__": 0.641
   },
   "sources": {
-    "population:N": "UN WPP 2024 (extracted)",
-    "population:S": "UN WPP 2024 (extracted)",
-    "population:__all__": "UN WPP 2024 (extracted)",
-    "labour_participation:N": "ILOSTAT LFPR (extracted)",
-    "labour_participation:S": "ILOSTAT LFPR (extracted)",
-    "labour_participation:__all__": "ILOSTAT LFPR (extracted)",
-    "productivity:S": "PWT 10.01 rtfpna (extracted)",
-    "productivity:N": "PWT 10.01 rtfpna (extracted)",
-    "productivity:__all__": "PWT 10.01 rtfpna (extracted)",
-    "sector_productivity:BRD": "EU KLEMS 2023 (ext)",
-    "sector_productivity:MIL": "EU KLEMS 2023 (ext)",
-    "sector_productivity:__all__": "EU KLEMS 2023 (ext)",
-    "emissions_intensity:__all__": "NGFS REMIND-MAgPIE 3.3-4.8 / Below 2°C, intensity=CO2/GDP (extracted)",
-    "capital_deepening:BRD": "EU KLEMS 2023 (ext)",
-    "capital_deepening:MIL": "EU KLEMS 2023 (ext)",
-    "capital_deepening:__all__": "EU KLEMS 2023 (ext)",
-    "source_labour_share:BRD": "EU KLEMS 2023 (ext)",
-    "source_labour_share:MIL": "EU KLEMS 2023 (ext)",
-    "source_labour_share:__all__": "EU KLEMS 2023 (ext)"
+    "population:N": "UN World Population Prospects 2024, Total Population (both sexes), Medium variant; annual growth pop[y+1]/pop[y]−1 at knots 2025/2035/2050; population-weighted over mapped countries per N/S archetype. https://population.un.org/wpp/",
+    "population:S": "UN World Population Prospects 2024, Total Population (both sexes), Medium variant; annual growth pop[y+1]/pop[y]−1 at knots 2025/2035/2050; population-weighted over mapped countries per N/S archetype. https://population.un.org/wpp/",
+    "population:__all__": "UN World Population Prospects 2024, Total Population (both sexes), Medium variant; annual growth pop[y+1]/pop[y]−1 at knots 2025/2035/2050; population-weighted over mapped countries per N/S archetype. https://population.un.org/wpp/",
+    "labour_participation:S": "ILOSTAT indicator EAP_DWAP_SEX_AGE_RT (labour-force participation rate), SEX_T total, AGE_AGGREGATE_YGE15 (15+) band; per-country annualised log-trend over the recent ≤10-year window (latest obs ≥2015), expm1→proportional, clipped ±1%/yr; UNWEIGHTED archetype mean, held forward. LOW confidence: no labour-force size weights, single recent trend projected flat. https://ilostat.ilo.org/",
+    "labour_participation:N": "ILOSTAT indicator EAP_DWAP_SEX_AGE_RT (labour-force participation rate), SEX_T total, AGE_AGGREGATE_YGE15 (15+) band; per-country annualised log-trend over the recent ≤10-year window (latest obs ≥2015), expm1→proportional, clipped ±1%/yr; UNWEIGHTED archetype mean, held forward. LOW confidence: no labour-force size weights, single recent trend projected flat. https://ilostat.ilo.org/",
+    "labour_participation:__all__": "ILOSTAT indicator EAP_DWAP_SEX_AGE_RT (labour-force participation rate), SEX_T total, AGE_AGGREGATE_YGE15 (15+) band; per-country annualised log-trend over the recent ≤10-year window (latest obs ≥2015), expm1→proportional, clipped ±1%/yr; UNWEIGHTED archetype mean, held forward. LOW confidence: no labour-force size weights, single recent trend projected flat. https://ilostat.ilo.org/",
+    "productivity:S": "Penn World Table 10.01, sheet Data, variable rtfpna (TFP at constant national prices, index); annualised log-change over 2000–2019 (window end 2019 — PWT ends 2019), expm1→proportional; GDP-weighted (rgdpo, 2019) over mapped countries per N/S archetype. https://www.rug.nl/ggdc/productivity/pwt/",
+    "productivity:N": "Penn World Table 10.01, sheet Data, variable rtfpna (TFP at constant national prices, index); annualised log-change over 2000–2019 (window end 2019 — PWT ends 2019), expm1→proportional; GDP-weighted (rgdpo, 2019) over mapped countries per N/S archetype. https://www.rug.nl/ggdc/productivity/pwt/",
+    "productivity:__all__": "Penn World Table 10.01, sheet Data, variable rtfpna (TFP at constant national prices, index); annualised log-change over 2000–2019 (window end 2019 — PWT ends 2019), expm1→proportional; GDP-weighted (rgdpo, 2019) over mapped countries per N/S archetype. https://www.rug.nl/ggdc/productivity/pwt/",
+    "sector_productivity:BRD": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1_G (delta-log p.p.); mean of the 5 most recent years, expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). https://euklems-intanprod-llee.luiss.it/",
+    "sector_productivity:MIL": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1_G (delta-log p.p.); mean of the 5 most recent years, expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). https://euklems-intanprod-llee.luiss.it/",
+    "sector_productivity:__all__": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1_G (delta-log p.p.); mean of the 5 most recent years, expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). https://euklems-intanprod-llee.luiss.it/",
+    "emissions_intensity:__all__": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; emissions intensity DERIVED as Emissions|CO2 / GDP|PPP|Counterfactual without damage; per-knot rate annualised over the knot interval. https://data.ece.iiasa.ac.at/ngfs/",
+    "mfp:BRD": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1ConTFP (per-hour-worked TFP contribution to VA growth, delta-log p.p.); mean of the 5 most recent years, expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). https://euklems-intanprod-llee.luiss.it/",
+    "mfp:MIL": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1ConTFP (per-hour-worked TFP contribution to VA growth, delta-log p.p.); mean of the 5 most recent years, expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). https://euklems-intanprod-llee.luiss.it/",
+    "mfp:__all__": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1ConTFP (per-hour-worked TFP contribution to VA growth, delta-log p.p.); mean of the 5 most recent years, expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). https://euklems-intanprod-llee.luiss.it/",
+    "source_labour_share:BRD": "EU KLEMS & INTANProd 2024 release, Austria; latest-year LAB/VA_CP (labour compensation over value added at current prices) — an APPROXIMATE source labour share, NOT an adjacent-period Törnqvist share. https://euklems-intanprod-llee.luiss.it/",
+    "source_labour_share:MIL": "EU KLEMS & INTANProd 2024 release, Austria; latest-year LAB/VA_CP (labour compensation over value added at current prices) — an APPROXIMATE source labour share, NOT an adjacent-period Törnqvist share. https://euklems-intanprod-llee.luiss.it/",
+    "source_labour_share:__all__": "EU KLEMS & INTANProd 2024 release, Austria; latest-year LAB/VA_CP (labour compensation over value added at current prices) — an APPROXIMATE source labour share, NOT an adjacent-period Törnqvist share. https://euklems-intanprod-llee.luiss.it/"
   },
   "confidence": {
     "population:N": "medium",
     "population:S": "medium",
     "population:__all__": "medium",
-    "labour_participation:N": "medium",
-    "labour_participation:S": "medium",
-    "labour_participation:__all__": "medium",
+    "labour_participation:S": "low",
+    "labour_participation:N": "low",
+    "labour_participation:__all__": "low",
     "productivity:S": "medium",
     "productivity:N": "medium",
     "productivity:__all__": "medium",
@@ -121,9 +121,9 @@
     "sector_productivity:MIL": "medium",
     "sector_productivity:__all__": "medium",
     "emissions_intensity:__all__": "medium",
-    "capital_deepening:BRD": "medium",
-    "capital_deepening:MIL": "medium",
-    "capital_deepening:__all__": "medium",
+    "mfp:BRD": "medium",
+    "mfp:MIL": "medium",
+    "mfp:__all__": "medium",
     "source_labour_share:BRD": "medium",
     "source_labour_share:MIL": "medium",
     "source_labour_share:__all__": "medium"
