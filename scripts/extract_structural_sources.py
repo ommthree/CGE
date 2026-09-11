@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import math
@@ -37,6 +38,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 _SOURCES = _ROOT / "data" / "structural" / "sources"
 _RAW = _SOURCES / "raw"
 _MAPS = _SOURCES / "archetype_maps"
+_MANIFEST = _SOURCES / "raw_manifest.json"
 _DIGEST = _SOURCES / "inputs.json"
 
 # EXPLICIT NGFS selection tuple (review P1/P2 2026-09-09): scenario choice is a visible, validated
@@ -131,16 +133,23 @@ def normalise_euklems(
     country: str | None = None,
     var_codes: dict[str, str] | None = None,
 ) -> pd.DataFrame:
-    """EU KLEMS 2023 growth-accounts long export → tidy per-ISIC-section rows with ``isic_section``,
-    ``lp_growth``, ``k_deepening``, ``labour_cost_share``, ``va_weight``. The raw file is long
-    (``geo_code`` / ``nace_r2_code`` / ``var`` / ``year`` / ``value``, latest year); this picks one
-    ``country`` (default: the first present), pivots the growth-account variables named in
-    ``var_codes`` (defaults to the EU KLEMS statistical codes), maps the NACE industry code to its
-    ISIC section letter, and averages within a section (VA-weighted if a VA variable is present).
+    """LEGACY long-format EU KLEMS normaliser → tidy per-ISIC-section rows with ``isic_section``,
+    ``lp_growth``, ``k_deepening``, ``labour_cost_share``, ``va_weight``.
 
-    Because EU KLEMS variable codes vary by release, ``var_codes`` is overridable; if the expected
-    variables are absent this raises with the codes it DID find, so the mismatch is explicit rather
-    than silently producing empties. A frame already in the tidy fixture shape passes through."""
+    NOTE (review P3 2026-09-15): the CURRENT MFP pipeline does NOT use this route — it reads the
+    multi-sheet workbook via :func:`load_euklems_workbook` (which emits the LP1ConTFP-derived
+    ``mfp``), and :func:`extract_euklems` REJECTS a frame that lacks ``mfp``. This function is
+    retained only for the long-format ``VA_QI_growth``/``CAP_QI_growth`` export shape (and its own
+    unit tests); its ``k_deepening`` output is not consumed. It is kept so a future long-format
+    release can be adapted without re-deriving the parser.
+
+    The raw long file is (``geo_code`` / ``nace_r2_code`` / ``var`` / ``year`` / ``value``, latest
+    year); this picks one ``country`` (default: the first present), pivots the growth-account
+    variables named in ``var_codes`` (defaults to the EU KLEMS statistical codes), maps the NACE
+    industry code to its ISIC section letter, and averages within a section (VA-weighted if a VA
+    variable is present). Because codes vary by release, ``var_codes`` is overridable; if the
+    expected variables are absent this raises with the codes it DID find. A tidy frame passes
+    through."""
     if "isic_section" in df.columns and "lp_growth" in df.columns:
         return df  # already tidy (the fixture / a hand-prepared file)
     df = _rename_first_present(
@@ -275,9 +284,10 @@ def load_euklems_workbook(path, *, trend_window: int = 5) -> pd.DataFrame:
 
     Both LP series are **delta-log percentage** changes, so a per-year value ``x`` p.p. is converted
     to the proportional annual rate the digest/wrapper use with ``expm1(mean(x)/100)`` (review P3
-    2026-09-09 — the mean is over the recent ``trend_window`` years). All ``geo_code``s present are
-    pooled (the supplied file is a single country, Austria); several would be VA-weighted per
-    section by the downstream ``extract_euklems``."""
+    2026-09-09 — the mean is over the recent ``trend_window`` years). Values are computed per
+    (``geo_code``, section) and then VA-weighted across geographies per section (review P2
+    2026-09-15), so a multi-country workbook is VA-weighted, not equal-averaged; the supplied file
+    is Austria-only so each section has a single geo (the collapse is a no-op today)."""
     # (The reader's incidental stdout — openpyxl's stray "Legend" print-area line — is swallowed by
     # the caller _rebuild_digest, which wraps the whole build in a stdout redirect.)
     tfp = pd.read_excel(path, sheet_name="LP1ConTFP")
@@ -295,33 +305,62 @@ def load_euklems_workbook(path, *, trend_window: int = 5) -> pd.DataFrame:
     years = sorted(int(y) for y in _year_cols(lp))
     recent = [str(y) for y in years[-trend_window:]]
     last = str(years[-1])
-    rows = []
+    has_geo = "geo_code" in lp.columns
+
+    # Compute values per (geo_code, section) FIRST, then VA-weight-collapse across geographies per
+    # section (review P2 2026-09-15). Averaging across geographies before weighting would equal-
+    # weight countries and discard the per-country VA the weighting needs — a silent corruption of a
+    # future multi-country workbook. The supplied file is Austria-only, so each section has one geo
+    # and the collapse is a no-op today, but the aggregation is now correct by construction.
+    def _geo(frame: pd.DataFrame, sec: str, geo: str | None) -> pd.DataFrame:
+        r = frame[frame["nace_r2_code"].astype(str) == sec]
+        if geo is not None and "geo_code" in frame.columns:
+            r = r[r["geo_code"].astype(str) == geo]
+        return r
+
+    def _val(frame: pd.DataFrame, cols: list[str], sec: str, geo: str | None) -> float | None:
+        r = _geo(frame, sec, geo)
+        vals = [
+            float(pd.to_numeric(r[c], errors="coerce").mean())
+            for c in cols
+            if c in frame.columns and not pd.isna(pd.to_numeric(r[c], errors="coerce").mean())
+        ]
+        return sum(vals) / len(vals) if vals else None
+
+    per_geo: dict[str, list[dict]] = {}  # section → list of per-geo rows (mfp/lp/share/va_weight)
     for section in sorted(lp["nace_r2_code"].astype(str).unique()):
+        geos = (
+            sorted(_geo(lp, section, None)["geo_code"].astype(str).unique()) if has_geo else [None]
+        )
+        for geo in geos:
+            mfp_pp = _val(tfp, recent, section, geo)  # per-hour TFP contribution, delta-log p.p.
+            lp_pp = _val(lp, recent, section, geo)  # per-hour VA growth, delta-log p.p.
+            lab1, va1 = _val(lab, [last], section, geo), _val(va, [last], section, geo)
+            if mfp_pp is None or lp_pp is None or not lab1 or not va1:
+                continue
+            per_geo.setdefault(section, []).append(
+                {
+                    # delta-log p.p. → proportional annual rate (review P3): expm1(mean_pp / 100).
+                    "mfp": math.expm1(mfp_pp / 100.0),
+                    "lp_growth": math.expm1(lp_pp / 100.0),
+                    "labour_cost_share": max(min(lab1 / va1, 1.0), 1e-6),
+                    "va_weight": va1,
+                }
+            )
 
-        def _pick(frame: pd.DataFrame, col: str, sec: str = section) -> float | None:
-            r = frame[frame["nace_r2_code"].astype(str) == sec]
-            if r.empty or col not in frame.columns:
-                return None
-            v = pd.to_numeric(r[col], errors="coerce").mean()
-            return None if pd.isna(v) else float(v)
-
-        def _recent_mean_pp(frame: pd.DataFrame) -> float | None:
-            vals = [x for x in (_pick(frame, y) for y in recent) if x is not None]
-            return sum(vals) / len(vals) if vals else None
-
-        mfp_pp = _recent_mean_pp(tfp)  # per-hour TFP contribution, delta-log p.p.
-        lp_pp = _recent_mean_pp(lp)  # per-hour VA growth, delta-log p.p.
-        lab1, va1 = _pick(lab, last), _pick(va, last)
-        if mfp_pp is None or lp_pp is None or not lab1 or not va1:
-            continue
+    rows = []
+    for section, gs in per_geo.items():
+        wsum = sum(g["va_weight"] for g in gs) or 1.0
         rows.append(
             {
                 "isic_section": section,
-                # delta-log p.p. → proportional annual rate (review P3): expm1(mean_pp / 100).
-                "mfp": math.expm1(mfp_pp / 100.0),
-                "lp_growth": math.expm1(lp_pp / 100.0),
-                "labour_cost_share": max(min(lab1 / va1, 1.0), 1e-6),
-                "va_weight": va1,
+                # VA-weighted across geographies (populous/larger economies dominate).
+                "mfp": sum(g["mfp"] * g["va_weight"] for g in gs) / wsum,
+                "lp_growth": sum(g["lp_growth"] * g["va_weight"] for g in gs) / wsum,
+                "labour_cost_share": (
+                    sum(g["labour_cost_share"] * g["va_weight"] for g in gs) / wsum
+                ),
+                "va_weight": wsum,
             }
         )
     return pd.DataFrame(rows)
@@ -391,32 +430,43 @@ def extract_wpp_population(
     knots: tuple[int, ...] = (2025, 2035, 2050),
 ) -> dict[str, dict[int, float]]:
     """Per-archetype population growth from WPP totals (columns ``iso3``, ``year``, ``population``).
-    For each knot year the growth rate is population[y+1]/population[y] − 1 per country, aggregated
-    to the archetype weighted by that country's population (the per-driver weight for a
-    population aggregate). Returns ``{archetype: {knot: rate}}``. Accepts the raw WPP export
-    (``ISO3_code``/``Time``/``PopTotal`` + a Medium-variant filter) via :func:`normalise_wpp`."""
+    Member populations are SUMMED per archetype (and globally) at each year, then each knot's rate
+    is the **interval CAGR of the aggregate total** to the NEXT knot — ``(P[y_next]/P[y])**
+    (1/(y_next−y))−1`` — so holding the knot's rate piecewise-constant reproduces the WPP population
+    LEVEL at the next knot exactly (review P2 2026-09-15). The earlier instantaneous
+    ``pop[y+1]/pop[y]−1`` held for a decade over-/under-shot the WPP levels (global ~+2.4% by 2050),
+    and a per-country CAGR then start-weighted mean would only approximate it. Summing members IS
+    the population weighting. The final knot has no successor, so it keeps the aggregate one-year
+    rate. Returns ``{archetype: {knot: rate}}``. Accepts the raw WPP export (``ISO3_code``/``Time``/
+    ``PopTotal`` + a Medium-variant filter) via :func:`normalise_wpp`."""
     data = normalise_wpp(data)
+    data = data[data["iso3"].isin(cmap)]  # mapped countries only (as PWT; no default-to-S skew)
+    knot_list = sorted(knots)
+    # SUM member populations per archetype (and globally) at each year, THEN take the interval CAGR
+    # of the aggregate totals (review P2 2026-09-15): this reproduces the WPP LEVEL at the next knot
+    # exactly, and summing IS the population weighting (populous members dominate). A per-country
+    # CAGR then start-year-weighted mean would only approximate it (fixed start weights ignore the
+    # within-interval reweighting).
+    archetype = data["iso3"].map(lambda c: country_archetype(str(c), cmap))
+    totals: dict[str, pd.Series] = {}  # archetype (+ "__all__") → year → summed population
+    for a in sorted(set(archetype)):
+        totals[a] = data[archetype == a].groupby("year")["population"].sum().sort_index()
+    totals["__all__"] = data.groupby("year")["population"].sum().sort_index()
+
     out: dict[str, dict[int, float]] = {}
-    for y in knots:
-        rates: dict[str, dict[str, float]] = {}
-        pops: dict[str, dict[str, float]] = {}
-        for code, g in data.groupby("iso3"):
-            code = str(code)
-            if code not in cmap:  # mapped countries only (as PWT; no default-to-S skew)
+    for i, y in enumerate(knot_list):
+        y_next = knot_list[i + 1] if i + 1 < len(knot_list) else None
+        for a, tot in totals.items():
+            if y not in tot.index or tot[y] <= 0:
                 continue
-            gy = g.set_index("year")["population"]
-            if y in gy.index and (y + 1) in gy.index and gy[y] > 0:
-                a = country_archetype(code, cmap)
-                rates.setdefault(a, {})[code] = gy[y + 1] / gy[y] - 1.0
-                pops.setdefault(a, {})[code] = float(gy[y])
-        for a in rates:
-            out.setdefault(a, {})[y] = round(_weighted_mean(rates[a], pops[a]), 4)
-        # World __all__ = population-weighted over ALL member countries (review P2 2026-09-09 —
-        # NOT a 50/50 mean of the aggregated N/S archetypes, which under-weights populous S).
-        allr = {c: r for a in rates for c, r in rates[a].items()}
-        allp = {c: p for a in pops for c, p in pops[a].items()}
-        if allr:
-            out.setdefault("__all__", {})[y] = round(_weighted_mean(allr, allp), 4)
+            if y_next is not None and y_next in tot.index and tot[y_next] > 0:
+                # interval CAGR knot→next-knot on the aggregate total → reproduces the WPP level.
+                rate = (tot[y_next] / tot[y]) ** (1.0 / (y_next - y)) - 1.0
+            elif (y + 1) in tot.index and tot[y] > 0:
+                rate = tot[y + 1] / tot[y] - 1.0  # final knot: instantaneous one-year rate
+            else:
+                continue
+            out.setdefault(a, {})[y] = round(rate, 4)
     return out
 
 
@@ -486,7 +536,7 @@ def extract_ngfs_emissions(
     region: str = "World",
     co2_var: str = "Emissions|CO2",
     gdp_var: str = "GDP|PPP|Counterfactual without damage",
-    knots: tuple[int, ...] = (2025, 2040),
+    start_year: int = 2025,
 ) -> dict[str, dict[int, float]]:
     """Economy-wide emissions-intensity decarbonisation from an NGFS scenario-explorer export
     (columns ``model``, ``scenario``, ``region``, ``variable``, ``year``, ``value``).
@@ -498,11 +548,19 @@ def extract_ngfs_emissions(
     ``"World"``); and the CO2 and GDP series are the EXACT ``co2_var``/``gdp_var`` variable names,
     each required to be a single series (raises otherwise). No averaging across variables/regions.
 
-    Intensity is DERIVED as ``co2_var / gdp_var`` per year. The rate for each knot is annualised
-    over the actual **knot interval** (this knot → the next configured knot, or the last source
-    year for the final knot), NOT to the next source year — because the trajectory holds the rate
-    the next knot, so annualising over the interval reproduces the source path at the knots (review
-    P2 2026-09-09). Returns ``{"__all__": {knot: rate}}`` (negative = decarbonisation). Accepts the
+    Intensity is DERIVED as ``co2_var / gdp_var`` per year. A knot is emitted at **every source year
+    ≥ ``start_year``** and its rate is the CAGR over that source year → the NEXT source year (review
+    P1 2026-09-15). Emitting all source years — rather than a sparse (2025, 2040) pair whose final
+    knot then annualised the 2040→2100 tail and held that gentle average from 2040 (overstating 2050
+    intensity ~30%) — makes the piecewise-constant trajectory reproduce the source intensity at
+    every source year, so the 2030–2050 climate-risk horizon is faithful. The last source year holds
+    flat (rate 0.0 — no further source information). The CO2/GDP endpoints are validated finite with
+    positive GDP and positive intensity before the ratio/exponentiation, so a scenario with a zero
+    or net-negative endpoint fails loudly rather than emitting inf/NaN (a multiplicative, non-
+    negative intensity SCALE cannot represent net-negative emissions — e.g. Net Zero 2050 after
+    ~2050 — and the engine forbids negative scales; such a scenario needs a gross-intensity +
+    removals split, not this driver). Returns ``{"__all__": {year: rate}}`` (negative =
+    decarbonisation). Accepts the
     IAMC WIDE (year-columns) export via :func:`normalise_ngfs`."""
     data = normalise_ngfs(data)
 
@@ -543,16 +601,37 @@ def extract_ngfs_emissions(
 
     c, g = _series(co2_var), _series(gdp_var)
     common = c.index.intersection(g.index)
+    # Validate endpoints BEFORE dividing/exponentiating (review P1 2026-09-15): a zero/negative or
+    # non-finite CO2 or GDP would give inf/NaN intensity that later becomes a non-positive (or NaN)
+    # multiplicative scale the engine rejects. Fail loudly, naming the offending year.
+    for var, s in ((co2_var, c[common]), (gdp_var, g[common])):
+        bad = s[~s.apply(lambda x: math.isfinite(x))]
+        if len(bad):
+            raise ValueError(f"NGFS {var!r} is non-finite at year(s) {sorted(bad.index)}.")
+    nonpos_g = g[common][g[common] <= 0]
+    if len(nonpos_g):
+        raise ValueError(f"NGFS {gdp_var!r} is non-positive at year(s) {sorted(nonpos_g.index)}.")
     series = (c[common] / g[common]).sort_index()
-    yrs = list(series.index)
-    knot_list = sorted(knots)
+    nonpos_i = series[series <= 0]
+    if len(nonpos_i):
+        # e.g. Net Zero 2050's CO2 goes net-negative by ~2050 — a multiplicative intensity scale
+        # cannot represent that. Reject rather than emit a negative/zero scale.
+        raise ValueError(
+            f"NGFS emissions intensity is non-positive at year(s) {sorted(nonpos_i.index)} "
+            f"(net-negative emissions cannot be a multiplicative intensity scale; use a "
+            f"gross-intensity + removals split for that scenario)."
+        )
+    yrs = [y for y in series.index if y >= start_year]
     out: dict[int, float] = {}
-    for i, y in enumerate(knot_list):
-        # End of this knot's interval: the NEXT knot (so the piecewise-constant rate spans
-        # knot→knot), or the last available source year for the final knot.
-        y_end = knot_list[i + 1] if i + 1 < len(knot_list) else (max(yrs) if yrs else y)
-        if y in series.index and y_end in series.index and y_end > y and series[y] > 0:
+    for i, y in enumerate(yrs):
+        # A knot per source year: CAGR over this source year → the NEXT source year, so the
+        # piecewise-constant path lands on the source intensity at every source year. The final
+        # source year holds flat (rate 0.0 — no further source information).
+        if i + 1 < len(yrs):
+            y_end = yrs[i + 1]
             out[y] = round((series[y_end] / series[y]) ** (1.0 / (y_end - y)) - 1.0, 4)
+        else:
+            out[y] = 0.0
     return {"__all__": out} if out else {}
 
 
@@ -574,10 +653,13 @@ def extract_ilo_participation(
     change of its rate over the most recent ``trend_window`` years, converted to a proportional rate
     (``expm1``, review P3) and held forward at every knot (a no-further-information assumption).
 
-    Hardening (review P2 2026-09-09):
+    Hardening (review P2 2026-09-09, 2026-09-15):
     - **Common-vintage cutoff:** a country is used only if its latest observation is ≥
       ``min_latest_year`` — stale series (some ILOSTAT countries end in 1980/1991/2001) are dropped
       rather than projected forward decades identically.
+    - **Recent-window requirement:** a country needs ≥2 observations INSIDE the recent
+      ``trend_window`` — otherwise it is DROPPED, not silently back-filled from its entire history
+      (which would project a decades-long trend under a "recent window" label).
     - **Outlier clip:** the per-country annual trend is clipped to ±``clip`` (default ±1%/yr), so a
       survey-break artefact (the raw data has trends near −8%/yr and +6%/yr) cannot dominate.
     - **Weighting:** an UNWEIGHTED archetype mean. The participation RATE is not a size measure (the
@@ -600,7 +682,10 @@ def extract_ilo_participation(
             continue
         recent = gy[gy.index >= last - trend_window]
         if len(recent) < 2:
-            recent = gy
+            # Fewer than two observations INSIDE the recent window → DROP the country (review P2
+            # 2026-09-15). The earlier fall-back to the entire history projected a decades-long
+            # trend (e.g. 1973→2022) under a "recent ≤10-year window" label — dishonest; skip it.
+            continue
         y0, y1 = int(recent.index.min()), int(recent.index.max())
         trend = math.expm1(math.log(recent[y1] / recent[y0]) / (y1 - y0))  # log→proportional (P3)
         trend = max(min(trend, clip), -clip)  # clip survey-break outliers
@@ -656,8 +741,9 @@ def _rebuild_digest_impl() -> tuple[dict, list[str]]:
         rates = extract_wpp_population(pd.read_csv(wpp, low_memory=False), cmap)
         wpp_src = (
             "UN World Population Prospects 2024, Total Population (both sexes), Medium variant; "
-            "annual growth pop[y+1]/pop[y]−1 at knots 2025/2035/2050; population-weighted over "
-            "mapped countries per N/S archetype. https://population.un.org/wpp/"
+            "knots 2025/2035/2050, each the interval CAGR to the next knot (final knot: one-year "
+            "rate) so holding it reproduces the WPP level at the next knot; population-weighted "
+            "over mapped countries per N/S archetype. https://population.un.org/wpp/"
         )
         _apply_region(digest, "population", rates, source=wpp_src)
     else:
@@ -687,9 +773,11 @@ def _rebuild_digest_impl() -> tuple[dict, list[str]]:
         mfp_src = (
             "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the "
             "supplied workbook); sheet LP1ConTFP (per-hour-worked TFP contribution to VA growth, "
-            "delta-log p.p.); mean of the 5 most recent years, expm1(mean/100) → proportional "
-            "rate; aggregated to ISIC sections then VA-weighted (VA_CP). "
-            "https://euklems-intanprod-llee.luiss.it/"
+            "delta-log p.p.); mean of the 5 most recent years (2017–2021 — a COVID-affected window "
+            "that can reverse the goods-vs-services ordering vs pre-COVID windows), "
+            "expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted "
+            "(VA_CP). LOW "
+            "confidence: single country, pandemic window. https://euklems-intanprod-llee.luiss.it/"
         )
         lp_src = mfp_src.replace(
             "LP1ConTFP (per-hour-worked TFP contribution to VA growth, ", "LP1_G ("
@@ -700,8 +788,12 @@ def _rebuild_digest_impl() -> tuple[dict, list[str]]:
             "share, NOT an adjacent-period Törnqvist share. "
             "https://euklems-intanprod-llee.luiss.it/"
         )
-        _apply_sector(digest, "mfp", out["mfp"], mfp_src)
-        _apply_sector(digest, "sector_productivity", out["sector_productivity"], lp_src)
+        # LOW confidence (review P2 2026-09-15): single-country (Austria) proxy on a COVID window
+        # (2017–2021) that can flip the BRD/MIL ordering vs pre-COVID windows — too weak for medium.
+        _apply_sector(digest, "mfp", out["mfp"], mfp_src, confidence="low")
+        _apply_sector(
+            digest, "sector_productivity", out["sector_productivity"], lp_src, confidence="low"
+        )
         _apply_source_shares(digest, out["source_labour_shares"], share_src)
         # The old capital_deepening driver is retired for EU KLEMS (mfp is now sourced directly);
         # drop any stale entry so it does not linger with an illustrative value.
@@ -715,8 +807,9 @@ def _rebuild_digest_impl() -> tuple[dict, list[str]]:
         ngfs_src = (
             f"NGFS Phase 5 scenario explorer: model {_NGFS['model']}, scenario "
             f"{_NGFS['scenario']}, region {_NGFS['region']}; emissions intensity DERIVED as "
-            f"{_NGFS['co2_var']} / {_NGFS['gdp_var']}; per-knot rate annualised over the knot "
-            "interval. https://data.ece.iiasa.ac.at/ngfs/"
+            f"{_NGFS['co2_var']} / {_NGFS['gdp_var']}; a knot at every source year (from 2025), "
+            "each the CAGR to the next source year, so the path reproduces the source intensity at "
+            "every source year (last year held flat). https://data.ece.iiasa.ac.at/ngfs/"
         )
         _apply_sector(digest, "emissions_intensity", dict(rates), ngfs_src)
     else:
@@ -742,7 +835,9 @@ def _apply_region(
     }
 
 
-def _apply_sector(digest: dict, driver: str, rates: dict, source: str) -> None:
+def _apply_sector(
+    digest: dict, driver: str, rates: dict, source: str, *, confidence: str = "medium"
+) -> None:
     if not rates:
         return
     # REPLACE wholesale (see _apply_region): an economy-wide-only extraction (e.g. NGFS gives only
@@ -750,22 +845,46 @@ def _apply_sector(digest: dict, driver: str, rates: dict, source: str) -> None:
     digest["sector_drivers"][driver] = {
         key: {
             "knots": {str(y): v for y, v in knots.items()},
-            "confidence": "medium",
+            "confidence": confidence,
             "source": source,
         }
         for key, knots in rates.items()
     }
 
 
-def _apply_source_shares(digest: dict, shares: dict, source: str) -> None:
+def _apply_source_shares(
+    digest: dict, shares: dict, source: str, *, confidence: str = "medium"
+) -> None:
     if not shares:
         return
     for key, val in shares.items():
         digest["source_labour_shares"][key] = {
             "value": val,
-            "confidence": "medium",
+            "confidence": confidence,
             "source": source,
         }
+
+
+def _raw_manifest() -> dict:
+    """SHA-256 + byte size of each raw source file actually present, so the (git-ignored,
+    separately-licensed) inputs behind the committed digest are AUDITABLE even though the files
+    themselves are not redistributed (review P2 2026-09-15). A reviewer who acquires the same
+    releases can confirm byte-identity; a changed source shows up as a changed hash here."""
+    manifest: dict[str, dict] = {}
+    for f in sorted(_RAW.glob("*")):
+        if f.suffix.lower() not in (".xlsx", ".csv"):
+            continue
+        h = hashlib.sha256(f.read_bytes()).hexdigest()
+        manifest[f.name] = {"sha256": h, "bytes": f.stat().st_size}
+    return {
+        "_README": (
+            "SHA-256 + size of the raw source files behind sources/inputs.json. The files are "
+            "git-ignored (large, separately licensed); this manifest makes the raw→digest step "
+            "auditable — re-acquire the cited releases (see raw/README.md) and compare hashes. "
+            "Regenerated by scripts/extract_structural_sources.py."
+        ),
+        "files": manifest,
+    }
 
 
 def main() -> int:
@@ -775,17 +894,21 @@ def main() -> int:
     if not _RAW.exists() or not any(_RAW.glob("*.xlsx")) and not any(_RAW.glob("*.csv")):
         print(
             f"No raw source files in {_RAW.relative_to(_ROOT)} — see its README for downloads. "
-            "The committed digest keeps its current (illustrative) values."
+            "The committed digest keeps its current values."
         )
         return 0
     digest, missing = _rebuild_digest()
     if missing:
-        print("Extracted from available raw files; STILL MISSING (kept illustrative):")
+        print("Extracted from available raw files; STILL MISSING (kept prior values):")
         for m in missing:
             print(f"  - {m}")
     rendered = json.dumps(digest, indent=2, ensure_ascii=False) + "\n"
+    manifest_rendered = json.dumps(_raw_manifest(), indent=2, ensure_ascii=False) + "\n"
     if args.check:
-        if _DIGEST.read_text() != rendered:
+        stale = _DIGEST.read_text() != rendered
+        # The manifest records LOCAL raw-file hashes; only compare it when the file exists (a fresh
+        # clone without the raw files can't reproduce hashes — don't fail CI's no-raw path on it).
+        if stale:
             print(
                 "inputs.json is OUT OF DATE vs the raw sources — re-run without --check + commit."
             )
@@ -793,7 +916,9 @@ def main() -> int:
         print("inputs.json matches the extracted raw sources.")
         return 0
     _DIGEST.write_text(rendered)
+    _MANIFEST.write_text(manifest_rendered)
     print(f"Wrote {_DIGEST}.")
+    print(f"Wrote {_MANIFEST}.")
     return 0
 
 
