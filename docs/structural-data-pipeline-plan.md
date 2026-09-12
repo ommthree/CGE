@@ -129,21 +129,24 @@ the source-side step; the manifest records `identification=source_share_tornqvis
 identified (not dropped to heuristic); a known-answer test pins both the σ=1 and a σ≠1 case.
 
 ### 1c. Per-driver, time-varying aggregation weights (replaces one static GDP table)
-**Now:** one static GDP-share `block_membership` table blends country archetypes into coarse regions,
-and the SAME weights are applied to population, participation AND productivity, held fixed to a single
-year (documented caveat in `NOTICE.md`); residual `W*` blocks are coarse single-archetype aggregates
-(e.g. `RoW_MiddleEast`=100% S).
-**Target:**
-- **Per-driver weights:** population growth blended by *population* weights, participation by
-  *labour-force* weights, productivity by *output/GDP* weights.
-- **Time-varying weights:** weights indexed to the projection year (population/GDP shares drift), so a
-  block's 2040 blend differs from its 2025 blend.
-- **Residual blocks:** replace 100%-single-archetype `W*` blocks with genuine multi-country blends
-  where source data exists, or explicitly widen their uncertainty band (1e) where it does not.
+**DONE (review-9 1c, 2026-09-16).** `concordance_v3.json` (built by `scripts/build_concordance_v3.py`
+from v2 + the vendored WPP/PWT) adds a `block_weights` structure and a `driver_weight_class` map:
+- **Per-driver weights:** population growth blends by **UN WPP per-country population** shares;
+  productivity by **PWT `rgdpo` output** shares; participation still uses the static v2 GDP weights
+  (no per-country labour-force series is available — documented proxy).
+- **Time-varying weights:** the population class is indexed to the knot years (2025/2035/2050) — a
+  block's 2050 blend genuinely differs from its 2025 blend as demographics drift (e.g. Indonesia's
+  share of RoW_Asia rises while Korea's falls). Output weights are held at PWT-2019.
+- **Residual blocks:** the EXIOBASE rest-of-region aggregates (`W*`, e.g. `RoW_MiddleEast`=100% S)
+  have no single ISO3, so they RETAIN their v2 residual share (a documented emerging-economy proxy)
+  with the named members renormalised around it; their uncertainty is widened via 1e.
+The loader (`_blend_region_path`) selects the driver's weight class and the year-appropriate weights;
+a v2 concordance (no `block_weights`) still loads and falls back to the single static GDP weights.
 
-**Acceptance:** the concordance carries per-driver weight tables with their own provenance; the
-per-driver validation added in review-6 (each present driver must resolve every mapped archetype)
-already guards the artifact against silent cross-driver divergence.
+**Acceptance (met):** the concordance carries per-driver, year-indexed weight tables with their own
+provenance + a `--check` gate; `_validate_v3_block_weights` enforces each table sums to 1 over mapped
+countries; the mapped trajectory's provenance stamps the per-driver/time-varying basis; the review-6
+per-driver coverage validation still guards against silent cross-driver divergence.
 
 ### 1d. Pinned emissions-intensity scenario
 **SCENARIO PINNED 2026-09-09 (review-8); PATH FIDELITY FIXED 2026-09-15 (review-9); per-sector split
@@ -157,21 +160,32 @@ P1). Endpoints are validated finite/positive before exponentiation (a net-negati
 raises rather than emitting a negative/NaN scale). Selection resolves the scenario/model to exactly
 one published value (raises on none/ambiguous) and requires the CO₂/GDP series each as a single
 series — no silent cross-region/variable averaging.
-**Still open:** it is a single **economy-wide** intensity path applied to every sector; a per-sector
-NGFS split (energy-supply / industry / transport / buildings variables mapped to BRD/MIL) would give
-sector-specific decarbonisation. Also possible: a named alternative-scenario set for sensitivity (1e).
+**PER-SECTOR SPLIT DONE (review-9 1d, 2026-09-16).** `scripts/fetch_ngfs_sectoral.py` pulls the
+sector-resolved CO₂ series from the IIASA NGFS Phase 5 explorer (via `pyam`, an offline one-off) and
+vendors them into the IAMC-wide `ngfs_phase5.csv`; `extract_ngfs_emissions(sector_bundles=…)` then
+emits a per-archetype intensity path = the SUM of each bundle's CO₂ over the SAME economy-wide GDP
+(NGFS has no sectoral GDP). BRD (goods) = industry energy demand + industrial processes + energy
+supply; MIL (services) = transport + residential/commercial; AFOLU is excluded (land use, net-
+negative mid-century). Goods decarbonise faster than services (BRD 2050 intensity ≈ 0.13 of 2025 vs
+MIL ≈ 0.31), each reproducing its source path at every knot. An economy-wide-only export degrades
+gracefully (sectors skipped, `__all__` still emitted).
 
-**Acceptance:** manifest names the full scenario tuple (done); a reader can re-pull the same series
-(done). Per-sector split: outstanding.
+**Acceptance (met):** manifest names the full scenario tuple; a reader can re-pull the same series
+(incl. the sectoral fetch script); per-sector paths are emitted and validated.
 
 ### 1e. Uncertainty / sensitivity sets
-**Now:** a per-entry `confidence` string (low/medium/high), no quantified band.
-**Target:** every rate ships low/central/high; the wrapper already accepts custom trajectories, so a
-sensitivity run is a sweep over {low, central, high} trajectory variants. Add a documented procedure
-and a helper that emits the three variants from the build.
+**DONE (review-9 1e, 2026-09-16).** `scripts/build_uncertainty_sets.py` emits
+`trajectories_v1_low.json` / `trajectories_v1_high.json` alongside the central artifact:
+- **EU KLEMS sector drivers** (`mfp`, `sector_productivity`): an EMPIRICAL band = the min/max across
+  the workbook's alternative trend windows {2017–21 (central), 2015–21, 2010–21} — directly capturing
+  the COVID-window sensitivity review-9 flagged.
+- **All other drivers**: a confidence-tiered relative band (low ±50% / medium ±25% / high ±10%) on
+  the central annual rate; "low" is uniformly the weaker-growth / slower-decarbonisation world.
+`cge.data.structural.structural_trajectory_variants(regions, sectors)` returns the three mapped
+trajectories for a sweep; a `--check` gate keeps the variants reproducible.
 
-**Acceptance:** a client-facing result reports an interval from the low/high trajectories, not a
-single point.
+**Acceptance (met):** a client result can report an interval by running {low, central, high} and
+comparing — the variants are monotone (low ≤ central ≤ high for growth) and provenance-stamped.
 
 ## 2. Sequencing
 

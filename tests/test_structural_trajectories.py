@@ -223,6 +223,120 @@ def test_concordance_v2_blends_mixed_blocks_with_gdp_weights():
     assert t.rate("productivity", "RoW_Europe", 2025) < t.rate("productivity", "RoW_Asia", 2025)
 
 
+def test_concordance_v3_per_driver_and_time_varying_weights(tmp_path):
+    """Review-9 1c: v3 blends each driver with its OWN weight class, and population weights are
+    year-indexed. Synthetic block BLK = {N-country CA, S-country IN}. output weights (productivity)
+    favour CA 0.9/0.1; population weights favour IN and DRIFT: 2025 CA 0.5 / IN 0.5 → 2050 CA 0.2 /
+    IN 0.8. So productivity(BLK) sits near N; population(BLK) moves toward S as years advance."""
+    import json
+
+    from cge.data.structural import structural_trajectories_for_build
+
+    traj = tmp_path / "traj.json"
+    traj.write_text(
+        json.dumps(
+            {
+                "provenance": {
+                    "source": "t",
+                    "source_version": "t",
+                    "licence": "t",
+                    "reference_year": 2024,
+                    "retrieved": "2026-09-16",
+                },
+                "rates": {
+                    "productivity": {"N": {"2025": 0.02}, "S": {"2025": 0.06}},
+                    "population": {
+                        "N": {"2025": 0.005, "2050": 0.005},
+                        "S": {"2025": 0.02, "2050": 0.02},
+                    },
+                },
+                "sources": {
+                    "productivity:N": "x",
+                    "productivity:S": "x",
+                    "population:N": "x",
+                    "population:S": "x",
+                },
+                "confidence": {
+                    "productivity:N": "low",
+                    "productivity:S": "low",
+                    "population:N": "low",
+                    "population:S": "low",
+                },
+            }
+        )
+    )
+    conc = tmp_path / "conc.json"
+    conc.write_text(
+        json.dumps(
+            {
+                "provenance": {
+                    "source": "concordance c",
+                    "source_version": "concordance-x",
+                    "licence": "x",
+                    "reference_year": 2024,
+                    "retrieved": "2026-09-16",
+                },
+                "country_archetype": {"CA": "N", "IN": "S"},
+                "block_membership": {"BLK": {"CA": 0.5, "IN": 0.5}},
+                "sector_archetype": {"manufacturing": "BRD"},
+                "block_weights": {
+                    "output": {"BLK": {"CA": 0.9, "IN": 0.1}},
+                    "population": {
+                        "BLK": {"2025": {"CA": 0.5, "IN": 0.5}, "2050": {"CA": 0.2, "IN": 0.8}}
+                    },
+                },
+                "driver_weight_class": {"population": "population", "productivity": "output"},
+                "sources": {"x": "x"},
+            }
+        )
+    )
+    t = structural_trajectories_for_build(
+        ["BLK"],
+        ["manufacturing"],
+        trajectory_path=str(traj),
+        concordance_path=str(conc),
+        require_full_coverage=False,
+    )
+    # productivity uses OUTPUT weights (CA 0.9): 0.9·0.02 + 0.1·0.06 = 0.024.
+    assert t.rate("productivity", "BLK", 2025) == pytest.approx(0.9 * 0.02 + 0.1 * 0.06)
+    # population uses POPULATION weights, which DRIFT: 2025 (0.5/0.5) vs 2050 (0.2/0.8).
+    assert t.rate("population", "BLK", 2025) == pytest.approx(0.5 * 0.005 + 0.5 * 0.02)
+    assert t.rate("population", "BLK", 2050) == pytest.approx(0.2 * 0.005 + 0.8 * 0.02)
+    # the drift moves the blended population rate UP toward S between 2025 and 2050.
+    assert t.rate("population", "BLK", 2050) > t.rate("population", "BLK", 2025)
+
+
+def test_uncertainty_variants_sweep_low_central_high():
+    """Review-9 1e: structural_trajectory_variants returns low/central/high, and for a growth driver
+    low ≤ central ≤ high (the sweep is monotone). The sibling artifacts must exist (built by
+    scripts/build_uncertainty_sets.py) and carry the sensitivity provenance."""
+    from cge.data.structural import structural_trajectory_variants
+
+    v = structural_trajectory_variants()  # raw archetype variants
+    assert set(v) == {"low", "central", "high"}
+    lo = v["low"].rate("productivity", "N", 2019)
+    ce = v["central"].rate("productivity", "N", 2019)
+    hi = v["high"].rate("productivity", "N", 2019)
+    assert lo <= ce <= hi and lo < hi  # a real, monotone band
+    assert "low" in v["low"].provenance.source_version
+    assert "uncertainty" in (v["low"].provenance.notes or "").lower()
+    # emissions-intensity: "low" = SLOWER decarbonisation (less negative) than central.
+    lo_e = v["low"].sector_rate("emissions_intensity", "__all__", 2025)
+    ce_e = v["central"].sector_rate("emissions_intensity", "__all__", 2025)
+    assert lo_e > ce_e  # less negative = slower decarbonisation
+
+
+def test_uncertainty_variants_map_onto_build_labels():
+    """The variants can be mapped onto real build labels for a sweep, sharing the concordance."""
+    from cge.data.structural import structural_trajectory_variants
+
+    v = structural_trajectory_variants(["US", "RoW_Asia"], ["manufacturing"])
+    assert set(v) == {"low", "central", "high"}
+    for label in ("low", "central", "high"):
+        # each variant carries the real build label US (mapped, not archetype N).
+        assert v[label].rate("productivity", "US", 2019) is not None
+
+
 def test_concordance_v2_carries_composite_provenance():
     """Review P2 2026-08-29: the mapped trajectory must record BOTH the concordance and archetype
     identities, not just the bare structural-trajectories-v1 provenance."""
@@ -230,23 +344,24 @@ def test_concordance_v2_carries_composite_provenance():
 
     t = structural_trajectories_for_build(["US", "CN"], ["manufacturing", "services"])
     assert "concordance" in t.provenance.source.lower()
-    assert "structural-concordance-v2" in t.provenance.source_version
-    # v3 (review-8 2026-09-09): EU KLEMS mfp=LP1ConTFP, capital_deepening retired, member-weighted
-    # aggregates, proportional rates.
+    # concordance v3 (review-9 1c): per-driver/time-varying weights. trajectories v3 (review-8):
+    # EU KLEMS mfp=LP1ConTFP, capital_deepening retired, member-weighted aggregates.
+    assert "structural-concordance-v3" in t.provenance.source_version
     assert "structural-trajectories-v3" in t.provenance.source_version
 
 
-def test_mapped_trajectory_stamps_the_weighting_caveat():
-    """Review P1 2026-08-31: the single-GDP-weight-for-all-drivers / static-weights / residual-block
-    limitation must be recorded in the mapped trajectory's provenance so a real-build run carries it
-    auditable-in-place, not only in NOTICE.md."""
+def test_mapped_trajectory_stamps_the_weighting_note():
+    """Review P1 2026-08-31 + review-9 1c: the weighting basis + residual-block limitation must be
+    recorded in the mapped trajectory's provenance, auditable-in-place. With the default v3
+    concordance the note describes the PER-DRIVER, TIME-VARYING weights and the residual-W*
+    proxy — not the old single-static-GDP caveat."""
     from cge.data.structural import structural_trajectories_for_build
 
-    t = structural_trajectories_for_build(["US", "CN"], ["manufacturing", "services"])
+    t = structural_trajectories_for_build(["US", "CN", "RoW_Asia"], ["manufacturing", "services"])
     notes = t.provenance.notes
-    assert "WEIGHTING CAVEAT" in notes
-    assert "GDP-share" in notes and "all region drivers" in notes.lower()
-    assert "RoW_MiddleEast" in notes
+    assert "PER-DRIVER, TIME-VARYING" in notes  # v3 weights
+    assert "population" in notes.lower() and "output shares" in notes.lower()
+    assert "RoW_MiddleEast" in notes  # the residual-W* proxy is still disclosed
 
 
 def test_concordance_validation_rejects_bad_archetype_and_weights(tmp_path):
@@ -446,9 +561,9 @@ def test_final_manifest_preserves_concordance_hashes_and_weighting_caveat():
     from cge.scenarios.loader import Scenario
 
     mapped = structural_trajectories_for_build(["US", "CN"], ["manufacturing", "services"])
-    # Sanity: the mapped trajectory really carries the hashes + caveat in notes (source of truth).
+    # Sanity: the mapped trajectory really carries the hashes + weighting note (source of truth).
     assert "concordance_content_hash=" in mapped.provenance.notes
-    assert "WEIGHTING CAVEAT" in mapped.provenance.notes
+    assert "PER-DRIVER, TIME-VARYING" in mapped.provenance.notes  # v3 weighting note
 
     sc = Scenario(
         name="x", engine="cge_static", years=[2025, 2030], shocks=[CarbonPrice(price=50.0)]
@@ -463,12 +578,12 @@ def test_final_manifest_preserves_concordance_hashes_and_weighting_caveat():
     )
     trend = path.result.manifest.assumptions["recursive_dynamics"]["trend_source"]
     # Full provenance object preserved (notes carried through, not just source/version/licence).
-    assert "WEIGHTING CAVEAT" in trend["provenance"]["notes"]
+    assert "PER-DRIVER, TIME-VARYING" in trend["provenance"]["notes"]
     assert "concordance_content_hash=" in trend["provenance"]["notes"]
     # Explicit audit fields surfaced at the top level (no prose-parsing needed downstream).
     assert trend["concordance_content_hash"] == _hash_in(mapped.provenance.notes, "concordance")
     assert trend["archetype_content_hash"] == _hash_in(mapped.provenance.notes, "archetype")
-    assert "WEIGHTING CAVEAT" in trend["weighting_caveat"]
+    assert "PER-DRIVER, TIME-VARYING" in trend["weighting_note"]
 
 
 def _hash_in(notes: str, which: str) -> str:

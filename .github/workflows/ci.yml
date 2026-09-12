@@ -53,6 +53,14 @@ jobs:
         # licensed — see data/structural/sources/raw/README.md); when present it fails on drift.
         run: python scripts/extract_structural_sources.py --check
 
+      - name: Concordance v3 reproduces from v2 + raw sources (pipeline step 1c)
+        # No-op when the raw WPP/PWT files are absent (as in CI); validates locally on drift.
+        run: python scripts/build_concordance_v3.py --check
+
+      - name: Uncertainty variants reproduce from the central digest (pipeline step 1e)
+        # No-op when the EU KLEMS raw file is absent (as in CI); validates locally on drift.
+        run: python scripts/build_uncertainty_sets.py --check
+
       - name: Pytest
         run: pytest -q
 

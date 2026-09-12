@@ -129,7 +129,43 @@
           "2100": 0.0
         },
         "confidence": "medium",
-        "source": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; emissions intensity DERIVED as Emissions|CO2 / GDP|PPP|Counterfactual without damage; a knot at every source year (from 2025), each the CAGR to the next source year, so the path reproduces the source intensity at every source year (last year held flat). https://data.ece.iiasa.ac.at/ngfs/"
+        "source": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; emissions intensity DERIVED as Emissions|CO2 / GDP|PPP|Counterfactual without damage; a knot at every source year (from 2025), each the CAGR to the next source year, so the path reproduces the source intensity at every source year (last year held flat). Per-sector paths (BRD = industry energy demand + industrial processes + energy supply; MIL = transport + residential/commercial; AFOLU excluded) use each bundle's summed CO2 over the SAME economy-wide GDP (no sectoral GDP in NGFS). https://data.ece.iiasa.ac.at/ngfs/"
+      },
+      "BRD": {
+        "knots": {
+          "2025": -0.0569,
+          "2030": -0.0754,
+          "2035": -0.0831,
+          "2040": -0.0855,
+          "2045": -0.0869,
+          "2050": -0.0771,
+          "2055": -0.0646,
+          "2060": -0.0501,
+          "2070": -0.0232,
+          "2080": -0.0133,
+          "2090": -0.0219,
+          "2100": 0.0
+        },
+        "confidence": "medium",
+        "source": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; emissions intensity DERIVED as Emissions|CO2 / GDP|PPP|Counterfactual without damage; a knot at every source year (from 2025), each the CAGR to the next source year, so the path reproduces the source intensity at every source year (last year held flat). Per-sector paths (BRD = industry energy demand + industrial processes + energy supply; MIL = transport + residential/commercial; AFOLU excluded) use each bundle's summed CO2 over the SAME economy-wide GDP (no sectoral GDP in NGFS). https://data.ece.iiasa.ac.at/ngfs/"
+      },
+      "MIL": {
+        "knots": {
+          "2025": -0.0426,
+          "2030": -0.047,
+          "2035": -0.0482,
+          "2040": -0.0487,
+          "2045": -0.0426,
+          "2050": -0.0353,
+          "2055": -0.0358,
+          "2060": -0.0341,
+          "2070": -0.0332,
+          "2080": -0.0317,
+          "2090": -0.0329,
+          "2100": 0.0
+        },
+        "confidence": "medium",
+        "source": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; emissions intensity DERIVED as Emissions|CO2 / GDP|PPP|Counterfactual without damage; a knot at every source year (from 2025), each the CAGR to the next source year, so the path reproduces the source intensity at every source year (last year held flat). Per-sector paths (BRD = industry energy demand + industrial processes + energy supply; MIL = transport + residential/commercial; AFOLU excluded) use each bundle's summed CO2 over the SAME economy-wide GDP (no sectoral GDP in NGFS). https://data.ece.iiasa.ac.at/ngfs/"
       }
     },
     "mfp": {
