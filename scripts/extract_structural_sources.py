@@ -54,6 +54,23 @@ _NGFS = {
     "region": "World",
     "co2_var": "Emissions|CO2",
     "gdp_var": "GDP|PPP|Counterfactual without damage",
+    # Per-sector emissions split (review-9 1d, 2026-09-16): each archetype's CO2 is the SUM of these
+    # component variables, over the shared economy-wide GDP denominator (NGFS has no sectoral GDP).
+    # BRD (goods) = industry energy demand + industrial processes + energy supply; MIL (services) =
+    # transport + residential/commercial. AFOLU is EXCLUDED (land use, not production; net-negative
+    # mid-century so it cannot be a multiplicative scale). These need the sectoral CSV vendored by
+    # scripts/fetch_ngfs_sectoral.py; the economy-wide __all__ path works without them.
+    "sector_bundles": {
+        "BRD": [
+            "Emissions|CO2|Energy|Demand|Industry",
+            "Emissions|CO2|Industrial Processes",
+            "Emissions|CO2|Energy|Supply",
+        ],
+        "MIL": [
+            "Emissions|CO2|Energy|Demand|Transportation",
+            "Emissions|CO2|Energy|Demand|Residential and Commercial",
+        ],
+    },
 }
 
 
@@ -537,9 +554,10 @@ def extract_ngfs_emissions(
     co2_var: str = "Emissions|CO2",
     gdp_var: str = "GDP|PPP|Counterfactual without damage",
     start_year: int = 2025,
+    sector_bundles: dict[str, list[str]] | None = None,
 ) -> dict[str, dict[int, float]]:
-    """Economy-wide emissions-intensity decarbonisation from an NGFS scenario-explorer export
-    (columns ``model``, ``scenario``, ``region``, ``variable``, ``year``, ``value``).
+    """Emissions-intensity decarbonisation from an NGFS scenario-explorer export (columns ``model``,
+    ``scenario``, ``region``, ``variable``, ``year``, ``value``).
 
     Selection is an EXPLICIT, VALIDATED tuple (review P1/P2 2026-09-09 — not loose substrings that
     could silently mix regions/variables/units): ``model`` and ``scenario`` match after stripping a
@@ -559,9 +577,19 @@ def extract_ngfs_emissions(
     or net-negative endpoint fails loudly rather than emitting inf/NaN (a multiplicative, non-
     negative intensity SCALE cannot represent net-negative emissions — e.g. Net Zero 2050 after
     ~2050 — and the engine forbids negative scales; such a scenario needs a gross-intensity +
-    removals split, not this driver). Returns ``{"__all__": {year: rate}}`` (negative =
-    decarbonisation). Accepts the
-    IAMC WIDE (year-columns) export via :func:`normalise_ngfs`."""
+    removals split, not this driver).
+
+    PER-SECTOR SPLIT (review-9 1d, 2026-09-16): if ``sector_bundles`` is given (``{archetype:
+    [co2_variable, ...]}``), each archetype gets its OWN intensity path — the SUM of its CO2
+    component variables divided by the SAME economy-wide ``gdp_var`` (there is no sectoral GDP in
+    the NGFS export, so the shared denominator is the honest choice; the split is on emissions).
+    Each bundle is validated the same way (finite, positive). This lets goods vs services diverge
+    at their own rates (BRD ≈ industry+processes+energy-supply falls faster than MIL ≈
+    transport+buildings). ``__all__`` is always the economy-wide ``co2_var`` path.
+
+    Returns ``{archetype: {year: rate}}`` (always ``__all__``; plus one key per ``sector_bundles``
+    archetype). Negative = decarbonisation. Accepts the IAMC WIDE (year-columns) export via
+    :func:`normalise_ngfs`."""
     data = normalise_ngfs(data)
 
     def _norm(x: str) -> str:
@@ -599,40 +627,72 @@ def extract_ngfs_emissions(
             raise ValueError(f"NGFS variable {var!r} is ambiguous (multiple series/units).")
         return v.groupby("year")["value"].first().sort_index()
 
-    c, g = _series(co2_var), _series(gdp_var)
-    common = c.index.intersection(g.index)
-    # Validate endpoints BEFORE dividing/exponentiating (review P1 2026-09-15): a zero/negative or
-    # non-finite CO2 or GDP would give inf/NaN intensity that later becomes a non-positive (or NaN)
-    # multiplicative scale the engine rejects. Fail loudly, naming the offending year.
-    for var, s in ((co2_var, c[common]), (gdp_var, g[common])):
+    g = _series(gdp_var)
+
+    def _check_finite(var: str, s: pd.Series) -> None:
+        # Validate BEFORE dividing/exponentiating (review P1 2026-09-15): a zero/negative or
+        # non-finite CO2 or GDP would give inf/NaN intensity that later becomes a non-positive (or
+        # NaN) multiplicative scale the engine rejects. Fail loudly, naming the offending year.
         bad = s[~s.apply(lambda x: math.isfinite(x))]
         if len(bad):
             raise ValueError(f"NGFS {var!r} is non-finite at year(s) {sorted(bad.index)}.")
-    nonpos_g = g[common][g[common] <= 0]
-    if len(nonpos_g):
-        raise ValueError(f"NGFS {gdp_var!r} is non-positive at year(s) {sorted(nonpos_g.index)}.")
-    series = (c[common] / g[common]).sort_index()
-    nonpos_i = series[series <= 0]
-    if len(nonpos_i):
-        # e.g. Net Zero 2050's CO2 goes net-negative by ~2050 — a multiplicative intensity scale
-        # cannot represent that. Reject rather than emit a negative/zero scale.
-        raise ValueError(
-            f"NGFS emissions intensity is non-positive at year(s) {sorted(nonpos_i.index)} "
-            f"(net-negative emissions cannot be a multiplicative intensity scale; use a "
-            f"gross-intensity + removals split for that scenario)."
-        )
-    yrs = [y for y in series.index if y >= start_year]
-    out: dict[int, float] = {}
-    for i, y in enumerate(yrs):
-        # A knot per source year: CAGR over this source year → the NEXT source year, so the
-        # piecewise-constant path lands on the source intensity at every source year. The final
-        # source year holds flat (rate 0.0 — no further source information).
-        if i + 1 < len(yrs):
-            y_end = yrs[i + 1]
-            out[y] = round((series[y_end] / series[y]) ** (1.0 / (y_end - y)) - 1.0, 4)
-        else:
-            out[y] = 0.0
-    return {"__all__": out} if out else {}
+
+    def _intensity_path(co2: pd.Series, label: str) -> dict[int, float]:
+        """Emissions-intensity knot rates for one CO2 series over the shared GDP denominator: a knot
+        at every source year ≥ start_year, each the CAGR to the NEXT source year (last held flat),
+        so the piecewise-constant path reproduces the source intensity at every source year."""
+        common = co2.index.intersection(g.index)
+        _check_finite(label, co2[common])
+        _check_finite(gdp_var, g[common])
+        nonpos_g = g[common][g[common] <= 0]
+        if len(nonpos_g):
+            raise ValueError(
+                f"NGFS {gdp_var!r} is non-positive at year(s) {sorted(nonpos_g.index)}."
+            )
+        s = (co2[common] / g[common]).sort_index()
+        nonpos_i = s[s <= 0]
+        if len(nonpos_i):
+            # e.g. Net Zero 2050's CO2 goes net-negative by ~2050 — a multiplicative intensity scale
+            # cannot represent that. Reject rather than emit a negative/zero scale.
+            raise ValueError(
+                f"NGFS emissions intensity ({label}) is non-positive at year(s) "
+                f"{sorted(nonpos_i.index)} (net-negative emissions cannot be a multiplicative "
+                f"intensity scale; use a gross-intensity + removals split for that scenario)."
+            )
+        yrs = [y for y in s.index if y >= start_year]
+        path: dict[int, float] = {}
+        for i, y in enumerate(yrs):
+            if i + 1 < len(yrs):
+                y_end = yrs[i + 1]
+                path[y] = round((s[y_end] / s[y]) ** (1.0 / (y_end - y)) - 1.0, 4)
+            else:
+                path[y] = 0.0  # final source year holds flat (no further source information)
+        return path
+
+    out: dict[str, dict[int, float]] = {}
+    all_path = _intensity_path(_series(co2_var), co2_var)
+    if all_path:
+        out["__all__"] = all_path
+    available = set(sub["variable"].unique())
+    for archetype, variables in (sector_bundles or {}).items():
+        # Sum the archetype's CO2 component variables (each a single series), then its own intensity
+        # path over the shared economy-wide GDP denominator. If the sectoral variables are absent
+        # (an economy-wide-only export), SKIP this archetype rather than raise — the __all__ path is
+        # still emitted, so an older/leaner NGFS file degrades gracefully to economy-wide only.
+        if not all(v in available for v in variables):
+            continue
+        # Sum on the intersection of years the components share (adding an empty-index Series as a
+        # start would align to nothing and yield all-NaN — so reduce over the real series).
+        comps = [_series(v) for v in variables]
+        bundle = comps[0].copy()
+        for s in comps[1:]:
+            bundle = bundle.add(
+                s, fill_value=None
+            )  # aligns on year; NaN where a component is absent
+        path = _intensity_path(bundle.dropna(), f"{archetype} bundle")
+        if path:
+            out[archetype] = path
+    return out
 
 
 # --------------------------------------------------------------------------------------------------
@@ -804,12 +864,23 @@ def _rebuild_digest_impl() -> tuple[dict, list[str]]:
     ngfs = _RAW / "ngfs_phase5.csv"
     if ngfs.exists():
         rates = extract_ngfs_emissions(pd.read_csv(ngfs), **_NGFS)
+        multi_sector = set(rates) - {"__all__"}
+        sector_note = (
+            (
+                " Per-sector paths (BRD = industry energy demand + industrial processes + energy "
+                "supply; MIL = transport + residential/commercial; AFOLU excluded) use each "
+                "bundle's summed CO2 over the SAME economy-wide GDP (no sectoral GDP in NGFS)."
+            )
+            if multi_sector
+            else ""
+        )
         ngfs_src = (
             f"NGFS Phase 5 scenario explorer: model {_NGFS['model']}, scenario "
             f"{_NGFS['scenario']}, region {_NGFS['region']}; emissions intensity DERIVED as "
             f"{_NGFS['co2_var']} / {_NGFS['gdp_var']}; a knot at every source year (from 2025), "
             "each the CAGR to the next source year, so the path reproduces the source intensity at "
-            "every source year (last year held flat). https://data.ece.iiasa.ac.at/ngfs/"
+            f"every source year (last year held flat).{sector_note} "
+            "https://data.ece.iiasa.ac.at/ngfs/"
         )
         _apply_sector(digest, "emissions_intensity", dict(rates), ngfs_src)
     else:
