@@ -168,9 +168,13 @@ shipped. The identity and CES/CD routing above still apply; only the source of t
   sparse 2025/2040 pair annualised the 2040→2100 tail and held that gentle average from 2040,
   overstating 2050 intensity ~30%). Endpoints are validated finite with positive GDP and positive
   intensity before exponentiation, so a net-negative-emissions scenario (e.g. Net Zero after ~2050)
-  fails loudly rather than emitting a negative/NaN scale. This is a **single economy-wide path**
-  applied to every sector — a per-sector split is a documented follow-up
-  (`docs/structural-data-pipeline-plan.md`, 1d). `confidence = medium`.
+  fails loudly rather than emitting a negative/NaN scale.
+- **Per-sector split (review-9 1d 2026-09-16):** the `__all__` path is economy-wide; the BRD/MIL
+  sector paths each use their own summed CO₂ bundle over the SAME economy-wide GDP (NGFS has no
+  sectoral GDP). BRD (goods) = industry energy demand + industrial processes + energy supply; MIL
+  (services) = transport + residential/commercial (AFOLU excluded — land use, net-negative
+  mid-century). Goods decarbonise faster than services. The sectoral CO₂ series are fetched by
+  `scripts/fetch_ngfs_sectoral.py` (pyam → IIASA NGFS Phase 5). `confidence = medium`.
 
 ## Reproducibility (review 2026-09-09 / 2026-09-15 — the transcription caveat is retired)
 
@@ -187,9 +191,20 @@ redistributing the files, `sources/raw_manifest.json` records each raw file's SH
 re-acquire the cited releases and compare. Rates are **proportional** annual growth (log/delta-log
 sources are converted with `expm1`). PWT 10.01 ends in **2019**, so the productivity knots are held
 forward (an assumption, flagged as such per-entry); WPP/NGFS supply genuinely forward-looking values.
-**Documented limitations** (not defects): EU KLEMS is single-country (Austria); NGFS intensity is
-economy-wide; forward participation/productivity knots hold the recent trend flat; the region/sector
-archetypes are N/S and BRD/MIL. See `docs/structural-data-pipeline-plan.md` (1a-breadth, 1c–1e).
+**Aggregation weights (review-9 1c 2026-09-16):** `concordance_v3.json` blends each region driver with
+its OWN, YEAR-INDEXED weight class — population by UN WPP per-country population shares that drift
+across 2025/2035/2050, productivity by PWT output shares; participation uses the static v2 GDP weights
+(no per-country labour-force series). The EXIOBASE W* residual aggregates keep their v2 proxy share.
+
+**Uncertainty (review-9 1e 2026-09-16):** `trajectories_v1_low.json` / `_high.json` (built by
+`scripts/build_uncertainty_sets.py`) bracket the central path — EU KLEMS sector drivers by the
+empirical trend-window envelope (2017–21/2015–21/2010–21), other drivers by a confidence-tiered
+±band. Use `structural_trajectory_variants()` to sweep {low, central, high} and report an interval.
+
+**Remaining limitations** (not defects): EU KLEMS is single-country (Austria — a breadth expansion is
+the main open item); forward participation/productivity knots hold the recent trend flat; the
+region/sector archetypes are N/S and BRD/MIL; NGFS sector paths share the economy-wide GDP denominator
+(no sectoral GDP in NGFS). See `docs/structural-data-pipeline-plan.md` (1a-breadth).
 
 ## Reproducing / updating
 

@@ -23,7 +23,7 @@ are handled automatically (`normalise_*` in the extractor), so you do **not** ne
 | **UN WPP 2024** (population growth) | <https://population.un.org/wpp/downloads> → **"Total Population - Both Sexes"** CSV, **Medium** variant | `wpp2024_population.csv` (raw `ISO3_code`/`Time`/`PopTotal`/`Variant` is fine) | CC BY 3.0 IGO |
 | **ILOSTAT** (labour-force participation) | <https://ilostat.ilo.org/data/> → indicator **`EAP_DWAP_SEX_AGE_RT`** (LFPR) bulk CSV, or the ILOSTAT bulk-download portal | `ilostat_lfpr.csv` (raw `ref_area`/`time`/`obs_value`/`sex`/`classif1` is fine) | CC BY 4.0 |
 | **EU KLEMS & INTANProd 2024** (sector MFP + per-hour LP + labour share) | <https://euklems-intanprod-llee.luiss.it/> → "Growth Accounts" release (registration/data agreement may apply) | `euklems_2023_growth_accounts.xlsx` — the supplied file is the **multi-sheet workbook** (one sheet per variable: `LP1ConTFP`/`LP1_G`/`LAB`/`VA_CP`), Austria only | CC BY 4.0 |
-| **NGFS Phase 5** (emissions intensity) | <https://data.ece.iiasa.ac.at/ngfs/> → filter **model `REMIND-MAgPIE 3.3-4.8`**, **scenario `Below 2°C`**, region `World`, variables `Emissions|CO2` + `GDP|PPP|Counterfactual without damage` → Download CSV | `ngfs_phase5.csv` (IAMC long OR wide/year-columns both accepted) | see NGFS terms |
+| **NGFS Phase 5** (emissions intensity, incl. per-sector) | Easiest: `pip install pyam-iamc` then `python scripts/fetch_ngfs_sectoral.py` (pulls economy-wide + sectoral CO₂ + GDP for the pinned tuple). Or manually from <https://data.ece.iiasa.ac.at/ngfs/> → **model `REMIND-MAgPIE 3.3-4.8`**, **scenario `Below 2°C`**, region `World`, the `Emissions|CO2*` sector variables + `GDP|PPP|Counterfactual without damage` → Download CSV | `ngfs_phase5.csv` (IAMC long OR wide/year-columns both accepted) | see NGFS terms |
 
 **Notes / caveats worth knowing before you download:**
 - **PWT** is a clean drop-in (native `Data` sheet, `countrycode`/`year`/`rtfpna`).
@@ -44,7 +44,9 @@ are handled automatically (`normalise_*` in the extractor), so you do **not** ne
   `Emissions|CO2 / GDP|PPP|Counterfactual without damage`. Model/scenario are matched after stripping
   the `(version: n)` suffix and the `°`→`?` mangling but must resolve to exactly one published value
   (it **raises** on none/ambiguous); the CO2 and GDP variables must be present as single series. To
-  use a different scenario, edit the `_NGFS` constant.
+  use a different scenario, edit the `_NGFS` constant. The **per-sector split** (BRD/MIL) needs the
+  sectoral `Emissions|CO2|*` variables — `scripts/fetch_ngfs_sectoral.py` fetches exactly the set the
+  extractor bundles; an economy-wide-only file still works (`__all__` only, sectors skipped).
 
 After the files are in place, `python scripts/extract_structural_sources.py` rebuilds
 `../inputs.json`; then `python scripts/build_structural_trajectories.py` regenerates

@@ -136,6 +136,77 @@ def test_ngfs_emits_a_knot_per_source_year_and_reproduces_the_path():
     assert level == pytest.approx(0.30, rel=1e-3)
 
 
+def test_ngfs_per_sector_split_bundles_co2_over_shared_gdp():
+    """With ``sector_bundles`` (review-9 1d), each archetype gets its own path = the sum of
+    its CO2 component variables over the SAME economy-wide GDP. GDP flat at 100. BRD = A+B: A 60→30,
+    B 20→10 → bundle 80→40 (halves); MIL = C: 20→18 (gentle). So BRD decarbonises faster than MIL,
+    and __all__ (economy-wide CO2 100→50) is still emitted."""
+    df = pd.DataFrame(
+        {
+            "model": ["M"] * 9,
+            "scenario": ["NZ"] * 9,
+            "region": ["World"] * 9,
+            "variable": ["Emissions|CO2", "A", "B", "C", "GDP|PPP"]
+            + ["Emissions|CO2", "A", "B", "C"],
+            "year": [2025, 2025, 2025, 2025, 2025, 2040, 2040, 2040, 2040],
+            "value": [100.0, 60.0, 20.0, 20.0, 100.0, 50.0, 30.0, 10.0, 18.0],
+        }
+    )
+    # GDP at 2040 too (flat):
+    df = pd.concat(
+        [
+            df,
+            pd.DataFrame(
+                {
+                    "model": ["M"],
+                    "scenario": ["NZ"],
+                    "region": ["World"],
+                    "variable": ["GDP|PPP"],
+                    "year": [2040],
+                    "value": [100.0],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+    out = extract_ngfs_emissions(
+        df,
+        model="M",
+        scenario="NZ",
+        gdp_var="GDP|PPP",
+        sector_bundles={"BRD": ["A", "B"], "MIL": ["C"]},
+    )
+    assert set(out) == {"__all__", "BRD", "MIL"}
+    # BRD bundle 80→40 over 15y → CAGR (40/80)^(1/15)−1; MIL 20→18 → (18/20)^(1/15)−1 (gentler).
+    assert out["BRD"][2025] == pytest.approx(round((40.0 / 80.0) ** (1 / 15) - 1, 4))
+    assert out["MIL"][2025] == pytest.approx(round((18.0 / 20.0) ** (1 / 15) - 1, 4))
+    assert out["BRD"][2025] < out["MIL"][2025]  # goods decarbonise faster than services
+    assert out["__all__"][2025] == pytest.approx(round((50.0 / 100.0) ** (1 / 15) - 1, 4))
+
+
+def test_ngfs_per_sector_split_skips_bundles_when_components_absent():
+    """An economy-wide-only export (no sectoral CO2 variables) must degrade gracefully: __all__ is
+    emitted, the sector bundles are SKIPPED rather than raising."""
+    df = pd.DataFrame(
+        {
+            "model": ["M"] * 4,
+            "scenario": ["NZ"] * 4,
+            "region": ["World"] * 4,
+            "variable": ["Emissions|CO2", "Emissions|CO2", "GDP|PPP", "GDP|PPP"],
+            "year": [2025, 2040, 2025, 2040],
+            "value": [100.0, 50.0, 100.0, 100.0],
+        }
+    )
+    out = extract_ngfs_emissions(
+        df,
+        model="M",
+        scenario="NZ",
+        gdp_var="GDP|PPP",
+        sector_bundles={"BRD": ["A", "B"], "MIL": ["C"]},
+    )
+    assert set(out) == {"__all__"}  # sectors skipped, no raise
+
+
 def test_ngfs_rejects_negative_emissions_and_bad_gdp():
     """A multiplicative intensity SCALE cannot represent net-negative emissions (e.g. Net Zero after
     ~2050) or a zero/non-finite GDP endpoint — the engine forbids non-positive scales. Each case
@@ -148,7 +219,7 @@ def test_ngfs_rejects_negative_emissions_and_bad_gdp():
         "year": [2025, 2050, 2025, 2050],
     }
     neg = pd.DataFrame({**base, "value": [100.0, -20.0, 100.0, 100.0]})  # CO2 net-negative by 2050
-    with pytest.raises(ValueError, match="intensity is non-positive"):
+    with pytest.raises(ValueError, match="intensity .* is non-positive"):
         extract_ngfs_emissions(neg, model="M", scenario="NZ", gdp_var="GDP|PPP")
     zero_gdp = pd.DataFrame({**base, "value": [100.0, 50.0, 100.0, 0.0]})  # GDP → 0
     with pytest.raises(ValueError, match="non-positive"):
