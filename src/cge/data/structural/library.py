@@ -64,7 +64,7 @@ def default_structural_trajectories() -> StructuralTrajectory:
 
 
 _DEFAULT_CONCORDANCE = (
-    Path(__file__).resolve().parents[4] / "data" / "structural" / "concordance_v2.json"
+    Path(__file__).resolve().parents[4] / "data" / "structural" / "concordance_v3.json"
 )
 
 
@@ -97,7 +97,7 @@ def load_structural_concordance(
     if not artifact.exists():
         raise FileNotFoundError(
             f"structural concordance not found at {artifact}; expected the vendored "
-            "data/structural/concordance_v2.json (see data/structural/NOTICE.md)."
+            "data/structural/concordance_v3.json (see data/structural/NOTICE.md)."
         )
     raw = json.loads(artifact.read_text())
     if "provenance" not in raw or not raw["provenance"]:
@@ -179,12 +179,49 @@ def load_structural_concordance(
     # trajectory.
     if is_v2:
         _validate_v2_structure(raw)
+        if "block_weights" in raw:  # v3 (review-9 1c): validate the per-driver/year weight tables
+            _validate_v3_block_weights(raw)
     elif not raw.get("region_archetype"):
         raise ValueError(
             "structural concordance needs either 'country_archetype'+'block_membership' (v2) or "
             "'region_archetype' (v1)."
         )
     return raw
+
+
+def _validate_v3_block_weights(raw: dict) -> None:
+    """Validate v3 ``block_weights`` (review-9 1c): every weight table (flat or year-indexed) covers
+    only mapped countries and sums to 1; ``driver_weight_class`` names real classes. A malformed v3
+    fails loudly rather than silently mis-blending."""
+    import math
+
+    country_arch = raw["country_archetype"]
+    classes = raw["block_weights"]
+    for cls, blocks in classes.items():
+        for block, table in blocks.items():
+            # A table is either flat {country: w} or year-indexed {year: {country: w}}.
+            year_indexed = table and all(str(k).isdigit() for k in table)
+            per_year = table.values() if year_indexed else [table]
+            for w_map in per_year:
+                missing = [c for c in w_map if c not in country_arch]
+                if missing:
+                    raise ValueError(
+                        f"block_weights[{cls!r}][{block!r}] has unmapped countries {missing}"
+                    )
+                w = list(w_map.values())
+                if any(not math.isfinite(x) or x < 0 for x in w):
+                    raise ValueError(
+                        f"block_weights[{cls!r}][{block!r}] weights must be finite and ≥ 0"
+                    )
+                if abs(sum(w) - 1.0) > 1e-3:
+                    raise ValueError(
+                        f"block_weights[{cls!r}][{block!r}] weights sum to {sum(w):.4f}, want 1.0"
+                    )
+    for driver, cls in raw.get("driver_weight_class", {}).items():
+        if cls != "block_membership" and cls not in classes:
+            raise ValueError(
+                f"driver_weight_class[{driver!r}]={cls!r} not a block_weights class {list(classes)}"
+            )
 
 
 def _validate_v2_structure(raw: dict) -> None:
@@ -221,49 +258,49 @@ class UnmappedStructuralLabels(ValueError):
     exact overclaim the concordance is meant to prevent. Reject loudly instead."""
 
 
+def _members_at(conc: dict, block: str, driver: str, year: int) -> dict | None:
+    """The ``{country: weight}`` map for ``block`` under ``driver`` at ``year`` (review-9 1c). v3
+    carries ``block_weights[class][block]`` where ``class`` is chosen by ``driver_weight_class``
+    (population→population, productivity→output, participation→the static v2 GDP weights); the
+    population class is year-indexed (``{year: {country: w}}``), output is flat ``{country: w}``. A
+    v2 concordance (no ``block_weights``) falls back to the single static ``block_membership``."""
+    bw = conc.get("block_weights")
+    if bw:
+        cls = conc.get("driver_weight_class", {}).get(driver, "block_membership")
+        table = bw.get(cls, {}).get(block) if cls != "block_membership" else None
+        if table is not None:
+            if table and all(str(k).isdigit() for k in table):  # year-indexed
+                yrs = sorted(int(k) for k in table)
+                chosen = max([y for y in yrs if y <= year], default=yrs[0])
+                return table[str(chosen)]
+            return table  # flat (e.g. output)
+    return conc.get("block_membership", {}).get(block)
+
+
 def _blend_region_path(
-    by_arch: dict, block: str, conc: dict, region_arch_v1: dict | None
+    by_arch: dict, block: str, conc: dict, region_arch_v1: dict | None, driver: str = ""
 ) -> tuple[dict, dict] | None:
-    """The rate path for a coarse ``block`` on one region driver: the GDP-WEIGHTED blend of its
-    member countries' archetype paths (v2), or the block's single archetype path (v1). Returns
+    """The rate path for a coarse ``block`` on one region ``driver``: the WEIGHTED blend of its
+    member countries' archetype paths (v2/v3), or the block's single archetype path (v1). Returns
     ``(path, arch_weights)`` — the ``{year: rate}`` dict and the ``{archetype: weight}`` map of
     which archetypes actually contributed (for provenance) — or None if no archetype path is
     available.
 
-    v2 blend (review P1 2026-08-29): for each knot year present across the members' archetype paths,
-    the blended rate is Σ_c weight[c] · archetype_rate(archetype[c], year) — so a mixed block gets a
-    weighted average, honestly reflecting that (e.g.) RoW_Asia contains both advanced and emerging
-    economies. The union of member knot years is used so no knot is dropped.
+    Blend (review P1 2026-08-29; PER-DRIVER + TIME-VARYING weights review-9 1c 2026-09-16): for each
+    knot year the blended rate is Σ_c weight[c, driver, year] · archetype_rate(archetype[c], year),
+    so a mixed block gets a weighted average with the driver-appropriate, year-appropriate weights
+    (population growth by population shares that drift over the horizon, productivity by output
+    shares). The union of member knot years is used so no knot is dropped.
 
     **Renormalisation (review P2 2026-08-31):** members whose archetype has NO path in *this*
-    trajectory (e.g. a custom trajectory missing one archetype) are dropped from BOTH the numerator
-    and the weight denominator, so the blend stays a proper convex combination rather than silently
-    shrinking toward zero. If NO member has a usable path, returns None (the caller falls back to
+    trajectory are dropped from BOTH the numerator and the weight denominator, so the blend stays a
+    proper convex combination. If NO member has a usable path, returns None (caller falls back to
     ``__all__``)."""
     if region_arch_v1 is not None:  # v1: single archetype
         arch = region_arch_v1.get(block)
         path = by_arch.get(arch) if arch else None
         return (dict(path), {arch: 1.0}) if path is not None else None
-    members: dict = conc["block_membership"].get(block)
-    if not members:
-        return None
     country_arch: dict = conc["country_archetype"]
-    # Members whose archetype path exists in THIS trajectory, and the total weight per archetype.
-    usable: list[tuple[str, float]] = []  # (archetype, weight)
-    knot_years: set[int] = set()
-    for c, w in members.items():
-        arch = country_arch[c]
-        p = by_arch.get(arch)
-        if p:
-            usable.append((arch, float(w)))
-            knot_years |= set(p)
-    if not knot_years or not usable:
-        return None
-    # Renormalise the surviving members' weights to sum to 1 (a proper convex combination).
-    total_w = sum(w for _, w in usable)
-    arch_weights: dict = {}
-    for arch, w in usable:
-        arch_weights[arch] = arch_weights.get(arch, 0.0) + w / total_w
 
     def _rate_at(path: dict, year: int) -> float:
         # Piecewise-constant hold (same rule as StructuralTrajectory._lookup).
@@ -271,13 +308,36 @@ def _blend_region_path(
         chosen = applicable[-1] if applicable else min(path)
         return float(path[chosen])
 
+    # Knot years = union of the members' archetype paths, using the FIRST-knot weights just to find
+    # which archetypes have a usable path (membership doesn't change across the weight classes).
+    seed = _members_at(conc, block, driver, year=-(10**9))  # earliest-knot weights
+    if not seed:
+        return None
+    knot_years: set[int] = set()
+    for c in seed:
+        p = by_arch.get(country_arch[c])
+        if p:
+            knot_years |= set(p)
+    if not knot_years:
+        return None
+
     blended: dict = {}
-    for year in sorted(knot_years):
-        acc = 0.0
-        for arch, w in arch_weights.items():
-            acc += w * _rate_at(by_arch[arch], year)
-        blended[int(year)] = acc
-    return blended, arch_weights
+    arch_weights_repr: dict = {}  # archetype weights at the earliest knot, for provenance
+    for i, year in enumerate(sorted(knot_years)):
+        members = _members_at(conc, block, driver, year) or seed
+        # Surviving members (archetype path present), renormalised to a proper convex combination.
+        surviving = {c: float(w) for c, w in members.items() if by_arch.get(country_arch[c])}
+        total_w = sum(surviving.values())
+        if total_w <= 0:
+            continue
+        aw: dict = {}
+        for c, w in surviving.items():
+            arch = country_arch[c]
+            aw[arch] = aw.get(arch, 0.0) + w / total_w
+        blended[int(year)] = sum(w * _rate_at(by_arch[arch], year) for arch, w in aw.items())
+        if i == 0:
+            arch_weights_repr = aw
+    return (blended, arch_weights_repr) if blended else None
 
 
 def structural_trajectories_for_build(
@@ -305,12 +365,14 @@ def structural_trajectories_for_build(
     ACTUAL contributing archetype sources and their blend weights (a mixed block shows both N and S,
     not a spurious world-average citation).
 
-    **Weighting caveat (review P1 2026-08-31).** The same static GDP-share block weights are applied
-    to every region driver (population, participation, productivity) rather than per-driver
-    population/labour-force/output weights, are held fixed over the horizon, and the residual W*
-    blocks (esp. ``RoW_MiddleEast`` = 100% S) are coarse single-archetype aggregates. This is a
-    documented illustrative simplification, stamped into the composite provenance notes and detailed
-    in ``data/structural/NOTICE.md``; per-driver, time-varying weights are the follow-up.
+    **Weighting (review P1 2026-08-31; PER-DRIVER + TIME-VARYING review-9 1c 2026-09-16).** With the
+    default v3 concordance, each region driver blends with its OWN weight class: population by WPP
+    per-country population shares that DRIFT across the 2025/2035/2050 knots, productivity by PWT
+    output shares; participation still uses the static v2 GDP weights (no per-country labour-force
+    series available). The residual EXIOBASE W* aggregates (esp. ``RoW_MiddleEast`` = 100% S) remain
+    coarse single-archetype proxies. The basis is stamped into the composite provenance notes and
+    detailed in ``data/structural/NOTICE.md``. A v2 concordance (no ``block_weights``) still loads,
+    falling back to the single static GDP weights for every driver.
 
     ``require_full_coverage`` (default True): a build label not mapped by the concordance raises
     :class:`UnmappedStructuralLabels` — so a real run can never silently degrade to an
@@ -344,7 +406,7 @@ def structural_trajectories_for_build(
     for driver, by_arch in archetype.rates.items():
         new: dict = {}
         for r in regions:
-            blend = _blend_region_path(by_arch, r, conc, region_arch_v1)
+            blend = _blend_region_path(by_arch, r, conc, region_arch_v1, driver=driver)
             if blend is not None:
                 path, aw = blend
                 new[r] = path
@@ -453,12 +515,25 @@ def structural_trajectories_for_build(
         retrieved=cp.get("retrieved", archetype.provenance.retrieved),
         notes=(
             f"concordance-mapped structural trajectory; concordance_content_hash={conc_hash}; "
-            f"archetype_content_hash={arch_hash}. WEIGHTING CAVEAT (review P1 2026-08-31): the "
-            "same static GDP-share block weights are applied to ALL region drivers (population, "
-            "participation, productivity) — not per-driver population/labour-force/output weights "
-            "— and are held fixed over the horizon; residual W* blocks (esp. RoW_MiddleEast=100% "
-            "S) are coarse single-archetype aggregates. Documented simplification; see "
-            "data/structural/NOTICE.md."
+            f"archetype_content_hash={arch_hash}. "
+            + (
+                (
+                    "WEIGHTING (review-9 1c 2026-09-16): PER-DRIVER, TIME-VARYING block weights — "
+                    "population blended by UN WPP per-country population shares that DRIFT across "
+                    "the 2025/2035/2050 knots, productivity by PWT output shares; participation "
+                    "uses the static v2 GDP weights (no per-country labour-force series). Residual "
+                    "EXIOBASE W* aggregates (esp. RoW_MiddleEast=100% S) remain coarse "
+                    "single-archetype proxies. See data/structural/NOTICE.md."
+                )
+                if "block_weights" in conc
+                else (
+                    "WEIGHTING CAVEAT (review P1 2026-08-31): the same static GDP-share block "
+                    "weights are applied to ALL region drivers (population, participation, "
+                    "productivity) — not per-driver weights — and are held fixed over the horizon; "
+                    "residual W* blocks (esp. RoW_MiddleEast=100% S) are coarse single-archetype "
+                    "aggregates. Documented simplification; see data/structural/NOTICE.md."
+                )
+            )
         ),
     )
     # Remap the archetype SOURCE labour shares onto the real build sectors the same way the sector
@@ -502,3 +577,49 @@ def structural_trajectories_for_build(
         confidence=confidence,
         source_labour_shares=mapped_src_sl,
     )
+
+
+def structural_trajectory_variants(
+    regions: list[str] | None = None,
+    sectors: list[str] | None = None,
+    *,
+    concordance_path: str | Path | None = None,
+    require_full_coverage: bool = True,
+) -> dict[str, StructuralTrajectory]:
+    """The low / central / high structural trajectories, for an uncertainty SWEEP (review-9 1e).
+
+    Returns ``{"low": ..., "central": ..., "high": ...}``. The central path is
+    ``trajectories_v1.json``; the siblings ``trajectories_v1_low.json`` / ``_high.json`` are the
+    sensitivity band (EU KLEMS sector drivers = empirical trend-window envelope; other drivers =
+    confidence-tiered ±band), produced by ``scripts/build_uncertainty_sets.py`` — "low" is uniformly
+    the weaker-growth / slower-decarbonisation world, "high" the stronger.
+
+    If ``regions``/``sectors`` are given, each variant is mapped onto the build's real labels via
+    :func:`structural_trajectories_for_build` (same concordance for all three); otherwise the raw
+    N/S + BRD/MIL archetype variants are returned. Typical use::
+
+        variants = structural_trajectory_variants(regions, sectors)
+        results = {
+            label: run_recursive(sc, config=DynamicConfig(structural=traj), data_source=build)
+            for label, traj in variants.items()
+        }
+        # report the interval across results["low"] .. results["high"], not a single point.
+    """
+    siblings = {
+        "low": _DEFAULT_ARTIFACT.with_name("trajectories_v1_low.json"),
+        "central": _DEFAULT_ARTIFACT,
+        "high": _DEFAULT_ARTIFACT.with_name("trajectories_v1_high.json"),
+    }
+    out: dict[str, StructuralTrajectory] = {}
+    for label, path in siblings.items():
+        if regions is not None and sectors is not None:
+            out[label] = structural_trajectories_for_build(
+                regions,
+                sectors,
+                trajectory_path=path,
+                concordance_path=concordance_path,
+                require_full_coverage=require_full_coverage,
+            )
+        else:
+            out[label] = load_structural_trajectories(path)
+    return out

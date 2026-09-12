@@ -1092,9 +1092,12 @@ def _structural_provenance_audit_fields(notes: str) -> dict:
         m = re.search(rf"{key}=([0-9a-fA-F]+)", notes)
         if m:
             out[key] = m.group(1)
-    if "WEIGHTING CAVEAT" in notes:
-        # The full caveat text is preserved verbatim in provenance.notes; flag its presence here.
-        out["weighting_caveat"] = notes[notes.index("WEIGHTING CAVEAT") :]
+    # The weighting basis is preserved verbatim in provenance.notes — v2 stamps "WEIGHTING CAVEAT"
+    # (single static GDP weights), v3 "WEIGHTING (review-9 1c ...)" (per-driver/time-varying).
+    # Surface whichever is present under the stable manifest key so downstream needn't parse prose.
+    m = re.search(r"WEIGHTING[ (]", notes)
+    if m:
+        out["weighting_note"] = notes[m.start() :]
     return out
 
 
