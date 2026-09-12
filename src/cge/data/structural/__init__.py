@@ -12,6 +12,7 @@ from cge.data.structural.library import (
     load_structural_concordance,
     load_structural_trajectories,
     structural_trajectories_for_build,
+    structural_trajectory_variants,
 )
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "default_structural_trajectories",
     "load_structural_concordance",
     "structural_trajectories_for_build",
+    "structural_trajectory_variants",
     "UnmappedStructuralLabels",
 ]
