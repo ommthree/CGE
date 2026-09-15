@@ -162,26 +162,35 @@ def _build() -> dict:
         "productivity": "output",
         "labour_participation": "block_membership",  # static v2 fallback (no labour-force weights)
     }
-    v3["provenance"] = dict(v2["provenance"])
-    v3["provenance"]["source"] = (
-        "Structural-trajectory region concordance v3: country-level development archetypes (World "
-        "Bank income classification, FY2025) aggregated to EXIOBASE coarse-v3 blocks with "
-        "PER-DRIVER, TIME-VARYING weights — population shares (UN WPP 2024, per knot) and output "
-        "shares (PWT 10.01 rgdpo 2019); v2's static IMF-2024 GDP weights are retained as the "
-        "participation proxy and back-compat block_membership."
-    )
-    v3["provenance"]["source_version"] = "structural-concordance-v3"
-    v3["provenance"]["retrieved"] = "2026-09-16"
-    v3["provenance"]["v3_note"] = (
-        "v3 (review-9 1c 2026-09-16): adds PER-DRIVER, TIME-VARYING block_weights. population "
-        "weights = UN WPP 2024 per-country population at each knot (2025/2035/2050 — genuinely "
-        "year-varying); output weights = PWT 10.01 rgdpo (2019, held flat). driver_weight_class "
-        "maps population→population, productivity→output, labour_participation→the static v2 "
-        "block_membership GDP weights (no per-country labour-force series available — documented "
-        "proxy). The EXIOBASE rest-of-region aggregates (W*) have no single ISO3 and retain their "
-        "v2 residual share, with named members renormalised around it. v2 block_membership is "
-        "preserved for back-compat."
-    )
+    # Build v3 provenance from SCRATCH — do NOT inherit v2's notes/gdp_weight_note, which described
+    # a single static IMF-2024 GDP table "not a committed extraction pipeline" — contradicting the
+    # per-driver, time-varying, reproducibly-extracted v3 fields (review-10 P2#6).
+    v3["provenance"] = {
+        "source": (
+            "Structural-trajectory region concordance v3: country-level development archetypes "
+            "(World Bank income classification, FY2025) aggregated to EXIOBASE coarse-v3 blocks "
+            "with PER-DRIVER, TIME-VARYING block_weights — population shares (UN WPP 2024, per "
+            "knot) and output shares (PWT 10.01 rgdpo 2019). The static v2 IMF-2024 GDP weights "
+            "survive ONLY as the participation proxy and the back-compat block_membership."
+        ),
+        "source_version": "structural-concordance-v3",
+        "licence": v2["provenance"].get("licence", ""),
+        "reference_year": v2["provenance"].get("reference_year", 2024),
+        "world_bank_vintage": v2["provenance"].get("world_bank_vintage", ""),
+        "retrieved": "2026-09-14",
+        "notes": (
+            "v3 (review-9 1c; provenance corrected review-10 P2#6 2026-09-14). block_weights is a "
+            "REPRODUCIBLE extraction (scripts/build_concordance_v3.py, --check-gated): population "
+            "weights = UN WPP 2024 per-country population at each knot (2025/2035/2050 — genuinely "
+            "year-varying, NOT static); output weights = PWT 10.01 rgdpo (2019, held flat). "
+            "driver_weight_class maps population→population, productivity→output, "
+            "labour_participation→block_membership (the static v2 GDP weights — an explicit, "
+            "declared proxy, as no per-country labour-force series is available). The EXIOBASE "
+            "rest-of-region aggregates (W*) have no single ISO3 and keep their v2 residual share, "
+            "with named members renormalised around it. block_membership is retained for "
+            "back-compat and as the declared participation fallback."
+        ),
+    }
     v3["sources"] = dict(v2["sources"])
     v3["sources"]["block_weights"] = (
         "population: UN WPP 2024 Total Population (Medium), per-country at each knot; output: PWT "

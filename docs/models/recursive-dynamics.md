@@ -295,23 +295,20 @@ horizon, δ, trends, retirement, K₀, and the capital path.
       **no observable effect** — pair it with a `CarbonPrice`.
   On a **real EXIOBASE build** the trajectory's archetype keys (N/S, BRD/MIL) are bound to the
   build's actual coarse-v3 region/sector labels by the provenance-carrying concordance
-  `data/structural/concordance_v2.json` (via `structural_trajectories_for_build`). **v2 is
-  GDP-weighted** (review P1 2026-08-29): World Bank regional aggregates mix income levels, so rather
-  than assign one unweighted N/S archetype per block, v2 keeps **country-level** archetypes
-  ([WorldBankIncome], FY2025 vintage) and blends the member countries' paths by **GDP weights**
-  (`block_membership`) — a mixed block such as `RoW_Asia` sits *between* the pure N and S paths. The
-  mapped trajectory carries a **composite** provenance naming both the concordance and the trajectory
-  artifact; the loader validates the Provenance contract, that every archetype target is a known
-  path, and that the v2 weights are finite, ≥ 0 and sum to 1 (review P2 2026-08-29). An unmapped
-  label fails loudly, and `run_recursive` **rejects** a run whose trajectory does not differentiate
-  any of the build's labels (every label falling through to `__all__`) unless the caller sets
-  `DynamicConfig(allow_uniform_fallback=True)` — so a real build cannot silently collapse to the
-  uniform default (review P2 2026-08-29). **Weighting caveat (review P1 2026-08-31).** The blend is a
-  documented simplification, stamped into the mapped provenance notes: the *same* static GDP-share
-  weights drive population, participation AND productivity (not per-driver population/labour-force/
-  output weights), are held fixed over the horizon, and the residual EXIOBASE `W*` blocks (esp.
-  `RoW_MiddleEast` = 100% S) are coarse single-archetype aggregates. Per-driver, time-varying weights
-  are the follow-up (see `data/structural/NOTICE.md`).
+  `data/structural/concordance_v3.json` (via `structural_trajectories_for_build`). It keeps
+  **country-level** archetypes ([WorldBankIncome], FY2025 vintage) and blends each block's member
+  paths — a mixed block such as `RoW_Asia` sits *between* the pure N and S paths. **v3 (review-9 1c)
+  weights each driver with its OWN, YEAR-INDEXED class**: population by UN WPP per-country population
+  shares that DRIFT across 2025/2035/2050, productivity by PWT output shares; participation keeps the
+  static v2 GDP weights as an explicit declared proxy (no per-country labour-force series). The mapped
+  trajectory carries a **composite** provenance naming both artifacts; the loader validates the
+  Provenance contract, that every archetype target is a known path, that weights are finite/≥0/
+  sum-to-1, and (review-10 P2#4) that every trajectory driver is explicitly classed and every block
+  covered — so v3 can never silently fall back to the static weights. An unmapped label fails loudly,
+  and `run_recursive` **rejects** a run whose trajectory does not differentiate any of the build's
+  labels unless the caller sets `DynamicConfig(allow_uniform_fallback=True)`. The remaining
+  simplification, stamped into the mapped provenance notes: the residual EXIOBASE `W*` blocks (esp.
+  `RoW_MiddleEast` = 100% S) are coarse single-archetype proxies (see `data/structural/NOTICE.md`).
 - **No perfect foresight**; recursive bookkeeping, not intertemporal optimisation.
 - Aggregate productivity is Hicks-neutral on primary factors; the per-sector series is a source-
   identified MFP applied through the sector's actual nest via eq $(6)$ — Cobb–Douglas via labour
@@ -357,11 +354,11 @@ reported. The hot path is the per-year static CGE solve; the wrapper itself is c
 | aggregate TFP path | sourced per region | [FeenstraPWT] |
 | sector MFP $g_{MFP}$ (the driver) | sourced per sector (`LP1ConTFP`, direct) | [EUKLEMS2024] |
 | sector labour productivity $g_{Y/L}$ | sourced per sector (`LP1_G`, context) | [EUKLEMS2024] |
-| emissions-intensity path | NGFS Below 2°C, CO₂/GDP | [NGFS_B2C], [NGFS] |
-| region/sector concordance | GDP-weighted, country-level | [WorldBankIncome] |
+| emissions-intensity path | NGFS Below 2°C, CO₂/Final-Energy (per sector) | [NGFS_B2C], [NGFS] |
+| region/sector concordance | per-driver, time-varying weights (v3) | [WorldBankIncome] |
 
 The vendored trajectory (`data/structural/trajectories_v1.json`) and concordance
-(`data/structural/concordance_v2.json`) are documented, sourced, per-entry-cited artifacts produced
+(`data/structural/concordance_v3.json`) are documented, sourced, per-entry-cited artifacts produced
 by a committed extraction pipeline (`scripts/extract_structural_sources.py` →
 `scripts/build_structural_trajectories.py`, both `--check`-gated); see `data/structural/NOTICE.md`
 for licences and the precise reproducibility scope (locally reproducible from separately-acquired
