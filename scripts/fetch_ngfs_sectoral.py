@@ -12,12 +12,16 @@ and writes them, with economy-wide CO2 + GDP, to `data/structural/sources/raw/ng
 the same IAMC WIDE (Model/Scenario/Region/Variable + year columns) layout the extractor already
 reads — so `extract_ngfs_emissions` consumes the richer file unchanged.
 
-The BRD (goods) / MIL (services) archetype bundles the extractor aggregates from these series are:
-  BRD = Industry energy demand + Industrial Processes + Energy Supply  (goods production + power)
-  MIL = Transportation + Residential and Commercial                    (services + mobility)
-AFOLU is deliberately EXCLUDED — it is land use, not goods/services production, and it goes
-net-negative mid-century (a multiplicative intensity scale cannot carry that). The two bundles cover
-~90-100% of economy-wide energy+process CO2 and stay strictly positive across the horizon.
+The extractor forms a per-archetype emissions INTENSITY = CO2 / Final Energy (review-10 P1 — CO2 per
+unit of the sector's physical final energy, NOT CO2/GDP, which double-counted the sector's
+output-share change the CGE determines endogenously):
+  __all__ = (Energy + Industrial Processes) CO2  / total Final Energy
+  BRD     = (Industry demand + Industrial Processes) CO2 / Final Energy|Industry            (goods)
+  MIL     = (Transport + Res/Comm) CO2 / (Final Energy|Transport + Res+Comm)     (services)
+Energy Supply (power/refining) is upstream, serving all end uses, so its emissions sit in __all__,
+not a single sector bundle. AFOLU is EXCLUDED everywhere — land use, net-negative mid-century (a
+multiplicative intensity scale cannot carry it), and out of scope for this gross-production driver.
+All three intensities are strictly positive and monotone-declining across the horizon.
 
 This is an OFFLINE data-acquisition step (needs network + the IIASA explorer). The parsing +
 aggregation is tested on synthetic fixtures in tests/test_structural_extractors.py; this script is
@@ -35,19 +39,27 @@ MODEL = "REMIND-MAgPIE 3.3-4.8"
 SCENARIO = "Below 2°C"
 REGION = "World"
 
-# The exact series to vendor: economy-wide CO2 + GDP (the aggregate path) plus the sector components
-# the extractor bundles into BRD/MIL. Population is kept for continuity with the prior file.
+# The exact series to vendor. Emissions intensities are E_s / FinalEnergy_s (review-10 P1) — CO2 per
+# unit of the sector's PHYSICAL FINAL ENERGY, which isolates fuel-switching and nets out the
+# energy-per-output term the CGE determines endogenously (E/GDP over-counted that). So we vendor the
+# CO2 numerators AND the matching Final Energy denominators. GDP + total-CO2 for reference only;
+# AFOLU is NOT fetched (land use, net-negative — out of scope for this gross-production driver).
 VARIABLES = [
-    "Emissions|CO2",  # economy-wide (the __all__ path)
-    "GDP|PPP|Counterfactual without damage",  # the intensity denominator
+    # --- reference / back-compat (not the intensity driver) ---
+    "Emissions|CO2",  # total economy-wide CO2 (incl AFOLU) — reference only
+    "GDP|PPP|Counterfactual without damage",  # reference denominator
     "Population",
-    # BRD (goods) bundle:
-    "Emissions|CO2|Energy|Demand|Industry",
+    # --- CO2 numerators (energy + industrial-process, gross production; NO AFOLU) ---
+    "Emissions|CO2|Energy",  # __all__ numerator (with Industrial Processes)
     "Emissions|CO2|Industrial Processes",
-    "Emissions|CO2|Energy|Supply",
-    # MIL (services) bundle:
-    "Emissions|CO2|Energy|Demand|Transportation",
+    "Emissions|CO2|Energy|Demand|Industry",  # BRD numerator (with Industrial Processes)
+    "Emissions|CO2|Energy|Demand|Transportation",  # MIL numerator (with Res+Comm)
     "Emissions|CO2|Energy|Demand|Residential and Commercial",
+    # --- Final Energy activity denominators (the E_s/FE_s intensity basis) ---
+    "Final Energy",  # __all__ denominator
+    "Final Energy|Industry",  # BRD denominator
+    "Final Energy|Transportation",  # MIL denominator (with Res+Comm)
+    "Final Energy|Residential and Commercial",
 ]
 
 
