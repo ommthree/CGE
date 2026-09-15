@@ -101,8 +101,9 @@ concordance (see `data/structural/NOTICE.md` for licences and the reproducibilit
 - **[WorldBankIncome]** World Bank country and lending groups (income classification, FY2025). —
   The country → N/S archetype rule underpinning `concordance_v2.json`.
 - **[NGFS_B2C]** NGFS Phase 5 scenario explorer (see [NGFS]), model *REMIND-MAgPIE 3.3-4.8*,
-  scenario *Below 2°C*, region World. — The CO₂-intensity-of-GDP decline path (`emissions_intensity`),
-  derived as `Emissions|CO2 / GDP|PPP|Counterfactual without damage`.
+  scenario *Below 2°C*, region World. — The per-archetype emissions-INTENSITY decline path
+  (`emissions_intensity`), derived as sector CO₂ / sector Final Energy (review-10 P1; not CO₂/GDP,
+  which double-counts the output-share change the CGE determines endogenously).
 
 ## Energy prices & pass-through
 

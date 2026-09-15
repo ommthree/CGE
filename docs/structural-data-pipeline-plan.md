@@ -1,18 +1,18 @@
 # Plan — consulting-grade structural-data pipeline (Phase 7b.2 readiness)
 
-**Status: IN PROGRESS (2026-09-07). Steps 1a + 1b DONE and the digest is now EXTRACTED FROM REAL
-DATA for all six drivers (PWT / WPP / ILOSTAT / EU KLEMS / NGFS). Remaining: broaden EU KLEMS beyond
-the single supplied country + add a per-sector NGFS split (1a-data breadth), per-driver/time-varying
-weights (1c), fuller scenario pinning (1d), and uncertainty sets (1e).** This document scopes the
-work needed to move
-the Phase 7b.2 structural trajectories from an *illustrative research scaffold* to an
+**Status: as of review-10 (2026-09-14), steps 1a/1b/1c/1d/1e are all DONE — the digest is EXTRACTED
+FROM REAL DATA (PWT / WPP / ILOSTAT / EU KLEMS / NGFS), with per-driver/time-varying concordance
+weights (1c, `concordance_v3.json`), a per-sector NGFS emissions-INTENSITY split over Final Energy
+(1d), and adverse/central/favourable deterministic sensitivity cases (1e). The one remaining data
+item is breadth: EU KLEMS is a single supplied country (Austria). This document scopes the work that
+moved** the Phase 7b.2 structural trajectories from an *illustrative research scaffold* toward an
 *engagement-grade baseline* fit for climate-risk consulting. It is the response to the standing
 **P1-readiness** finding raised across reviews 4–6: the shipped `data/structural/trajectories_v1.json`
-and `concordance_v2.json` are transparently disclosed as headline/illustrative (see
-`data/structural/NOTICE.md`), which is honest but is **not** the same as a reproducible, sourced,
-uncertainty-quantified dataset. It also absorbs the **review-6 P1** on identification: the current
-growth-accounting decomposition is a *model-calibrated Cobb-Douglas* approximation, and the rigorous
-fix (source-period MFP estimation translated through the actual production nest) belongs here.
+and concordance were originally disclosed as headline/illustrative (see `data/structural/NOTICE.md`),
+which is honest but is **not** the same as a reproducible, sourced dataset. It also absorbs the
+**review-6 P1** on identification: the current growth-accounting decomposition is a *model-calibrated
+Cobb-Douglas* approximation, and the rigorous fix (source-period MFP estimation translated through
+the actual production nest) belongs here.
 
 The engine and wrapper are sound and reviewed; this plan is about the **inputs**, not the code paths
 that consume them. Nothing in here blocks scenario-experimentation use of the model today — it blocks

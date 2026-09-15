@@ -180,7 +180,7 @@ def load_structural_concordance(
     if is_v2:
         _validate_v2_structure(raw)
         if "block_weights" in raw:  # v3 (review-9 1c): validate the per-driver/year weight tables
-            _validate_v3_block_weights(raw)
+            _validate_v3_block_weights(raw, traj)
     elif not raw.get("region_archetype"):
         raise ValueError(
             "structural concordance needs either 'country_archetype'+'block_membership' (v2) or "
@@ -189,14 +189,24 @@ def load_structural_concordance(
     return raw
 
 
-def _validate_v3_block_weights(raw: dict) -> None:
-    """Validate v3 ``block_weights`` (review-9 1c): every weight table (flat or year-indexed) covers
-    only mapped countries and sums to 1; ``driver_weight_class`` names real classes. A malformed v3
-    fails loudly rather than silently mis-blending."""
+def _validate_v3_block_weights(raw: dict, traj: StructuralTrajectory) -> None:
+    """Validate v3 ``block_weights`` (review-9 1c; COMPLETE-COVERAGE hardening review-10 P2#4).
+
+    Structural checks: every weight table (flat or year-indexed) covers only mapped countries and
+    sums to 1; ``driver_weight_class`` names real classes.
+
+    COVERAGE checks (review-10 P2#4 — so v3 can never SILENTLY fall back to the v2 static weights
+    while claiming per-driver weighting):
+      1. Every region driver present in the trajectory must have a ``driver_weight_class`` entry
+         (``block_membership`` is an EXPLICIT, declared fallback — allowed; a MISSING entry is not).
+      2. Every non-``block_membership`` class must cover EVERY ``block_membership`` block.
+      3. A year-indexed class must cover every block at every ``__all__``-population knot year the
+         trajectory uses (so a block's weights exist at each blended knot)."""
     import math
 
     country_arch = raw["country_archetype"]
     classes = raw["block_weights"]
+    all_blocks = set(raw["block_membership"])
     for cls, blocks in classes.items():
         for block, table in blocks.items():
             # A table is either flat {country: w} or year-indexed {year: {country: w}}.
@@ -217,11 +227,42 @@ def _validate_v3_block_weights(raw: dict) -> None:
                     raise ValueError(
                         f"block_weights[{cls!r}][{block!r}] weights sum to {sum(w):.4f}, want 1.0"
                     )
-    for driver, cls in raw.get("driver_weight_class", {}).items():
+        # (2) the class must cover every block (no silent per-block fallback to v2 membership).
+        uncovered = all_blocks - set(blocks)
+        if uncovered:
+            raise ValueError(
+                f"block_weights[{cls!r}] is missing block(s) {sorted(uncovered)} — every "
+                f"block_membership block must be covered so no block silently falls back to the v2 "
+                f"static weights."
+            )
+    dwc = raw.get("driver_weight_class", {})
+    for driver, cls in dwc.items():
         if cls != "block_membership" and cls not in classes:
             raise ValueError(
                 f"driver_weight_class[{driver!r}]={cls!r} not a block_weights class {list(classes)}"
             )
+    # (1) every trajectory region driver must be explicitly classed (declared fallback OR a class).
+    unclassed = [d for d in traj.rates if d not in dwc]
+    if unclassed:
+        raise ValueError(
+            f"driver_weight_class is missing region driver(s) {sorted(unclassed)} present in the "
+            f"trajectory — every driver must be explicitly classed (name a block_weights class, or "
+            f"'block_membership' as an explicit fallback) so none SILENTLY falls back to the v2 "
+            f"static weights."
+        )
+    # (3) year-indexed classes must cover the knot years the trajectory blends at. Use the
+    # population driver's __all__ knots as the representative set (the year-varying region driver).
+    pop_all = traj.rates.get("population", {}).get("__all__", {})
+    needed_years = {int(y) for y in pop_all}
+    for cls, blocks in classes.items():
+        for block, table in blocks.items():
+            if table and all(str(k).isdigit() for k in table):  # year-indexed
+                have = {int(y) for y in table}
+                if not needed_years <= have:
+                    raise ValueError(
+                        f"block_weights[{cls!r}][{block!r}] is missing knot year(s) "
+                        f"{sorted(needed_years - have)} that the trajectory blends at."
+                    )
 
 
 def _validate_v2_structure(raw: dict) -> None:
@@ -462,13 +503,18 @@ def structural_trajectories_for_build(
                 continue
             aw = region_arch_weights.get((driver, k), {})
             # Name each contributing archetype's source with its blend weight, so a mixed block has
-            # both N and S sources (not a spurious world-average citation).
+            # both N and S sources (not a spurious world-average citation). The weights shown are
+            # the EARLIEST-KNOT representative (review-10 P3): for a year-indexed class (population)
+            # the member weights DRIFT across knots, so a later knot's archetype split differs.
             parts = []
             for arch in sorted(aw):
                 s = _arch_src(driver, arch)
                 parts.append(f"{arch} ({aw[arch]:.2f}): {s}" if s else f"{arch} ({aw[arch]:.2f})")
             if parts:
-                sources[f"{driver}:{k}"] = f"concordance-blended [{conc_ver}] — " + "; ".join(parts)
+                sources[f"{driver}:{k}"] = (
+                    f"concordance-blended [{conc_ver}], earliest-knot weights (time-varying for "
+                    f"year-indexed classes) — " + "; ".join(parts)
+                )
             # Confidence: the lowest (most conservative) among the contributing archetypes.
             cfs = [c for arch in aw if (c := _arch_cf(driver, arch)) is not None]
             order = {"low": 0, "medium": 1, "high": 2}
@@ -586,33 +632,34 @@ def structural_trajectory_variants(
     concordance_path: str | Path | None = None,
     require_full_coverage: bool = True,
 ) -> dict[str, StructuralTrajectory]:
-    """The low / central / high structural trajectories, for an uncertainty SWEEP (review-9 1e).
+    """The adverse / central / favourable structural-trajectory SENSITIVITY CASES (review-9 1e;
+    relabelled review-10 P1#2).
 
-    Returns ``{"low": ..., "central": ..., "high": ...}``. The central path is
-    ``trajectories_v1.json``; the siblings ``trajectories_v1_low.json`` / ``_high.json`` are the
-    sensitivity band (EU KLEMS sector drivers = empirical trend-window envelope; other drivers =
-    confidence-tiered ±band), produced by ``scripts/build_uncertainty_sets.py`` — "low" is uniformly
-    the weaker-growth / slower-decarbonisation world, "high" the stronger.
+    Returns ``{"adverse": ..., "central": ..., "favourable": ...}``. The central path is
+    ``trajectories_v1.json``; the siblings ``trajectories_v1_adverse.json`` / ``_favourable.json``
+    are DETERMINISTIC STRESS CASES produced by ``scripts/build_uncertainty_sets.py`` — EU KLEMS
+    sector drivers from an empirical trend-window envelope (2017–21 / 2015–19 / 2010–19), other
+    drivers from a judgmental confidence-tiered stress. They are NOT a statistical interval and NOT
+    output bounds: the labels order the INPUT DRIVERS by favourability, not any nonlinear CGE
+    output. For output bounds run all three and take the realised per-output min/max (see
+    :func:`structural_sensitivity_bounds`).
 
-    If ``regions``/``sectors`` are given, each variant is mapped onto the build's real labels via
-    :func:`structural_trajectories_for_build` (same concordance for all three); otherwise the raw
-    N/S + BRD/MIL archetype variants are returned. Typical use::
-
-        variants = structural_trajectory_variants(regions, sectors)
-        results = {
-            label: run_recursive(sc, config=DynamicConfig(structural=traj), data_source=build)
-            for label, traj in variants.items()
-        }
-        # report the interval across results["low"] .. results["high"], not a single point.
-    """
+    Pass BOTH ``regions`` and ``sectors`` to map each case onto the build's real labels (same
+    concordance for all three); pass NEITHER for the raw N/S + BRD/MIL archetype cases. Passing
+    exactly one raises (review-10 P3 — the earlier version silently ignored a lone argument)."""
+    if (regions is None) != (sectors is None):
+        raise ValueError(
+            "structural_trajectory_variants: pass BOTH regions and sectors (to map onto build "
+            "labels) or NEITHER (for archetype cases) — not just one."
+        )
     siblings = {
-        "low": _DEFAULT_ARTIFACT.with_name("trajectories_v1_low.json"),
+        "adverse": _DEFAULT_ARTIFACT.with_name("trajectories_v1_adverse.json"),
         "central": _DEFAULT_ARTIFACT,
-        "high": _DEFAULT_ARTIFACT.with_name("trajectories_v1_high.json"),
+        "favourable": _DEFAULT_ARTIFACT.with_name("trajectories_v1_favourable.json"),
     }
     out: dict[str, StructuralTrajectory] = {}
     for label, path in siblings.items():
-        if regions is not None and sectors is not None:
+        if regions is not None:
             out[label] = structural_trajectories_for_build(
                 regions,
                 sectors,
@@ -623,3 +670,21 @@ def structural_trajectory_variants(
         else:
             out[label] = load_structural_trajectories(path)
     return out
+
+
+def structural_sensitivity_bounds(results: dict[str, dict[str, float]]) -> dict[str, tuple]:
+    """Realised per-output min/max across the sensitivity cases (review-10 P1#2). Given
+    ``{case_label: {output_name: value}}`` from running each of
+    :func:`structural_trajectory_variants` through the model, return
+    ``{output_name: (min_value, max_value)}`` — the HONEST output range, since the adverse /
+    favourable INPUT labels do not necessarily produce the min/max of a nonlinear CGE OUTPUT.
+    Callers report this realised range, not assume the labelled cases bound the output."""
+    outputs: set[str] = set()
+    for by_output in results.values():
+        outputs |= set(by_output)
+    bounds: dict[str, tuple] = {}
+    for name in outputs:
+        vals = [by_output[name] for by_output in results.values() if name in by_output]
+        if vals:
+            bounds[name] = (min(vals), max(vals))
+    return bounds

@@ -1,12 +1,12 @@
 {
-  "_README": "Source-digest for scripts/build_structural_trajectories.py. Each driver entry lists per-key knot rates with a value-level source citation + confidence, so trajectories_v{N}.json is REPRODUCIBLE (build --check gates it). The driver values here are EXTRACTED FROM REAL SOURCES by scripts/extract_structural_sources.py (run it to rebuild from data/structural/sources/raw/): PWT 10.01, UN WPP 2024, ILOSTAT LFPR, EU KLEMS 2024 growth-accounts workbook, NGFS Phase 5. NOT illustrative. Documented limits (single-country EU KLEMS = Austria; NGFS economy-wide; forward knots = recent trend held flat; N/S+BRD/MIL archetypes) are tracked in docs/structural-data-pipeline-plan.md (1a-breadth, 1c-1e).",
+  "_README": "Source-digest for scripts/build_structural_trajectories.py. Each driver entry lists per-key knot rates with a value-level source citation + confidence, so trajectories_v{N}.json is REPRODUCIBLE (build --check gates it). The driver values here are EXTRACTED FROM REAL SOURCES by scripts/extract_structural_sources.py (run it to rebuild from data/structural/sources/raw/): PWT 10.01, UN WPP 2024, ILOSTAT LFPR, EU KLEMS 2024 growth-accounts workbook, NGFS Phase 5. NOT illustrative. Documented limits (single-country EU KLEMS = Austria; NGFS sector intensities share the Final-Energy activity basis; forward knots = recent trend held flat; N/S+BRD/MIL archetypes) are tracked in docs/structural-data-pipeline-plan.md (1a-breadth).",
   "provenance": {
-    "source": "PWT 10.01 (productivity) + UN WPP 2024 (population) + ILOSTAT LFPR (participation) + EU KLEMS & INTANProd 2024 release (sector MFP via LP1ConTFP, per-hour LP, labour share) + NGFS Phase 5 REMIND-MAgPIE 3.3-4.8 / Below 2C (emissions intensity = CO2/GDP)",
-    "source_version": "structural-trajectories-v3",
+    "source": "PWT 10.01 (productivity) + UN WPP 2024 (population) + ILOSTAT LFPR (participation) + EU KLEMS & INTANProd 2024 release (sector MFP via LP1ConTFP, per-hour LP, labour share) + NGFS Phase 5 REMIND-MAgPIE 3.3-4.8 / Below 2C (per-archetype emissions intensity = sector CO2 / sector Final Energy)",
+    "source_version": "structural-trajectories-v4",
     "licence": "see per-entry sources; UN WPP: CC BY 3.0 IGO, PWT 10.01: CC BY 4.0, ILOSTAT: CC BY 4.0, EU KLEMS: CC BY 4.0, NGFS: see NGFS terms",
     "reference_year": 2024,
-    "retrieved": "2026-09-09",
-    "notes": "Per-region and per-sector annual growth trajectories for the Phase 7b.2 structural drivers, EXTRACTED FROM REAL SOURCES by scripts/extract_structural_sources.py and assembled by scripts/build_structural_trajectories.py (both have --check gates in CI). v3 (review-8 2026-09-09): EU KLEMS uses the workbook's per-hour TFP contribution LP1ConTFP directly as the sourced 'mfp' driver (was a dimensionally-wrong LP2_G/CAP_QI decomposition — LP2_G is VA per PERSON, not per hour; capital_deepening driver retired for EU KLEMS); NGFS scenario is an explicit validated tuple (Below 2C); global __all__ aggregates are member-weighted (not means of archetypes); rates are proportional (log/delta-log sources converted via expm1). Rates are decimal fractions per year; the wrapper holds the most recent knot piecewise-constant. N (advanced) / S (emerging) region + BRD (goods) / MIL (services) sector archetypes, plus a global __all__. Per-value source strings carry geography/release/sheet/window/transform. Known limits (single-country EU KLEMS, NGFS economy-wide, held-flat forward knots, participation LOW confidence) are documented in docs/structural-data-pipeline-plan.md."
+    "retrieved": "2026-09-14",
+    "notes": "Per-region and per-sector annual growth trajectories for the Phase 7b.2 structural drivers, EXTRACTED FROM REAL SOURCES by scripts/extract_structural_sources.py and assembled by scripts/build_structural_trajectories.py (both --check-gated in CI). v4 (review-10 2026-09-14): NGFS emissions_intensity is now a genuine per-archetype INTENSITY = sector CO2 / sector Final Energy (was CO2/GDP, which double-counted the output-share change the CGE determines endogenously); __all__ and BRD/MIL share one gross energy+process boundary over Final Energy (AFOLU excluded); the low/high sensitivity variants were relabelled adverse/favourable (deterministic stress cases, not intervals) and gained pre-COVID EU KLEMS windows. v3 (review-8): EU KLEMS mfp = LP1ConTFP directly (was a dimensionally-wrong LP2_G/CAP_QI decomposition; capital_deepening retired); NGFS scenario an explicit validated tuple (Below 2C); global __all__ member-weighted; rates proportional (expm1). Rates are decimal fractions per year; the wrapper holds the most recent knot piecewise-constant. N (advanced) / S (emerging) region + BRD (goods) / MIL (services) sector archetypes, plus __all__. Per-value source strings carry geography/release/sheet/window/transform. Known limits (single-country EU KLEMS, NGFS sector intensities over a Final-Energy activity basis, held-flat forward knots, participation LOW confidence) are documented in docs/structural-data-pipeline-plan.md."
   },
   "region_drivers": {
     "population": {
@@ -115,57 +115,57 @@
     "emissions_intensity": {
       "__all__": {
         "knots": {
-          "2025": -0.0654,
-          "2030": -0.0774,
-          "2035": -0.0843,
-          "2040": -0.0864,
-          "2045": -0.0785,
-          "2050": -0.0647,
-          "2055": -0.0592,
-          "2060": -0.0541,
-          "2070": -0.0434,
-          "2080": -0.0413,
-          "2090": -0.0641,
+          "2025": -0.0269,
+          "2030": -0.0399,
+          "2035": -0.0446,
+          "2040": -0.0454,
+          "2045": -0.045,
+          "2050": -0.0381,
+          "2055": -0.04,
+          "2060": -0.026,
+          "2070": -0.0189,
+          "2080": -0.0142,
+          "2090": -0.0148,
           "2100": 0.0
         },
         "confidence": "medium",
-        "source": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; emissions intensity DERIVED as Emissions|CO2 / GDP|PPP|Counterfactual without damage; a knot at every source year (from 2025), each the CAGR to the next source year, so the path reproduces the source intensity at every source year (last year held flat). Per-sector paths (BRD = industry energy demand + industrial processes + energy supply; MIL = transport + residential/commercial; AFOLU excluded) use each bundle's summed CO2 over the SAME economy-wide GDP (no sectoral GDP in NGFS). https://data.ece.iiasa.ac.at/ngfs/"
+        "source": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; per-archetype emissions INTENSITY = Σ(sector CO2) / Σ(sector Final Energy) — CO2 per unit of the sector's physical final energy (review-10 P1: NOT CO2/GDP, which double-counts the output-share change the CGE determines endogenously; E/FE isolates fuel switching). __all__ = (Energy + Industrial Processes) CO2 / total Final Energy; BRD = Industry (+ processes) / FE|Industry; MIL = Transport + Res/Comm / their FE. Energy Supply sits in __all__ (upstream); AFOLU excluded (gross-production boundary). A knot at every source year (from 2025), each the CAGR to the next, reproducing the source intensity at every source year (last held flat). https://data.ece.iiasa.ac.at/ngfs/"
       },
       "BRD": {
         "knots": {
-          "2025": -0.0569,
-          "2030": -0.0754,
-          "2035": -0.0831,
-          "2040": -0.0855,
-          "2045": -0.0869,
-          "2050": -0.0771,
-          "2055": -0.0646,
-          "2060": -0.0501,
-          "2070": -0.0232,
-          "2080": -0.0133,
-          "2090": -0.0219,
+          "2025": -0.0132,
+          "2030": -0.0156,
+          "2035": -0.0242,
+          "2040": -0.0453,
+          "2045": -0.0553,
+          "2050": -0.0569,
+          "2055": -0.0427,
+          "2060": -0.0163,
+          "2070": 0.0028,
+          "2080": 0.0052,
+          "2090": 0.0041,
           "2100": 0.0
         },
         "confidence": "medium",
-        "source": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; emissions intensity DERIVED as Emissions|CO2 / GDP|PPP|Counterfactual without damage; a knot at every source year (from 2025), each the CAGR to the next source year, so the path reproduces the source intensity at every source year (last year held flat). Per-sector paths (BRD = industry energy demand + industrial processes + energy supply; MIL = transport + residential/commercial; AFOLU excluded) use each bundle's summed CO2 over the SAME economy-wide GDP (no sectoral GDP in NGFS). https://data.ece.iiasa.ac.at/ngfs/"
+        "source": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; per-archetype emissions INTENSITY = Σ(sector CO2) / Σ(sector Final Energy) — CO2 per unit of the sector's physical final energy (review-10 P1: NOT CO2/GDP, which double-counts the output-share change the CGE determines endogenously; E/FE isolates fuel switching). __all__ = (Energy + Industrial Processes) CO2 / total Final Energy; BRD = Industry (+ processes) / FE|Industry; MIL = Transport + Res/Comm / their FE. Energy Supply sits in __all__ (upstream); AFOLU excluded (gross-production boundary). A knot at every source year (from 2025), each the CAGR to the next, reproducing the source intensity at every source year (last held flat). https://data.ece.iiasa.ac.at/ngfs/"
       },
       "MIL": {
         "knots": {
-          "2025": -0.0426,
-          "2030": -0.047,
-          "2035": -0.0482,
-          "2040": -0.0487,
-          "2045": -0.0426,
-          "2050": -0.0353,
-          "2055": -0.0358,
-          "2060": -0.0341,
-          "2070": -0.0332,
-          "2080": -0.0317,
-          "2090": -0.0329,
+          "2025": -0.0147,
+          "2030": -0.0184,
+          "2035": -0.0211,
+          "2040": -0.0232,
+          "2045": -0.0222,
+          "2050": -0.0173,
+          "2055": -0.0298,
+          "2060": -0.0217,
+          "2070": -0.027,
+          "2080": -0.0264,
+          "2090": -0.0234,
           "2100": 0.0
         },
         "confidence": "medium",
-        "source": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; emissions intensity DERIVED as Emissions|CO2 / GDP|PPP|Counterfactual without damage; a knot at every source year (from 2025), each the CAGR to the next source year, so the path reproduces the source intensity at every source year (last year held flat). Per-sector paths (BRD = industry energy demand + industrial processes + energy supply; MIL = transport + residential/commercial; AFOLU excluded) use each bundle's summed CO2 over the SAME economy-wide GDP (no sectoral GDP in NGFS). https://data.ece.iiasa.ac.at/ngfs/"
+        "source": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; per-archetype emissions INTENSITY = Σ(sector CO2) / Σ(sector Final Energy) — CO2 per unit of the sector's physical final energy (review-10 P1: NOT CO2/GDP, which double-counts the output-share change the CGE determines endogenously; E/FE isolates fuel switching). __all__ = (Energy + Industrial Processes) CO2 / total Final Energy; BRD = Industry (+ processes) / FE|Industry; MIL = Transport + Res/Comm / their FE. Energy Supply sits in __all__ (upstream); AFOLU excluded (gross-production boundary). A knot at every source year (from 2025), each the CAGR to the next, reproducing the source intensity at every source year (last held flat). https://data.ece.iiasa.ac.at/ngfs/"
       }
     },
     "mfp": {

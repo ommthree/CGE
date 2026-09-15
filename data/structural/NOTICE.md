@@ -11,19 +11,24 @@ consulting baseline** — see `docs/structural-data-pipeline-plan.md` for the re
 source-share-identification, per-driver-weighting, scenario-pinning and uncertainty work that
 consulting use requires, and the interim conservative posture until it lands. The shipped `N`/`S` region and `BRD`/`MIL` sector keys are development/
 composition **archetypes**. On a real EXIOBASE build, the provenance-carrying concordance
-`concordance_v2.json` (the default; see below) binds each real coarse-v3 build label to its archetype, and
+`concordance_v3.json` (the default — per-driver, time-varying weights; see below) binds each real coarse-v3 build label to its archetype, and
 `cge.data.structural.structural_trajectories_for_build(regions, sectors)` emits a trajectory keyed by
 the build's OWN labels — so a real build has genuine country differentiation and sectoral composition
 drift, not every label collapsing to the global `__all__` default. An unmapped build label fails
 loudly rather than silently taking `__all__` (review P1c 2026-08-28).
 
-## Region/sector concordance — `concordance_v2.json` (default)
+## Region/sector concordance — `concordance_v3.json` (default)
 
-`concordance_v2.json` is the default; `concordance_v1.json` (a single unweighted archetype per
-coarse block) remains loadable for back-compatibility. **v2 fixes the review-3 P1**: World Bank
-regional aggregates (`RoW_Asia`, `RoW_Europe`, `RoW_America`) mix income levels, so a *single*
-unweighted N/S archetype could not honestly come from an income-classification rule. v2 therefore
-keeps **country-level** archetypes and blends them per block with documented **GDP weights**.
+`concordance_v3.json` is the default; `concordance_v2.json` (single static GDP weights) and
+`concordance_v1.json` (a single unweighted archetype per coarse block) remain loadable for
+back-compatibility. **v3 (review-9 1c) adds PER-DRIVER, TIME-VARYING `block_weights`**: population
+blends by UN WPP per-country population shares that DRIFT across the 2025/2035/2050 knots,
+productivity by PWT output shares; participation uses the static v2 GDP weights as an explicit,
+declared proxy (no per-country labour-force series). Every trajectory region driver must be
+explicitly classed and every block covered, so v3 can never silently fall back to the static
+weights (review-10 P2#4). **v2 fixed the review-3 P1**: World Bank regional aggregates (`RoW_Asia`,
+`RoW_Europe`, `RoW_America`) mix income levels, so a *single* unweighted N/S archetype could not
+honestly come from an income rule — v2 keeps **country-level** archetypes and blends them per block.
 
 - **`country_archetype`:** each country → `N` (advanced proxy) or `S` (emerging proxy) by World Bank
   income classification (FY2025 vintage; e.g. Russia → `N` under the current high-income
