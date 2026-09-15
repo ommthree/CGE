@@ -306,35 +306,155 @@ def test_concordance_v3_per_driver_and_time_varying_weights(tmp_path):
     assert t.rate("population", "BLK", 2050) > t.rate("population", "BLK", 2025)
 
 
-def test_uncertainty_variants_sweep_low_central_high():
-    """Review-9 1e: structural_trajectory_variants returns low/central/high, and for a growth driver
-    low ≤ central ≤ high (the sweep is monotone). The sibling artifacts must exist (built by
-    scripts/build_uncertainty_sets.py) and carry the sensitivity provenance."""
+def _v3_pair(tmp_path):
+    """A minimal VALID (trajectory, concordance-v3) pair for the coverage-validation tests."""
+    import json
+
+    traj = tmp_path / "traj.json"
+    traj.write_text(
+        json.dumps(
+            {
+                "provenance": {
+                    "source": "t",
+                    "source_version": "t",
+                    "licence": "t",
+                    "reference_year": 2024,
+                    "retrieved": "2026-09-16",
+                },
+                "rates": {
+                    "productivity": {"N": {"2025": 0.02}, "S": {"2025": 0.06}},
+                    "population": {"N": {"2025": 0.005}, "S": {"2025": 0.02}},
+                },
+                "sources": {
+                    "productivity:N": "x",
+                    "productivity:S": "x",
+                    "population:N": "x",
+                    "population:S": "x",
+                },
+                "confidence": {
+                    "productivity:N": "low",
+                    "productivity:S": "low",
+                    "population:N": "low",
+                    "population:S": "low",
+                },
+            }
+        )
+    )
+    conc = {
+        "provenance": {
+            "source": "c",
+            "source_version": "concordance-x",
+            "licence": "x",
+            "reference_year": 2024,
+            "retrieved": "2026-09-16",
+        },
+        "country_archetype": {"CA": "N", "IN": "S"},
+        "block_membership": {"BLK": {"CA": 0.5, "IN": 0.5}},
+        "sector_archetype": {"manufacturing": "BRD"},
+        "block_weights": {
+            "output": {"BLK": {"CA": 0.9, "IN": 0.1}},
+            "population": {"BLK": {"2025": {"CA": 0.5, "IN": 0.5}}},
+        },
+        "driver_weight_class": {"population": "population", "productivity": "output"},
+        "sources": {"x": "x"},
+    }
+    return traj, conc
+
+
+def test_concordance_v3_rejects_incomplete_coverage(tmp_path):
+    """Review-10 P2#4: v3 must NOT silently fall back to v2 static weights. A weight class missing a
+    block, and a trajectory driver with no driver_weight_class entry, both fail loudly."""
+    import json
+
+    from cge.data.structural import load_structural_concordance, load_structural_trajectories
+
+    traj_path, conc = _v3_pair(tmp_path)
+    trajectory = load_structural_trajectories(str(traj_path))
+
+    # baseline: the valid pair loads.
+    ok = tmp_path / "ok.json"
+    ok.write_text(json.dumps(conc))
+    load_structural_concordance(str(ok), trajectory=trajectory)
+
+    # (a) output class missing the BLK block → reject.
+    import copy
+
+    miss_block = copy.deepcopy(conc)
+    miss_block["block_weights"]["output"] = {}  # no BLK
+    p1 = tmp_path / "miss_block.json"
+    p1.write_text(json.dumps(miss_block))
+    with pytest.raises(ValueError, match="missing block"):
+        load_structural_concordance(str(p1), trajectory=trajectory)
+
+    # (b) a trajectory driver (population) with no driver_weight_class entry → reject.
+    miss_driver = copy.deepcopy(conc)
+    del miss_driver["driver_weight_class"]["population"]
+    p2 = tmp_path / "miss_driver.json"
+    p2.write_text(json.dumps(miss_driver))
+    with pytest.raises(ValueError, match="missing region driver"):
+        load_structural_concordance(str(p2), trajectory=trajectory)
+
+
+def test_sensitivity_cases_adverse_central_favourable():
+    """Review-10 P1#2: structural_trajectory_variants returns adverse/central/favourable
+    DETERMINISTIC sensitivity cases. For a growth driver the INPUT rates order adverse ≤ central ≤
+    favourable (the labels order the drivers by favourability). The siblings carry the sensitivity
+    provenance and are explicitly NOT called intervals/bounds."""
     from cge.data.structural import structural_trajectory_variants
 
-    v = structural_trajectory_variants()  # raw archetype variants
-    assert set(v) == {"low", "central", "high"}
-    lo = v["low"].rate("productivity", "N", 2019)
+    v = structural_trajectory_variants()  # raw archetype cases
+    assert set(v) == {"adverse", "central", "favourable"}
+    ad = v["adverse"].rate("productivity", "N", 2019)
     ce = v["central"].rate("productivity", "N", 2019)
-    hi = v["high"].rate("productivity", "N", 2019)
-    assert lo <= ce <= hi and lo < hi  # a real, monotone band
-    assert "low" in v["low"].provenance.source_version
-    assert "uncertainty" in (v["low"].provenance.notes or "").lower()
-    # emissions-intensity: "low" = SLOWER decarbonisation (less negative) than central.
-    lo_e = v["low"].sector_rate("emissions_intensity", "__all__", 2025)
+    fa = v["favourable"].rate("productivity", "N", 2019)
+    assert ad <= ce <= fa and ad < fa  # input drivers ordered by favourability
+    assert "adverse" in v["adverse"].provenance.source_version
+    notes = (v["adverse"].provenance.notes or "").lower()
+    assert (
+        "sensitivity" in notes and "not a statistical" in notes
+    )  # honest framing, not an interval
+    # emissions-intensity: adverse = SLOWER decarbonisation (less negative) than central.
+    ad_e = v["adverse"].sector_rate("emissions_intensity", "__all__", 2025)
     ce_e = v["central"].sector_rate("emissions_intensity", "__all__", 2025)
-    assert lo_e > ce_e  # less negative = slower decarbonisation
+    assert ad_e > ce_e  # less negative = slower decarbonisation
 
 
-def test_uncertainty_variants_map_onto_build_labels():
-    """The variants can be mapped onto real build labels for a sweep, sharing the concordance."""
+def test_sensitivity_cases_map_onto_build_labels():
+    """The cases can be mapped onto real build labels for a sweep, sharing the concordance."""
     from cge.data.structural import structural_trajectory_variants
 
     v = structural_trajectory_variants(["US", "RoW_Asia"], ["manufacturing"])
-    assert set(v) == {"low", "central", "high"}
-    for label in ("low", "central", "high"):
-        # each variant carries the real build label US (mapped, not archetype N).
+    assert set(v) == {"adverse", "central", "favourable"}
+    for label in ("adverse", "central", "favourable"):
         assert v[label].rate("productivity", "US", 2019) is not None
+
+
+def test_variants_require_both_regions_and_sectors_or_neither():
+    """Review-10 P3: passing exactly one of regions/sectors raises rather than silently returning
+    archetype cases."""
+    from cge.data.structural import structural_trajectory_variants
+
+    with pytest.raises(ValueError, match="BOTH regions and sectors"):
+        structural_trajectory_variants(["US"], None)
+    with pytest.raises(ValueError, match="BOTH regions and sectors"):
+        structural_trajectory_variants(None, ["manufacturing"])
+
+
+def test_structural_sensitivity_bounds_take_realised_per_output_minmax():
+    """Review-10 P1#2: output bounds are the REALISED per-output min/max across cases, not the
+    adverse/favourable labels — a nonlinear output need not be monotone in input favourability."""
+    from cge.data.structural import structural_sensitivity_bounds
+
+    # adverse GDP happens to exceed favourable for this output (nonlinearity) — bounds must still be
+    # the true min/max, not label-ordered.
+    results = {
+        "adverse": {"gdp": 1.02, "emissions": 0.90},
+        "central": {"gdp": 1.05, "emissions": 0.80},
+        "favourable": {"gdp": 1.01, "emissions": 0.70},
+    }
+    bounds = structural_sensitivity_bounds(results)
+    assert bounds["gdp"] == (1.01, 1.05)  # realised min/max, NOT (adverse, favourable)
+    assert bounds["emissions"] == (0.70, 0.90)
 
 
 def test_concordance_v2_carries_composite_provenance():
@@ -344,10 +464,10 @@ def test_concordance_v2_carries_composite_provenance():
 
     t = structural_trajectories_for_build(["US", "CN"], ["manufacturing", "services"])
     assert "concordance" in t.provenance.source.lower()
-    # concordance v3 (review-9 1c): per-driver/time-varying weights. trajectories v3 (review-8):
-    # EU KLEMS mfp=LP1ConTFP, capital_deepening retired, member-weighted aggregates.
+    # concordance v3 (review-9 1c): per-driver/time-varying weights. trajectories v4 (review-10):
+    # NGFS emissions intensity = CO2/Final-Energy (was CO2/GDP), sensitivity cases relabelled.
     assert "structural-concordance-v3" in t.provenance.source_version
-    assert "structural-trajectories-v3" in t.provenance.source_version
+    assert "structural-trajectories-v4" in t.provenance.source_version
 
 
 def test_mapped_trajectory_stamps_the_weighting_note():
