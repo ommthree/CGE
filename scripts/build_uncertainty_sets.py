@@ -86,49 +86,65 @@ def _klems_envelope() -> dict:
     return env
 
 
-def _band_rate(rate: float, half: float, side: str) -> float:
-    """The adverse/favourable variant of a central annual ``rate`` with relative half-width
-    ``half``. 'adverse' = the less-favourable growth path: a POSITIVE growth rate shrinks
-    (×(1−half)); a NEGATIVE rate (emissions-intensity or population decline) moves toward zero
-    (×(1−half) in magnitude). 'favourable' is the mirror. NOTE (review-10 P1#2): 'adverse' /
-    'favourable' order the INPUT DRIVER rates by favourability — they are NOT guaranteed lower/upper
-    bounds on any nonlinear CGE OUTPUT (GDP, prices, emissions). For output bounds, run all cases
-    and take the realised per-output min/max (see structural_sensitivity_bounds)."""
-    factor = (1.0 - half) if side == "adverse" else (1.0 + half)
-    return round(rate * factor, 4)
+# Which way is "adverse" per driver (review-11 P2#2): a growth driver (productivity, population,
+# participation, sector productivity/MFP) is adverse when its rate is LOWER (a smaller or
+# more-negative number → less growth / faster shrinkage); emissions_intensity is adverse when its
+# decarbonisation is SLOWER (less negative → toward zero). So adverse shifts growth rates by
+# −half·|rate| and emissions rates by +half·|rate| (favourable is the mirror).
+_EMISSIONS_DRIVERS = {"emissions_intensity"}
+
+
+def _band_rate(rate: float, half: float, side: str, driver: str) -> float:
+    """Deterministic stress variant of a central annual ``rate`` (review-11 P2#2 — DIRECTION IS
+    PER-DRIVER). Adverse means the WELFARE-WORSE input: LOWER growth for a growth driver (shift the
+    rate toward −∞ by ``half·|rate|``, so a positive rate shrinks and a negative one falls further),
+    and SLOWER decarbonisation for emissions intensity (shift toward zero / +). Favourable is the
+    mirror. These order the INPUT DRIVERS by favourability, NOT any nonlinear CGE OUTPUT."""
+    grow_down = side == "adverse"  # adverse = worse: growth drivers move DOWN
+    if driver in _EMISSIONS_DRIVERS:
+        grow_down = not grow_down  # emissions: adverse = LESS decarbonisation = move UP (toward 0)
+    delta = half * abs(rate)
+    return round(rate - delta if grow_down else rate + delta, 4)
 
 
 def _apply_bands(digest: dict, side: str, env: dict) -> dict:
     out = copy.deepcopy(digest)
-    # Region drivers: confidence-tiered judgmental stress band.
-    for _driver, table in out["region_drivers"].items():
+    # Region drivers: confidence-tiered judgmental stress band, direction per driver.
+    for driver, table in out["region_drivers"].items():
         for _key, entry in table.items():
             half = _TIER_BAND.get(entry.get("confidence", "medium"), 0.25)
-            entry["knots"] = {y: _band_rate(r, half, side) for y, r in entry["knots"].items()}
+            entry["knots"] = {
+                y: _band_rate(r, half, side, driver) for y, r in entry["knots"].items()
+            }
     # Sector drivers: EU KLEMS mfp/sector_productivity use the EMPIRICAL window envelope; others
-    # (emissions_intensity) the confidence-tiered stress band.
+    # (emissions_intensity) the confidence-tiered stress band, direction per driver.
     for driver, table in out["sector_drivers"].items():
         for key, entry in table.items():
             if driver in env and key in env[driver]:
                 lo, hi = env[driver][key]
+                # For a growth driver the envelope min is adverse; the empirical envelope is already
+                # signed correctly (lower = worse).
                 chosen = lo if side == "adverse" else hi
                 entry["knots"] = {y: round(chosen, 4) for y in entry["knots"]}
             else:
                 half = _TIER_BAND.get(entry.get("confidence", "medium"), 0.25)
-                entry["knots"] = {y: _band_rate(r, half, side) for y, r in entry["knots"].items()}
+                entry["knots"] = {
+                    y: _band_rate(r, half, side, driver) for y, r in entry["knots"].items()
+                }
     # Stamp the basis into provenance.notes (a first-class contract field that round-trips).
     out["provenance"] = dict(out["provenance"])
     out["provenance"]["source_version"] = out["provenance"]["source_version"] + f"-{side}"
     uncertainty_note = (
-        f" SENSITIVITY: {side.upper()} deterministic stress case (review-10 P1#2 2026-09-14) — NOT "
-        f"a statistical bound or a probabilistic interval (NGFS scenarios are not forecasts and "
-        f"carry no probabilities). EU KLEMS mfp/sector_productivity: per-archetype envelope across "
-        f"trend windows 2017–21 (central) / 2015–19 / 2010–19; these mix windows and are "
-        f"not one coherent calibration. Other drivers: judgmental relative stress "
-        f"(low±50/medium±25/high±10) "
-        f"on the central rate ordered by favourability. 'adverse'/'favourable' order the INPUT "
-        f"drivers, NOT any CGE output — for output bounds run all cases and take the realised "
-        f"per-output min/max. Central path = trajectories_v1.json."
+        f" SENSITIVITY: {side.upper()} deterministic stress case (review-10 P1#2; per-driver "
+        f"direction review-11 P2#2 2026-09-19) — NOT a statistical bound or probabilistic interval "
+        f"(NGFS scenarios are not forecasts and carry no probabilities). Direction is PER DRIVER: "
+        f"adverse = LOWER growth for productivity/population/participation/sector-productivity, "
+        f"and SLOWER decarbonisation (less-negative) for emissions intensity. EU KLEMS mfp/"
+        f"sector_productivity: per-archetype envelope across trend windows 2017–21 (central) / "
+        f"2015–19 / 2010–19; these mix windows and are not one coherent calibration. Other "
+        f"drivers: judgmental relative stress (low±50/medium±25/high±10) on the central rate. "
+        f"'adverse'/'favourable' order the INPUT drivers, NOT any CGE output — for output bounds "
+        f"run all cases and take the realised per-output min/max. Central = trajectories_v1.json."
     )
     out["provenance"]["notes"] = (out["provenance"].get("notes", "") or "") + uncertainty_note
     return out
