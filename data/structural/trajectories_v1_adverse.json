@@ -5,14 +5,14 @@
     "licence": "see per-entry sources; UN WPP: CC BY 3.0 IGO, PWT 10.01: CC BY 4.0, ILOSTAT: CC BY 4.0, EU KLEMS: CC BY 4.0, NGFS: see NGFS terms",
     "reference_year": 2024,
     "retrieved": "2026-09-14",
-    "notes": "Per-region and per-sector annual growth trajectories for the Phase 7b.2 structural drivers, EXTRACTED FROM REAL SOURCES by scripts/extract_structural_sources.py and assembled by scripts/build_structural_trajectories.py (both --check-gated in CI). v4 (review-10 2026-09-14): NGFS emissions_intensity is now a genuine per-archetype INTENSITY = sector CO2 / sector Final Energy (was CO2/GDP, which double-counted the output-share change the CGE determines endogenously); __all__ and BRD/MIL share one gross energy+process boundary over Final Energy (AFOLU excluded); the low/high sensitivity variants were relabelled adverse/favourable (deterministic stress cases, not intervals) and gained pre-COVID EU KLEMS windows. v3 (review-8): EU KLEMS mfp = LP1ConTFP directly (was a dimensionally-wrong LP2_G/CAP_QI decomposition; capital_deepening retired); NGFS scenario an explicit validated tuple (Below 2C); global __all__ member-weighted; rates proportional (expm1). Rates are decimal fractions per year; the wrapper holds the most recent knot piecewise-constant. N (advanced) / S (emerging) region + BRD (goods) / MIL (services) sector archetypes, plus __all__. Per-value source strings carry geography/release/sheet/window/transform. Known limits (single-country EU KLEMS, NGFS sector intensities over a Final-Energy activity basis, held-flat forward knots, participation LOW confidence) are documented in docs/structural-data-pipeline-plan.md. SENSITIVITY: ADVERSE deterministic stress case (review-10 P1#2 2026-09-14) — NOT a statistical bound or a probabilistic interval (NGFS scenarios are not forecasts and carry no probabilities). EU KLEMS mfp/sector_productivity: per-archetype envelope across trend windows 2017–21 (central) / 2015–19 / 2010–19; these mix windows and are not one coherent calibration. Other drivers: judgmental relative stress (low±50/medium±25/high±10) on the central rate ordered by favourability. 'adverse'/'favourable' order the INPUT drivers, NOT any CGE output — for output bounds run all cases and take the realised per-output min/max. Central path = trajectories_v1.json."
+    "notes": "Per-region and per-sector annual growth trajectories for the Phase 7b.2 structural drivers, EXTRACTED FROM REAL SOURCES by scripts/extract_structural_sources.py and assembled by scripts/build_structural_trajectories.py (both --check-gated in CI). v4 (review-10 2026-09-14): NGFS emissions_intensity is now a genuine per-archetype INTENSITY = sector CO2 / sector Final Energy (was CO2/GDP, which double-counted the output-share change the CGE determines endogenously); __all__ and BRD/MIL share one gross energy+process boundary over Final Energy (AFOLU excluded); the low/high sensitivity variants were relabelled adverse/favourable (deterministic stress cases, not intervals) and gained pre-COVID EU KLEMS windows. v3 (review-8): EU KLEMS mfp = LP1ConTFP directly (was a dimensionally-wrong LP2_G/CAP_QI decomposition; capital_deepening retired); NGFS scenario an explicit validated tuple (Below 2C); global __all__ member-weighted; rates proportional (expm1). Rates are decimal fractions per year; the wrapper holds the most recent knot piecewise-constant. N (advanced) / S (emerging) region + BRD (goods) / MIL (services) sector archetypes, plus __all__. Per-value source strings carry geography/release/sheet/window/transform. Known limits (single-country EU KLEMS, NGFS sector intensities over a Final-Energy activity basis, held-flat forward knots, participation LOW confidence) are documented in docs/structural-data-pipeline-plan.md. SENSITIVITY: ADVERSE deterministic stress case (review-10 P1#2; per-driver direction review-11 P2#2 2026-09-19) — NOT a statistical bound or probabilistic interval (NGFS scenarios are not forecasts and carry no probabilities). Direction is PER DRIVER: adverse = LOWER growth for productivity/population/participation/sector-productivity, and SLOWER decarbonisation (less-negative) for emissions intensity. EU KLEMS mfp/sector_productivity: per-archetype envelope across trend windows 2017–21 (central) / 2015–19 / 2010–19; these mix windows and are not one coherent calibration. Other drivers: judgmental relative stress (low±50/medium±25/high±10) on the central rate. 'adverse'/'favourable' order the INPUT drivers, NOT any CGE output — for output bounds run all cases and take the realised per-output min/max. Central = trajectories_v1.json."
   },
   "rates": {
     "population": {
       "N": {
         "2025": 0.0012,
         "2035": 0.0002,
-        "2050": -0.0003
+        "2050": -0.0005
       },
       "S": {
         "2025": 0.0065,
@@ -27,8 +27,8 @@
     },
     "labour_participation": {
       "S": {
-        "2025": -0.0001,
-        "2040": -0.0001
+        "2025": -0.0003,
+        "2040": -0.0003
       },
       "N": {
         "2025": 0.0004,
@@ -65,45 +65,85 @@
     },
     "emissions_intensity": {
       "__all__": {
-        "2025": -0.0202,
-        "2030": -0.0299,
-        "2035": -0.0335,
-        "2040": -0.0341,
-        "2045": -0.0338,
-        "2050": -0.0286,
-        "2055": -0.03,
-        "2060": -0.0195,
+        "2025": -0.0135,
+        "2030": -0.0199,
+        "2035": -0.0223,
+        "2040": -0.0227,
+        "2045": -0.0225,
+        "2050": -0.0191,
+        "2055": -0.02,
+        "2060": -0.013,
+        "2070": -0.0095,
+        "2080": -0.0071,
+        "2090": -0.0074,
+        "2100": 0.0
+      },
+      "electricity": {
+        "2025": -0.044,
+        "2030": -0.0745,
+        "2035": -0.1041,
+        "2040": -0.0982,
+        "2045": -0.0683,
+        "2050": -0.0241,
+        "2055": -0.0251,
+        "2060": -0.043,
+        "2070": -0.152,
+        "2080": 0.0
+      },
+      "industry": {
+        "2025": -0.0069,
+        "2030": -0.0091,
+        "2035": -0.0145,
+        "2040": -0.0266,
+        "2045": -0.0331,
+        "2050": -0.0354,
+        "2055": -0.02,
+        "2060": -0.0084,
+        "2070": 0.0027,
+        "2080": 0.0042,
+        "2090": 0.0024,
+        "2100": 0.0
+      },
+      "process": {
+        "2025": 0.0004,
+        "2030": -0.0001,
+        "2035": -0.0016,
+        "2040": -0.0062,
+        "2045": -0.0124,
+        "2050": -0.0132,
+        "2055": -0.0238,
+        "2060": -0.0092,
+        "2070": 0.0065,
+        "2080": 0.0084,
+        "2090": 0.0065,
+        "2100": 0.0
+      },
+      "transport": {
+        "2025": -0.006,
+        "2030": -0.0086,
+        "2035": -0.0084,
+        "2040": -0.008,
+        "2045": -0.0076,
+        "2050": -0.0084,
+        "2055": -0.0099,
+        "2060": -0.0094,
+        "2070": -0.0109,
+        "2080": -0.0135,
+        "2090": -0.0117,
+        "2100": 0.0
+      },
+      "buildings": {
+        "2025": -0.0048,
+        "2030": -0.0075,
+        "2035": -0.0157,
+        "2040": -0.0226,
+        "2045": -0.0232,
+        "2050": -0.0109,
+        "2055": -0.026,
+        "2060": -0.0115,
         "2070": -0.0142,
-        "2080": -0.0106,
-        "2090": -0.0111,
-        "2100": 0.0
-      },
-      "BRD": {
-        "2025": -0.0099,
-        "2030": -0.0117,
-        "2035": -0.0181,
-        "2040": -0.034,
-        "2045": -0.0415,
-        "2050": -0.0427,
-        "2055": -0.032,
-        "2060": -0.0122,
-        "2070": 0.0021,
-        "2080": 0.0039,
-        "2090": 0.0031,
-        "2100": 0.0
-      },
-      "MIL": {
-        "2025": -0.011,
-        "2030": -0.0138,
-        "2035": -0.0158,
-        "2040": -0.0174,
-        "2045": -0.0167,
-        "2050": -0.013,
-        "2055": -0.0224,
-        "2060": -0.0163,
-        "2070": -0.0203,
-        "2080": -0.0198,
-        "2090": -0.0175,
+        "2080": -0.0067,
+        "2090": -0.0115,
         "2100": 0.0
       }
     },
@@ -137,9 +177,12 @@
     "sector_productivity:BRD": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1_G (delta-log p.p.); mean of the 5 most recent years (2017–2021 — a COVID-affected window that can reverse the goods-vs-services ordering vs pre-COVID windows), expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). LOW confidence: single country, pandemic window. https://euklems-intanprod-llee.luiss.it/",
     "sector_productivity:MIL": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1_G (delta-log p.p.); mean of the 5 most recent years (2017–2021 — a COVID-affected window that can reverse the goods-vs-services ordering vs pre-COVID windows), expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). LOW confidence: single country, pandemic window. https://euklems-intanprod-llee.luiss.it/",
     "sector_productivity:__all__": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1_G (delta-log p.p.); mean of the 5 most recent years (2017–2021 — a COVID-affected window that can reverse the goods-vs-services ordering vs pre-COVID windows), expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). LOW confidence: single country, pandemic window. https://euklems-intanprod-llee.luiss.it/",
-    "emissions_intensity:__all__": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; per-archetype emissions INTENSITY = Σ(sector CO2) / Σ(sector Final Energy) — CO2 per unit of the sector's physical final energy (review-10 P1: NOT CO2/GDP, which double-counts the output-share change the CGE determines endogenously; E/FE isolates fuel switching). __all__ = (Energy + Industrial Processes) CO2 / total Final Energy; BRD = Industry (+ processes) / FE|Industry; MIL = Transport + Res/Comm / their FE. Energy Supply sits in __all__ (upstream); AFOLU excluded (gross-production boundary). A knot at every source year (from 2025), each the CAGR to the next, reproducing the source intensity at every source year (last held flat). https://data.ece.iiasa.ac.at/ngfs/",
-    "emissions_intensity:BRD": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; per-archetype emissions INTENSITY = Σ(sector CO2) / Σ(sector Final Energy) — CO2 per unit of the sector's physical final energy (review-10 P1: NOT CO2/GDP, which double-counts the output-share change the CGE determines endogenously; E/FE isolates fuel switching). __all__ = (Energy + Industrial Processes) CO2 / total Final Energy; BRD = Industry (+ processes) / FE|Industry; MIL = Transport + Res/Comm / their FE. Energy Supply sits in __all__ (upstream); AFOLU excluded (gross-production boundary). A knot at every source year (from 2025), each the CAGR to the next, reproducing the source intensity at every source year (last held flat). https://data.ece.iiasa.ac.at/ngfs/",
-    "emissions_intensity:MIL": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; per-archetype emissions INTENSITY = Σ(sector CO2) / Σ(sector Final Energy) — CO2 per unit of the sector's physical final energy (review-10 P1: NOT CO2/GDP, which double-counts the output-share change the CGE determines endogenously; E/FE isolates fuel switching). __all__ = (Energy + Industrial Processes) CO2 / total Final Energy; BRD = Industry (+ processes) / FE|Industry; MIL = Transport + Res/Comm / their FE. Energy Supply sits in __all__ (upstream); AFOLU excluded (gross-production boundary). A knot at every source year (from 2025), each the CAGR to the next, reproducing the source intensity at every source year (last held flat). https://data.ece.iiasa.ac.at/ngfs/",
+    "emissions_intensity:__all__": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; PER-CHANNEL emissions intensity (review-11 P1), each CO2 over the activity that drives it: electricity = CO2|Supply|Electricity / Secondary Energy|Electricity (generation); industry = CO2|Demand|Industry / FE|Industry (combustion); process = CO2|Industrial Processes / (Production|Steel + |Cement); transport = CO2|Demand|Transportation / FE|Transportation; buildings = CO2|Demand|Res+Comm / FE|Res+Comm; __all__ = (Energy + Industrial Processes) CO2 / total Final Energy. The concordance maps each model sector to its channel so electricity gets the generation path, not industry combustion. KNOWN GAP: FE/output (autonomous energy efficiency) is NOT sourceable per sector from NGFS (no sector output/VA) and the Leontief CGE does not reproduce it — these are combustion/energy-emissions intensities, NOT full CO2/output (hence LOW confidence). AFOLU excluded; a knot at every positive source year, CAGR to the next, last held flat (electricity truncates at its last positive year ~2080). https://data.ece.iiasa.ac.at/ngfs/",
+    "emissions_intensity:electricity": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; PER-CHANNEL emissions intensity (review-11 P1), each CO2 over the activity that drives it: electricity = CO2|Supply|Electricity / Secondary Energy|Electricity (generation); industry = CO2|Demand|Industry / FE|Industry (combustion); process = CO2|Industrial Processes / (Production|Steel + |Cement); transport = CO2|Demand|Transportation / FE|Transportation; buildings = CO2|Demand|Res+Comm / FE|Res+Comm; __all__ = (Energy + Industrial Processes) CO2 / total Final Energy. The concordance maps each model sector to its channel so electricity gets the generation path, not industry combustion. KNOWN GAP: FE/output (autonomous energy efficiency) is NOT sourceable per sector from NGFS (no sector output/VA) and the Leontief CGE does not reproduce it — these are combustion/energy-emissions intensities, NOT full CO2/output (hence LOW confidence). AFOLU excluded; a knot at every positive source year, CAGR to the next, last held flat (electricity truncates at its last positive year ~2080). https://data.ece.iiasa.ac.at/ngfs/",
+    "emissions_intensity:industry": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; PER-CHANNEL emissions intensity (review-11 P1), each CO2 over the activity that drives it: electricity = CO2|Supply|Electricity / Secondary Energy|Electricity (generation); industry = CO2|Demand|Industry / FE|Industry (combustion); process = CO2|Industrial Processes / (Production|Steel + |Cement); transport = CO2|Demand|Transportation / FE|Transportation; buildings = CO2|Demand|Res+Comm / FE|Res+Comm; __all__ = (Energy + Industrial Processes) CO2 / total Final Energy. The concordance maps each model sector to its channel so electricity gets the generation path, not industry combustion. KNOWN GAP: FE/output (autonomous energy efficiency) is NOT sourceable per sector from NGFS (no sector output/VA) and the Leontief CGE does not reproduce it — these are combustion/energy-emissions intensities, NOT full CO2/output (hence LOW confidence). AFOLU excluded; a knot at every positive source year, CAGR to the next, last held flat (electricity truncates at its last positive year ~2080). https://data.ece.iiasa.ac.at/ngfs/",
+    "emissions_intensity:process": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; PER-CHANNEL emissions intensity (review-11 P1), each CO2 over the activity that drives it: electricity = CO2|Supply|Electricity / Secondary Energy|Electricity (generation); industry = CO2|Demand|Industry / FE|Industry (combustion); process = CO2|Industrial Processes / (Production|Steel + |Cement); transport = CO2|Demand|Transportation / FE|Transportation; buildings = CO2|Demand|Res+Comm / FE|Res+Comm; __all__ = (Energy + Industrial Processes) CO2 / total Final Energy. The concordance maps each model sector to its channel so electricity gets the generation path, not industry combustion. KNOWN GAP: FE/output (autonomous energy efficiency) is NOT sourceable per sector from NGFS (no sector output/VA) and the Leontief CGE does not reproduce it — these are combustion/energy-emissions intensities, NOT full CO2/output (hence LOW confidence). AFOLU excluded; a knot at every positive source year, CAGR to the next, last held flat (electricity truncates at its last positive year ~2080). https://data.ece.iiasa.ac.at/ngfs/",
+    "emissions_intensity:transport": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; PER-CHANNEL emissions intensity (review-11 P1), each CO2 over the activity that drives it: electricity = CO2|Supply|Electricity / Secondary Energy|Electricity (generation); industry = CO2|Demand|Industry / FE|Industry (combustion); process = CO2|Industrial Processes / (Production|Steel + |Cement); transport = CO2|Demand|Transportation / FE|Transportation; buildings = CO2|Demand|Res+Comm / FE|Res+Comm; __all__ = (Energy + Industrial Processes) CO2 / total Final Energy. The concordance maps each model sector to its channel so electricity gets the generation path, not industry combustion. KNOWN GAP: FE/output (autonomous energy efficiency) is NOT sourceable per sector from NGFS (no sector output/VA) and the Leontief CGE does not reproduce it — these are combustion/energy-emissions intensities, NOT full CO2/output (hence LOW confidence). AFOLU excluded; a knot at every positive source year, CAGR to the next, last held flat (electricity truncates at its last positive year ~2080). https://data.ece.iiasa.ac.at/ngfs/",
+    "emissions_intensity:buildings": "NGFS Phase 5 scenario explorer: model REMIND-MAgPIE 3.3-4.8, scenario Below 2°C, region World; PER-CHANNEL emissions intensity (review-11 P1), each CO2 over the activity that drives it: electricity = CO2|Supply|Electricity / Secondary Energy|Electricity (generation); industry = CO2|Demand|Industry / FE|Industry (combustion); process = CO2|Industrial Processes / (Production|Steel + |Cement); transport = CO2|Demand|Transportation / FE|Transportation; buildings = CO2|Demand|Res+Comm / FE|Res+Comm; __all__ = (Energy + Industrial Processes) CO2 / total Final Energy. The concordance maps each model sector to its channel so electricity gets the generation path, not industry combustion. KNOWN GAP: FE/output (autonomous energy efficiency) is NOT sourceable per sector from NGFS (no sector output/VA) and the Leontief CGE does not reproduce it — these are combustion/energy-emissions intensities, NOT full CO2/output (hence LOW confidence). AFOLU excluded; a knot at every positive source year, CAGR to the next, last held flat (electricity truncates at its last positive year ~2080). https://data.ece.iiasa.ac.at/ngfs/",
     "mfp:BRD": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1ConTFP (per-hour-worked TFP contribution to VA growth, delta-log p.p.); mean of the 5 most recent years (2017–2021 — a COVID-affected window that can reverse the goods-vs-services ordering vs pre-COVID windows), expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). LOW confidence: single country, pandemic window. https://euklems-intanprod-llee.luiss.it/",
     "mfp:MIL": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1ConTFP (per-hour-worked TFP contribution to VA growth, delta-log p.p.); mean of the 5 most recent years (2017–2021 — a COVID-affected window that can reverse the goods-vs-services ordering vs pre-COVID windows), expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). LOW confidence: single country, pandemic window. https://euklems-intanprod-llee.luiss.it/",
     "mfp:__all__": "EU KLEMS & INTANProd 2024 release, growth accounts, Austria (AT — sole geo in the supplied workbook); sheet LP1ConTFP (per-hour-worked TFP contribution to VA growth, delta-log p.p.); mean of the 5 most recent years (2017–2021 — a COVID-affected window that can reverse the goods-vs-services ordering vs pre-COVID windows), expm1(mean/100) → proportional rate; aggregated to ISIC sections then VA-weighted (VA_CP). LOW confidence: single country, pandemic window. https://euklems-intanprod-llee.luiss.it/",
@@ -160,9 +203,12 @@
     "sector_productivity:BRD": "low",
     "sector_productivity:MIL": "low",
     "sector_productivity:__all__": "low",
-    "emissions_intensity:__all__": "medium",
-    "emissions_intensity:BRD": "medium",
-    "emissions_intensity:MIL": "medium",
+    "emissions_intensity:__all__": "low",
+    "emissions_intensity:electricity": "low",
+    "emissions_intensity:industry": "low",
+    "emissions_intensity:process": "low",
+    "emissions_intensity:transport": "low",
+    "emissions_intensity:buildings": "low",
     "mfp:BRD": "low",
     "mfp:MIL": "low",
     "mfp:__all__": "low",

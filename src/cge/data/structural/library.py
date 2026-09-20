@@ -173,6 +173,25 @@ def load_structural_concordance(
 
     if traj.sector_rates:
         referenced_sec = {a for a in raw["sector_archetype"].values() if a != "__all__"}
+        # The emissions_intensity driver is mapped by sector_emissions_channel (review-11 P1), whose
+        # channel targets (electricity/industry/process/transport/buildings) are a DIFFERENT vocab
+        # from BRD/MIL — validate them against the emissions driver specifically so a channel typo
+        # can't silently fall through to __all__.
+        channels = {a for a in raw.get("sector_emissions_channel", {}).values() if a != "__all__"}
+        emis = traj.sector_rates.get("emissions_intensity")
+        if channels and emis is not None:
+            # A named channel target must be an EXPLICIT key in the emissions trajectory — NOT
+            # resolved via __all__ (that would be the silent fall-through a typo causes). So we do
+            # NOT exempt the check when __all__ is present.
+            unknown_ch = channels - (set(emis) - {"__all__"})
+            if unknown_ch:
+                raise ValueError(
+                    f"sector_emissions_channel target(s) {sorted(unknown_ch)} are not among the "
+                    f"emissions_intensity trajectory channels {sorted(emis)} — a typo or a channel "
+                    "the trajectory does not carry."
+                )
+        # For the BRD/MIL sector_archetype axis, only the NON-emissions sector drivers must resolve
+        # them (the emissions driver uses the channel vocab, resolving BRD/MIL via its __all__).
         _check_axis("sector", traj.sector_rates, referenced_sec)
 
     # Structural v2 checks (block weights sum to 1, members mapped) run regardless of the
@@ -206,17 +225,29 @@ def _validate_v3_block_weights(raw: dict, traj: StructuralTrajectory) -> None:
 
     country_arch = raw["country_archetype"]
     classes = raw["block_weights"]
-    all_blocks = set(raw["block_membership"])
+    membership = raw["block_membership"]
+    all_blocks = set(membership)
     for cls, blocks in classes.items():
         for block, table in blocks.items():
             # A table is either flat {country: w} or year-indexed {year: {country: w}}.
             year_indexed = table and all(str(k).isdigit() for k in table)
             per_year = table.values() if year_indexed else [table]
+            block_members = set(membership.get(block, {}))
             for w_map in per_year:
-                missing = [c for c in w_map if c not in country_arch]
-                if missing:
+                # EXACT membership (review-11 P2#3): the weighted countries must be EXACTLY the
+                # block's members — not merely "mapped somewhere". Previously a weight for a country
+                # in a DIFFERENT block (the reviewer's US→CN swap) passed because CN exists in
+                # country_archetype; now it is rejected.
+                unmapped = [c for c in w_map if c not in country_arch]
+                if unmapped:
                     raise ValueError(
-                        f"block_weights[{cls!r}][{block!r}] has unmapped countries {missing}"
+                        f"block_weights[{cls!r}][{block!r}] has unmapped countries {unmapped}"
+                    )
+                if set(w_map) != block_members:
+                    raise ValueError(
+                        f"block_weights[{cls!r}][{block!r}] countries {sorted(w_map)} do not match "
+                        f"block_membership[{block!r}] {sorted(block_members)} — a class must "
+                        "weight exactly the block's member countries."
                     )
                 w = list(w_map.values())
                 if any(not math.isfinite(x) or x < 0 for x in w):
@@ -459,12 +490,19 @@ def structural_trajectories_for_build(
             new["__all__"] = dict(by_arch["__all__"])
         new_rates[driver] = new
 
-    # Sector axis: each sector inherits its archetype path (unchanged shape).
+    # Sector axis: each sector inherits its archetype path. The map is DRIVER-AWARE (review-11 P1):
+    # emissions_intensity uses ``sector_emissions_channel`` (electricity→electricity generation,
+    # transport→transport, industry-like→industry+process, services/buildings→buildings) so
+    # electricity no longer inherits the industry combustion path, while mfp/sector_productivity
+    # keep using the goods/services ``sector_archetype``. A concordance without
+    # ``sector_emissions_channel`` falls back to ``sector_archetype`` (back-compat).
+    emissions_channel: dict[str, str] = conc.get("sector_emissions_channel", sector_arch)
     new_sector_rates: dict = {}
     for driver, by_arch in archetype.sector_rates.items():
+        smap = emissions_channel if driver == "emissions_intensity" else sector_arch
         new = {}
         for s in sectors:
-            arch = sector_arch.get(s)
+            arch = smap.get(s)
             path = by_arch.get(arch) if arch else None
             if path is None:
                 path = by_arch.get("__all__")
@@ -521,8 +559,9 @@ def structural_trajectories_for_build(
             if cfs:
                 confidence[f"{driver}:{k}"] = min(cfs, key=lambda c: order.get(c, 1))
     for driver, by_key in new_sector_rates.items():
+        smap = emissions_channel if driver == "emissions_intensity" else sector_arch
         for k in by_key:
-            arch = sector_arch.get(k, "__all__")
+            arch = smap.get(k, "__all__")
             src = archetype.sources.get(f"{driver}:{arch}") or archetype.sources.get(
                 f"{driver}:__all__"
             )
@@ -672,19 +711,43 @@ def structural_trajectory_variants(
     return out
 
 
-def structural_sensitivity_bounds(results: dict[str, dict[str, float]]) -> dict[str, tuple]:
+def structural_sensitivity_bounds(
+    results: dict[str, dict[str, float]],
+    *,
+    expected_cases: tuple[str, ...] = ("adverse", "central", "favourable"),
+) -> dict[str, tuple]:
     """Realised per-output min/max across the sensitivity cases (review-10 P1#2). Given
     ``{case_label: {output_name: value}}`` from running each of
     :func:`structural_trajectory_variants` through the model, return
     ``{output_name: (min_value, max_value)}`` — the HONEST output range, since the adverse /
     favourable INPUT labels do not necessarily produce the min/max of a nonlinear CGE OUTPUT.
-    Callers report this realised range, not assume the labelled cases bound the output."""
-    outputs: set[str] = set()
-    for by_output in results.values():
-        outputs |= set(by_output)
-    bounds: dict[str, tuple] = {}
-    for name in outputs:
-        vals = [by_output[name] for by_output in results.values() if name in by_output]
-        if vals:
-            bounds[name] = (min(vals), max(vals))
-    return bounds
+
+    VALIDATED (review-11 P2#5 — a reporting helper must not silently produce a range from one case
+    or from NaNs): ``results`` must be non-empty, contain exactly ``expected_cases``, every case
+    must report the SAME output keys, and every value must be finite. Any violation raises."""
+    import math
+
+    if not results:
+        raise ValueError("structural_sensitivity_bounds: results is empty.")
+    if set(results) != set(expected_cases):
+        raise ValueError(
+            f"structural_sensitivity_bounds: cases {sorted(results)} != expected "
+            f"{sorted(expected_cases)}."
+        )
+    key_sets = {frozenset(by_output) for by_output in results.values()}
+    if len(key_sets) != 1:
+        raise ValueError(
+            "structural_sensitivity_bounds: cases report different output keys "
+            f"{[sorted(k) for k in key_sets]} — every case must report the same outputs."
+        )
+    for case, by_output in results.items():
+        nonfinite = [k for k, v in by_output.items() if not math.isfinite(v)]
+        if nonfinite:
+            raise ValueError(
+                f"structural_sensitivity_bounds: case {case!r} has non-finite outputs {nonfinite}."
+            )
+    outputs = next(iter(key_sets))
+    return {
+        name: (min(r[name] for r in results.values()), max(r[name] for r in results.values()))
+        for name in outputs
+    }
