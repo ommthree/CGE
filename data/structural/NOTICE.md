@@ -155,31 +155,36 @@ KLEMS workbook's own per-hour TFP-contribution series `LP1ConTFP` (route (a) abo
 nets out capital deepening at source — so no separate `capital_deepening` series is needed or
 shipped. The identity and CES/CD routing above still apply; only the source of the MFP term changed.
 
-## Emissions intensity — NGFS Phase 5, REMIND-MAgPIE 3.3-4.8 / Below 2°C
+## Emissions intensity (per channel) — NGFS Phase 5, REMIND-MAgPIE 3.3-4.8 / Below 2°C
 
-- **Source:** NGFS Phase 5 scenario explorer — economy-wide CO₂ **intensity of GDP** decline,
-  **derived** as `Emissions|CO2 / GDP|PPP|Counterfactual without damage` for model
-  `REMIND-MAgPIE 3.3-4.8`, scenario **`Below 2°C`**, region `World`.
-  <https://data.ece.iiasa.ac.at/ngfs/>
-- **Retrieved:** 2026-09-09.
+- **Source:** NGFS Phase 5 scenario explorer, model `REMIND-MAgPIE 3.3-4.8`, scenario **`Below 2°C`**,
+  region `World`. <https://data.ece.iiasa.ac.at/ngfs/>
+- **Retrieved:** 2026-09-19.
 - **Licence:** NGFS scenario data terms (cited, not redistributed).
-- **Selection (review P1/P2 2026-09-09):** the model/scenario/region are an **explicit validated
-  tuple** (`_NGFS` in `scripts/extract_structural_sources.py`), not a loose substring filter. The
-  scenario name is matched after stripping the `(version: n)` suffix and the `°`→`?` header mangling
-  but must resolve to exactly one published value (raises on none/ambiguous), the region must equal
-  `World`, and the CO₂ and GDP series must each be present as a single series. A knot is emitted at
-  **every source year** (from 2025), each the CAGR to the next source year, so the piecewise-constant
-  trajectory reproduces the source intensity at every source year (review P1 2026-09-15 — the earlier
-  sparse 2025/2040 pair annualised the 2040→2100 tail and held that gentle average from 2040,
-  overstating 2050 intensity ~30%). Endpoints are validated finite with positive GDP and positive
-  intensity before exponentiation, so a net-negative-emissions scenario (e.g. Net Zero after ~2050)
-  fails loudly rather than emitting a negative/NaN scale.
-- **Per-sector split (review-9 1d 2026-09-16):** the `__all__` path is economy-wide; the BRD/MIL
-  sector paths each use their own summed CO₂ bundle over the SAME economy-wide GDP (NGFS has no
-  sectoral GDP). BRD (goods) = industry energy demand + industrial processes + energy supply; MIL
-  (services) = transport + residential/commercial (AFOLU excluded — land use, net-negative
-  mid-century). Goods decarbonise faster than services. The sectoral CO₂ series are fetched by
-  `scripts/fetch_ngfs_sectoral.py` (pyam → IIASA NGFS Phase 5). `confidence = medium`.
+- **Per-channel intensity (review-11 P1 2026-09-19):** emissions intensity is built **per channel**,
+  each CO₂ over the activity that actually drives it — NOT one BRD/MIL bundle over final energy, and
+  NOT CO₂/GDP:
+  - **electricity** = `CO2|Supply|Electricity / Secondary Energy|Electricity` (generation intensity)
+  - **industry** = `CO2|Demand|Industry / Final Energy|Industry` (fuel combustion)
+  - **process** = `CO2|Industrial Processes / (Production|Steel + |Cement)` (physical output driven)
+  - **transport** / **buildings** = their CO₂ over their final energy
+  - **`__all__`** = (Energy + Industrial Processes) CO₂ / total Final Energy (fallback)
+
+  The concordance (`sector_emissions_channel`) maps each model sector to its channel — so electricity
+  gets the generation-decarbonisation path, not industry combustion; metals/minerals get the process
+  path. Model/scenario/region are an **explicit validated tuple** (`_NGFS`), and **every configured
+  CO₂/activity variable is MANDATORY** (a missing one raises — no silent economy-wide degrade). A knot
+  is emitted at every positive source year, each the CAGR to the next; the electricity channel turns
+  net-negative ~2090 (grid with net CCS) so it is **truncated at its last positive year** and held
+  flat, and a channel that turns non-positive within the client horizon (before 2050) raises (the
+  Net-Zero net-negative case needing a gross-intensity + removals split).
+- **KNOWN GAP → `confidence = low`:** the energy-per-output term FE/output (autonomous energy
+  efficiency) is **not sourceable per sector** from NGFS (it publishes no sector output/value-added)
+  and the default Leontief CGE does not reproduce it. So the drivers are **combustion / energy-
+  emissions intensities, NOT the full CO₂/output** the engine multiplier nominally represents; they
+  omit the efficiency term and thereby understate decarbonisation. This is documented, not fabricated;
+  closing it needs a sector-output source + an engine channel for AEEI. AFOLU/removals stay a separate
+  concern (excluded). The per-channel series are fetched by `scripts/fetch_ngfs_sectoral.py` (pyam).
 
 ## Reproducibility (review 2026-09-09 / 2026-09-15 — the transcription caveat is retired)
 
@@ -201,15 +206,24 @@ its OWN, YEAR-INDEXED weight class — population by UN WPP per-country populati
 across 2025/2035/2050, productivity by PWT output shares; participation uses the static v2 GDP weights
 (no per-country labour-force series). The EXIOBASE W* residual aggregates keep their v2 proxy share.
 
-**Uncertainty (review-9 1e 2026-09-16):** `trajectories_v1_low.json` / `_high.json` (built by
-`scripts/build_uncertainty_sets.py`) bracket the central path — EU KLEMS sector drivers by the
-empirical trend-window envelope (2017–21/2015–21/2010–21), other drivers by a confidence-tiered
-±band. Use `structural_trajectory_variants()` to sweep {low, central, high} and report an interval.
+**Sensitivity cases (review-9 1e; relabelled review-10 P1#2; per-driver direction review-11 P2#2):**
+`trajectories_v1_adverse.json` / `_favourable.json` (built by `scripts/build_uncertainty_sets.py`)
+are **DETERMINISTIC STRESS CASES, NOT statistical uncertainty intervals or output bounds** — NGFS
+scenarios are not forecasts and carry no probabilities. Direction is **per driver**: adverse = lower
+growth for productivity/population/participation/sector-productivity, and slower (less-negative)
+decarbonisation for emissions intensity. EU KLEMS sector drivers use the empirical trend-window
+envelope (2017–21 central / 2015–19 / 2010–19 pre-COVID); other drivers a confidence-tiered stress.
+Use `structural_trajectory_variants()` to sweep {adverse, central, favourable}, and
+`structural_sensitivity_bounds()` for the **realised per-output min/max** (the input labels do not
+bound a nonlinear CGE output). Genuine, probability-weighted **quantified uncertainty remains open**.
 
 **Remaining limitations** (not defects): EU KLEMS is single-country (Austria — a breadth expansion is
-the main open item); forward participation/productivity knots hold the recent trend flat; the
-region/sector archetypes are N/S and BRD/MIL; NGFS sector paths share the economy-wide GDP denominator
-(no sectoral GDP in NGFS). See `docs/structural-data-pipeline-plan.md` (1a-breadth).
+the main open item); forward participation/productivity knots hold the recent trend flat; the region
+archetypes are N/S and the productivity/MFP sector archetypes BRD/MIL; the NGFS emissions channels
+capture combustion/energy-emissions intensity but **not** the FE/output efficiency term (AEEI — not
+sourceable per sector from NGFS, not reproduced by the Leontief CGE); and quantified probabilistic
+uncertainty is not built (the sensitivity cases are deterministic). See
+`docs/structural-data-pipeline-plan.md` (1a-breadth, 1d-AEEI).
 
 ## Reproducing / updating
 

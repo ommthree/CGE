@@ -36,15 +36,16 @@ A trajectory artifact is engagement-grade when every number in it is:
 6. **Scenario-pinned** — the emissions-intensity path names a specific NGFS/IEA model, scenario,
    region, variable and aggregation, versioned to a release.
 
-**Current state (2026-09-09):** the artifact now meets **(1)** (committed extraction scripts, both
-`--check`-gated in CI), **(2)** (value-level provenance: dataset/release/table/geography/window/
-transform per rate), **(6)** (NGFS scenario pinned to an explicit validated tuple), and **(3)/(4)**
-partially (MFP taken directly from EU KLEMS `LP1ConTFP` so no benchmark-share step is used for the
-sourced sectors; aggregations are member-weighted with each driver's own weight — but weights are
-static and the source labour share is an approximate LAB/VA ratio, not an adjacent-period Törnqvist
-share). **(5)** (low/central/high uncertainty bands) is not yet built. The remaining gaps below —
-breadth (EU KLEMS single-country, NGFS economy-wide), time-varying weights, Törnqvist shares, and
-uncertainty sets — are ordered by how much they change a client answer.
+**Current state (2026-09-19):** the artifact meets **(1)** (committed extraction scripts, all
+`--check`-gated in CI), **(2)** (value-level provenance per rate), **(4)** (per-driver, year-indexed
+concordance weights — population by WPP, productivity by PWT output; review-9 1c), **(6)** (NGFS
+scenario pinned to an explicit validated tuple, per-channel intensities routed by the concordance;
+review-11 1d), and **(3)** partially (MFP taken directly from EU KLEMS `LP1ConTFP`; the source labour
+share is still an approximate LAB/VA ratio, not an adjacent-period Törnqvist share). **(5)** is met
+only as **deterministic sensitivity cases** (adverse/central/favourable) — genuine probability-
+weighted **quantified uncertainty is still open**. Two substantive gaps remain, ordered by how much
+they change a client answer: EU KLEMS single-country **breadth**, and the NGFS **AEEI/FE-output** term
+(unsourceable per sector + needs an engine channel). See 1a-breadth and 1d-AEEI below.
 
 ## 1. Gaps and the concrete remediation
 
@@ -160,32 +161,46 @@ P1). Endpoints are validated finite/positive before exponentiation (a net-negati
 raises rather than emitting a negative/NaN scale). Selection resolves the scenario/model to exactly
 one published value (raises on none/ambiguous) and requires the CO₂/GDP series each as a single
 series — no silent cross-region/variable averaging.
-**PER-SECTOR SPLIT DONE (review-9 1d, 2026-09-16).** `scripts/fetch_ngfs_sectoral.py` pulls the
-sector-resolved CO₂ series from the IIASA NGFS Phase 5 explorer (via `pyam`, an offline one-off) and
-vendors them into the IAMC-wide `ngfs_phase5.csv`; `extract_ngfs_emissions(sector_bundles=…)` then
-emits a per-archetype intensity path = the SUM of each bundle's CO₂ over the SAME economy-wide GDP
-(NGFS has no sectoral GDP). BRD (goods) = industry energy demand + industrial processes + energy
-supply; MIL (services) = transport + residential/commercial; AFOLU is excluded (land use, net-
-negative mid-century). Goods decarbonise faster than services (BRD 2050 intensity ≈ 0.13 of 2025 vs
-MIL ≈ 0.31), each reproducing its source path at every knot. An economy-wide-only export degrades
-gracefully (sectors skipped, `__all__` still emitted).
+**PER-CHANNEL INTENSITY (review-9 1d; reworked to CO₂/activity review-10 P1; per-channel review-11
+P1).** `scripts/fetch_ngfs_sectoral.py` (pyam, offline one-off) vendors, per NGFS channel, a CO₂
+numerator + the activity that drives it; `extract_ngfs_emissions(intensity_specs=…)` emits an
+intensity = Σ(CO₂)/Σ(activity) per channel: electricity = CO₂|Supply|Electricity / Secondary
+Energy|Electricity (generation), industry = CO₂|Demand|Industry / FE|Industry (combustion), process =
+CO₂|Industrial Processes / (Production|Steel + |Cement), transport/buildings over their FE, `__all__`
+= (Energy + Industrial Processes) CO₂ / total FE. The concordance's `sector_emissions_channel` maps
+each model sector to its channel, so **electricity gets the generation path, not industry combustion**
+and metals/minerals get the process path. Every configured variable is mandatory (missing → raise).
+The electricity channel turns net-negative ~2090 (net-CCS grid) → truncated at its last positive year;
+a channel non-positive within the client horizon (before 2050) raises (Net-Zero removals case).
 
-**Acceptance (met):** manifest names the full scenario tuple; a reader can re-pull the same series
-(incl. the sectoral fetch script); per-sector paths are emitted and validated.
+**KNOWN GAP (1d-AEEI, documented not fabricated):** the FE/output autonomous-energy-efficiency term is
+NOT sourceable per sector from NGFS (no sector output/value-added published) and the default Leontief
+CGE does not reproduce it, so the drivers are combustion/energy-emissions intensities, NOT the full
+CO₂/output the engine multiplier nominally represents — they omit efficiency and understate
+decarbonisation; confidence LOW. Closing it needs a sector-output source + an engine AEEI channel.
 
-### 1e. Uncertainty / sensitivity sets
-**DONE (review-9 1e, 2026-09-16).** `scripts/build_uncertainty_sets.py` emits
-`trajectories_v1_low.json` / `trajectories_v1_high.json` alongside the central artifact:
-- **EU KLEMS sector drivers** (`mfp`, `sector_productivity`): an EMPIRICAL band = the min/max across
-  the workbook's alternative trend windows {2017–21 (central), 2015–21, 2010–21} — directly capturing
-  the COVID-window sensitivity review-9 flagged.
-- **All other drivers**: a confidence-tiered relative band (low ±50% / medium ±25% / high ±10%) on
-  the central annual rate; "low" is uniformly the weaker-growth / slower-decarbonisation world.
-`cge.data.structural.structural_trajectory_variants(regions, sectors)` returns the three mapped
-trajectories for a sweep; a `--check` gate keeps the variants reproducible.
+**Acceptance:** manifest names the full scenario tuple; a reader can re-pull each channel's series
+(the fetch script); per-channel paths are emitted, validated, and routed by the concordance. AEEI
+term: outstanding (data + engine).
 
-**Acceptance (met):** a client result can report an interval by running {low, central, high} and
-comparing — the variants are monotone (low ≤ central ≤ high for growth) and provenance-stamped.
+### 1e. Sensitivity cases (deterministic) — quantified uncertainty still open
+**SENSITIVITY CASES DONE (review-9 1e; relabelled review-10 P1#2; per-driver direction review-11
+P2#2). Probabilistic quantified uncertainty: OPEN.** `scripts/build_uncertainty_sets.py` emits
+`trajectories_v1_adverse.json` / `_favourable.json` as **deterministic stress cases** (NOT statistical
+intervals — NGFS scenarios carry no probabilities):
+- **EU KLEMS sector drivers**: an EMPIRICAL envelope = the per-archetype min/max across the trend
+  windows {2017–21 (central, COVID), 2015–19, 2010–19 (pre-COVID)}.
+- **Other drivers**: a confidence-tiered relative stress (low ±50% / medium ±25% / high ±10%), with
+  direction PER DRIVER — adverse = lower growth for productivity/population/participation, slower
+  (less-negative) decarbonisation for emissions intensity.
+`structural_trajectory_variants(regions, sectors)` returns {adverse, central, favourable};
+`structural_sensitivity_bounds()` reports the REALISED per-output min/max (the input labels do not
+bound a nonlinear output). A `--check` gate keeps them reproducible.
+
+**Acceptance:** a client result can report a deterministic sensitivity range by running the three
+cases; the cases are provenance-stamped as non-probabilistic. **Still open:** genuine quantified
+(probability-weighted) uncertainty — WPP variants, multiple NGFS models/scenarios, empirically
+grounded driver ranges — remains a follow-up, so "uncertainty-quantified" in §0 is only PARTIALLY met.
 
 ## 2. Sequencing
 
