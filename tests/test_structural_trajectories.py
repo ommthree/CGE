@@ -166,6 +166,38 @@ def test_concordance_maps_real_build_labels_to_differentiated_trajectories():
     )
 
 
+def test_emissions_intensity_routes_each_sector_to_its_ngfs_channel():
+    """review-11 P1: emissions_intensity is mapped by sector_emissions_channel, so electricity gets
+    the ELECTRICITY-GENERATION path (not industry combustion), transport the transport path, metals
+    the process path — while sector_productivity still uses the goods/services archetypes. The
+    channels give materially different rates, and electricity ≠ manufacturing (the old bug mapped
+    both to the industry bundle)."""
+    from cge.data.structural import (
+        load_structural_trajectories,
+        structural_trajectories_for_build,
+    )
+
+    arch = load_structural_trajectories()
+    # The archetype trajectory carries per-channel emissions keys, not BRD/MIL.
+    assert {"electricity", "industry", "process", "transport", "buildings"} <= set(
+        arch.sector_rates["emissions_intensity"]
+    )
+    t = structural_trajectories_for_build(
+        ["US"], ["electricity", "manufacturing", "metals", "transport", "services"]
+    )
+    # electricity uses the generation channel; manufacturing the industry channel → they DIFFER
+    # (previously both inherited the single industry bundle).
+    e_elec = t.sector_rate("emissions_intensity", "electricity", 2040)
+    e_manu = t.sector_rate("emissions_intensity", "manufacturing", 2040)
+    e_metals = t.sector_rate("emissions_intensity", "metals", 2040)
+    e_transport = t.sector_rate("emissions_intensity", "transport", 2040)
+    assert e_elec != e_manu  # electricity no longer inherits the industry path
+    assert e_metals != e_manu  # metals routes to the process channel, not industry
+    assert e_transport != e_manu  # transport its own channel
+    # electricity (grid greening) decarbonises fastest.
+    assert e_elec < e_transport
+
+
 def test_concordance_rejects_unmapped_build_labels():
     """An unmapped build label must fail loudly (review P1c): otherwise every real label would
     silently take the global __all__ trajectory and the run would falsely claim country/sector
@@ -394,6 +426,75 @@ def test_concordance_v3_rejects_incomplete_coverage(tmp_path):
     with pytest.raises(ValueError, match="missing region driver"):
         load_structural_concordance(str(p2), trajectory=trajectory)
 
+    # (c) review-11 P2#3: a weight for a country from a DIFFERENT block (BLK members are CA+IN; swap
+    # IN→a mapped-but-non-member country) must be rejected even though it is in country_archetype.
+    wrong_block = copy.deepcopy(conc)
+    wrong_block["country_archetype"]["ZZ"] = "S"  # mapped, but not a BLK member
+    wrong_block["block_weights"]["output"]["BLK"] = {"CA": 0.9, "ZZ": 0.1}
+    p3 = tmp_path / "wrong_block.json"
+    p3.write_text(json.dumps(wrong_block))
+    with pytest.raises(ValueError, match="do not match block_membership"):
+        load_structural_concordance(str(p3), trajectory=trajectory)
+
+
+def test_concordance_rejects_unknown_emissions_channel(tmp_path):
+    """review-11 P1: a sector_emissions_channel target that the emissions_intensity trajectory does
+    not carry (a typo) must fail loudly, not silently fall through to __all__."""
+    import json
+
+    from cge.data.structural import load_structural_concordance, load_structural_trajectories
+
+    # A trajectory carrying per-channel emissions keys.
+    traj = tmp_path / "traj.json"
+    traj.write_text(
+        json.dumps(
+            {
+                "provenance": {
+                    "source": "t",
+                    "source_version": "t",
+                    "licence": "t",
+                    "reference_year": 2024,
+                    "retrieved": "2026-09-19",
+                },
+                "rates": {"productivity": {"__all__": {"2025": 0.01}}},
+                "sector_rates": {
+                    "emissions_intensity": {
+                        "electricity": {"2025": -0.05},
+                        "__all__": {"2025": -0.02},
+                    }
+                },
+                "sources": {
+                    "productivity:__all__": "x",
+                    "emissions_intensity:electricity": "x",
+                    "emissions_intensity:__all__": "x",
+                },
+                "confidence": {
+                    "productivity:__all__": "low",
+                    "emissions_intensity:electricity": "low",
+                    "emissions_intensity:__all__": "low",
+                },
+            }
+        )
+    )
+    trajectory = load_structural_trajectories(str(traj))
+    conc = {
+        "provenance": {
+            "source": "c",
+            "source_version": "concordance-x",
+            "licence": "x",
+            "reference_year": 2024,
+            "retrieved": "2026-09-19",
+        },
+        "region_archetype": {"US": "__all__"},
+        "sector_archetype": {"electricity": "__all__"},
+        "sector_emissions_channel": {"electricity": "ELECTRICTY_TYPO"},  # not a trajectory channel
+        "sources": {"x": "x"},
+    }
+    p = tmp_path / "conc.json"
+    p.write_text(json.dumps(conc))
+    with pytest.raises(ValueError, match="sector_emissions_channel target"):
+        load_structural_concordance(str(p), trajectory=trajectory)
+
 
 def test_sensitivity_cases_adverse_central_favourable():
     """Review-10 P1#2: structural_trajectory_variants returns adverse/central/favourable
@@ -455,6 +556,38 @@ def test_structural_sensitivity_bounds_take_realised_per_output_minmax():
     bounds = structural_sensitivity_bounds(results)
     assert bounds["gdp"] == (1.01, 1.05)  # realised min/max, NOT (adverse, favourable)
     assert bounds["emissions"] == (0.70, 0.90)
+
+
+def test_structural_sensitivity_bounds_rejects_incomplete_or_nonfinite(tmp_path):
+    """Review-11 P2#5: the reporting helper must not silently produce a range from one case or from
+    NaNs — it validates non-empty, exact case set, matching output keys, and finite values."""
+    import math
+
+    from cge.data.structural import structural_sensitivity_bounds
+
+    with pytest.raises(ValueError, match="empty"):
+        structural_sensitivity_bounds({})
+    # missing a case
+    with pytest.raises(ValueError, match="!= expected"):
+        structural_sensitivity_bounds({"adverse": {"gdp": 1.0}, "central": {"gdp": 1.0}})
+    # mismatched output keys across cases (emissions only in one)
+    with pytest.raises(ValueError, match="different output keys"):
+        structural_sensitivity_bounds(
+            {
+                "adverse": {"gdp": 1.0},
+                "central": {"gdp": 1.0, "emissions": 2.0},
+                "favourable": {"gdp": 1.0},
+            }
+        )
+    # non-finite value
+    with pytest.raises(ValueError, match="non-finite"):
+        structural_sensitivity_bounds(
+            {
+                "adverse": {"gdp": math.nan},
+                "central": {"gdp": 1.0},
+                "favourable": {"gdp": 1.0},
+            }
+        )
 
 
 def test_concordance_v2_carries_composite_provenance():

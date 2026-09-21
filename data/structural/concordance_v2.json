@@ -50,9 +50,19 @@
     "manufacturing": "BRD", "construction": "BRD",
     "trade": "MIL", "transport": "MIL", "services": "MIL", "water_waste": "MIL", "other": "MIL"
   },
+  "sector_emissions_channel": {
+    "electricity": "electricity",
+    "transport": "transport",
+    "metals": "process", "minerals": "process",
+    "manufacturing": "industry", "chemicals": "industry", "construction": "industry",
+    "mining": "industry", "agriculture": "industry", "energy_coal": "industry",
+    "energy_oil_gas": "industry",
+    "trade": "buildings", "services": "buildings", "water_waste": "buildings", "other": "buildings"
+  },
   "sources": {
     "country_archetype": "World Bank country and lending groups, FY2025 income classification (July 2024 release). High-income → N; low/lower-middle/upper-middle → S. https://datahelpdesk.worldbank.org/knowledgebase/articles/906519",
     "block_membership": "EXIOBASE coarse-v3 region folding (cge.data.build._coarse_region), with GDP weights from IMF World Economic Outlook, October 2024 (nominal GDP, current USD). https://www.imf.org/en/Publications/WEO",
-    "sector_archetype": "ISIC Rev.4 / EU KLEMS goods-vs-services split. https://unstats.un.org/unsd/classifications/Econ/isic"
+    "sector_archetype": "ISIC Rev.4 / EU KLEMS goods-vs-services split. https://unstats.un.org/unsd/classifications/Econ/isic",
+    "sector_emissions_channel": "Each model sector → its NGFS emissions channel (review-11 P1): electricity→electricity generation, transport→transport, metals/minerals→process (steel/cement), other goods+extraction→industry combustion, services/trade/buildings→buildings. So electricity gets the power-generation decarbonisation path, not industry combustion."
   }
 }

@@ -133,6 +133,7 @@ def test_ngfs_emits_a_knot_per_source_year_and_reproduces_the_path():
         model="M",
         scenario="NZ",
         intensity_specs={"__all__": _spec("Emissions|CO2", ["Final Energy"])},
+        require_positive_through=2040,  # this synthetic series ends at 2040
     )["__all__"]
     assert sorted(out) == [2025, 2030, 2040]  # a knot at every source year
     assert out[2025] == pytest.approx(round((0.70 / 1.0) ** (1 / 5) - 1, 4))  # 2025→2030
@@ -142,67 +143,102 @@ def test_ngfs_emits_a_knot_per_source_year_and_reproduces_the_path():
     assert (1 + out[2025]) ** 5 * (1 + out[2030]) ** 10 == pytest.approx(0.30, rel=1e-3)
 
 
-def test_ngfs_per_sector_intensity_is_co2_over_sector_final_energy():
-    """Each archetype's intensity = Σ(sector CO2) / Σ(sector Final Energy) — CO2 per unit sector
-    energy, NOT CO2/GDP (review-10 P1). BRD CO2 A+B: 80→40, its activity FE_ind flat 100 → intensity
-    halves. MIL CO2 C: 20→18, activity FE_tr+FE_rc = 40 flat → gentle. So BRD decarbonises faster,
-    and each is independent of output share (activity, not GDP)."""
+def test_ngfs_per_channel_intensity_each_over_its_own_activity():
+    """review-11 P1: each channel's intensity = Σ(CO2) / Σ(its OWN activity), so electricity uses
+    generation, industry uses final energy, process uses physical production — NOT one FE bundle.
+    Here electricity CO2 40→10 over generation flat 100 → fast; industry CO2 60→50 over FE flat 100
+    → slow. Different denominators, different (correct) rates."""
     rows = []
 
-    def add(var, y2025, y2040):
-        rows.extend(
-            [
+    def add(var, y2025, y2040, unit="x"):
+        for y, val in ((2025, y2025), (2040, y2040)):
+            rows.append(
                 {
                     "model": "M",
                     "scenario": "NZ",
                     "region": "World",
                     "variable": var,
-                    "year": 2025,
-                    "value": y2025,
-                },
-                {
-                    "model": "M",
-                    "scenario": "NZ",
-                    "region": "World",
-                    "variable": var,
-                    "year": 2040,
-                    "value": y2040,
-                },
-            ]
-        )
+                    "Unit": unit,
+                    "year": y,
+                    "value": val,
+                }
+            )
 
-    add("A", 60.0, 30.0)
-    add("B", 20.0, 10.0)  # BRD CO2 = A+B: 80→40
-    add("C", 20.0, 18.0)  # MIL CO2
-    add("FE_ind", 100.0, 100.0)  # BRD activity (flat)
-    add("FE_tr", 25.0, 25.0)
-    add("FE_rc", 15.0, 15.0)  # MIL activity = 40 (flat)
+    add("CO2|Elec", 40.0, 10.0)
+    add("Gen", 100.0, 100.0)  # electricity: 0.4→0.1
+    add("CO2|Ind", 60.0, 50.0)
+    add("FE|Ind", 100.0, 100.0)  # industry: 0.6→0.5
     df = pd.DataFrame(rows)
     out = extract_ngfs_emissions(
         df,
         model="M",
         scenario="NZ",
         intensity_specs={
-            "BRD": _spec(["A", "B"], ["FE_ind"]),
-            "MIL": _spec(["C"], ["FE_tr", "FE_rc"]),
+            "electricity": _spec(["CO2|Elec"], ["Gen"]),
+            "industry": _spec(["CO2|Ind"], ["FE|Ind"]),
         },
+        require_positive_through=2040,
     )
-    assert set(out) == {"BRD", "MIL"}
-    # BRD intensity 80/100→40/100 over 15y → CAGR (0.5)^(1/15)−1; MIL 20/40→18/40 → (0.9)^(1/15)−1.
-    assert out["BRD"][2025] == pytest.approx(round((0.5) ** (1 / 15) - 1, 4))
-    assert out["MIL"][2025] == pytest.approx(round((0.9) ** (1 / 15) - 1, 4))
-    assert out["BRD"][2025] < out["MIL"][2025]  # goods decarbonise faster than services
+    assert set(out) == {"electricity", "industry"}
+    assert out["electricity"][2025] == pytest.approx(round((0.1 / 0.4) ** (1 / 15) - 1, 4))
+    assert out["industry"][2025] == pytest.approx(round((0.5 / 0.6) ** (1 / 15) - 1, 4))
+    assert out["electricity"][2025] < out["industry"][2025]  # generation decarbonises faster
 
 
-def test_ngfs_missing_bundle_component_raises(monkeypatch):
-    """review-10 P2#5: a configured component absent from the export must RAISE, not silently skip
-    the archetype — else a future NGFS refresh could degrade to economy-wide with CI green."""
+def test_ngfs_truncates_far_tail_negative_but_rejects_within_horizon():
+    """review-11 P1: a channel that turns net-negative only in the FAR TAIL (past
+    require_positive_through) is TRUNCATED at its last positive year and held flat; one that turns
+    non-positive WITHIN the horizon RAISES (the Net-Zero net-negative case needing removals)."""
+    # tail case: positive through 2050, negative at 2060 → truncate at 2050.
+    tail = pd.DataFrame(
+        {
+            "model": ["M"] * 6,
+            "scenario": ["NZ"] * 6,
+            "region": ["World"] * 6,
+            "variable": ["CO2"] * 3 + ["Act"] * 3,
+            "year": [2025, 2050, 2060, 2025, 2050, 2060],
+            "value": [100.0, 10.0, -5.0, 100.0, 100.0, 100.0],
+        }
+    )
+    out = extract_ngfs_emissions(
+        tail,
+        model="M",
+        scenario="NZ",
+        intensity_specs={"c": _spec(["CO2"], ["Act"])},
+        require_positive_through=2050,
+    )["c"]
+    assert max(out) == 2050 and out[2050] == 0.0  # truncated at the last positive year, held flat
+
+    # within-horizon case: negative at 2050 → raise.
+    early = pd.DataFrame(
+        {
+            "model": ["M"] * 4,
+            "scenario": ["NZ"] * 4,
+            "region": ["World"] * 4,
+            "variable": ["CO2", "CO2", "Act", "Act"],
+            "year": [2025, 2050, 2025, 2050],
+            "value": [100.0, -20.0, 100.0, 100.0],
+        }
+    )
+    with pytest.raises(ValueError, match="non-positive from year"):
+        extract_ngfs_emissions(
+            early,
+            model="M",
+            scenario="NZ",
+            intensity_specs={"c": _spec(["CO2"], ["Act"])},
+            require_positive_through=2050,
+        )
+
+
+def test_ngfs_missing_component_raises_and_bad_activity():
+    """review-10 P2#5: a configured component absent from the export RAISES (no silent skip). A
+    zero/non-finite activity endpoint also raises."""
     df = pd.DataFrame(
         {
             "model": ["M"] * 4,
             "scenario": ["NZ"] * 4,
             "region": ["World"] * 4,
-            "variable": ["Emissions|CO2", "Emissions|CO2", "Final Energy", "Final Energy"],
+            "variable": ["CO2", "CO2", "Act", "Act"],
             "year": [2025, 2040, 2025, 2040],
             "value": [100.0, 50.0, 100.0, 100.0],
         }
@@ -212,34 +248,42 @@ def test_ngfs_missing_bundle_component_raises(monkeypatch):
             df,
             model="M",
             scenario="NZ",
-            intensity_specs={
-                "__all__": _spec("Emissions|CO2", ["Final Energy"]),
-                "BRD": _spec(["MISSING_CO2"], ["Final Energy"]),  # component absent → raise
-            },
+            intensity_specs={"c": _spec(["MISSING"], ["Act"])},
+            require_positive_through=2040,
+        )
+    zero_a = df.copy()
+    zero_a.loc[(zero_a["variable"] == "Act") & (zero_a["year"] == 2040), "value"] = 0.0
+    with pytest.raises(ValueError, match="non-positive"):
+        extract_ngfs_emissions(
+            zero_a,
+            model="M",
+            scenario="NZ",
+            intensity_specs={"c": _spec(["CO2"], ["Act"])},
+            require_positive_through=2040,
         )
 
 
-def test_ngfs_rejects_negative_emissions_and_bad_activity():
-    """A multiplicative intensity SCALE cannot represent net-negative emissions or a zero/non-finite
-    activity endpoint — the engine forbids non-positive scales. Each case raises before
-    exponentiation, naming the offending year."""
-    base = {
-        "model": ["M"] * 4,
-        "scenario": ["NZ"] * 4,
-        "region": ["World"] * 4,
-        "variable": ["Emissions|CO2", "Emissions|CO2", "Final Energy", "Final Energy"],
-        "year": [2025, 2050, 2025, 2050],
-    }
-    spec = {"__all__": _spec("Emissions|CO2", ["Final Energy"])}
-    neg = pd.DataFrame({**base, "value": [100.0, -20.0, 100.0, 100.0]})  # CO2 net-negative by 2050
-    with pytest.raises(ValueError, match="intensity .* is non-positive"):
-        extract_ngfs_emissions(neg, model="M", scenario="NZ", intensity_specs=spec)
-    zero_a = pd.DataFrame({**base, "value": [100.0, 50.0, 100.0, 0.0]})  # activity → 0
-    with pytest.raises(ValueError, match="non-positive"):
-        extract_ngfs_emissions(zero_a, model="M", scenario="NZ", intensity_specs=spec)
-    inf_a = pd.DataFrame({**base, "value": [100.0, 50.0, 100.0, float("inf")]})
-    with pytest.raises(ValueError, match="non-finite"):
-        extract_ngfs_emissions(inf_a, model="M", scenario="NZ", intensity_specs=spec)
+def test_ngfs_sum_rejects_incompatible_units():
+    """review-11 P3: summing components with different units is silent nonsense — _sum raises."""
+    df = pd.DataFrame(
+        {
+            "model": ["M"] * 4,
+            "scenario": ["NZ"] * 4,
+            "region": ["World"] * 4,
+            "variable": ["A", "A", "B", "B"],
+            "Unit": ["Mt", "Mt", "Gt", "Gt"],  # A in Mt, B in Gt → cannot sum
+            "year": [2025, 2040, 2025, 2040],
+            "value": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    with pytest.raises(ValueError, match="incompatible units"):
+        extract_ngfs_emissions(
+            df,
+            model="M",
+            scenario="NZ",
+            intensity_specs={"c": {"co2": ["A", "B"], "activity": ["A"]}},
+            require_positive_through=2040,
+        )
 
 
 def test_ngfs_excludes_wrong_region_rows_from_the_intensity():
@@ -267,6 +311,7 @@ def test_ngfs_excludes_wrong_region_rows_from_the_intensity():
         scenario="NZ",
         region="World",
         intensity_specs={"__all__": _spec("Emissions|CO2", ["Final Energy"])},
+        require_positive_through=2040,
     )["__all__"]
     assert out[2025] == pytest.approx(
         round((0.50 / 1.0) ** (1 / 15) - 1, 4)
@@ -385,6 +430,7 @@ def test_normalise_ngfs_melts_iamc_wide_format():
         model="M",
         scenario="NZ",
         intensity_specs={"__all__": _spec("Emissions|CO2", ["Final Energy"])},
+        require_positive_through=2040,
     )
     assert out["__all__"][2025] == pytest.approx(round((60 / 100) ** (1 / 15) - 1, 4))
 
@@ -456,8 +502,9 @@ def test_ngfs_intensity_over_final_energy_nets_out_output_share():
         model="REMIND-MAgPIE 3.3-4.8",
         scenario="Below 2°C",
         intensity_specs={"__all__": _spec("Emissions|CO2", ["Final Energy"])},
+        require_positive_through=2040,
     )
-    # E/FE = 0.5 over 15y (GDP irrelevant); NOT E/GDP which would be 0.25.
+    # E/activity = 0.5 over 15y (GDP irrelevant); NOT E/GDP which would be 0.25.
     assert out["__all__"][2025] == pytest.approx(round((0.5) ** (1 / 15) - 1, 4))
     assert out["__all__"][2025] < 0  # decarbonisation
 

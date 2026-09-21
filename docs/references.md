@@ -101,9 +101,11 @@ concordance (see `data/structural/NOTICE.md` for licences and the reproducibilit
 - **[WorldBankIncome]** World Bank country and lending groups (income classification, FY2025). —
   The country → N/S archetype rule underpinning `concordance_v2.json`.
 - **[NGFS_B2C]** NGFS Phase 5 scenario explorer (see [NGFS]), model *REMIND-MAgPIE 3.3-4.8*,
-  scenario *Below 2°C*, region World. — The per-archetype emissions-INTENSITY decline path
-  (`emissions_intensity`), derived as sector CO₂ / sector Final Energy (review-10 P1; not CO₂/GDP,
-  which double-counts the output-share change the CGE determines endogenously).
+  scenario *Below 2°C*, region World. — The per-CHANNEL emissions-intensity decline path
+  (`emissions_intensity`, review-11 P1): each channel's CO₂ over the activity that drives it
+  (electricity → generation, industry → final energy, process → physical production, transport/
+  buildings → final energy). LOW confidence — the FE/output efficiency term is not sourceable per
+  sector from NGFS, so these are combustion/energy-emissions intensities, not full CO₂/output.
 
 ## Energy prices & pass-through
 

@@ -23,7 +23,7 @@ are handled automatically (`normalise_*` in the extractor), so you do **not** ne
 | **UN WPP 2024** (population growth) | <https://population.un.org/wpp/downloads> → **"Total Population - Both Sexes"** CSV, **Medium** variant | `wpp2024_population.csv` (raw `ISO3_code`/`Time`/`PopTotal`/`Variant` is fine) | CC BY 3.0 IGO |
 | **ILOSTAT** (labour-force participation) | <https://ilostat.ilo.org/data/> → indicator **`EAP_DWAP_SEX_AGE_RT`** (LFPR) bulk CSV, or the ILOSTAT bulk-download portal | `ilostat_lfpr.csv` (raw `ref_area`/`time`/`obs_value`/`sex`/`classif1` is fine) | CC BY 4.0 |
 | **EU KLEMS & INTANProd 2024** (sector MFP + per-hour LP + labour share) | <https://euklems-intanprod-llee.luiss.it/> → "Growth Accounts" release (registration/data agreement may apply) | `euklems_2023_growth_accounts.xlsx` — the supplied file is the **multi-sheet workbook** (one sheet per variable: `LP1ConTFP`/`LP1_G`/`LAB`/`VA_CP`), Austria only | CC BY 4.0 |
-| **NGFS Phase 5** (emissions intensity, incl. per-sector) | Easiest: `pip install pyam-iamc` then `python scripts/fetch_ngfs_sectoral.py` (pulls economy-wide + sectoral CO₂ + GDP for the pinned tuple). Or manually from <https://data.ece.iiasa.ac.at/ngfs/> → **model `REMIND-MAgPIE 3.3-4.8`**, **scenario `Below 2°C`**, region `World`, the `Emissions|CO2*` sector variables + `GDP|PPP|Counterfactual without damage` → Download CSV | `ngfs_phase5.csv` (IAMC long OR wide/year-columns both accepted) | see NGFS terms |
+| **NGFS Phase 5** (per-channel emissions intensity) | Easiest: `pip install pyam-iamc` then `python scripts/fetch_ngfs_sectoral.py` (pulls each channel's CO₂ numerator + activity denominator for the pinned tuple). Or manually from <https://data.ece.iiasa.ac.at/ngfs/> → **model `REMIND-MAgPIE 3.3-4.8`**, **scenario `Below 2°C`**, region `World`, the CO₂ series (`Emissions\|CO2\|Energy\|Supply\|Electricity`, `\|Energy\|Demand\|Industry`, `\|Industrial Processes`, `\|Energy\|Demand\|Transportation`, `\|Energy\|Demand\|Residential and Commercial`, plus `\|Energy`) **AND their activity denominators** (`Secondary Energy\|Electricity`, `Final Energy` + `\|Industry`/`\|Transportation`/`\|Residential and Commercial`, `Production\|Steel`, `Production\|Cement`) → Download CSV | `ngfs_phase5.csv` (IAMC long OR wide/year-columns both accepted) | see NGFS terms |
 
 **Notes / caveats worth knowing before you download:**
 - **PWT** is a clean drop-in (native `Data` sheet, `countrycode`/`year`/`rtfpna`).
@@ -39,14 +39,20 @@ are handled automatically (`normalise_*` in the extractor), so you do **not** ne
   **Austria only** (the sole geography present) — a single-country proxy for the archetypes, flagged
   as a breadth limitation in `docs/structural-data-pipeline-plan.md`. (The legacy long-format
   `normalise_euklems` path is kept for tidy exports but does not identify MFP.)
-- **NGFS** — selection is an **explicit validated tuple** in `_rebuild_digest` (`_NGFS`): model
-  `REMIND-MAgPIE 3.3-4.8`, scenario `Below 2°C`, region `World`, intensity **derived** as
-  `Emissions|CO2 / GDP|PPP|Counterfactual without damage`. Model/scenario are matched after stripping
-  the `(version: n)` suffix and the `°`→`?` mangling but must resolve to exactly one published value
-  (it **raises** on none/ambiguous); the CO2 and GDP variables must be present as single series. To
-  use a different scenario, edit the `_NGFS` constant. The **per-sector split** (BRD/MIL) needs the
-  sectoral `Emissions|CO2|*` variables — `scripts/fetch_ngfs_sectoral.py` fetches exactly the set the
-  extractor bundles; an economy-wide-only file still works (`__all__` only, sectors skipped).
+- **NGFS** — selection is an **explicit validated tuple** in `_NGFS`: model `REMIND-MAgPIE 3.3-4.8`,
+  scenario `Below 2°C`, region `World`. Emissions intensity is built **per channel** (review-11 P1),
+  each CO₂ over the activity that drives it: electricity = `CO2|Supply|Electricity / Secondary
+  Energy|Electricity` (generation), industry = `CO2|Demand|Industry / FE|Industry` (combustion),
+  process = `CO2|Industrial Processes / (Production|Steel + |Cement)`, transport / buildings over
+  their final energy, `__all__` = (Energy + Industrial Processes) CO₂ / total Final Energy. This is
+  **not CO₂/GDP** (double-counts the CGE-endogenous output-share change) and **not** one bundle over
+  final energy (which mis-mapped electricity + divided process emissions by energy). Model/scenario
+  are matched after stripping the `(version: n)` suffix and `°`→`?` mangling but must resolve to
+  exactly one published value (raises on none/ambiguous); **every configured CO₂ and activity
+  variable is MANDATORY** — a missing one **raises** (no silent degrade to economy-wide). KNOWN GAP:
+  the FE/output (autonomous energy efficiency) term is not sourceable per sector from NGFS and the
+  Leontief CGE does not reproduce it — the drivers are combustion/energy-emissions intensities, not
+  full CO₂/output, hence **LOW confidence**. To change scenario/mapping, edit `_NGFS`.
 
 After the files are in place, `python scripts/extract_structural_sources.py` rebuilds
 `../inputs.json`; then `python scripts/build_structural_trajectories.py` regenerates

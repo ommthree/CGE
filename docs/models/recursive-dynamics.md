@@ -354,7 +354,7 @@ reported. The hot path is the per-year static CGE solve; the wrapper itself is c
 | aggregate TFP path | sourced per region | [FeenstraPWT] |
 | sector MFP $g_{MFP}$ (the driver) | sourced per sector (`LP1ConTFP`, direct) | [EUKLEMS2024] |
 | sector labour productivity $g_{Y/L}$ | sourced per sector (`LP1_G`, context) | [EUKLEMS2024] |
-| emissions-intensity path | NGFS Below 2°C, CO₂/Final-Energy (per sector) | [NGFS_B2C], [NGFS] |
+| emissions-intensity path | NGFS Below 2°C, per-channel CO₂/activity (LOW conf; AEEI omitted) | [NGFS_B2C], [NGFS] |
 | region/sector concordance | per-driver, time-varying weights (v3) | [WorldBankIncome] |
 
 The vendored trajectory (`data/structural/trajectories_v1.json`) and concordance

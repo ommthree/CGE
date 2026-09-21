@@ -42,21 +42,26 @@ _MANIFEST = _SOURCES / "raw_manifest.json"
 _DIGEST = _SOURCES / "inputs.json"
 
 # EXPLICIT NGFS selection tuple (review P1/P2 2026-09-09; intensity spec reworked review-10 P1
-# 2026-09-14): scenario choice is a visible, validated configuration. The supplied export is
-# REMIND-MAgPIE 3.3-4.8 / "Below 2°C" (a CHOICE recorded here; the docs match it).
+# 2026-09-14; PER-CHANNEL review-11 P1 2026-09-19). scenario choice is a visible, validated config:
+# REMIND-MAgPIE 3.3-4.8 / "Below 2°C" (recorded here; the docs match it).
 #
-# Each archetype's emissions INTENSITY = Σ(co2 components) / Σ(activity components) — CO2 per unit
-# of the sector's PHYSICAL FINAL ENERGY, NOT CO2/GDP. review-10 P1: E_s/GDP conflates the sector's
-# energy-emissions intensity (fuel switching — genuinely exogenous) with FE/GDP (energy per unit
-# output — which the CGE determines endogenously), so feeding E_s/GDP as a per-sector intensity
-# shock double-counts structural change. E_s/FinalEnergy_s isolates the exogenous term.
-#   __all__ : (Energy + Industrial Processes) CO2 / total Final Energy
-#   BRD     : (Industry demand + Industrial Processes) CO2 / Final Energy|Industry       (goods)
-#   MIL     : (Transport + Res/Comm) CO2 / (Final Energy|Transport + Res/Comm)           (services)
-# Energy Supply (power/refining) is upstream — it serves every end use, so it sits in __all__, not a
-# single bundle. AFOLU is EXCLUDED everywhere (land use, net-negative — cannot be a multiplicative
-# scale, out of scope for this gross-production driver). GDP + total CO2 stay for reference only.
-# To change the scenario/mapping, edit this tuple; extract_ngfs_emissions VALIDATES each series.
+# Each CHANNEL's emissions INTENSITY = Σ(co2 components) / Σ(activity components), with the activity
+# matched to what actually drives that channel's emissions (review-11 P1 — not one BRD/MIL bundle
+# over final energy, which mis-mapped electricity to industry combustion and divided PROCESS
+# emissions by energy):
+#   electricity : CO2|Supply|Electricity / Secondary Energy|Electricity   (generation intensity)
+#   industry    : CO2|Demand|Industry    / Final Energy|Industry           (fuel combustion)
+#   process     : CO2|Industrial Processes / (Production|Steel + |Cement)  (physical output driven)
+#   transport   : CO2|Demand|Transportation / Final Energy|Transportation
+#   buildings   : CO2|Demand|Residential and Commercial / FE|Res+Comm
+#   __all__     : (Energy + Industrial Processes) CO2 / total Final Energy (fallback)
+# The concordance maps each model sector to its channel (concordance sector_emissions_channel), so
+# electricity gets the generation-intensity path, not industry combustion. KNOWN GAP: the
+# energy-per-output term FE/output (autonomous energy efficiency) is NOT sourceable per sector from
+# NGFS (no sector output/VA) and the default Leontief CGE does not reproduce it — these are
+# combustion/energy-emissions intensities, NOT full CO2/output; confidence LOW. AFOLU excluded (land
+# use, net-negative). Electricity intensity goes net-negative ~2090 (grid w/ net CCS) → the
+# extractor holds the last positive knot flat. GDP + total CO2 stay for reference only.
 _NGFS = {
     "model": "REMIND-MAgPIE 3.3-4.8",
     "scenario": "Below 2°C",
@@ -67,16 +72,25 @@ _NGFS = {
             "co2": ["Emissions|CO2|Energy", "Emissions|CO2|Industrial Processes"],
             "activity": ["Final Energy"],
         },
-        "BRD": {
-            "co2": ["Emissions|CO2|Energy|Demand|Industry", "Emissions|CO2|Industrial Processes"],
+        "electricity": {
+            "co2": ["Emissions|CO2|Energy|Supply|Electricity"],
+            "activity": ["Secondary Energy|Electricity"],
+        },
+        "industry": {
+            "co2": ["Emissions|CO2|Energy|Demand|Industry"],
             "activity": ["Final Energy|Industry"],
         },
-        "MIL": {
-            "co2": [
-                "Emissions|CO2|Energy|Demand|Transportation",
-                "Emissions|CO2|Energy|Demand|Residential and Commercial",
-            ],
-            "activity": ["Final Energy|Transportation", "Final Energy|Residential and Commercial"],
+        "process": {
+            "co2": ["Emissions|CO2|Industrial Processes"],
+            "activity": ["Production|Steel", "Production|Cement"],
+        },
+        "transport": {
+            "co2": ["Emissions|CO2|Energy|Demand|Transportation"],
+            "activity": ["Final Energy|Transportation"],
+        },
+        "buildings": {
+            "co2": ["Emissions|CO2|Energy|Demand|Residential and Commercial"],
+            "activity": ["Final Energy|Residential and Commercial"],
         },
     },
 }
@@ -568,6 +582,7 @@ def extract_ngfs_emissions(
     region: str = "World",
     intensity_specs: dict[str, dict[str, list[str]]],
     start_year: int = 2025,
+    require_positive_through: int = 2050,
 ) -> dict[str, dict[int, float]]:
     """Per-archetype emissions-INTENSITY decarbonisation from an NGFS scenario-explorer export
     (columns ``model``, ``scenario``, ``region``, ``variable``, ``year``, ``value``).
@@ -577,25 +592,29 @@ def extract_ngfs_emissions(
     EXACTLY ONE value each (raises on none/ambiguous); ``region`` must equal ``region``; every
     referenced variable must be present as a single series. No averaging across regions/units.
 
-    ``intensity_specs`` maps ``{archetype: {"co2": [vars], "activity": [vars]}}``. Each archetype's
-    intensity is ``Σ(co2 components) / Σ(activity components)`` per year — CO2 per unit of the
-    archetype's PHYSICAL FINAL ENERGY (review-10 P1 2026-09-14). This is the CGE-consistent bridge:
-    the old CO2/GDP conflated the sector's energy-emissions intensity (fuel switching — genuinely
-    exogenous) with energy-per-output (FE/GDP — which the CGE determines endogenously), so applying
-    CO2/GDP as a per-sector intensity SHOCK double-counted structural change. E/FE isolates the
-    exogenous fuel-switching term. All archetypes (incl. ``__all__``) use the SAME gross-production
-    boundary — energy + industrial-process CO2 over final energy; AFOLU/removals are OUT of scope
-    for this multiplicative driver (land use, net-negative — cannot be a positive scale).
+    ``intensity_specs`` maps ``{channel: {"co2": [vars], "activity": [vars]}}``. Each channel's
+    intensity is ``Σ(co2 components) / Σ(activity components)`` per year, with the activity matched
+    to what drives that channel (review-11 P1 2026-09-19): electricity → generation, industry
+    combustion → final energy, process → physical production, transport/buildings → their final
+    energy. This is CO2 per unit of the channel's PHYSICAL activity, NOT CO2/GDP (which
+    double-counts the output-share change the CGE determines endogenously) and NOT one bundle over
+    final energy (which mis-mapped electricity + divided process emissions by energy). KNOWN GAP:
+    the FE/output (autonomous energy efficiency) term is not sourceable per sector from NGFS and the
+    default Leontief CGE does not reproduce it, so these are combustion/energy-emissions
+    intensities, NOT the full CO2/output the engine multiplier nominally represents — the caller
+    keeps confidence LOW. AFOLU/removals are OUT of scope (net-negative — not a multiplicative).
 
-    ALL configured components are MANDATORY (review-10 P2#5): a missing co2/activity variable
-    RAISES, so a future NGFS refresh cannot silently drop a sector and degrade to economy-wide while
-    CI stays green. Endpoints are validated finite with positive activity and positive intensity
-    BEFORE the ratio/exponentiation (review P1 2026-09-15) — a zero/net-negative endpoint raises.
+    ALL configured components are MANDATORY (review-10 P2#5): a missing co2/activity variable errs.
+    Endpoints validated finite with positive activity (review P1 2026-09-15). A channel whose
+    intensity turns non-positive BEFORE ``require_positive_through`` (default 2050, the client
+    horizon) RAISES — that is the net-negative-emissions case needing a gross-intensity + removals
+    split. If it turns non-positive only in the far tail (e.g. electricity ~2090 with net-CCS grids,
+    where intensity is already ~0), the path is TRUNCATED at the last positive year and held flat.
 
-    A knot is emitted at **every source year ≥ ``start_year``**, each the CAGR to the NEXT source
-    year (last held flat), so the piecewise-constant path reproduces the source intensity at every
-    year. Returns ``{archetype: {year: rate}}`` (negative = decarbonisation). Accepts the IAMC WIDE
-    (year-columns) export via :func:`normalise_ngfs`."""
+    A knot is emitted at **every positive source year ≥ ``start_year``**, each the CAGR to the NEXT,
+    so the piecewise-constant path reproduces the source intensity at every source year. Returns
+    ``{channel: {year: rate}}`` (negative = decarbonisation). Accepts the IAMC WIDE export via
+    :func:`normalise_ngfs`."""
     data = normalise_ngfs(data)
 
     def _norm(x: str) -> str:
@@ -643,7 +662,21 @@ def extract_ngfs_emissions(
             raise ValueError(f"NGFS variable {var!r} changes units across years ({units}).")
         return v.groupby("year")["value"].first().sort_index()
 
+    def _unit_of(var: str) -> str | None:
+        if unit_col is None:
+            return None
+        u = sub[sub["variable"] == var][unit_col].dropna().unique()
+        return str(u[0]) if len(u) else None
+
     def _sum(vars_: list[str]) -> pd.Series:
+        # All components must share ONE unit before summing (review-11 P3): summing e.g. a Mt series
+        # with a Gt series (or Final Energy in EJ with one in PJ) is numerically silent nonsense.
+        units = {_unit_of(v) for v in vars_}
+        units.discard(None)
+        if len(units) > 1:
+            raise ValueError(
+                f"NGFS components {vars_} have incompatible units {sorted(units)} — cannot sum."
+            )
         # Sum components on the intersection of years they share (reduce over real series — an
         # empty-index start would align to nothing and yield all-NaN).
         comps = [_series(v) for v in vars_]
@@ -668,22 +701,38 @@ def extract_ngfs_emissions(
                 f"NGFS {archetype} activity is non-positive at year(s) {sorted(nonpos_a.index)}."
             )
         s = (co2[common] / act[common]).sort_index()
-        nonpos_i = s[s <= 0]
-        if len(nonpos_i):
-            # net-negative CO2 (e.g. Net Zero after ~2050) can't be a multiplicative scale.
-            raise ValueError(
-                f"NGFS emissions intensity ({archetype}) is non-positive at year(s) "
-                f"{sorted(nonpos_i.index)} (net-negative emissions cannot be a multiplicative "
-                f"intensity scale; use a gross-intensity + removals split for that scenario)."
-            )
         yrs = [y for y in s.index if y >= start_year]
+        # The consecutive run of positive-intensity years from the start.
+        positive_yrs: list[int] = []
+        for y in yrs:
+            if s[y] <= 0:
+                break
+            positive_yrs.append(y)
+        last_pos = positive_yrs[-1] if positive_yrs else (start_year - 1)
+        if last_pos < require_positive_through:
+            # The intensity turns non-positive within the client horizon → a multiplicative scale
+            # genuinely cannot represent it (this is the Net-Zero-style net-negative-emissions case
+            # that needs a gross-intensity + removals split, review P1). Fail loudly.
+            raise ValueError(
+                f"NGFS emissions intensity ({archetype}) is non-positive from year "
+                f"{last_pos + 1} — before require_positive_through={require_positive_through}. A "
+                f"net-negative-emissions path cannot be a multiplicative intensity scale; it needs "
+                f"a gross-intensity + removals split."
+            )
+        # Beyond the client horizon, TRUNCATE at the last positive year and hold flat (review-11):
+        # some channels turn net-negative only in the far tail (e.g. electricity ~2090 with net-CCS
+        # grids), where the intensity is already ~0 (essentially fully decarbonised), so holding the
+        # last positive knot flat is a negligible, honest approximation — better than dropping the
+        # whole channel or emitting a non-positive scale the engine rejects.
         path: dict[int, float] = {}
-        for i, y in enumerate(yrs):
-            if i + 1 < len(yrs):
-                y_end = yrs[i + 1]
+        for i, y in enumerate(positive_yrs):
+            if i + 1 < len(positive_yrs):
+                y_end = positive_yrs[i + 1]
                 path[y] = round((s[y_end] / s[y]) ** (1.0 / (y_end - y)) - 1.0, 4)
             else:
-                path[y] = 0.0  # final source year holds flat (no further source information)
+                path[y] = (
+                    0.0  # last positive year holds flat (source turns non-positive after / ends)
+                )
         return path
 
     out: dict[str, dict[int, float]] = {}
@@ -866,17 +915,22 @@ def _rebuild_digest_impl() -> tuple[dict, list[str]]:
         rates = extract_ngfs_emissions(pd.read_csv(ngfs), **ngfs_kwargs)
         ngfs_src = (
             f"NGFS Phase 5 scenario explorer: model {_NGFS['model']}, scenario "
-            f"{_NGFS['scenario']}, region {_NGFS['region']}; per-archetype emissions INTENSITY = "
-            "Σ(sector CO2) / Σ(sector Final Energy) — CO2 per unit of the sector's physical final "
-            "energy (review-10 P1: NOT CO2/GDP, which double-counts the output-share change the "
-            "CGE determines endogenously; E/FE isolates fuel switching). __all__ = (Energy + "
-            "Industrial Processes) CO2 / total Final Energy; BRD = Industry (+ processes) / "
-            "FE|Industry; MIL = Transport + Res/Comm / their FE. Energy Supply sits in __all__ "
-            "(upstream); AFOLU excluded (gross-production boundary). A knot at every source year "
-            "(from 2025), each the CAGR to the next, reproducing the source intensity at every "
-            "source year (last held flat). https://data.ece.iiasa.ac.at/ngfs/"
+            f"{_NGFS['scenario']}, region {_NGFS['region']}; PER-CHANNEL emissions intensity "
+            "(review-11 P1), each CO2 over the activity that drives it: electricity = "
+            "CO2|Supply|Electricity / Secondary Energy|Electricity (generation); industry = "
+            "CO2|Demand|Industry / FE|Industry (combustion); process = CO2|Industrial Processes / "
+            "(Production|Steel + |Cement); transport = CO2|Demand|Transportation / "
+            "FE|Transportation; buildings = CO2|Demand|Res+Comm / FE|Res+Comm; __all__ = (Energy + "
+            "Industrial Processes) CO2 / total Final Energy. The concordance maps each model "
+            "sector to its channel so electricity gets the generation path, not industry "
+            "combustion. KNOWN GAP: FE/output (autonomous energy efficiency) is NOT sourceable per "
+            "sector from NGFS (no sector output/VA) and the Leontief CGE does not reproduce it — "
+            "these are combustion/energy-emissions intensities, NOT full CO2/output (hence LOW "
+            "confidence). AFOLU excluded; a knot at every positive source year, CAGR to the next, "
+            "last held flat (electricity truncates at its last positive year ~2080). "
+            "https://data.ece.iiasa.ac.at/ngfs/"
         )
-        _apply_sector(digest, "emissions_intensity", dict(rates), ngfs_src)
+        _apply_sector(digest, "emissions_intensity", dict(rates), ngfs_src, confidence="low")
     else:
         missing.append("ngfs_phase5.csv (emissions intensity)")
 
