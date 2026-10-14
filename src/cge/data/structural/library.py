@@ -173,22 +173,33 @@ def load_structural_concordance(
 
     if traj.sector_rates:
         referenced_sec = {a for a in raw["sector_archetype"].values() if a != "__all__"}
-        # The emissions_intensity driver is mapped by sector_emissions_channel (review-11 P1), whose
-        # channel targets (electricity/industry/process/transport/buildings) are a DIFFERENT vocab
-        # from BRD/MIL — validate them against the emissions driver specifically so a channel typo
-        # can't silently fall through to __all__.
-        channels = {a for a in raw.get("sector_emissions_channel", {}).values() if a != "__all__"}
+        # emissions_intensity is mapped by sector_emissions_channel {sector: {channel: weight}}
+        # (review-11 P1; blend review-12 P1#2), a DIFFERENT vocab from BRD/MIL.
+        sec_chan = raw.get("sector_emissions_channel", {})
+        channels: set[str] = set()
+        for blend in sec_chan.values():
+            channels |= {c for c in blend if c != "__all__"}
         emis = traj.sector_rates.get("emissions_intensity")
         if channels and emis is not None:
-            # A named channel target must be an EXPLICIT key in the emissions trajectory — NOT
-            # resolved via __all__ (that would be the silent fall-through a typo causes). So we do
-            # NOT exempt the check when __all__ is present.
+            # A named channel must be an EXPLICIT key in the emissions trajectory — NOT resolved via
+            # __all__ (the silent fall-through a typo causes). So __all__ does NOT exempt the check.
             unknown_ch = channels - (set(emis) - {"__all__"})
             if unknown_ch:
                 raise ValueError(
-                    f"sector_emissions_channel target(s) {sorted(unknown_ch)} are not among the "
+                    f"sector_emissions_channel channel(s) {sorted(unknown_ch)} are not among the "
                     f"emissions_intensity trajectory channels {sorted(emis)} — a typo or a channel "
                     "the trajectory does not carry."
+                )
+            # COMPLETE COVERAGE (review-12 P2#4): every sector in sector_archetype must have a
+            # sector_emissions_channel entry, so a missing entry cannot silently fall back to the
+            # global __all__ rate. (For the deliberate uniform fallback, map the sector explicitly
+            # to {"__all__": 1.0}.)
+            uncovered = set(raw["sector_archetype"]) - set(sec_chan)
+            if uncovered:
+                raise ValueError(
+                    f"sector_emissions_channel is missing sector(s) {sorted(uncovered)} present in "
+                    "sector_archetype — every mapped sector needs an explicit channel blend (use "
+                    '{"__all__": 1.0} for the deliberate economy-wide fallback).'
                 )
         # For the BRD/MIL sector_archetype axis, only the NON-emissions sector drivers must resolve
         # them (the emissions driver uses the channel vocab, resolving BRD/MIL via its __all__).
@@ -490,20 +501,46 @@ def structural_trajectories_for_build(
             new["__all__"] = dict(by_arch["__all__"])
         new_rates[driver] = new
 
-    # Sector axis: each sector inherits its archetype path. The map is DRIVER-AWARE (review-11 P1):
-    # emissions_intensity uses ``sector_emissions_channel`` (electricity→electricity generation,
-    # transport→transport, industry-like→industry+process, services/buildings→buildings) so
-    # electricity no longer inherits the industry combustion path, while mfp/sector_productivity
-    # keep using the goods/services ``sector_archetype``. A concordance without
+    # Sector axis: DRIVER-AWARE mapping (review-11 P1; review-12 P1#2 channel BLEND).
+    # emissions_intensity uses ``sector_emissions_channel`` {sector: {channel: weight}} — a weighted
+    # BLEND of NGFS channels, because a sector's emissions are mixed-source (e.g. metals = process +
+    # combustion). So electricity → generation, metals → process+industry, coal/oil_gas →
+    # energy_supply, agriculture → economy-wide (its energy CO2; AFOLU excluded). mfp/
+    # sector_productivity keep the single goods/services ``sector_archetype``. A concordance without
     # ``sector_emissions_channel`` falls back to ``sector_archetype`` (back-compat).
-    emissions_channel: dict[str, str] = conc.get("sector_emissions_channel", sector_arch)
+    emissions_channel: dict = conc.get("sector_emissions_channel", sector_arch)
+
+    def _rate_at(path: dict, year: int) -> float:
+        applicable = [y for y in sorted(path) if y <= year]
+        return float(path[applicable[-1] if applicable else min(path)])
+
+    def _blend_channels(by_arch: dict, weights: dict[str, float]) -> dict | None:
+        # Weighted blend of the channels' rate paths over the union of their knot years. Channels
+        # absent from the trajectory are dropped and the weights renormalised (a proper convex
+        # combination); None if none are present (caller falls back to __all__).
+        present = {c: w for c, w in weights.items() if by_arch.get(c)}
+        tot = sum(present.values())
+        if tot <= 0:
+            return None
+        knots: set[int] = set()
+        for c in present:
+            knots |= set(by_arch[c])
+        return {
+            int(y): sum((w / tot) * _rate_at(by_arch[c], y) for c, w in present.items())
+            for y in sorted(knots)
+        }
+
     new_sector_rates: dict = {}
     for driver, by_arch in archetype.sector_rates.items():
-        smap = emissions_channel if driver == "emissions_intensity" else sector_arch
+        is_emis = driver == "emissions_intensity"
+        smap = emissions_channel if is_emis else sector_arch
         new = {}
         for s in sectors:
-            arch = smap.get(s)
-            path = by_arch.get(arch) if arch else None
+            spec = smap.get(s)
+            if is_emis and isinstance(spec, dict):
+                path = _blend_channels(by_arch, spec)
+            else:
+                path = by_arch.get(spec) if spec else None
             if path is None:
                 path = by_arch.get("__all__")
             if path is not None:
@@ -558,10 +595,30 @@ def structural_trajectories_for_build(
             order = {"low": 0, "medium": 1, "high": 2}
             if cfs:
                 confidence[f"{driver}:{k}"] = min(cfs, key=lambda c: order.get(c, 1))
+    order = {"low": 0, "medium": 1, "high": 2}
+    emis_channels = set(archetype.sector_rates.get("emissions_intensity", {}))
     for driver, by_key in new_sector_rates.items():
-        smap = emissions_channel if driver == "emissions_intensity" else sector_arch
+        is_emis = driver == "emissions_intensity"
+        smap = emissions_channel if is_emis else sector_arch
         for k in by_key:
-            arch = smap.get(k, "__all__")
+            spec = smap.get(k, "__all__")
+            if is_emis and isinstance(spec, dict):
+                # Blended emissions channel: cite each contributing channel with its weight; take
+                # the LOWEST (most conservative) confidence across them.
+                chans = {c: w for c, w in spec.items() if c in emis_channels} or spec
+                parts = []
+                cfs = []
+                for c in sorted(chans):
+                    s = _arch_src(driver, c)
+                    parts.append(f"{c} ({chans[c]:.2f}): {s}" if s else f"{c} ({chans[c]:.2f})")
+                    cf = _arch_cf(driver, c)
+                    if cf is not None:
+                        cfs.append(cf)
+                sources[f"{driver}:{k}"] = f"channel-blended [{conc_ver}] — " + "; ".join(parts)
+                if cfs:
+                    confidence[f"{driver}:{k}"] = min(cfs, key=lambda c: order.get(c, 1))
+                continue
+            arch = spec if isinstance(spec, str) else "__all__"
             src = archetype.sources.get(f"{driver}:{arch}") or archetype.sources.get(
                 f"{driver}:__all__"
             )

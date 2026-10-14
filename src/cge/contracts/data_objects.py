@@ -450,7 +450,9 @@ class ConcordanceMap(_DataObject):
 # participation, labour productivity. PER-SECTOR drivers: sectoral productivity drift (structural
 # change — sector-biased TFP shifts the output mix endogenously) and emissions intensity (per-sector
 # decarbonisation of the carbon-cost intensity).
-StructuralDriver = Literal["population", "labour_participation", "productivity"]
+StructuralDriver = Literal[
+    "population", "working_age_population", "labour_participation", "productivity"
+]
 StructuralSectorDriver = Literal[
     "sector_productivity",
     "emissions_intensity",
@@ -538,7 +540,12 @@ class StructuralTrajectory(_DataObject):
     # ``mfp`` series is present it is used directly. Empty ⇒ no source-side identification.
     source_labour_shares: dict[str, float] = Field(default_factory=dict)
 
-    _REGION_DRIVERS: ClassVar[set[str]] = {"population", "labour_participation", "productivity"}
+    _REGION_DRIVERS: ClassVar[set[str]] = {
+        "population",
+        "working_age_population",
+        "labour_participation",
+        "productivity",
+    }
     _SECTOR_DRIVERS: ClassVar[set[str]] = {
         "sector_productivity",
         "emissions_intensity",

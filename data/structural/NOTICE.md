@@ -1,17 +1,23 @@
 # Structural trajectories — sources & licences
 
 `trajectories_v1.json` holds **documented, sourced annual growth trajectories** for the Phase 7b.2
-structural drivers: per-region **population**, **labour-force participation** and **labour
-productivity**, plus per-sector **sectoral productivity** and **emissions intensity**. Each
-`(driver, key)` path carries its own citation and confidence in the artifact itself; this file
-records the underlying sources and their licences. The figures are **headline trend rates** taken
-from the published sources below — a compact, review-friendly artifact, not a re-distribution of the
-full source databases. **These are illustrative research-scaffold inputs, not an engagement-grade
-consulting baseline** — see `docs/structural-data-pipeline-plan.md` for the reproducible-extraction,
-source-share-identification, per-driver-weighting, scenario-pinning and uncertainty work that
-consulting use requires, and the interim conservative posture until it lands. The shipped `N`/`S` region and `BRD`/`MIL` sector keys are development/
-composition **archetypes**. On a real EXIOBASE build, the provenance-carrying concordance
-`concordance_v3.json` (the default — per-driver, time-varying weights; see below) binds each real coarse-v3 build label to its archetype, and
+structural drivers: per-region **population** (total + 15+), **labour-force participation** and
+**labour productivity**, plus per-sector **sectoral productivity** and per-channel **emissions
+intensity**. Each `(driver, key)` path carries its own citation and confidence in the artifact
+itself; this file records the underlying sources and their licences. The values are the **output of a
+committed, --check-gated extraction pipeline** (`scripts/extract_structural_sources.py` →
+`build_structural_trajectories.py`) over the real published sources below — a compact,
+review-friendly artifact, not a redistribution of the full databases. The pipeline is now built
+(reproducible extraction, source-share MFP identification, per-driver/time-varying concordance
+weights, pinned NGFS scenario with per-channel intensities, deterministic sensitivity cases); the
+**remaining honest gaps** — EU KLEMS single-country breadth, the NGFS AEEI (FE/output) term, gas-
+indexed emissions paths, per-region satellite-weighted channel blends, and quantified (probabilistic)
+uncertainty — are tracked in `docs/structural-data-pipeline-plan.md`, so this is a strong research/
+scenario scaffold approaching but not yet a fully engagement-grade consulting baseline. The shipped
+`N`/`S` region and `BRD`/`MIL` sector keys are development/composition **archetypes**. On a real
+EXIOBASE build, the provenance-carrying concordance `concordance_v3.json` (the default — per-driver,
+time-varying weights + per-sector emissions-channel blends; see below) binds each real coarse-v3
+build label to its archetype, and
 `cge.data.structural.structural_trajectories_for_build(regions, sectors)` emits a trajectory keyed by
 the build's OWN labels — so a real build has genuine country differentiation and sectoral composition
 drift, not every label collapsing to the global `__all__` default. An unmapped build label fails
@@ -49,21 +55,16 @@ honestly come from an income rule — v2 keeps **country-level** archetypes and 
 ### Aggregation-weighting limitations (review P1 2026-08-31 — documented, not yet resolved)
 
 The GDP-weighted blend is a **documented simplification**, not an internally consistent aggregation.
-Three limitations to state plainly (they bound how much a real-build regional trajectory should be
-trusted; resolving them is a follow-up that needs per-driver weight data this artifact does not yet
-vendor):
+Limitations 1 and 2 below were **RESOLVED by concordance v3** (review-9 1c) and are kept only to
+record the history; limitation 3 still stands:
 
-1. **One weight table for every region driver.** The single `block_membership` GDP-share table is
-   applied to *all three* per-region drivers — population, labour-force participation and
-   productivity. That is not the internally consistent choice: population growth should be aggregated
-   from population levels (or population weights), labour-force growth from working-age/labour-force
-   levels, and productivity growth from output/value-added (or Divisia) weights. Using GDP shares for
-   all three is a transparent common-proxy approximation, defensible only because the whole artifact
-   is illustrative. Per-driver weight tables are the documented follow-up.
-2. **Static weights over a long horizon.** The GDP shares are a single reference-year snapshot held
-   fixed across the whole scenario (e.g. to 2050). As economies grow at different rates the true
-   shares drift, so a fixed 2025 weight progressively misweights later years. A time-varying weight
-   (or re-derived shares per decade) is the follow-up.
+1. **~~One weight table for every region driver.~~ RESOLVED (v3).** v3's `block_weights` +
+   `driver_weight_class` blend each driver with its OWN class: population (and 15+ working-age
+   population) by UN WPP population shares, productivity by PWT output shares; participation still
+   uses the static GDP weights as an explicit, declared proxy (no per-country labour-force series).
+2. **~~Static weights over a long horizon.~~ RESOLVED (v3).** The population weights are YEAR-INDEXED
+   (per-knot 2025/2035/2050 WPP shares), so a block's blend genuinely drifts over the horizon; output
+   weights are held at PWT-2019.
 3. **Residual `W*` blocks are coarse.** EXIOBASE's five rest-of-world aggregates (`WA`, `WL`, `WE`,
    `WF`, `WM`) are opaque multi-country regions with no within-block country detail, so each is
    assigned a single archetype. In particular **`RoW_MiddleEast` (`WM`) is 100% `S`** even though the

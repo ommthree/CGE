@@ -55,13 +55,15 @@ _DIGEST = _SOURCES / "inputs.json"
 #   transport   : CO2|Demand|Transportation / Final Energy|Transportation
 #   buildings   : CO2|Demand|Residential and Commercial / FE|Res+Comm
 #   __all__     : (Energy + Industrial Processes) CO2 / total Final Energy (fallback)
-# The concordance maps each model sector to its channel (concordance sector_emissions_channel), so
-# electricity gets the generation-intensity path, not industry combustion. KNOWN GAP: the
-# energy-per-output term FE/output (autonomous energy efficiency) is NOT sourceable per sector from
-# NGFS (no sector output/VA) and the default Leontief CGE does not reproduce it — these are
-# combustion/energy-emissions intensities, NOT full CO2/output; confidence LOW. AFOLU excluded (land
-# use, net-negative). Electricity intensity goes net-negative ~2090 (grid w/ net CCS) → the
-# extractor holds the last positive knot flat. GDP + total CO2 stay for reference only.
+# The concordance (sector_emissions_channel) BLENDS these channels per model sector (review-12 —
+# emissions are mixed-source: metals = process+industry, coal/oil_gas = energy_supply, agriculture =
+# economy-wide), so electricity gets the generation path, not industry combustion. KNOWN GAPS: (a)
+# the FE/output autonomous-energy-efficiency term is NOT sourceable per sector from NGFS (no sector
+# output/VA) and the Leontief CGE does not reproduce it — these are combustion/energy-emissions
+# intensities, NOT full CO2/output; confidence LOW. (b) CO2-only; a non-CO2 CarbonPrice is rejected
+# by the wrapper (gas-indexed paths = future). AFOLU excluded (land use, net-negative). Electricity
+# intensity goes net-negative ~2090 (grid w/ net CCS) → the extractor holds the last positive knot
+# flat. GDP + total CO2 stay for reference only.
 _NGFS = {
     "model": "REMIND-MAgPIE 3.3-4.8",
     "scenario": "Below 2°C",
@@ -75,6 +77,14 @@ _NGFS = {
         "electricity": {
             "co2": ["Emissions|CO2|Energy|Supply|Electricity"],
             "activity": ["Secondary Energy|Electricity"],
+        },
+        # Non-electricity energy supply (refining, fugitive, extraction) over total final energy —
+        # the channel coal/oil_gas extraction sectors blend in (review-12 P1#2). co2 is the Energy|
+        # Supply total NET of the electricity component, expressed as a (minuend, subtrahend) pair.
+        "energy_supply": {
+            "co2": ["Emissions|CO2|Energy|Supply"],
+            "co2_subtract": ["Emissions|CO2|Energy|Supply|Electricity"],
+            "activity": ["Final Energy"],
         },
         "industry": {
             "co2": ["Emissions|CO2|Energy|Demand|Industry"],
@@ -669,14 +679,24 @@ def extract_ngfs_emissions(
         return str(u[0]) if len(u) else None
 
     def _sum(vars_: list[str]) -> pd.Series:
-        # All components must share ONE unit before summing (review-11 P3): summing e.g. a Mt series
-        # with a Gt series (or Final Energy in EJ with one in PJ) is numerically silent nonsense.
-        units = {_unit_of(v) for v in vars_}
-        units.discard(None)
-        if len(units) > 1:
-            raise ValueError(
-                f"NGFS components {vars_} have incompatible units {sorted(units)} — cannot sum."
-            )
+        # All components must share ONE non-empty unit before summing (review-11 P3; tightened
+        # review-12 P3#7): summing Mt with Gt (or EJ with PJ) is silent nonsense. If a
+        # unit column exists, EVERY component must have exactly one non-empty unit and they must all
+        # agree — a mix of a labelled and an UNLABELLED component is rejected too (it was previously
+        # allowed because the None was discarded).
+        if unit_col is not None and len(vars_) > 1:
+            units = [_unit_of(v) for v in vars_]
+            missing = [v for v, u in zip(vars_, units, strict=True) if not u]
+            if missing:
+                raise ValueError(
+                    f"NGFS components {missing} have no unit label — cannot verify summation "
+                    f"compatibility against {vars_}."
+                )
+            if len(set(units)) > 1:
+                raise ValueError(
+                    f"NGFS components {vars_} have incompatible units {sorted(set(units))} — "
+                    "cannot sum."
+                )
         # Sum components on the intersection of years they share (reduce over real series — an
         # empty-index start would align to nothing and yield all-NaN).
         comps = [_series(v) for v in vars_]
@@ -692,6 +712,10 @@ def extract_ngfs_emissions(
 
     def _intensity_path(archetype: str, spec: dict[str, list[str]]) -> dict[int, float]:
         co2, act = _sum(spec["co2"]), _sum(spec["activity"])
+        if spec.get("co2_subtract"):
+            # CO2 = Σ(co2) − Σ(co2_subtract), e.g. non-electricity supply = Supply − Supply|Elec.
+            sub = _sum(spec["co2_subtract"])
+            co2 = (co2 - sub).dropna()
         common = co2.index.intersection(act.index)
         _check_finite(f"{archetype} CO2", co2[common])
         _check_finite(f"{archetype} activity", act[common])
@@ -712,10 +736,13 @@ def extract_ngfs_emissions(
         if last_pos < require_positive_through:
             # The intensity turns non-positive within the client horizon → a multiplicative scale
             # genuinely cannot represent it (this is the Net-Zero-style net-negative-emissions case
-            # that needs a gross-intensity + removals split, review P1). Fail loudly.
+            # that needs a gross-intensity + removals split, review P1). Fail loudly, naming the
+            # ACTUAL first non-positive SOURCE year (review-12 P3#7 — not last_pos+1, which need not
+            # be a source year when the series is sparse).
+            first_nonpos = next((y for y in yrs if s[y] <= 0), None)
             raise ValueError(
                 f"NGFS emissions intensity ({archetype}) is non-positive from year "
-                f"{last_pos + 1} — before require_positive_through={require_positive_through}. A "
+                f"{first_nonpos} — before require_positive_through={require_positive_through}. A "
                 f"net-negative-emissions path cannot be a multiplicative intensity scale; it needs "
                 f"a gross-intensity + removals split."
             )
@@ -857,6 +884,25 @@ def _rebuild_digest_impl() -> tuple[dict, list[str]]:
     else:
         missing.append("wpp2024_population.csv (population)")
 
+    # Working-age (15+) population (review-12 P1#3): labour identity = 15+ population × 15+ LFPR,
+    # so the labour driver should use 15+ population, not total. Built from the WPP by-age file when
+    # present (fetch_wpp_by_age.py); absent → the wrapper falls back to total population with an
+    # explicit documented caveat (the 15+ data is auth-gated, see raw/README.md).
+    wpp_wa = _RAW / "wpp2024_working_age.csv"
+    if wpp_wa.exists():
+        wa_rates = extract_wpp_population(pd.read_csv(wpp_wa, low_memory=False), cmap)
+        wa_src = (
+            "UN WPP 2024 Data Portal, indicator 70 (population by broad age group), Medium "
+            "variant, both sexes, summed over the 15+ bands per country; knots 2025/2035/2050 as "
+            "interval "
+            "CAGRs (final: one-year). The 15+ denominator matches ILOSTAT's 15+ LFPR, so labour "
+            "supply = 15+ population × 15+ LFPR without a constant-age-share assumption. "
+            "https://population.un.org/dataportal/"
+        )
+        _apply_region(digest, "working_age_population", wa_rates, source=wa_src)
+    else:
+        missing.append("wpp2024_working_age.csv (15+ population — labour uses total-pop fallback)")
+
     ilo = _RAW / "ilostat_lfpr.csv"
     if ilo.exists():
         rates = extract_ilo_participation(pd.read_csv(ilo), cmap)
@@ -920,10 +966,12 @@ def _rebuild_digest_impl() -> tuple[dict, list[str]]:
             "CO2|Supply|Electricity / Secondary Energy|Electricity (generation); industry = "
             "CO2|Demand|Industry / FE|Industry (combustion); process = CO2|Industrial Processes / "
             "(Production|Steel + |Cement); transport = CO2|Demand|Transportation / "
-            "FE|Transportation; buildings = CO2|Demand|Res+Comm / FE|Res+Comm; __all__ = (Energy + "
-            "Industrial Processes) CO2 / total Final Energy. The concordance maps each model "
-            "sector to its channel so electricity gets the generation path, not industry "
-            "combustion. KNOWN GAP: FE/output (autonomous energy efficiency) is NOT sourceable per "
+            "FE|Transportation; buildings = CO2|Demand|Res+Comm / FE|Res+Comm; energy_supply = "
+            "(Energy|Supply − Electricity) / FE; __all__ = (Energy + Industrial Processes) CO2 / "
+            "total Final Energy. The concordance BLENDS these channels per model sector (metals = "
+            "process+industry, coal/oil_gas = energy_supply, agriculture = economy-wide) so "
+            "electricity gets the generation path, not industry combustion. KNOWN GAP: FE/output "
+            "(autonomous energy efficiency) is NOT sourceable per "
             "sector from NGFS (no sector output/VA) and the Leontief CGE does not reproduce it — "
             "these are combustion/energy-emissions intensities, NOT full CO2/output (hence LOW "
             "confidence). AFOLU excluded; a knot at every positive source year, CAGR to the next, "

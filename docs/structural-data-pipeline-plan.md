@@ -1,10 +1,13 @@
 # Plan — consulting-grade structural-data pipeline (Phase 7b.2 readiness)
 
-**Status: as of review-10 (2026-09-14), steps 1a/1b/1c/1d/1e are all DONE — the digest is EXTRACTED
-FROM REAL DATA (PWT / WPP / ILOSTAT / EU KLEMS / NGFS), with per-driver/time-varying concordance
-weights (1c, `concordance_v3.json`), a per-sector NGFS emissions-INTENSITY split over Final Energy
-(1d), and adverse/central/favourable deterministic sensitivity cases (1e). The one remaining data
-item is breadth: EU KLEMS is a single supplied country (Austria). This document scopes the work that
+**Status: as of review-12 (2026-10-14), steps 1a/1b/1c/1d/1e are built — the digest is EXTRACTED
+FROM REAL DATA (PWT / WPP total+15+ / ILOSTAT / EU KLEMS / NGFS), with per-driver/time-varying
+concordance weights (1c, `concordance_v3.json`), PER-CHANNEL NGFS emissions intensities blended per
+sector (1d), and adverse/central/favourable deterministic sensitivity cases (1e). The labour identity
+uses 15+ population when the WPP by-age file is present. Remaining honest gaps (NOT yet
+engagement-grade): EU KLEMS single-country breadth; the NGFS AEEI (FE/output) term + gas-indexed
+emissions paths + per-region satellite-weighted channel blends (all sign-posted below); and
+quantified (probabilistic) uncertainty. This document scopes the work that
 moved** the Phase 7b.2 structural trajectories from an *illustrative research scaffold* toward an
 *engagement-grade baseline* fit for climate-risk consulting. It is the response to the standing
 **P1-readiness** finding raised across reviews 4–6: the shipped `data/structural/trajectories_v1.json`
@@ -149,35 +152,43 @@ provenance + a `--check` gate; `_validate_v3_block_weights` enforces each table 
 countries; the mapped trajectory's provenance stamps the per-driver/time-varying basis; the review-6
 per-driver coverage validation still guards against silent cross-driver divergence.
 
-### 1d. Pinned emissions-intensity scenario
-**SCENARIO PINNED 2026-09-09 (review-8); PATH FIDELITY FIXED 2026-09-15 (review-9); per-sector split
-still open.** The extraction pins an **explicit validated tuple** (`_NGFS` in
-`scripts/extract_structural_sources.py`): NGFS Phase 5, model `REMIND-MAgPIE 3.3-4.8`, scenario
-`Below 2°C`, region `World`, intensity **derived** as `Emissions|CO2 / GDP|PPP|Counterfactual without
-damage`. A knot is emitted at every source year (each the CAGR to the next), so the piecewise path
-reproduces the source intensity at every source year — the earlier sparse 2025/2040 pair annualised
-the 2040→2100 tail and held that gentle average from 2040, overstating 2050 intensity ~30% (review-9
-P1). Endpoints are validated finite/positive before exponentiation (a net-negative-emissions scenario
-raises rather than emitting a negative/NaN scale). Selection resolves the scenario/model to exactly
-one published value (raises on none/ambiguous) and requires the CO₂/GDP series each as a single
-series — no silent cross-region/variable averaging.
-**PER-CHANNEL INTENSITY (review-9 1d; reworked to CO₂/activity review-10 P1; per-channel review-11
-P1).** `scripts/fetch_ngfs_sectoral.py` (pyam, offline one-off) vendors, per NGFS channel, a CO₂
-numerator + the activity that drives it; `extract_ngfs_emissions(intensity_specs=…)` emits an
-intensity = Σ(CO₂)/Σ(activity) per channel: electricity = CO₂|Supply|Electricity / Secondary
-Energy|Electricity (generation), industry = CO₂|Demand|Industry / FE|Industry (combustion), process =
-CO₂|Industrial Processes / (Production|Steel + |Cement), transport/buildings over their FE, `__all__`
-= (Energy + Industrial Processes) CO₂ / total FE. The concordance's `sector_emissions_channel` maps
-each model sector to its channel, so **electricity gets the generation path, not industry combustion**
-and metals/minerals get the process path. Every configured variable is mandatory (missing → raise).
-The electricity channel turns net-negative ~2090 (net-CCS grid) → truncated at its last positive year;
-a channel non-positive within the client horizon (before 2050) raises (Net-Zero removals case).
+### 1d. Pinned emissions-intensity scenario — per-channel, blended per sector
+**SCENARIO PINNED (review-8); PATH FIDELITY (review-9); CO₂/activity (review-10); PER-CHANNEL + BLEND
+(review-11/12).** The extraction pins an explicit validated tuple (`_NGFS`): NGFS Phase 5, model
+`REMIND-MAgPIE 3.3-4.8`, scenario `Below 2°C`, region `World`. A knot is emitted at every source year
+(each the CAGR to the next); endpoints validated finite/positive; the electricity channel's
+net-negative ~2090 tail is truncated at its last positive year, and a channel non-positive within the
+client horizon (before 2050) raises (the Net-Zero removals case).
 
-**KNOWN GAP (1d-AEEI, documented not fabricated):** the FE/output autonomous-energy-efficiency term is
-NOT sourceable per sector from NGFS (no sector output/value-added published) and the default Leontief
-CGE does not reproduce it, so the drivers are combustion/energy-emissions intensities, NOT the full
-CO₂/output the engine multiplier nominally represents — they omit efficiency and understate
-decarbonisation; confidence LOW. Closing it needs a sector-output source + an engine AEEI channel.
+**Per-channel intensity.** `scripts/fetch_ngfs_sectoral.py` (pyam, offline) vendors, per channel, a
+CO₂ numerator + the activity that drives it; `extract_ngfs_emissions(intensity_specs=…)` emits
+Σ(CO₂)/Σ(activity) per channel: electricity = CO₂|Supply|Electricity / Secondary Energy|Electricity,
+industry = CO₂|Demand|Industry / FE|Industry, process = CO₂|Industrial Processes / (Steel + Cement),
+energy_supply = (Energy|Supply − Electricity) / FE, transport/buildings over their FE, `__all__` =
+(Energy + Industrial Processes) CO₂ / total FE. Every configured variable is mandatory (missing →
+raise).
+
+**Per-sector channel BLEND (review-12 P1#2).** The concordance's `sector_emissions_channel` maps each
+model sector to a WEIGHTED BLEND of channels (not one), because emissions are mixed-source:
+electricity → {electricity}, metals → {process 0.6, industry 0.4}, minerals → {process 0.7, industry
+0.3}, chemicals → {industry 0.7, process 0.3}, coal/oil_gas → {energy_supply}, agriculture →
+{`__all__`} (its energy CO₂; AFOLU excluded), services/buildings → {buildings}. The loader blends the
+channel paths by these weights; the mapping must cover every sector (no silent `__all__` fallthrough,
+review-12 P2#4). The weights are documented fixed values; a **per-region satellite-weighted blend**
+(reading the build's combustion/process/supply satellite split) is a sign-posted future refinement.
+
+**KNOWN GAPS (documented, not fabricated):**
+- **1d-AEEI:** the FE/output autonomous-energy-efficiency term is NOT sourceable per sector from NGFS
+  (no sector output/VA) and the Leontief CGE does not reproduce it — the drivers are combustion/
+  energy-emissions intensities, NOT the full CO₂/output the engine multiplier nominally represents;
+  confidence LOW. Closing it needs a sector-output source + an engine AEEI channel.
+- **1d-gas:** the paths are CO₂-only (NGFS CO₂ series). A non-CO₂/CO₂e `CarbonPrice` combined with the
+  structural emissions trajectory is REJECTED (review-12 P1#1) rather than silently scaled with the
+  CO₂ path. Gas-indexed structural paths (NGFS does publish CH₄/N₂O per sector) applied pre-aggregation
+  per gas are the full fix — sign-posted; needs the engine to apply gas×component scales before
+  aggregating the carbon cost share.
+- **region uniformity:** the source path is World, duplicated across model regions; per-region paths
+  are a follow-up.
 
 **Acceptance:** manifest names the full scenario tuple; a reader can re-pull each channel's series
 (the fetch script); per-channel paths are emitted, validated, and routed by the concordance. AEEI

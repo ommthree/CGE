@@ -1,12 +1,12 @@
 {
   "provenance": {
-    "source": "Structural-trajectory region concordance v3: country-level development archetypes (World Bank income classification, FY2025) aggregated to EXIOBASE coarse-v3 blocks with PER-DRIVER, TIME-VARYING block_weights — population shares (UN WPP 2024, per knot) and output shares (PWT 10.01 rgdpo 2019). The static v2 IMF-2024 GDP weights survive ONLY as the participation proxy and the back-compat block_membership.",
-    "source_version": "structural-concordance-v3",
+    "source": "Structural-trajectory region concordance v4: country-level development archetypes (World Bank income classification, FY2025) aggregated to EXIOBASE coarse-v3 blocks with PER-DRIVER, TIME-VARYING block_weights — population shares (UN WPP 2024, per knot) and output shares (PWT 10.01 rgdpo 2019); plus a PER-SECTOR EMISSIONS-CHANNEL BLEND map (sector_emissions_channel). The static v2 IMF-2024 GDP weights survive ONLY as the participation proxy and the back-compat block_membership.",
+    "source_version": "structural-concordance-v4",
     "licence": "derived mapping (CC BY 4.0); World Bank income classification (CC BY 4.0), IMF WEO (public, cited not redistributed)",
     "reference_year": 2024,
     "world_bank_vintage": "FY2025 (July 2024 release; Russia = high-income in this vintage)",
-    "retrieved": "2026-09-14",
-    "notes": "v3 (review-9 1c; provenance corrected review-10 P2#6 2026-09-14). block_weights is a REPRODUCIBLE extraction (scripts/build_concordance_v3.py, --check-gated): population weights = UN WPP 2024 per-country population at each knot (2025/2035/2050 — genuinely year-varying, NOT static); output weights = PWT 10.01 rgdpo (2019, held flat). driver_weight_class maps population→population, productivity→output, labour_participation→block_membership (the static v2 GDP weights — an explicit, declared proxy, as no per-country labour-force series is available). The EXIOBASE rest-of-region aggregates (W*) have no single ISO3 and keep their v2 residual share, with named members renormalised around it. block_membership is retained for back-compat and as the declared participation fallback."
+    "retrieved": "2026-10-14",
+    "notes": "v4 (review-12: adds the per-sector emissions-channel BLEND + working_age_population class; v3 review-9 1c added per-driver/time-varying block_weights). block_weights is a REPRODUCIBLE extraction (scripts/build_concordance_v3.py, --check-gated): population weights = UN WPP 2024 per-country population at each knot (2025/2035/2050 — genuinely year-varying, NOT static); output weights = PWT 10.01 rgdpo (2019, held flat). driver_weight_class maps population + working_age_population → population, productivity → output, labour_participation → block_membership (static v2 GDP weights, an explicit declared proxy — no per-country labour-force series). sector_emissions_channel blends each model sector over NGFS channels (metals/minerals = process+industry, coal/oil_gas = energy_supply, agriculture = economy-wide) — a documented fixed blend; a per-region satellite-weighted blend is a future refinement. The EXIOBASE rest-of-region aggregates (W*) have no single ISO3 and keep their v2 residual share, with named members renormalised around it."
   },
   "country_archetype": {
     "US": "N",
@@ -158,21 +158,55 @@
     "other": "MIL"
   },
   "sector_emissions_channel": {
-    "electricity": "electricity",
-    "transport": "transport",
-    "metals": "process",
-    "minerals": "process",
-    "manufacturing": "industry",
-    "chemicals": "industry",
-    "construction": "industry",
-    "mining": "industry",
-    "agriculture": "industry",
-    "energy_coal": "industry",
-    "energy_oil_gas": "industry",
-    "trade": "buildings",
-    "services": "buildings",
-    "water_waste": "buildings",
-    "other": "buildings"
+    "electricity": {
+      "electricity": 1.0
+    },
+    "transport": {
+      "transport": 1.0
+    },
+    "metals": {
+      "process": 0.6,
+      "industry": 0.4
+    },
+    "minerals": {
+      "process": 0.7,
+      "industry": 0.3
+    },
+    "chemicals": {
+      "industry": 0.7,
+      "process": 0.3
+    },
+    "manufacturing": {
+      "industry": 1.0
+    },
+    "construction": {
+      "industry": 1.0
+    },
+    "mining": {
+      "industry": 0.5,
+      "energy_supply": 0.5
+    },
+    "energy_coal": {
+      "energy_supply": 1.0
+    },
+    "energy_oil_gas": {
+      "energy_supply": 1.0
+    },
+    "agriculture": {
+      "__all__": 1.0
+    },
+    "trade": {
+      "buildings": 1.0
+    },
+    "services": {
+      "buildings": 1.0
+    },
+    "water_waste": {
+      "buildings": 1.0
+    },
+    "other": {
+      "__all__": 1.0
+    }
   },
   "sources": {
     "country_archetype": "World Bank country and lending groups, FY2025 income classification (July 2024 release). High-income → N; low/lower-middle/upper-middle → S. https://datahelpdesk.worldbank.org/knowledgebase/articles/906519",
@@ -535,6 +569,7 @@
   },
   "driver_weight_class": {
     "population": "population",
+    "working_age_population": "population",
     "productivity": "output",
     "labour_participation": "block_membership"
   }

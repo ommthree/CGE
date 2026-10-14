@@ -19,10 +19,11 @@ that actually drives it (not one BRD/MIL bundle over final energy):
   process     : CO2|Industrial Processes / (Production|Steel + |Cement) (physical output driven)
   transport   : CO2|Demand|Transportation / Final Energy|Transportation
   buildings   : CO2|Demand|Residential and Commercial / FE|Res+Comm
+  energy_supply : (Energy|Supply − Electricity) / Final Energy (coal/oil_gas extraction + refining)
   __all__     : (Energy + Industrial Processes) CO2 / total Final Energy (fallback)
-The concordance maps each model sector to its channel (electricity→electricity, transport→transport,
-industry-like→industry+process, services/buildings→buildings), so electricity no longer inherits
-the industry combustion path. KNOWN GAP (documented, not fabricated): the energy-per-output term
+The concordance BLENDS these channels per model sector (review-12 P1#2 — metals = process+industry,
+coal/oil_gas = energy_supply, agriculture = economy-wide), so electricity no longer inherits the
+industry combustion path. KNOWN GAP (documented, not fabricated): the energy-per-output term
 FE/output (autonomous energy efficiency) is not sourceable per sector from NGFS (no sector output/VA
 published) and the default Leontief CGE does not reproduce it, so these drivers are combustion/
 energy-emissions intensities, NOT the full CO2/output the engine multiplier nominally represents —
@@ -67,6 +68,7 @@ VARIABLES = [
     # --- CO2 numerators per channel (energy + industrial-process; gross production; NO AFOLU) ---
     "Emissions|CO2|Energy",  # __all__ numerator (with Industrial Processes)
     "Emissions|CO2|Industrial Processes",  # process channel numerator
+    "Emissions|CO2|Energy|Supply",  # total energy supply (energy_supply = this − electricity)
     "Emissions|CO2|Energy|Supply|Electricity",  # electricity channel numerator
     "Emissions|CO2|Energy|Demand|Industry",  # industry-combustion numerator
     "Emissions|CO2|Energy|Demand|Transportation",  # transport numerator

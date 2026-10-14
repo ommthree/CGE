@@ -286,6 +286,54 @@ def test_ngfs_sum_rejects_incompatible_units():
         )
 
 
+def test_ngfs_sum_rejects_labelled_plus_unlabelled_unit():
+    """review-12 P3#7: a mix of a labelled (Mt) and an UNLABELLED component must also raise — the
+    missing unit can't be assumed compatible (was previously discarded and passed)."""
+    df = pd.DataFrame(
+        {
+            "model": ["M"] * 4,
+            "scenario": ["NZ"] * 4,
+            "region": ["World"] * 4,
+            "variable": ["A", "A", "B", "B"],
+            "Unit": ["Mt", "Mt", "", ""],  # B has no unit label
+            "year": [2025, 2040, 2025, 2040],
+            "value": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    with pytest.raises(ValueError, match="no unit label"):
+        extract_ngfs_emissions(
+            df,
+            model="M",
+            scenario="NZ",
+            intensity_specs={"c": {"co2": ["A", "B"], "activity": ["A"]}},
+            require_positive_through=2040,
+        )
+
+
+def test_ngfs_nonpositive_within_horizon_names_actual_source_year():
+    """review-12 P3#7: the 'non-positive' error names the ACTUAL first non-positive source year, not
+    last_pos+1 (which need not be a source year when the series is sparse). CO2 positive at 2025,
+    negative at the next SOURCE year 2040 → error must say 2040, not 2026."""
+    df = pd.DataFrame(
+        {
+            "model": ["M"] * 4,
+            "scenario": ["NZ"] * 4,
+            "region": ["World"] * 4,
+            "variable": ["CO2", "CO2", "Act", "Act"],
+            "year": [2025, 2040, 2025, 2040],
+            "value": [100.0, -10.0, 100.0, 100.0],
+        }
+    )
+    with pytest.raises(ValueError, match="non-positive from year 2040"):
+        extract_ngfs_emissions(
+            df,
+            model="M",
+            scenario="NZ",
+            intensity_specs={"c": _spec(["CO2"], ["Act"])},
+            require_positive_through=2050,
+        )
+
+
 def test_ngfs_excludes_wrong_region_rows_from_the_intensity():
     """A wrong-region row with a DIFFERENT value must not perturb the World intensity. World CO2
     100→50, activity flat; a Europe row with wildly different CO2 must be ignored."""

@@ -159,6 +159,7 @@ def _build() -> dict:
     # Map each region driver to a weight class; participation has no per-country basis → v2 proxy.
     v3["driver_weight_class"] = {
         "population": "population",
+        "working_age_population": "population",  # 15+ pop blends by population shares too
         "productivity": "output",
         "labour_participation": "block_membership",  # static v2 fallback (no labour-force weights)
     }
@@ -167,28 +168,32 @@ def _build() -> dict:
     # per-driver, time-varying, reproducibly-extracted v3 fields (review-10 P2#6).
     v3["provenance"] = {
         "source": (
-            "Structural-trajectory region concordance v3: country-level development archetypes "
+            "Structural-trajectory region concordance v4: country-level development archetypes "
             "(World Bank income classification, FY2025) aggregated to EXIOBASE coarse-v3 blocks "
             "with PER-DRIVER, TIME-VARYING block_weights — population shares (UN WPP 2024, per "
-            "knot) and output shares (PWT 10.01 rgdpo 2019). The static v2 IMF-2024 GDP weights "
-            "survive ONLY as the participation proxy and the back-compat block_membership."
+            "knot) and output shares (PWT 10.01 rgdpo 2019); plus a PER-SECTOR EMISSIONS-CHANNEL "
+            "BLEND map (sector_emissions_channel). The static v2 IMF-2024 GDP weights survive ONLY "
+            "as the participation proxy and the back-compat block_membership."
         ),
-        "source_version": "structural-concordance-v3",
+        "source_version": "structural-concordance-v4",
         "licence": v2["provenance"].get("licence", ""),
         "reference_year": v2["provenance"].get("reference_year", 2024),
         "world_bank_vintage": v2["provenance"].get("world_bank_vintage", ""),
-        "retrieved": "2026-09-14",
+        "retrieved": "2026-10-14",
         "notes": (
-            "v3 (review-9 1c; provenance corrected review-10 P2#6 2026-09-14). block_weights is a "
-            "REPRODUCIBLE extraction (scripts/build_concordance_v3.py, --check-gated): population "
-            "weights = UN WPP 2024 per-country population at each knot (2025/2035/2050 — genuinely "
-            "year-varying, NOT static); output weights = PWT 10.01 rgdpo (2019, held flat). "
-            "driver_weight_class maps population→population, productivity→output, "
-            "labour_participation→block_membership (the static v2 GDP weights — an explicit, "
-            "declared proxy, as no per-country labour-force series is available). The EXIOBASE "
-            "rest-of-region aggregates (W*) have no single ISO3 and keep their v2 residual share, "
-            "with named members renormalised around it. block_membership is retained for "
-            "back-compat and as the declared participation fallback."
+            "v4 (review-12: adds the per-sector emissions-channel BLEND + working_age_population "
+            "class; v3 review-9 1c added per-driver/time-varying block_weights). block_weights "
+            "is a REPRODUCIBLE extraction (scripts/build_concordance_v3.py, --check-gated): "
+            "population weights = UN WPP 2024 per-country population at each knot (2025/2035/2050 "
+            "— genuinely year-varying, NOT static); output weights = PWT 10.01 rgdpo (2019, held "
+            "flat). driver_weight_class maps population + working_age_population → population, "
+            "productivity → output, labour_participation → block_membership (static v2 GDP "
+            "weights, an explicit declared proxy — no per-country labour-force series). "
+            "sector_emissions_channel blends each model sector over NGFS channels (metals/minerals "
+            "= process+industry, coal/oil_gas = energy_supply, agriculture = economy-wide) — a "
+            "documented fixed blend; a per-region satellite-weighted blend is a future refinement. "
+            "The EXIOBASE rest-of-region aggregates (W*) have no single ISO3 and keep their v2 "
+            "residual share, with named members renormalised around it."
         ),
     }
     v3["sources"] = dict(v2["sources"])
