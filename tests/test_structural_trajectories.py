@@ -198,6 +198,81 @@ def test_emissions_intensity_routes_each_sector_to_its_ngfs_channel():
     assert e_elec < e_transport
 
 
+def test_emissions_intensity_blends_channels_by_concordance_weights(tmp_path):
+    """review-12 P1#2: a sector's emissions path is a WEIGHTED BLEND of channels (mixed sources),
+    not one channel. Synthetic: process=−0.02, industry=−0.06; metals={process:0.6, industry:0.4} →
+    0.6·−0.02 + 0.4·−0.06 = −0.036. Channels absent from the trajectory are dropped/renorm'd."""
+    import json
+
+    from cge.data.structural import (
+        load_structural_concordance,  # noqa: F401
+        structural_trajectories_for_build,
+    )
+
+    traj = tmp_path / "traj.json"
+    traj.write_text(
+        json.dumps(
+            {
+                "provenance": {
+                    "source": "t",
+                    "source_version": "t",
+                    "licence": "t",
+                    "reference_year": 2024,
+                    "retrieved": "2026-10-14",
+                },
+                "rates": {"productivity": {"__all__": {"2025": 0.0}}},
+                "sector_rates": {
+                    "emissions_intensity": {
+                        "process": {"2025": -0.02},
+                        "industry": {"2025": -0.06},
+                        "__all__": {"2025": -0.03},
+                    }
+                },
+                "sources": {
+                    "productivity:__all__": "x",
+                    "emissions_intensity:process": "x",
+                    "emissions_intensity:industry": "x",
+                    "emissions_intensity:__all__": "x",
+                },
+                "confidence": {
+                    "productivity:__all__": "low",
+                    "emissions_intensity:process": "low",
+                    "emissions_intensity:industry": "low",
+                    "emissions_intensity:__all__": "low",
+                },
+            }
+        )
+    )
+    conc = {
+        "provenance": {
+            "source": "c",
+            "source_version": "concordance-x",
+            "licence": "x",
+            "reference_year": 2024,
+            "retrieved": "2026-10-14",
+        },
+        "region_archetype": {"US": "__all__"},
+        "sector_archetype": {"metals": "__all__"},
+        "sector_emissions_channel": {"metals": {"process": 0.6, "industry": 0.4}},
+        "sources": {"x": "x"},
+    }
+    p = tmp_path / "conc.json"
+    p.write_text(json.dumps(conc))
+    t = structural_trajectories_for_build(
+        ["US"],
+        ["metals"],
+        trajectory_path=str(traj),
+        concordance_path=str(p),
+        require_full_coverage=False,
+    )
+    assert t.sector_rate("emissions_intensity", "metals", 2025) == pytest.approx(
+        0.6 * -0.02 + 0.4 * -0.06
+    )
+    # provenance names both channels with weights.
+    src = t.sources["emissions_intensity:metals"]
+    assert "channel-blended" in src and "process (0.60)" in src and "industry (0.40)" in src
+
+
 def test_concordance_rejects_unmapped_build_labels():
     """An unmapped build label must fail loudly (review P1c): otherwise every real label would
     silently take the global __all__ trajectory and the run would falsely claim country/sector
@@ -487,13 +562,26 @@ def test_concordance_rejects_unknown_emissions_channel(tmp_path):
         },
         "region_archetype": {"US": "__all__"},
         "sector_archetype": {"electricity": "__all__"},
-        "sector_emissions_channel": {"electricity": "ELECTRICTY_TYPO"},  # not a trajectory channel
+        # blend form {sector: {channel: weight}} with a typo'd channel → not a trajectory channel.
+        "sector_emissions_channel": {"electricity": {"ELECTRICTY_TYPO": 1.0}},
         "sources": {"x": "x"},
     }
     p = tmp_path / "conc.json"
     p.write_text(json.dumps(conc))
-    with pytest.raises(ValueError, match="sector_emissions_channel target"):
+    with pytest.raises(ValueError, match="sector_emissions_channel channel"):
         load_structural_concordance(str(p), trajectory=trajectory)
+
+    # review-12 P2#4: a sector present in sector_archetype but MISSING from sector_emissions_channel
+    # must raise (no silent __all__ fallback). Add a second sector with no channel entry.
+    conc2 = dict(conc)
+    conc2["sector_archetype"] = {"electricity": "__all__", "manufacturing": "__all__"}
+    conc2["sector_emissions_channel"] = {
+        "electricity": {"electricity": 1.0}
+    }  # manufacturing absent
+    p2 = tmp_path / "conc2.json"
+    p2.write_text(json.dumps(conc2))
+    with pytest.raises(ValueError, match="missing sector"):
+        load_structural_concordance(str(p2), trajectory=trajectory)
 
 
 def test_sensitivity_cases_adverse_central_favourable():
@@ -597,10 +685,10 @@ def test_concordance_v2_carries_composite_provenance():
 
     t = structural_trajectories_for_build(["US", "CN"], ["manufacturing", "services"])
     assert "concordance" in t.provenance.source.lower()
-    # concordance v3 (review-9 1c): per-driver/time-varying weights. trajectories v4 (review-10):
-    # NGFS emissions intensity = CO2/Final-Energy (was CO2/GDP), sensitivity cases relabelled.
-    assert "structural-concordance-v3" in t.provenance.source_version
-    assert "structural-trajectories-v4" in t.provenance.source_version
+    # concordance v4 (review-12): per-sector emissions-channel blend + working_age class.
+    # trajectories v5 (review-12): per-channel NGFS emissions intensities + 15+ labour population.
+    assert "structural-concordance-v4" in t.provenance.source_version
+    assert "structural-trajectories-v5" in t.provenance.source_version
 
 
 def test_mapped_trajectory_stamps_the_weighting_note():
@@ -800,6 +888,39 @@ def test_run_recursive_rejects_all_fallthrough_structural_run():
         data_source="toy_cge_gov",
     )
     assert path.result is not None
+
+
+def test_non_co2_carbon_price_rejected_with_co2_emissions_trajectory():
+    """review-12 P1#1: the structural emissions_intensity path is CO2-derived, so a CH4/CO2e
+    CarbonPrice combined with it must RAISE (not silently inherit the CO2 decarbonisation path). A
+    CO2-only price is fine; a trajectory WITHOUT an emissions driver imposes no restriction."""
+    from cge.contracts.shocks import CarbonPrice
+    from cge.dynamics import DynamicConfig, run_recursive
+    from cge.scenarios.loader import Scenario
+
+    emis = StructuralTrajectory(
+        provenance=Provenance(
+            source="t", source_version="v", licence="n", reference_year=2024, retrieved="2026-10-14"
+        ),
+        rates={"productivity": {"__all__": {2025: 0.0}}},
+        sector_rates={"emissions_intensity": {"__all__": {2025: -0.05}}},
+        sources={"productivity:__all__": "c", "emissions_intensity:__all__": "c"},
+        confidence={"productivity:__all__": "low", "emissions_intensity:__all__": "low"},
+    )
+    cfg = DynamicConfig(structural=emis, allow_uniform_fallback=True)
+    ch4 = Scenario(
+        name="x",
+        engine="cge_static",
+        years=[2025, 2030],
+        shocks=[CarbonPrice(price=50.0, gases=["CH4"])],
+    )
+    with pytest.raises(ValueError, match="CO2-only"):
+        run_recursive(ch4, config=cfg, data_source="toy_cge_gov")
+    # CO2-only price is accepted (reaches the solve).
+    co2 = Scenario(
+        name="x", engine="cge_static", years=[2025, 2030], shocks=[CarbonPrice(price=50.0)]
+    )
+    assert run_recursive(co2, config=cfg, data_source="toy_cge_gov").result is not None
 
 
 def test_final_manifest_preserves_concordance_hashes_and_weighting_caveat():

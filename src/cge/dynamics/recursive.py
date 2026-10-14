@@ -375,6 +375,24 @@ def run_recursive(
     # engine applies to whatever intensity it computed (supplied OR IO-derived).
     has_emissions = _has_emissions_traj(config)
 
+    # Guard (review-12 P1#1): the structural emissions_intensity trajectory is derived EXCLUSIVELY
+    # from NGFS CO2 series, but a CarbonPrice may select CH4 / CO2e / other gases. The engine then
+    # the single structural scale to whatever gas-aggregate intensity it built, so a non-CO2 run
+    # would silently inherit the CO2 decarbonisation path. Until gas-indexed structural paths exist,
+    # reject that combination loudly rather than mis-scale a different gas.
+    if has_emissions:
+        from cge.contracts.shocks import CarbonPrice
+
+        for s in scenario.shocks:
+            if isinstance(s, CarbonPrice) and set(s.gases) != {"CO2"}:
+                raise ValueError(
+                    "the structural emissions_intensity trajectory is CO2-only (derived from NGFS "
+                    f"CO2 series), but a CarbonPrice selects gases {s.gases}. Applying the CO2 "
+                    "decarbonisation path to a non-CO2 gas-aggregate would be silently wrong — use "
+                    "a CO2-only CarbonPrice, or drop the structural emissions trajectory. "
+                    "Gas-indexed structural paths are a documented follow-up (NOTICE.md)."
+                )
+
     emissions_reference: np.ndarray | None = None  # base-year covered emissions per region (7b.2)
     k_t = k0.copy()  # 1-D array, one entry per capital region
     for year in solve_years:
@@ -556,13 +574,22 @@ def _trend_scale(
         acc = 1.0
         for y in range(base_year, year):  # compound each annual step up to (not incl.) target year
             if kind == "labour":
-                # Labour-SUPPLY growth = population growth compounded WITH participation growth
-                # (both
-                # proportional annual rates): (1+pop)(1+part), the exact multiplicative step, NOT
-                # the
-                # additive pop+part approximation (review P2 2026-08-23). The two are proportional
-                # growth rates (fractions/yr), so this multiplies the whole labour-supply index.
-                step = (1.0 + traj.rate("population", region, y)) * (
+                # Labour-SUPPLY growth = working-age-population growth compounded WITH participation
+                # growth, both proportional annual rates: (1+pop)(1+part), the exact multiplicative
+                # step, NOT the additive approximation (review P2 2026-08-23).
+                #
+                # review-12 P1#3: the identity is labour force ≈ 15+ population × 15+ LFPR, and
+                # ILOSTAT's LFPR is on the 15+ denominator — so use the WORKING-AGE (15+) population
+                # driver when present. Fall back to TOTAL population only if the 15+ driver is
+                # absent (the 15+ WPP data is auth-gated; see fetch_wpp_by_age.py / NOTICE.md),
+                # which assumes a constant 15+ share — a documented approximation, not silent: the
+                # mapped trajectory's confidence for labour reflects it.
+                pop_driver = (
+                    "working_age_population"
+                    if traj.rates.get("working_age_population")
+                    else "population"
+                )
+                step = (1.0 + traj.rate(pop_driver, region, y)) * (
                     1.0 + traj.rate("labour_participation", region, y)
                 )
             else:

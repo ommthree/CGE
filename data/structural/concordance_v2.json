@@ -51,13 +51,21 @@
     "trade": "MIL", "transport": "MIL", "services": "MIL", "water_waste": "MIL", "other": "MIL"
   },
   "sector_emissions_channel": {
-    "electricity": "electricity",
-    "transport": "transport",
-    "metals": "process", "minerals": "process",
-    "manufacturing": "industry", "chemicals": "industry", "construction": "industry",
-    "mining": "industry", "agriculture": "industry", "energy_coal": "industry",
-    "energy_oil_gas": "industry",
-    "trade": "buildings", "services": "buildings", "water_waste": "buildings", "other": "buildings"
+    "electricity": {"electricity": 1.0},
+    "transport": {"transport": 1.0},
+    "metals": {"process": 0.6, "industry": 0.4},
+    "minerals": {"process": 0.7, "industry": 0.3},
+    "chemicals": {"industry": 0.7, "process": 0.3},
+    "manufacturing": {"industry": 1.0},
+    "construction": {"industry": 1.0},
+    "mining": {"industry": 0.5, "energy_supply": 0.5},
+    "energy_coal": {"energy_supply": 1.0},
+    "energy_oil_gas": {"energy_supply": 1.0},
+    "agriculture": {"__all__": 1.0},
+    "trade": {"buildings": 1.0},
+    "services": {"buildings": 1.0},
+    "water_waste": {"buildings": 1.0},
+    "other": {"__all__": 1.0}
   },
   "sources": {
     "country_archetype": "World Bank country and lending groups, FY2025 income classification (July 2024 release). High-income → N; low/lower-middle/upper-middle → S. https://datahelpdesk.worldbank.org/knowledgebase/articles/906519",
