@@ -1,9 +1,12 @@
 # Structural trajectories — sources & licences
 
 `trajectories_v1.json` holds **documented, sourced annual growth trajectories** for the Phase 7b.2
-structural drivers: per-region **population** (total + 15+), **labour-force participation** and
-**labour productivity**, plus per-sector **sectoral productivity** and per-channel **emissions
-intensity**. Each `(driver, key)` path carries its own citation and confidence in the artifact
+structural drivers: per-region **population** (total, plus a **15+ working-age** driver when the WPP
+by-age file is vendored — the labour identity is 15+ population × 15+ LFPR; the by-age `/data`
+endpoint is auth-gated, so absent it falls back to total population with an explicit caveat),
+**labour-force participation** and **labour productivity**, plus per-sector **sectoral productivity**
+and per-channel **emissions intensity** (blended per sector at the cumulative LEVEL, not an
+annual-rate average — review-13). Each `(driver, key)` path carries its own citation and confidence in the artifact
 itself; this file records the underlying sources and their licences. The values are the **output of a
 committed, --check-gated extraction pipeline** (`scripts/extract_structural_sources.py` →
 `build_structural_trajectories.py`) over the real published sources below — a compact,
@@ -171,9 +174,14 @@ shipped. The identity and CES/CD routing above still apply; only the source of t
   - **transport** / **buildings** = their CO₂ over their final energy
   - **`__all__`** = (Energy + Industrial Processes) CO₂ / total Final Energy (fallback)
 
-  The concordance (`sector_emissions_channel`) maps each model sector to its channel — so electricity
-  gets the generation-decarbonisation path, not industry combustion; metals/minerals get the process
-  path. Model/scenario/region are an **explicit validated tuple** (`_NGFS`), and **every configured
+  The concordance (`sector_emissions_channel`) maps each model sector to a **weighted BLEND** of these
+  channels (emissions are mixed-source: metals = process + combustion), so electricity gets the
+  generation-decarbonisation path, not industry combustion. The blend is taken **at the cumulative
+  LEVEL** — a sector's factor is `Fₛ(t) = Σ wₖ Fₖ(t)`, `Fₖ(t) = ∏_{τ<t}(1+rₖ,τ)` — because the
+  weights are baseline emission-source shares; a per-year average of the channel *rates* would
+  silently rebalance those shares every year (~5% level error on the shipped metals/chemicals paths,
+  review-13 P1#2). The weights must be a non-empty convex combination (validated — review-13 P2).
+  Model/scenario/region are an **explicit validated tuple** (`_NGFS`), and **every configured
   CO₂/activity variable is MANDATORY** (a missing one raises — no silent economy-wide degrade). A knot
   is emitted at every positive source year, each the CAGR to the next; the electricity channel turns
   net-negative ~2090 (grid with net CCS) so it is **truncated at its last positive year** and held

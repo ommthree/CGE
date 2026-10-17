@@ -678,25 +678,28 @@ def extract_ngfs_emissions(
         u = sub[sub["variable"] == var][unit_col].dropna().unique()
         return str(u[0]) if len(u) else None
 
+    def _assert_units_compatible(vars_: list[str]) -> None:
+        # EVERY component must have exactly one non-empty unit and they must agree (review-11 P3;
+        # tightened review-12 P3#7): summing/subtracting Mt with Gt (or EJ with PJ) is silent
+        # nonsense. A mix of a labelled and an UNLABELLED component is rejected too (it was
+        # previously allowed because the None was discarded).
+        if unit_col is None or len(vars_) <= 1:
+            return
+        units = [_unit_of(v) for v in vars_]
+        missing = [v for v, u in zip(vars_, units, strict=True) if not u]
+        if missing:
+            raise ValueError(
+                f"NGFS components {missing} have no unit label — cannot verify "
+                f"summation/subtraction compatibility against {vars_}."
+            )
+        if len(set(units)) > 1:
+            raise ValueError(
+                f"NGFS components {vars_} have incompatible units {sorted(set(units))} — "
+                "cannot combine."
+            )
+
     def _sum(vars_: list[str]) -> pd.Series:
-        # All components must share ONE non-empty unit before summing (review-11 P3; tightened
-        # review-12 P3#7): summing Mt with Gt (or EJ with PJ) is silent nonsense. If a
-        # unit column exists, EVERY component must have exactly one non-empty unit and they must all
-        # agree — a mix of a labelled and an UNLABELLED component is rejected too (it was previously
-        # allowed because the None was discarded).
-        if unit_col is not None and len(vars_) > 1:
-            units = [_unit_of(v) for v in vars_]
-            missing = [v for v, u in zip(vars_, units, strict=True) if not u]
-            if missing:
-                raise ValueError(
-                    f"NGFS components {missing} have no unit label — cannot verify summation "
-                    f"compatibility against {vars_}."
-                )
-            if len(set(units)) > 1:
-                raise ValueError(
-                    f"NGFS components {vars_} have incompatible units {sorted(set(units))} — "
-                    "cannot sum."
-                )
+        _assert_units_compatible(vars_)
         # Sum components on the intersection of years they share (reduce over real series — an
         # empty-index start would align to nothing and yield all-NaN).
         comps = [_series(v) for v in vars_]
@@ -714,6 +717,10 @@ def extract_ngfs_emissions(
         co2, act = _sum(spec["co2"]), _sum(spec["activity"])
         if spec.get("co2_subtract"):
             # CO2 = Σ(co2) − Σ(co2_subtract), e.g. non-electricity supply = Supply − Supply|Elec.
+            # review-13 P3#5: the MINUEND and SUBTRAHEND numerators must share units too (an
+            # internally-consistent co2 sum and co2_subtract sum can still differ from each other,
+            # e.g. Mt − Gt); validate the combined numerator-variable set before subtracting.
+            _assert_units_compatible(list(spec["co2"]) + list(spec["co2_subtract"]))
             sub = _sum(spec["co2_subtract"])
             co2 = (co2 - sub).dropna()
         common = co2.index.intersection(act.index)
@@ -982,6 +989,34 @@ def _rebuild_digest_impl() -> tuple[dict, list[str]]:
     else:
         missing.append("ngfs_phase5.csv (emissions intensity)")
 
+    # Stamp the top-level provenance from the GENERATOR (review-13 P3#6): the source/_README strings
+    # were hand-written and went stale (they claimed "total + 15+ population" though the 15+ driver
+    # is absent whenever the by-age file is missing). Derive the WPP phrase from what was actually
+    # built so it can never overstate the committed artifact.
+    has_wa = "working_age_population" in digest.get("region_drivers", {})
+    wpp_phrase = (
+        "UN WPP 2024 (total + 15+ population)"
+        if has_wa
+        else "UN WPP 2024 (total population; 15+ by-age file absent → labour uses total-pop)"
+    )
+    digest["provenance"]["source"] = (
+        f"PWT 10.01 (productivity) + {wpp_phrase} + ILOSTAT LFPR (participation) + EU KLEMS & "
+        "INTANProd 2024 release (sector MFP via LP1ConTFP, per-hour LP, labour share) + NGFS "
+        "Phase 5 REMIND-MAgPIE 3.3-4.8 / Below 2C (PER-CHANNEL emissions intensity = channel "
+        "CO2 / channel activity)"
+    )
+    digest["_README"] = (
+        "Source-digest for scripts/build_structural_trajectories.py. Each driver entry lists "
+        "per-key knot rates with a value-level source citation + confidence, so "
+        "trajectories_v{N}.json is REPRODUCIBLE (build --check gates it). The driver values here "
+        "are EXTRACTED FROM REAL SOURCES by scripts/extract_structural_sources.py (run it to "
+        f"rebuild from data/structural/sources/raw/): PWT 10.01, {wpp_phrase}, ILOSTAT LFPR, EU "
+        "KLEMS 2024 growth-accounts workbook, NGFS Phase 5. NOT illustrative. Documented limits "
+        "(single-country EU KLEMS = Austria; per-channel NGFS emissions intensities are "
+        "CO2/activity with the AEEI FE/output term omitted + World-level region-uniform; labour "
+        "uses 15+ population when the by-age file is present else total-pop; forward knots held "
+        "flat; N/S+BRD/MIL archetypes) are tracked in docs/structural-data-pipeline-plan.md."
+    )
     return digest, missing
 
 

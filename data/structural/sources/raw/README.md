@@ -70,6 +70,8 @@ mixed for sectors) by the committed concordances in `archetype_maps/`:
   goods-vs-services split).
 
 The extractor aggregates each source over the archetype using the documented per-driver weights
-(population weights for population, labour-force weights for participation, output/GDP weights for
-productivity and sector series). Missing weights fall back to an unweighted mean with a recorded
+(population weights for population, output/GDP weights for productivity and sector series). **Labour
+participation is aggregated as an UNWEIGHTED archetype mean** — ILOSTAT provides no labour-force
+size series, so there are no participation weights (flagged LOW confidence in the value-level
+provenance). Other missing weights likewise fall back to an unweighted mean with a recorded
 `confidence` downgrade.

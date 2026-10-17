@@ -1,6 +1,6 @@
 {
   "provenance": {
-    "source": "PWT 10.01 (productivity) + UN WPP 2024 (total + 15+ population) + ILOSTAT LFPR (participation) + EU KLEMS & INTANProd 2024 release (sector MFP via LP1ConTFP, per-hour LP, labour share) + NGFS Phase 5 REMIND-MAgPIE 3.3-4.8 / Below 2C (PER-CHANNEL emissions intensity = channel CO2 / channel activity)",
+    "source": "PWT 10.01 (productivity) + UN WPP 2024 (total population; 15+ by-age file absent → labour uses total-pop) + ILOSTAT LFPR (participation) + EU KLEMS & INTANProd 2024 release (sector MFP via LP1ConTFP, per-hour LP, labour share) + NGFS Phase 5 REMIND-MAgPIE 3.3-4.8 / Below 2C (PER-CHANNEL emissions intensity = channel CO2 / channel activity)",
     "source_version": "structural-trajectories-v5-favourable",
     "licence": "see per-entry sources; UN WPP: CC BY 3.0 IGO, PWT 10.01: CC BY 4.0, ILOSTAT: CC BY 4.0, EU KLEMS: CC BY 4.0, NGFS: see NGFS terms",
     "reference_year": 2024,
