@@ -299,9 +299,9 @@ cycler==0.12.1 \
     --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30 \
     --hash=sha256:88bb128f02ba341da8ef447245a9e138fae777f6a23943da4540077d3601eb1c
     # via matplotlib
-distlib==0.4.3 \
-    --hash=sha256:4b0ce306c966eb73bc3a7b6abad017c556dadd92c44701562cd528ac7fde4d5b \
-    --hash=sha256:f152097224a0ae24be5a0f6bae1b9359af82133bce63f98a95f86cae1aede9ed
+distlib==0.4.4 \
+    --hash=sha256:ca4175b4ac7f71223cc30ed7248c45d2b38c2439d8ee6e498ab67ed63cf3508d \
+    --hash=sha256:cf09d55b1e85a89576b036aeb71550bfd68320f3f21761ca329eadadad918638
     # via virtualenv
 docutils==0.23 \
     --hash=sha256:25d013af9bf23bc1c7b2b093dff4208166c53a94786c9e447808335ef1185fea \
@@ -354,9 +354,9 @@ faker==40.43.0 \
     --hash=sha256:02fae4327c03a4a6315e1b428a3878f435bfc276c93435ea349b95c0c9372361 \
     --hash=sha256:9dd7c0ddfaf30c842b05502d3cf641c135e0120a3a19047008ba8525b72953ed
     # via pymrio
-filelock==4.2.0 \
-    --hash=sha256:2ff5690882e8cdb00ef31fb3d01a3094c29f30985426c59495afb1733f3b7238 \
-    --hash=sha256:7a60906c75227cf04d0c273afadc8219400f11aeb13cc69591d4f6cdc6c8036e
+filelock==4.2.1 \
+    --hash=sha256:7be2662e9e826b9bba28afc0f843a123280d799a2ea44bb5d35ccec67905ae44 \
+    --hash=sha256:c4c937ccac2a813cee448e662a56366cfb374c0f8702e75f295c412cc1c5d5a3
     # via
     #   python-discovery
     #   virtualenv
@@ -1188,13 +1188,13 @@ pillow==12.3.0 \
     # via
     #   matplotlib
     #   streamlit
-platformdirs==4.13.0 \
-    --hash=sha256:1aa0b0d3f224c1f07c295121e312a5a24a180d6ae5a8425ea1784b3e3863e9c0 \
-    --hash=sha256:3dbcf4cd708f21cf876c4eaa90e58412bc4f033d87143f41b1493ff77c25b7e1
+platformdirs==4.13.3 \
+    --hash=sha256:5e567f664eb087ab8521c0179cd8d1bd60857d271136567a39719e28e2d383ce \
+    --hash=sha256:f6ad7f447f24f8a3b82cce5976387428bff894a0eca6c3488f4a17f153c130c4
     # via virtualenv
-pluggy==1.6.0 \
-    --hash=sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3 \
-    --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+pluggy==1.7.0 \
+    --hash=sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec \
+    --hash=sha256:d1eaa46ebb595891b860ab086b4d09c8588af65ebd4361b8e8f4bb8920b90ba8
     # via pytest
 ply==3.11 \
     --hash=sha256:00c7c1aaa88358b9c765b6d3000c6eec0ba42abca5351b095321aef446081da3 \
@@ -1439,9 +1439,9 @@ python-dateutil==2.9.0.post0 \
     # via
     #   matplotlib
     #   pandas
-python-discovery==1.6.2 \
-    --hash=sha256:cd1738ca1d37c86ef9d0b654dd46fcee1e41c97c6add12575e8501ced39afdb4 \
-    --hash=sha256:f0c697f95a3aaec4174a6e5e58f5885e25768684bafc76f1afde384709ebdcf2
+python-discovery==1.6.3 \
+    --hash=sha256:a62b301d96cf5489cb96ab023b32e068421867fdd5df2e42eece877869047fa2 \
+    --hash=sha256:cb7654125e3dcb594269a6feb56ac693f1f13b7c654493a93eba72dc22d18034
     # via virtualenv
 python-multipart==0.0.32 \
     --hash=sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e \
@@ -1812,9 +1812,9 @@ uvicorn==0.54.0 \
     --hash=sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf \
     --hash=sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620
     # via streamlit
-virtualenv==21.14.7 \
-    --hash=sha256:3769219a308c5d2f093e7729621ad12a6346b5767a7ec4338414e2a0fb0c526b \
-    --hash=sha256:5f427d56f39eb7e7447d641dd4b7ab1e9c92793f498f35f26da2e4972c5546ae
+virtualenv==21.14.10 \
+    --hash=sha256:bf4a0f9671731d097e017e41280aa05e1e1adcd536b0e804fceb3179947ad50e \
+    --hash=sha256:f733501a49404c91b5bb1d34d107073b8f4b93a9a1ddb7e9a950eb8ce60f38ad
     # via pre-commit
 watchdog==6.0.0 ; sys_platform != 'darwin' \
     --hash=sha256:07df1fdd701c5d4c8e55ef6cf55b8f0120fe1aef7ef39a1c6fc6bc2e606d517a \
