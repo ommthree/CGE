@@ -10,6 +10,7 @@ run. See ``data/structural/NOTICE.md`` for the underlying sources and licences.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from cge.contracts.data_objects import Provenance, StructuralTrajectory
@@ -176,6 +177,35 @@ def load_structural_concordance(
         # emissions_intensity is mapped by sector_emissions_channel {sector: {channel: weight}}
         # (review-11 P1; blend review-12 P1#2), a DIFFERENT vocab from BRD/MIL.
         sec_chan = raw.get("sector_emissions_channel", {})
+        # review-13 P2: each sector's channel weights must be a non-empty CONVEX COMBINATION —
+        # numeric, finite, non-negative, and summing to 1. (The weights are baseline source shares;
+        # a non-convex set like {electricity: -0.2, __all__: 1.2} is not a meaningful blend.) This
+        # is validated up front so a malformed concordance fails loudly rather than being silently
+        # accepted; because the weights sum to 1 and every channel must exist (checked below), the
+        # blend never drops/renormalises for a valid artifact.
+        for sector, blend in sec_chan.items():
+            if not isinstance(blend, dict) or not blend:
+                raise ValueError(
+                    f"sector_emissions_channel[{sector!r}] must be a non-empty {{channel: weight}} "
+                    f"map; got {blend!r}."
+                )
+            bad = {c: w for c, w in blend.items() if not isinstance(w, (int, float))}
+            if bad or any(isinstance(w, bool) for w in blend.values()):
+                raise ValueError(
+                    f"sector_emissions_channel[{sector!r}] has non-numeric weight(s) "
+                    f"{bad or blend}."
+                )
+            if any(not math.isfinite(w) or w < 0 for w in blend.values()):
+                raise ValueError(
+                    f"sector_emissions_channel[{sector!r}] weights must be finite and "
+                    f"non-negative; got {blend}."
+                )
+            total = sum(blend.values())
+            if not math.isclose(total, 1.0, abs_tol=1e-6):
+                raise ValueError(
+                    f"sector_emissions_channel[{sector!r}] weights must sum to 1 (a convex "
+                    f"combination); got {total:.6f} from {blend}."
+                )
         channels: set[str] = set()
         for blend in sec_chan.values():
             channels |= {c for c in blend if c != "__all__"}
@@ -515,20 +545,48 @@ def structural_trajectories_for_build(
         return float(path[applicable[-1] if applicable else min(path)])
 
     def _blend_channels(by_arch: dict, weights: dict[str, float]) -> dict | None:
-        # Weighted blend of the channels' rate paths over the union of their knot years. Channels
-        # absent from the trajectory are dropped and the weights renormalised (a proper convex
-        # combination); None if none are present (caller falls back to __all__).
+        # review-13 P1#2: the weights are BASELINE EMISSION-SOURCE SHARES, so the sector's intensity
+        # LEVEL is the weighted mean of the channels' cumulative level factors — F_s(t)=Σ w_c F_c(t)
+        # with F_c(t) = ∏_{τ<t}(1+r_{c,τ}) — NOT a per-year average of the channels' annual rates
+        # (∏_t(1+Σ w_c r_{c,t}) silently rebalances the source shares every year). We blend the
+        # LEVELS at each union knot, then emit the equivalent piecewise-constant ANNUAL rate per
+        # interval so the downstream year-by-year compounder reproduces F_s exactly. The rates'
+        # compounding is annual and piecewise-constant (a knot rate holds until the next knot), so a
+        # channel's level is compounded across the actual year gaps, matching the engine.
         present = {c: w for c, w in weights.items() if by_arch.get(c)}
         tot = sum(present.values())
         if tot <= 0:
-            return None
-        knots: set[int] = set()
-        for c in present:
-            knots |= set(by_arch[c])
-        return {
-            int(y): sum((w / tot) * _rate_at(by_arch[c], y) for c, w in present.items())
-            for y in sorted(knots)
+            return None  # none of the blend's channels are in the trajectory → caller uses __all__
+        knots = sorted({int(y) for c in present for y in by_arch[c]})
+
+        def _level(path: dict, upto: int) -> float:
+            # ∏_{y<upto}(1+annual rate at y), annual piecewise-constant — the same compounding the
+            # engine applies, so blending these levels and re-deriving rates is exact at every year.
+            start = min(int(y) for y in path)
+            acc = 1.0
+            for y in range(start, upto):
+                acc *= 1.0 + _rate_at(path, y)
+            return acc
+
+        # Blended cumulative level at each knot: F_s(t) = Σ (w_c/Σw)·F_c(t), each channel's level
+        # measured from THIS blend's first knot so every channel shares one t0 (F_s(t0) = 1).
+        t0 = knots[0]
+        levels = {
+            t: sum((w / tot) * _level(by_arch[c], t) for c, w in present.items()) for t in knots
         }
+        # Re-express as the interval annual rate r(t_k) = (F(t_{k+1})/F(t_k))^(1/Δ) − 1 that, held
+        # flat across [t_k, t_{k+1}), reproduces the blended level; the final knot holds its rate.
+        out: dict[int, float] = {}
+        for i, t in enumerate(knots):
+            if i + 1 < len(knots):
+                nxt = knots[i + 1]
+                span = nxt - t
+                ratio = levels[nxt] / levels[t] if levels[t] > 0 else 1.0
+                out[t] = ratio ** (1.0 / span) - 1.0 if span > 0 and ratio > 0 else 0.0
+            else:
+                out[t] = out[knots[i - 1]] if i > 0 else 0.0  # hold last interval's rate flat
+        _ = t0  # (documented: levels are relative to the first knot; absolute t0 level cancels)
+        return out
 
     new_sector_rates: dict = {}
     for driver, by_arch in archetype.sector_rates.items():

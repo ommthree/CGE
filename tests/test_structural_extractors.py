@@ -286,6 +286,37 @@ def test_ngfs_sum_rejects_incompatible_units():
         )
 
 
+def test_ngfs_co2_subtract_rejects_minuend_subtrahend_unit_mismatch():
+    """review-13 P3#5: the co2 minuend and the co2_subtract subtrahend must share units. Each sum is
+    internally consistent (Supply in Mt, Electricity in Gt) but subtracting them is nonsense — the
+    combined numerator unit check must raise."""
+    df = pd.DataFrame(
+        {
+            "model": ["M"] * 6,
+            "scenario": ["NZ"] * 6,
+            "region": ["World"] * 6,
+            "variable": ["Supply", "Supply", "Elec", "Elec", "FE", "FE"],
+            "Unit": ["Mt", "Mt", "Gt", "Gt", "EJ", "EJ"],  # Supply Mt − Elec Gt → mismatch
+            "year": [2025, 2040, 2025, 2040, 2025, 2040],
+            "value": [100.0, 80.0, 10.0, 5.0, 50.0, 50.0],
+        }
+    )
+    with pytest.raises(ValueError, match="incompatible units"):
+        extract_ngfs_emissions(
+            df,
+            model="M",
+            scenario="NZ",
+            intensity_specs={
+                "energy_supply": {
+                    "co2": ["Supply"],
+                    "co2_subtract": ["Elec"],
+                    "activity": ["FE"],
+                }
+            },
+            require_positive_through=2040,
+        )
+
+
 def test_ngfs_sum_rejects_labelled_plus_unlabelled_unit():
     """review-12 P3#7: a mix of a labelled (Mt) and an UNLABELLED component must also raise — the
     missing unit can't be assumed compatible (was previously discarded and passed)."""
@@ -671,3 +702,118 @@ def test_load_euklems_workbook_va_weights_across_geographies(tmp_path):
         (math.expm1(1.0 / 100) * 100 + math.expm1(4.0 / 100) * 300) / 400
     )
     assert row["va_weight"] == pytest.approx(400.0)  # summed across geographies
+
+
+# --- WPP 15+ downloader (review-13 P1): parse the real-API response, pick ONLY cumulative 15+ ---
+
+
+def _wpp_record(iso3, year, value, age_id, age_label, variant=4, sex=3):
+    """One Data Portal /data record in the documented camelCase layout."""
+    return {
+        "iso3": iso3,
+        "timeLabel": year,
+        "value": value,
+        "ageId": age_id,
+        "ageLabel": age_label,
+        "variantId": variant,
+        "sexId": sex,
+    }
+
+
+def test_wpp_parse_selects_only_cumulative_15plus_not_sum_of_bands():
+    """review-13 P1: indicator 70 ships OVERLAPPING functional groups (15-24, 15-49, 15-64, 16+, …)
+    alongside the cumulative '15+' (ageId 26). The parser must return the single 15+ level, NOT the
+    sum of every 15-prefixed band (which would multiply-count). USA 2025 15+ = 280 (not the sum).
+    """
+    from scripts.fetch_wpp_by_age import _parse_records
+
+    records = [
+        _wpp_record("USA", 2025, 280.0, 26, "15+"),
+        _wpp_record("USA", 2025, 120.0, 30, "15-24"),  # overlapping — must be ignored
+        _wpp_record("USA", 2025, 240.0, 35, "15-64"),  # overlapping — must be ignored
+        _wpp_record("USA", 2025, 60.0, 3, "0-14"),  # not 15+ — ignored
+        _wpp_record("USA", 2026, 282.0, 26, "15+"),
+    ]
+    out = _parse_records(records)
+    assert out == [
+        {"iso3": "USA", "year": 2025, "population": 280.0},
+        {"iso3": "USA", "year": 2026, "population": 282.0},
+    ]
+
+
+def test_wpp_parse_matches_15plus_by_label_when_ageid_absent():
+    """Fallback identity: if a deployment omits ageId, the exact ageLabel '15+' still selects the
+    cumulative category (and '15-64'/'16+' labels do NOT match)."""
+    from scripts.fetch_wpp_by_age import _parse_records
+
+    records = [
+        {
+            "iso3": "DEU",
+            "timeLabel": 2025,
+            "value": 70.0,
+            "ageLabel": "15+",
+            "variantId": 4,
+            "sexId": 3,
+        },
+        {
+            "iso3": "DEU",
+            "timeLabel": 2025,
+            "value": 55.0,
+            "ageLabel": "15-64",
+            "variantId": 4,
+            "sexId": 3,
+        },
+    ]
+    out = _parse_records(records)
+    assert out == [{"iso3": "DEU", "year": 2025, "population": 70.0}]
+
+
+def test_wpp_parse_drops_aggregates_and_wrong_variant_or_sex():
+    """Region/aggregate rows (non-3-letter ISO3) and non-Medium / non-both-sexes rows are dropped,
+    so only country-level Medium both-sexes 15+ survives."""
+    from scripts.fetch_wpp_by_age import _parse_records
+
+    records = [
+        _wpp_record("USA", 2025, 280.0, 26, "15+"),
+        _wpp_record("World", 2025, 6000.0, 26, "15+"),  # aggregate — dropped
+        _wpp_record("USA", 2025, 140.0, 26, "15+", sex=1),  # male — dropped (not sexId 3)
+        _wpp_record("USA", 2025, 285.0, 26, "15+", variant=8),  # high variant — dropped
+    ]
+    out = _parse_records(records)
+    assert out == [{"iso3": "USA", "year": 2025, "population": 280.0}]
+
+
+def test_wpp_parse_rejects_duplicate_country_year():
+    """Two 15+ rows for the same country-year (e.g. a filter leak) must RAISE, not silently sum or
+    overwrite."""
+    from scripts.fetch_wpp_by_age import _parse_records
+
+    records = [
+        _wpp_record("USA", 2025, 280.0, 26, "15+"),
+        _wpp_record("USA", 2025, 281.0, 26, "15+"),  # duplicate country-year
+    ]
+    with pytest.raises(SystemExit, match="duplicate 15"):
+        _parse_records(records)
+
+
+def test_wpp_parse_raises_when_no_15plus_present():
+    """If the 15+ category is entirely absent (categories changed), raise rather than write an empty
+    file — a silent empty CSV would re-trigger the total-population fallback invisibly."""
+    from scripts.fetch_wpp_by_age import _parse_records
+
+    records = [_wpp_record("USA", 2025, 120.0, 30, "15-24")]
+    with pytest.raises(SystemExit, match="no 15"):
+        _parse_records(records)
+
+
+def test_wpp_page_payload_accepts_object_and_bare_list():
+    """The documented response is {data, nextPage, …}; some deployments return a bare list for a
+    single page. Both are accepted; an object WITHOUT a 'data' key raises (contract changed)."""
+    from scripts.fetch_wpp_by_age import _page_payload
+
+    recs, nxt = _page_payload({"data": [{"x": 1}], "nextPage": "u2", "pages": 2})
+    assert recs == [{"x": 1}] and nxt == "u2"
+    recs, nxt = _page_payload([{"x": 1}])
+    assert recs == [{"x": 1}] and nxt is None
+    with pytest.raises(SystemExit, match="without a 'data' key"):
+        _page_payload({"total": 0, "pages": 0})

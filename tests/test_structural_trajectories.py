@@ -198,16 +198,17 @@ def test_emissions_intensity_routes_each_sector_to_its_ngfs_channel():
     assert e_elec < e_transport
 
 
-def test_emissions_intensity_blends_channels_by_concordance_weights(tmp_path):
-    """review-12 P1#2: a sector's emissions path is a WEIGHTED BLEND of channels (mixed sources),
-    not one channel. Synthetic: process=−0.02, industry=−0.06; metals={process:0.6, industry:0.4} →
-    0.6·−0.02 + 0.4·−0.06 = −0.036. Channels absent from the trajectory are dropped/renorm'd."""
+def test_emissions_intensity_blends_cumulative_levels_not_annual_rates(tmp_path):
+    """review-13 P1#2: a sector's emissions path is a WEIGHTED BLEND of channels (mixed sources),
+    the weights are BASELINE SOURCE SHARES, so the sector's intensity LEVEL is Σ w_c F_c(t) with
+    F_c(t)=∏_{τ<t}(1+r_{c,τ}) — NOT a per-year average of the channels' annual rates (which silently
+    rebalances the source shares every year). Multi-knot channels where the two formulas DIVERGE:
+    process = {2025:+0.10, 2035:0}, industry = {2025:−0.30, 2035:0}, metals={process:0.6,
+    industry:0.4}. The emitted metals rate, compounded 2025→2035, must reproduce the LEVEL blend
+    0.6·1.10^10 + 0.4·0.70^10, NOT ∏(1+0.6·0.10+0.4·−0.30)=1.0^10=1."""
     import json
 
-    from cge.data.structural import (
-        load_structural_concordance,  # noqa: F401
-        structural_trajectories_for_build,
-    )
+    from cge.data.structural import structural_trajectories_for_build
 
     traj = tmp_path / "traj.json"
     traj.write_text(
@@ -223,9 +224,9 @@ def test_emissions_intensity_blends_channels_by_concordance_weights(tmp_path):
                 "rates": {"productivity": {"__all__": {"2025": 0.0}}},
                 "sector_rates": {
                     "emissions_intensity": {
-                        "process": {"2025": -0.02},
-                        "industry": {"2025": -0.06},
-                        "__all__": {"2025": -0.03},
+                        "process": {"2025": 0.10, "2035": 0.0},
+                        "industry": {"2025": -0.30, "2035": 0.0},
+                        "__all__": {"2025": -0.03, "2035": 0.0},
                     }
                 },
                 "sources": {
@@ -265,9 +266,15 @@ def test_emissions_intensity_blends_channels_by_concordance_weights(tmp_path):
         concordance_path=str(p),
         require_full_coverage=False,
     )
-    assert t.sector_rate("emissions_intensity", "metals", 2025) == pytest.approx(
-        0.6 * -0.02 + 0.4 * -0.06
-    )
+    # Compound the emitted metals rate over the interval and compare to the LEVEL blend.
+    factor = 1.0
+    for y in range(2025, 2035):
+        factor *= 1.0 + t.sector_rate("emissions_intensity", "metals", y)
+    level_blend = 0.6 * (1.10**10) + 0.4 * (0.70**10)
+    assert factor == pytest.approx(level_blend, rel=1e-9)
+    # And it must NOT equal the buggy annual-rate average (which here would be exactly 1.0).
+    annual_rate_avg = (1.0 + (0.6 * 0.10 + 0.4 * -0.30)) ** 10
+    assert abs(factor - annual_rate_avg) > 0.05
     # provenance names both channels with weights.
     src = t.sources["emissions_intensity:metals"]
     assert "channel-blended" in src and "process (0.60)" in src and "industry (0.40)" in src
@@ -583,6 +590,28 @@ def test_concordance_rejects_unknown_emissions_channel(tmp_path):
     with pytest.raises(ValueError, match="missing sector"):
         load_structural_concordance(str(p2), trajectory=trajectory)
 
+    # review-13 P2: channel weights must be a non-empty CONVEX COMBINATION — non-numeric,
+    # negative, non-finite, or non-sum-to-1 weights must all raise (a non-convex blend like
+    # {electricity: -0.2, __all__: 1.2} was previously accepted).
+    def _conc_with(blend):
+        c = dict(conc)
+        c["sector_archetype"] = {"electricity": "__all__"}
+        c["sector_emissions_channel"] = {"electricity": blend}
+        pth = tmp_path / f"conc_w_{abs(hash(str(blend)))}.json"
+        pth.write_text(json.dumps(c))
+        return str(pth)
+
+    with pytest.raises(ValueError, match="non-negative"):
+        load_structural_concordance(
+            _conc_with({"electricity": -0.2, "__all__": 1.2}), trajectory=trajectory
+        )
+    with pytest.raises(ValueError, match="sum to 1"):
+        load_structural_concordance(_conc_with({"electricity": 0.5}), trajectory=trajectory)
+    with pytest.raises(ValueError, match="non-numeric"):
+        load_structural_concordance(_conc_with({"electricity": "lots"}), trajectory=trajectory)
+    with pytest.raises(ValueError, match="non-empty"):
+        load_structural_concordance(_conc_with({}), trajectory=trajectory)
+
 
 def test_sensitivity_cases_adverse_central_favourable():
     """Review-10 P1#2: structural_trajectory_variants returns adverse/central/favourable
@@ -687,7 +716,7 @@ def test_concordance_v2_carries_composite_provenance():
     assert "concordance" in t.provenance.source.lower()
     # concordance v4 (review-12): per-sector emissions-channel blend + working_age class.
     # trajectories v5 (review-12): per-channel NGFS emissions intensities + 15+ labour population.
-    assert "structural-concordance-v4" in t.provenance.source_version
+    assert "structural-concordance-v5" in t.provenance.source_version
     assert "structural-trajectories-v5" in t.provenance.source_version
 
 

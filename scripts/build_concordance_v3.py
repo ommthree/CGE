@@ -93,6 +93,18 @@ def _population_by_iso3_year() -> pd.DataFrame:
     return wpp.set_index(["iso3", "year"])["population"]
 
 
+def _working_age_by_iso3_year() -> pd.DataFrame | None:
+    """15+ population per ISO3-year from the WPP by-age file (review-13 P2) — the correct basis for
+    aggregating the ``working_age_population`` driver across mixed blocks. Returns None when the
+    (auth-gated) file is absent; the caller then aliases the total-population class with a recorded
+    caveat rather than silently weighting 15+ growth by TOTAL-population shares."""
+    wa = _RAW / "wpp2024_working_age.csv"
+    if not wa.exists():
+        return None
+    df = pd.read_csv(wa)  # already tidy iso3/year/population (see scripts/fetch_wpp_by_age.py)
+    return df.set_index(["iso3", "year"])["population"]
+
+
 def _gdp_by_iso3() -> dict[str, float]:
     # PWT rgdpo at 2019 (its latest year) — real output level, the output-weight basis.
     import contextlib
@@ -130,36 +142,63 @@ def _weights_for_block(members: dict, basis: dict, residual_keys: set[str]) -> d
     return out
 
 
+def _year_indexed_pop_weights(members: dict, basis_series, residual_keys: set[str]) -> dict:
+    """Year-indexed block weights from an (iso3, year)→size series (WPP-style), one table/knot."""
+    by_year: dict[str, dict] = {}
+    for y in _KNOTS:
+        basis = {
+            iso3: float(basis_series.get((iso3, y), 0.0))
+            for iso3 in (_ALPHA2_TO_ISO3.get(c, c) for c in members)
+        }
+        by_year[str(y)] = _weights_for_block(members, basis, residual_keys)
+    return by_year
+
+
 def _build() -> dict:
     v2 = json.loads(_V2.read_text())
     pop = _population_by_iso3_year()
+    wa_pop = _working_age_by_iso3_year()  # None when the 15+ file is absent (auth-gated)
     gdp = _gdp_by_iso3()
     residual_keys = {"WA", "WE", "WF", "WL", "WM", "WT"}
 
     block_weights: dict[str, dict] = {"population": {}, "output": {}}
+    if wa_pop is not None:
+        block_weights["working_age"] = {}
     for block, members in v2["block_membership"].items():
         if len(members) == 1:  # 1:1 country block — weight 1.0 for every class/year
             block_weights["population"][block] = {str(y): dict(members) for y in _KNOTS}
             block_weights["output"][block] = dict(members)
+            if wa_pop is not None:
+                block_weights["working_age"][block] = {str(y): dict(members) for y in _KNOTS}
             continue
         # population weights are year-indexed (WPP projects annually)
-        by_year: dict[str, dict] = {}
-        for y in _KNOTS:
-            basis = {
-                iso3: float(pop.get((iso3, y), 0.0))
-                for iso3 in (_ALPHA2_TO_ISO3.get(c, c) for c in members)
-            }
-            by_year[str(y)] = _weights_for_block(members, basis, residual_keys)
-        block_weights["population"][block] = by_year
+        block_weights["population"][block] = _year_indexed_pop_weights(members, pop, residual_keys)
         # output weights held flat at PWT-2019
         block_weights["output"][block] = _weights_for_block(members, gdp, residual_keys)
+        # 15+ population weights, year-indexed from the by-age file when present (review-13 P2)
+        if wa_pop is not None:
+            block_weights["working_age"][block] = _year_indexed_pop_weights(
+                members, wa_pop, residual_keys
+            )
 
     v3 = dict(v2)
     v3["block_weights"] = block_weights
+    # When the 15+ file is absent, working_age_population aliases the population class — an EXPLICIT
+    # documented approximation (15+ growth weighted by TOTAL-population shares), not a silent one.
+    _wa_class = "working_age" if wa_pop is not None else "population"
+    _wa_note = (
+        "working_age_population → working_age (15+ shares, UN WPP by-age, year-indexed)"
+        if wa_pop is not None
+        else "working_age_population → population (15+ file absent; 15+ growth weighted by "
+        "TOTAL-population shares as an EXPLICIT documented approximation until wpp2024_working_age."
+        "csv is vendored)"
+    )
     # Map each region driver to a weight class; participation has no per-country basis → v2 proxy.
     v3["driver_weight_class"] = {
         "population": "population",
-        "working_age_population": "population",  # 15+ pop blends by population shares too
+        # 15+ driver → dedicated 15+ weight class when the by-age file is present; else the
+        # total-population class as an EXPLICIT documented approximation (review-13 P2).
+        "working_age_population": _wa_class,
         "productivity": "output",
         "labour_participation": "block_membership",  # static v2 fallback (no labour-force weights)
     }
@@ -168,25 +207,27 @@ def _build() -> dict:
     # per-driver, time-varying, reproducibly-extracted v3 fields (review-10 P2#6).
     v3["provenance"] = {
         "source": (
-            "Structural-trajectory region concordance v4: country-level development archetypes "
+            "Structural-trajectory region concordance v5: country-level development archetypes "
             "(World Bank income classification, FY2025) aggregated to EXIOBASE coarse-v3 blocks "
-            "with PER-DRIVER, TIME-VARYING block_weights — population shares (UN WPP 2024, per "
-            "knot) and output shares (PWT 10.01 rgdpo 2019); plus a PER-SECTOR EMISSIONS-CHANNEL "
-            "BLEND map (sector_emissions_channel). The static v2 IMF-2024 GDP weights survive ONLY "
-            "as the participation proxy and the back-compat block_membership."
+            "with PER-DRIVER, TIME-VARYING block_weights — total-pop shares, 15+ shares, and "
+            "output shares (UN WPP 2024 per knot; PWT 10.01 rgdpo 2019); plus a PER-SECTOR "
+            "EMISSIONS-CHANNEL BLEND map (sector_emissions_channel). The static v2 IMF-2024 GDP "
+            "weights survive ONLY as the participation proxy and the back-compat block_membership."
         ),
-        "source_version": "structural-concordance-v4",
+        "source_version": "structural-concordance-v5",
         "licence": v2["provenance"].get("licence", ""),
         "reference_year": v2["provenance"].get("reference_year", 2024),
         "world_bank_vintage": v2["provenance"].get("world_bank_vintage", ""),
         "retrieved": "2026-10-14",
         "notes": (
-            "v4 (review-12: adds the per-sector emissions-channel BLEND + working_age_population "
-            "class; v3 review-9 1c added per-driver/time-varying block_weights). block_weights "
-            "is a REPRODUCIBLE extraction (scripts/build_concordance_v3.py, --check-gated): "
-            "population weights = UN WPP 2024 per-country population at each knot (2025/2035/2050 "
-            "— genuinely year-varying, NOT static); output weights = PWT 10.01 rgdpo (2019, held "
-            "flat). driver_weight_class maps population + working_age_population → population, "
+            "v5 (review-13: dedicated working_age weight class from the WPP by-age 15+ file when "
+            "present; v4 review-12 added the per-sector emissions-channel BLEND; v3 review-9 1c "
+            "added per-driver/time-varying block_weights). block_weights is a REPRODUCIBLE "
+            "extraction (scripts/build_concordance_v3.py, --check-gated): population weights = UN "
+            "WPP 2024 per-country TOTAL population at each knot (2025/2035/2050 — genuinely "
+            "year-varying, NOT static); output weights = PWT 10.01 rgdpo (2019, held flat); "
+            "working_age weights = UN WPP 2024 15+ population per knot (present only if the by-age "
+            "file is vendored). driver_weight_class: population → population, " + _wa_note + ", "
             "productivity → output, labour_participation → block_membership (static v2 GDP "
             "weights, an explicit declared proxy — no per-country labour-force series). "
             "sector_emissions_channel blends each model sector over NGFS channels (metals/minerals "
@@ -198,8 +239,10 @@ def _build() -> dict:
     }
     v3["sources"] = dict(v2["sources"])
     v3["sources"]["block_weights"] = (
-        "population: UN WPP 2024 Total Population (Medium), per-country at each knot; output: PWT "
-        "10.01 rgdpo (2019). Same raw files as the trajectories (data/structural/sources/raw/)."
+        "population: UN WPP 2024 Total Population (Medium), per-country at each knot; working_age: "
+        "UN WPP 2024 15+ population (Medium), per-country at each knot (present only if the by-age "
+        "file is vendored); output: PWT 10.01 rgdpo (2019). Same raw files as the trajectories "
+        "(data/structural/sources/raw/)."
     )
     return v3
 
