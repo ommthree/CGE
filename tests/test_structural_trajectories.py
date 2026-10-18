@@ -275,9 +275,98 @@ def test_emissions_intensity_blends_cumulative_levels_not_annual_rates(tmp_path)
     # And it must NOT equal the buggy annual-rate average (which here would be exactly 1.0).
     annual_rate_avg = (1.0 + (0.6 * 0.10 + 0.4 * -0.30)) ** 10
     assert abs(factor - annual_rate_avg) > 0.05
+
+    # review-14 P2#3: exact at EVERY year, not just the knots (a weighted sum of differently-growing
+    # channel levels is NOT geometric between knots). Check an intermediate year 2030.
+    def F_s(y):  # level blend from the shared t0=2025
+        return 0.6 * (1.10 ** (y - 2025)) + 0.4 * (0.70 ** (y - 2025))
+
+    mid = 1.0
+    for y in range(2025, 2030):
+        mid *= 1.0 + t.sector_rate("emissions_intensity", "metals", y)
+    assert mid == pytest.approx(F_s(2030), rel=1e-9)  # exact mid-interval, not just at 2035
+
+    # review-14 P1#1: both channels hold their final rate flat (0.0) from 2035, so the mapped sector
+    # must ALSO be flat after 2035 — the level stops changing. The old code repeated the previous
+    # interval's (non-zero) rate past the last knot, so a truncated-flat channel kept decaying.
+    assert t.sector_rate("emissions_intensity", "metals", 2035) == pytest.approx(0.0, abs=1e-12)
+    assert t.sector_rate("emissions_intensity", "metals", 2060) == pytest.approx(0.0, abs=1e-12)
+    tail = 1.0
+    for y in range(2035, 2100):
+        tail *= 1.0 + t.sector_rate("emissions_intensity", "metals", y)
+    assert tail == pytest.approx(1.0, rel=1e-9)  # dead flat past the last channel knot
+
     # provenance names both channels with weights.
     src = t.sources["emissions_intensity:metals"]
     assert "channel-blended" in src and "process (0.60)" in src and "industry (0.40)" in src
+
+
+def test_emissions_blend_holds_final_knot_flat_when_a_channel_is_truncated(tmp_path):
+    """review-14 P1#1: the shipped electricity channel is intentionally truncated to 0.0 after its
+    net-negative tail. A sector on {electricity:1.0} must inherit that FLAT tail exactly — the last
+    mapped knot must be the channel's held final rate (0.0), NOT a repeat of the prior decline. With
+    a single channel the mapped path equals the source path, so electricity at 2080+ must be 0.0."""
+    from cge.data.structural import structural_trajectories_for_build
+
+    t = structural_trajectories_for_build(["US"], ["electricity"], require_full_coverage=False)
+    # The real concordance maps electricity → {electricity: 1.0}; the source channel is 0.0 from
+    # 2080 (truncated). The mapped rate must be exactly flat there, not the ~−0.30 prior interval.
+    assert t.sector_rate("emissions_intensity", "electricity", 2080) == pytest.approx(0.0, abs=1e-9)
+    assert t.sector_rate("emissions_intensity", "electricity", 2100) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_emissions_channel_coverage_enforced_even_for_all_fallback_only_map(tmp_path):
+    """review-14 P2#4: the complete-coverage check must fire INDEPENDENTLY of whether any NAMED
+    channel exists. If every present sector maps to {"__all__": 1.0}, an OMITTED sector previously
+    slipped through (the check was gated on a non-empty named-channel set) and silently took the
+    global __all__ rate. Now a missing sector raises regardless."""
+    import json
+
+    from cge.data.structural import load_structural_concordance, load_structural_trajectories
+
+    traj = tmp_path / "traj.json"
+    traj.write_text(
+        json.dumps(
+            {
+                "provenance": {
+                    "source": "t",
+                    "source_version": "t",
+                    "licence": "t",
+                    "reference_year": 2024,
+                    "retrieved": "2026-10-18",
+                },
+                "rates": {"productivity": {"__all__": {"2025": 0.0}}},
+                "sector_rates": {"emissions_intensity": {"__all__": {"2025": -0.03}}},
+                "sources": {
+                    "productivity:__all__": "x",
+                    "emissions_intensity:__all__": "x",
+                },
+                "confidence": {
+                    "productivity:__all__": "low",
+                    "emissions_intensity:__all__": "low",
+                },
+            }
+        )
+    )
+    trajectory = load_structural_trajectories(str(traj))
+    conc = {
+        "provenance": {
+            "source": "c",
+            "source_version": "concordance-x",
+            "licence": "x",
+            "reference_year": 2024,
+            "retrieved": "2026-10-18",
+        },
+        "region_archetype": {"US": "__all__"},
+        # TWO sectors present; both would be __all__-only, but 'coal' is OMITTED from the map.
+        "sector_archetype": {"metals": "__all__", "coal": "__all__"},
+        "sector_emissions_channel": {"metals": {"__all__": 1.0}},  # coal missing
+        "sources": {"x": "x"},
+    }
+    p = tmp_path / "conc.json"
+    p.write_text(json.dumps(conc))
+    with pytest.raises(ValueError, match="missing sector"):
+        load_structural_concordance(str(p), trajectory=trajectory)
 
 
 def test_concordance_rejects_unmapped_build_labels():
@@ -854,6 +943,23 @@ def test_lock_is_hash_pinned_and_platform_marked():
     # watchdog is a Streamlit runtime dep on non-Darwin platforms; the universal lock carries it
     # with a platform marker so a Linux deployment installs it.
     assert "watchdog==" in text and "sys_platform" in text
+
+
+def test_gen_lock_verify_is_deterministic_and_covers_declared_deps():
+    """review-14 P2#5: --verify is the DETERMINISTIC CI gate — it must pass on the committed lock
+    WITHOUT re-resolving against the package index (no network, no uv), and it must flag a lock that
+    omits a declared direct dependency (a real input change). We assert both the committed-lock pass
+    and the declared-vs-locked coverage logic."""
+    from scripts.gen_lock import _declared_top_level, _locked_names, _verify_frozen
+
+    assert _verify_frozen() == 0  # committed lock is frozen & complete — offline, deterministic
+    declared = _declared_top_level()
+    locked = _locked_names()
+    assert declared, "pyproject must declare direct dependencies"
+    # Every DIRECT dependency the project declares is pinned in the lock (the coverage invariant).
+    assert declared <= locked, f"lock missing declared deps: {sorted(declared - locked)}"
+    # A couple of known direct deps are present (sanity that parsing found real names).
+    assert {"numpy", "pydantic"} <= locked
 
 
 def test_vendored_artifact_reproduces_from_source_digest():

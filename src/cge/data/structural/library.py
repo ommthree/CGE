@@ -220,10 +220,14 @@ def load_structural_concordance(
                     f"emissions_intensity trajectory channels {sorted(emis)} — a typo or a channel "
                     "the trajectory does not carry."
                 )
-            # COMPLETE COVERAGE (review-12 P2#4): every sector in sector_archetype must have a
-            # sector_emissions_channel entry, so a missing entry cannot silently fall back to the
-            # global __all__ rate. (For the deliberate uniform fallback, map the sector explicitly
-            # to {"__all__": 1.0}.)
+        # COMPLETE COVERAGE (review-12 P2#4; review-14 P2#4 — enforce INDEPENDENTLY of whether any
+        # NAMED channel exists): every sector in sector_archetype must have a
+        # sector_emissions_channel entry, so a missing entry cannot silently fall back to the global
+        # __all__ rate. Previously this was gated on `channels` being non-empty, so an
+        # all-{"__all__":1.0} map let an omitted sector slip through. Gate only on the presence of
+        # the emissions trajectory + channel map. (For the deliberate uniform fallback, map the
+        # sector explicitly to {"__all__": 1.0}.)
+        if sec_chan and emis is not None:
             uncovered = set(raw["sector_archetype"]) - set(sec_chan)
             if uncovered:
                 raise ValueError(
@@ -545,47 +549,50 @@ def structural_trajectories_for_build(
         return float(path[applicable[-1] if applicable else min(path)])
 
     def _blend_channels(by_arch: dict, weights: dict[str, float]) -> dict | None:
-        # review-13 P1#2: the weights are BASELINE EMISSION-SOURCE SHARES, so the sector's intensity
-        # LEVEL is the weighted mean of the channels' cumulative level factors — F_s(t)=Σ w_c F_c(t)
-        # with F_c(t) = ∏_{τ<t}(1+r_{c,τ}) — NOT a per-year average of the channels' annual rates
-        # (∏_t(1+Σ w_c r_{c,t}) silently rebalances the source shares every year). We blend the
-        # LEVELS at each union knot, then emit the equivalent piecewise-constant ANNUAL rate per
-        # interval so the downstream year-by-year compounder reproduces F_s exactly. The rates'
-        # compounding is annual and piecewise-constant (a knot rate holds until the next knot), so a
-        # channel's level is compounded across the actual year gaps, matching the engine.
+        # review-13 P1#2 / review-14 P1#1+P2#3: the weights are BASELINE EMISSION-SOURCE SHARES, so
+        # the sector's intensity LEVEL is the weighted mean of the channels' cumulative level
+        # factors — F_s(y)=Σ w_c F_c(y) with F_c(y)=∏_{τ<y}(1+r_{c,τ}) — NOT a per-year average of
+        # the channels' annual rates (∏(1+Σ w_c r_c) silently rebalances the source shares yearly).
+        #
+        # We emit an annual rate for EVERY year r_s(y) = F_s(y+1)/F_s(y) − 1 (review-14 P2#3): a
+        # weighted sum of differently-growing channel levels is NOT geometric between knots, so one
+        # CAGR per interval was only exact AT the knots (≤0.14% intermediate / 2.55% tail level
+        # error measured). Per-year rates make the engine's annual compounder reproduce F_s exactly
+        # at every year. All channel levels share ONE t0 = the blend's first knot (review-14 P2#3:
+        # mixing per-channel t0s mis-levelled staggered-knot blends by ~8%). The final year's rate
+        # is derived the same way, from the channels' ACTUAL held-flat final rates at y_last+1
+        # (review-14 P1#1: the old code repeated the previous interval's rate, so a channel that was
+        # intentionally truncated-flat — electricity 0.0 after 2080 — kept decaying ~0.70/yr).
         present = {c: w for c, w in weights.items() if by_arch.get(c)}
         tot = sum(present.values())
         if tot <= 0:
             return None  # none of the blend's channels are in the trajectory → caller uses __all__
         knots = sorted({int(y) for c in present for y in by_arch[c]})
+        t0 = knots[0]
 
-        def _level(path: dict, upto: int) -> float:
-            # ∏_{y<upto}(1+annual rate at y), annual piecewise-constant — the same compounding the
-            # engine applies, so blending these levels and re-deriving rates is exact at every year.
-            start = min(int(y) for y in path)
-            acc = 1.0
-            for y in range(start, upto):
-                acc *= 1.0 + _rate_at(path, y)
+        def _level(y: int) -> float:
+            # Blended cumulative level F_s(y) = Σ (w_c/Σw)·∏_{t0≤τ<y}(1+r_{c,τ}), every channel
+            # compounded from the SHARED t0 using its piecewise-constant held rate (so a channel
+            # that ends flat contributes a flat level past its last knot). F_s(t0) = 1.
+            acc = 0.0
+            for c, w in present.items():
+                lvl = 1.0
+                for yr in range(t0, y):
+                    lvl *= 1.0 + _rate_at(by_arch[c], yr)
+                acc += (w / tot) * lvl
             return acc
 
-        # Blended cumulative level at each knot: F_s(t) = Σ (w_c/Σw)·F_c(t), each channel's level
-        # measured from THIS blend's first knot so every channel shares one t0 (F_s(t0) = 1).
-        t0 = knots[0]
-        levels = {
-            t: sum((w / tot) * _level(by_arch[c], t) for c, w in present.items()) for t in knots
-        }
-        # Re-express as the interval annual rate r(t_k) = (F(t_{k+1})/F(t_k))^(1/Δ) − 1 that, held
-        # flat across [t_k, t_{k+1}), reproduces the blended level; the final knot holds its rate.
+        # A rate for every year from t0 to the last knot inclusive; the last year's rate is
+        # F_s(last+1)/F_s(last)−1, which uses each channel's held-flat final rate (correctly flat
+        # when every channel has flattened, e.g. all 0.0 at 2100). The engine holds the last emitted
+        # rate for any year beyond, so this stays flat thereafter.
         out: dict[int, float] = {}
-        for i, t in enumerate(knots):
-            if i + 1 < len(knots):
-                nxt = knots[i + 1]
-                span = nxt - t
-                ratio = levels[nxt] / levels[t] if levels[t] > 0 else 1.0
-                out[t] = ratio ** (1.0 / span) - 1.0 if span > 0 and ratio > 0 else 0.0
-            else:
-                out[t] = out[knots[i - 1]] if i > 0 else 0.0  # hold last interval's rate flat
-        _ = t0  # (documented: levels are relative to the first knot; absolute t0 level cancels)
+        last = knots[-1]
+        prev = _level(t0)  # F_s(t0) = 1
+        for y in range(t0, last + 1):
+            nxt = _level(y + 1)
+            out[y] = (nxt / prev - 1.0) if prev > 0 else 0.0
+            prev = nxt
         return out
 
     new_sector_rates: dict = {}
