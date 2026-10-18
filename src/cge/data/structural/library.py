@@ -207,8 +207,10 @@ def load_structural_concordance(
                     f"combination); got {total:.6f} from {blend}."
                 )
         channels: set[str] = set()
+        uses_all = False
         for blend in sec_chan.values():
             channels |= {c for c in blend if c != "__all__"}
+            uses_all = uses_all or "__all__" in blend
         emis = traj.sector_rates.get("emissions_intensity")
         if channels and emis is not None:
             # A named channel must be an EXPLICIT key in the emissions trajectory — NOT resolved via
@@ -220,6 +222,16 @@ def load_structural_concordance(
                     f"emissions_intensity trajectory channels {sorted(emis)} — a typo or a channel "
                     "the trajectory does not carry."
                 )
+        # review-15 P2#3: a blend that references __all__ requires the emissions trajectory to carry
+        # an explicit __all__ path. Otherwise {"__all__": 1.0} resolves to NOTHING, the mapped
+        # emissions table is empty, and decarbonisation is SILENTLY switched off at a zero rate.
+        if uses_all and emis is not None and "__all__" not in emis:
+            raise ValueError(
+                "sector_emissions_channel references the __all__ channel but the "
+                "emissions_intensity trajectory has no __all__ path — the blend would resolve to "
+                "an empty rate (decarbonisation silently off). Add an __all__ emissions path, or "
+                "map the sector(s) to named channels."
+            )
         # COMPLETE COVERAGE (review-12 P2#4; review-14 P2#4 — enforce INDEPENDENTLY of whether any
         # NAMED channel exists): every sector in sector_archetype must have a
         # sector_emissions_channel entry, so a missing entry cannot silently fall back to the global
@@ -569,6 +581,23 @@ def structural_trajectories_for_build(
             return None  # none of the blend's channels are in the trajectory → caller uses __all__
         knots = sorted({int(y) for c in present for y in by_arch[c]})
         t0 = knots[0]
+
+        # review-15 P3#5: BEYOND the last union knot the engine holds ONE blended rate forever, but
+        # if the channels' TERMINAL (last-knot) rates differ their relative level weights keep
+        # drifting, so no single held rate is exact there. We emit exact per-year rates THROUGH the
+        # last knot; past it we require equal terminal rates so the single held rate is correct (the
+        # shipped NGFS channels all terminate at 0.0, so this holds). A custom blend of unequal
+        # terminal rates is rejected rather than silently mis-held.
+        if len(present) > 1:
+            terminal = {round(_rate_at(by_arch[c], max(by_arch[c])), 12) for c in present}
+            if len(terminal) > 1:
+                raise ValueError(
+                    "sector_emissions_channel blends channels with DIFFERENT terminal rates "
+                    f"{sorted(terminal)} — the blended rate held flat beyond the last knot would "
+                    "be wrong (the level weights keep drifting). Give the blended channels equal "
+                    "terminal rates (e.g. all 0.0, as the shipped NGFS paths do) or extend them "
+                    "to a common horizon."
+                )
 
         def _level(y: int) -> float:
             # Blended cumulative level F_s(y) = Σ (w_c/Σw)·∏_{t0≤τ<y}(1+r_{c,τ}), every channel

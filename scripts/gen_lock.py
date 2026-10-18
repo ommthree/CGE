@@ -42,19 +42,49 @@ _CONSTRAINTS = "constraints.txt"
 # The full install target the deployment/CI uses: all extras.
 _EXTRAS = "cge,dev,data,gui"
 
-# A stable, path-free header we substitute for the resolver's auto-generated one (which embeds the
-# absolute invocation, so it would differ between machines and defeat --check).
-_HEADER = "\n".join(
-    [
-        "# Resolver-complete, hash-pinned dependency lock. Regenerate with",
-        "# `python scripts/gen_lock.py` (uv or pip-tools) after bumping constraints.txt or the",
-        "# pyproject dependency set. Byte-for-byte install:",
-        "#     pip install --require-hashes -r requirements.lock",
-        f"# Resolved for the project's extras [{_EXTRAS}] under constraints.txt (review P2).",
-        "",
-        "",
-    ]
-)
+_INPUT_DIGEST_PREFIX = "# input-digest: sha256="
+
+
+def _input_digest() -> str:
+    """SHA-256 over the lock's INPUTS — the declared direct deps (pyproject base + the locked
+    extras, order-insensitive) and the full constraints.txt text (review-15 P2#4). Embedding this in
+    the lock header lets --verify catch a CHANGED dependency SPECIFIER or constraint (e.g. a bumped
+    pin or a new ``numpy>=999``) deterministically, without re-resolving against the index."""
+    import hashlib
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # py<3.11
+        import tomli as tomllib
+
+    data = tomllib.loads((_ROOT / "pyproject.toml").read_text())
+    proj = data.get("project", {})
+    reqs: list[str] = list(proj.get("dependencies", []))
+    optional = proj.get("optional-dependencies", {})
+    for extra in _EXTRAS.split(","):
+        reqs += optional.get(extra, [])
+    constraints = (_ROOT / _CONSTRAINTS).read_text()
+    # Sort the requirement strings so formatting/order changes don't churn the digest, but a changed
+    # SPECIFIER (version/marker/extras) does. Constraints are hashed verbatim.
+    payload = "\n".join(sorted(r.strip() for r in reqs)) + "\n----\n" + constraints
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _header() -> str:
+    return "\n".join(
+        [
+            "# Resolver-complete, hash-pinned dependency lock. Regenerate with",
+            "# `python scripts/gen_lock.py` (uv or pip-tools) after bumping constraints.txt or the",
+            "# pyproject dependency set. Byte-for-byte install:",
+            "#     pip install --require-hashes -r requirements.lock",
+            f"# Resolved for the project's extras [{_EXTRAS}] under constraints.txt (review P2).",
+            # A digest of the INPUTS (declared deps + constraints) so --verify catches a changed
+            # specifier/constraint without re-resolving (review-15 P2#4).
+            f"{_INPUT_DIGEST_PREFIX}{_input_digest()}",
+            "",
+            "",
+        ]
+    )
 
 
 def _normalise(text: str) -> str:
@@ -62,7 +92,7 @@ def _normalise(text: str) -> str:
     and prepend a stable, path-free header, so the lock is identical on any machine given the same
     inputs — a prerequisite for the --check drift gate to be meaningful."""
     body = "\n".join(ln for ln in text.splitlines() if not ln.startswith("#"))
-    return _HEADER + body.lstrip("\n") + "\n"
+    return _header() + body.lstrip("\n") + "\n"
 
 
 # The ONE pinned resolver used to (re)generate the lock (review P3 2026-09-06). Requiring a single
@@ -169,6 +199,31 @@ def _verify_frozen() -> int:
     text = _LOCK.read_text()
     if "--hash=" not in text:
         print("requirements.lock is not hash-pinned — regenerate with `scripts/gen_lock.py`.")
+        return 1
+    # review-15 P2#4: the embedded input-digest must match the CURRENT declared deps + constraints,
+    # so a changed SPECIFIER/constraint (a bumped pin, a new numpy>=999, an edited constraints.txt)
+    # is caught deterministically — the name-coverage check alone missed a changed version.
+    want = _input_digest()
+    stamped = next(
+        (
+            ln[len(_INPUT_DIGEST_PREFIX) :].strip()
+            for ln in text.splitlines()
+            if ln.startswith(_INPUT_DIGEST_PREFIX)
+        ),
+        None,
+    )
+    if stamped is None:
+        print(
+            "requirements.lock has no input-digest header — regenerate with "
+            "`python scripts/gen_lock.py` (review-15 P2#4)."
+        )
+        return 1
+    if stamped != want:
+        print(
+            "requirements.lock input-digest MISMATCH — pyproject dependencies or constraints.txt "
+            "changed since the lock was generated. Deliberately regenerate with "
+            "`python scripts/gen_lock.py` and commit."
+        )
         return 1
     locked = _locked_names()
     missing = sorted(_declared_top_level() - locked)

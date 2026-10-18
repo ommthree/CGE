@@ -783,6 +783,20 @@ def test_wpp_parse_drops_aggregates_and_wrong_variant_or_sex():
     assert out == [{"iso3": "USA", "year": 2025, "population": 280.0}]
 
 
+def test_wpp_parse_rejects_three_letter_aggregate_codes_via_inventory():
+    """review-15 P2#2: real WPP aggregates have 3-letter ids (WLD/ASS/ANZ/…), so the shape check
+    alone lets them through. With the /locations country inventory supplied, a code NOT in it (WLD)
+    is dropped even though it looks like an ISO3; only the real country (USA) survives."""
+    from scripts.fetch_wpp_by_age import _parse_records
+
+    records = [
+        _wpp_record("USA", 2025, 280.0, 26, "15+"),
+        _wpp_record("WLD", 2025, 6500.0, 26, "15+"),  # 3-letter AGGREGATE — not a country
+    ]
+    out = _parse_records(records, valid_iso3={"USA", "DEU"})
+    assert out == [{"iso3": "USA", "year": 2025, "population": 280.0}]
+
+
 def test_wpp_parse_rejects_duplicate_country_year():
     """Two 15+ rows for the same country-year (e.g. a filter leak) must RAISE, not silently sum or
     overwrite."""
@@ -818,65 +832,117 @@ def test_wpp_page_records_accepts_object_and_bare_list():
         _page_records({"total": 0, "pages": 0})
 
 
-def test_wpp_fetch_pages_walks_pagenumber_until_short_page(monkeypatch):
-    """review-14 P1#2: the fetcher must NOT assume the first page is the whole dataset — it pages by
-    an explicit pageNumber until a page shorter than PAGE_SIZE. Three pages (100, 100, 37) → 237
-    records across all pages; a naive single-request fetch would see only the first 100."""
-    import scripts.fetch_wpp_by_age as mod
-
-    # Build three synthetic pages keyed by the pageNumber in the URL; full pages are PAGE_SIZE long.
-    full = mod.PAGE_SIZE
-    pages = {
-        1: [{"i": k} for k in range(full)],
-        2: [{"i": k} for k in range(full, 2 * full)],
-        3: [{"i": k} for k in range(2 * full, 2 * full + 37)],
-    }
-    calls: list[int] = []
-
-    class _Resp:
-        status_code = 200
-
-        def __init__(self, body):
-            self._body = body
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"data": self._body, "pages": 3}
-
-    def fake_get(url, headers=None, timeout=None):
-        import re
-
-        page = int(re.search(r"pageNumber=(\d+)", url).group(1))
-        calls.append(page)
-        return _Resp(pages.get(page, []))
-
-    # _fetch_pages does a local `import requests`; patch the module in sys.modules it resolves.
+def _patch_wpp_network(monkeypatch, responder):
+    """Patch _fetch_pages' network (`import requests`) + silence its throttle/backoff sleeps so the
+    pagination/rate-limit logic runs without real waits. `responder(url)` returns a _Resp."""
     import sys
 
-    monkeypatch.setitem(sys.modules, "requests", type("R", (), {"get": staticmethod(fake_get)}))
-    rows = mod._fetch_pages("tok")
-    assert len(rows) == 2 * full + 37  # ALL pages, not just the first
-    assert calls == [1, 2, 3]  # stopped after the short third page
+    monkeypatch.setattr("scripts.fetch_wpp_by_age.time.sleep", lambda *_: None)
+    monkeypatch.setattr("scripts.fetch_wpp_by_age.time.monotonic", lambda: 0.0)
+    monkeypatch.setitem(sys.modules, "requests", type("R", (), {"get": staticmethod(responder)}))
 
 
-def test_wpp_validate_coverage_rejects_truncated_and_missing_years():
-    """review-14 P1#2: refuse to write a partial file. Too few countries (pagination truncated) or a
-    missing knot year must raise before the CSV is written."""
+class _Resp:
+    def __init__(self, body, status=200, headers=None):
+        self._body = body
+        self.status_code = status
+        self.headers = headers or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise AssertionError(f"unexpected status {self.status_code}")
+
+    def json(self):
+        return self._body
+
+
+def test_wpp_fetch_pages_uses_inventory_then_pages_data_until_short_page(monkeypatch):
+    """review-14 P1#2 / review-15 P1+P2#2: the fetcher first pulls the /locations COUNTRY inventory
+    (locationTypeId 4 → numeric ids + ISO3), then queries the DATA endpoint for those ids paging by
+    an explicit pageNumber until a short page. It returns (records, country-ISO3 set) and never
+    assumes one page is the whole dataset."""
+    import re
+
+    import scripts.fetch_wpp_by_age as mod
+
+    full = mod.PAGE_SIZE
+
+    def iso(n):  # 160 distinct 3-LETTER codes (AAA, AAB, …) so they pass the ISO3 shape check
+        return chr(65 + n // 676) + chr(65 + (n // 26) % 26) + chr(65 + n % 26)
+
+    # 160 fake countries so the inventory clears _MIN_COUNTRIES (spans two /locations pages).
+    inv = [{"iso3": iso(n), "id": 1000 + n, "locationTypeId": 4} for n in range(160)] + [
+        {"iso3": "WLD", "id": 900, "locationTypeId": 1}
+    ]  # an aggregate — must be filtered out
+    data_pages = {1: [{"d": k} for k in range(full)], 2: [{"d": k} for k in range(5)]}
+    seen = {"loc": 0, "data": 0}
+
+    def responder(url, headers=None, timeout=None):
+        if "/locations?" in url:
+            seen["loc"] += 1
+            page = int(re.search(r"pageNumber=(\d+)", url).group(1))
+            chunk = inv[(page - 1) * full : page * full]
+            return _Resp({"data": chunk})
+        if "/data/indicators/" in url:
+            seen["data"] += 1
+            assert "startAge=15" in url and "locations/all" not in url  # real contract, numeric ids
+            page = int(re.search(r"pageNumber=(\d+)", url).group(1))
+            return _Resp({"data": data_pages.get(page, [])})
+        raise AssertionError(f"unexpected URL {url}")
+
+    _patch_wpp_network(monkeypatch, responder)
+    rows, iso3s = mod._fetch_pages("tok")
+    assert "WLD" not in iso3s and len(iso3s) == 160  # only locationTypeId-4 countries in inventory
+    # 160 countries / _LOCATIONS_PER_CALL batches, each paged full(100)+5 past its first full page.
+    n_batches = -(-160 // mod._LOCATIONS_PER_CALL)
+    assert len(rows) == n_batches * (full + 5)
+    assert seen["loc"] == 2 and seen["data"] == n_batches * 2  # 2 data pages per batch
+
+
+def test_wpp_get_retries_on_429_then_succeeds(monkeypatch):
+    """review-15 P1: a 429 must be retried (honouring Retry-After) with bounded attempts, not abort
+    at raise_for_status. Two 429s then a 200 → the payload is returned."""
+    from scripts.fetch_wpp_by_age import _get, _Throttle
+
+    seq = [_Resp(None, 429, {"Retry-After": "0"}), _Resp(None, 429), _Resp({"data": [1]})]
+    calls = {"n": 0}
+
+    def responder(url, headers=None, timeout=None):
+        r = seq[calls["n"]]
+        calls["n"] += 1
+        return r
+
+    monkeypatch.setattr("scripts.fetch_wpp_by_age.time.sleep", lambda *_: None)
+    monkeypatch.setattr("scripts.fetch_wpp_by_age.time.monotonic", lambda: 0.0)
+    import sys
+
+    monkeypatch.setitem(sys.modules, "requests", type("R", (), {"get": staticmethod(responder)}))
+    assert _get("u", "tok", _Throttle()) == {"data": [1]}
+    assert calls["n"] == 3  # two 429 retries then success
+
+
+def test_wpp_validate_coverage_requires_each_year_independently():
+    """review-15 P2#2: a degenerate panel where ~all countries have only 2025 and ONE country
+    supplies the other years must be rejected — every required year needs enough real countries, not
+    just a global count with each year present somewhere."""
     from scripts.fetch_wpp_by_age import _validate_coverage
 
-    # Full year set but far too few countries → truncation guard fires.
-    years = [2025, 2026, 2035, 2036, 2050, 2051]
-    few = [{"iso3": "USA", "year": y, "population": 1.0} for y in years]
-    with pytest.raises(SystemExit, match="truncated"):
-        _validate_coverage(few)
+    # 200 countries, but only 2025 is well-covered; the other years come from a single country.
+    rows = [{"iso3": f"C{n:03d}", "year": 2025, "population": 1.0} for n in range(200)]
+    rows += [{"iso3": "AAA", "year": y, "population": 1.0} for y in (2026, 2035, 2036, 2050, 2051)]
+    with pytest.raises(SystemExit, match="incomplete per year"):
+        _validate_coverage(rows)
 
-    # Enough countries but a knot year missing → year guard fires.
-    many = [
+    # A full panel (every required year covered by ≥150 countries) passes.
+    years = [2025, 2026, 2035, 2036, 2050, 2051]
+    full = [{"iso3": f"C{n:03d}", "year": y, "population": 1.0} for n in range(160) for y in years]
+    _validate_coverage(full)  # must not raise
+
+    # A missing required year is still caught.
+    missing = [
         {"iso3": f"C{n:03d}", "year": y, "population": 1.0}
-        for n in range(200)
-        for y in [2025, 2026, 2035, 2036, 2050]  # 2051 missing
+        for n in range(160)
+        for y in [2025, 2026, 2035, 2036, 2050]
     ]
     with pytest.raises(SystemExit, match="missing required knot year"):
-        _validate_coverage(many)
+        _validate_coverage(missing)

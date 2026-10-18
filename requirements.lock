@@ -3,6 +3,7 @@
 # pyproject dependency set. Byte-for-byte install:
 #     pip install --require-hashes -r requirements.lock
 # Resolved for the project's extras [cge,dev,data,gui] under constraints.txt (review P2).
+# input-digest: sha256=f3dc59f9691e281058d7d7facf5119bb543268af44d18d09bc253571a09aecb9
 
 altair==6.2.2 \
     --hash=sha256:94014f8ad8617c3cb163d1137359cd6db5ba134b9b46d93cfd8b609fd245a583 \

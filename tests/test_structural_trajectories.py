@@ -315,6 +315,72 @@ def test_emissions_blend_holds_final_knot_flat_when_a_channel_is_truncated(tmp_p
     assert t.sector_rate("emissions_intensity", "electricity", 2100) == pytest.approx(0.0, abs=1e-9)
 
 
+def test_emissions_blend_rejects_unequal_terminal_channel_rates(tmp_path):
+    """review-15 P3#5: beyond the last knot the engine holds ONE blended rate forever, but channels
+    with DIFFERENT terminal rates keep re-weighting, so no single held rate is exact. A blend of
+    terminal +10% and −10% is rejected (the shipped NGFS channels all terminate at 0.0, so they
+    pass; this guards custom trajectories)."""
+    import json
+
+    from cge.data.structural import structural_trajectories_for_build
+
+    traj = tmp_path / "traj.json"
+    traj.write_text(
+        json.dumps(
+            {
+                "provenance": {
+                    "source": "t",
+                    "source_version": "t",
+                    "licence": "t",
+                    "reference_year": 2024,
+                    "retrieved": "2026-10-18",
+                },
+                "rates": {"productivity": {"__all__": {"2025": 0.0}}},
+                "sector_rates": {
+                    "emissions_intensity": {
+                        "process": {"2025": 0.0, "2035": 0.10},  # terminal +10%
+                        "industry": {"2025": 0.0, "2035": -0.10},  # terminal −10% (differs)
+                    }
+                },
+                "sources": {
+                    "productivity:__all__": "x",
+                    "emissions_intensity:process": "x",
+                    "emissions_intensity:industry": "x",
+                },
+                "confidence": {
+                    "productivity:__all__": "low",
+                    "emissions_intensity:process": "low",
+                    "emissions_intensity:industry": "low",
+                },
+            }
+        )
+    )
+    conc = {
+        "provenance": {
+            "source": "c",
+            "source_version": "concordance-x",
+            "licence": "x",
+            "reference_year": 2024,
+            "retrieved": "2026-10-18",
+        },
+        "region_archetype": {"US": "__all__"},
+        "sector_archetype": {"metals": "__all__"},
+        "sector_emissions_channel": {"metals": {"process": 0.5, "industry": 0.5}},
+        "sources": {"x": "x"},
+    }
+    p = tmp_path / "conc.json"
+    p.write_text(json.dumps(conc))
+    # The guard fires at mapping time (structural_trajectories_for_build).
+    with pytest.raises(ValueError, match="terminal rates"):
+        structural_trajectories_for_build(
+            ["US"],
+            ["metals"],
+            trajectory_path=str(traj),
+            concordance_path=str(p),
+            require_full_coverage=False,
+        )
+
+
 def test_emissions_channel_coverage_enforced_even_for_all_fallback_only_map(tmp_path):
     """review-14 P2#4: the complete-coverage check must fire INDEPENDENTLY of whether any NAMED
     channel exists. If every present sector maps to {"__all__": 1.0}, an OMITTED sector previously
@@ -366,6 +432,59 @@ def test_emissions_channel_coverage_enforced_even_for_all_fallback_only_map(tmp_
     p = tmp_path / "conc.json"
     p.write_text(json.dumps(conc))
     with pytest.raises(ValueError, match="missing sector"):
+        load_structural_concordance(str(p), trajectory=trajectory)
+
+
+def test_emissions_blend_referencing_all_requires_an_all_path(tmp_path):
+    """review-15 P2#3: a blend that references __all__ must find an __all__ path in the emissions
+    trajectory. Without one, {"__all__": 1.0} resolves to an EMPTY rate table and decarbonisation is
+    silently switched off at zero — so it must raise instead."""
+    import json
+
+    from cge.data.structural import load_structural_concordance, load_structural_trajectories
+
+    traj = tmp_path / "traj.json"
+    traj.write_text(
+        json.dumps(
+            {
+                "provenance": {
+                    "source": "t",
+                    "source_version": "t",
+                    "licence": "t",
+                    "reference_year": 2024,
+                    "retrieved": "2026-10-18",
+                },
+                "rates": {"productivity": {"__all__": {"2025": 0.0}}},
+                # emissions trajectory carries ONLY a named channel, NO __all__ path.
+                "sector_rates": {"emissions_intensity": {"electricity": {"2025": -0.05}}},
+                "sources": {
+                    "productivity:__all__": "x",
+                    "emissions_intensity:electricity": "x",
+                },
+                "confidence": {
+                    "productivity:__all__": "low",
+                    "emissions_intensity:electricity": "low",
+                },
+            }
+        )
+    )
+    trajectory = load_structural_trajectories(str(traj))
+    conc = {
+        "provenance": {
+            "source": "c",
+            "source_version": "concordance-x",
+            "licence": "x",
+            "reference_year": 2024,
+            "retrieved": "2026-10-18",
+        },
+        "region_archetype": {"US": "__all__"},
+        "sector_archetype": {"metals": "__all__"},
+        "sector_emissions_channel": {"metals": {"__all__": 1.0}},  # needs an __all__ path (absent)
+        "sources": {"x": "x"},
+    }
+    p = tmp_path / "conc.json"
+    p.write_text(json.dumps(conc))
+    with pytest.raises(ValueError, match="no __all__ path"):
         load_structural_concordance(str(p), trajectory=trajectory)
 
 
@@ -960,6 +1079,39 @@ def test_gen_lock_verify_is_deterministic_and_covers_declared_deps():
     assert declared <= locked, f"lock missing declared deps: {sorted(declared - locked)}"
     # A couple of known direct deps are present (sanity that parsing found real names).
     assert {"numpy", "pydantic"} <= locked
+
+
+def test_gen_lock_verify_detects_changed_inputs_via_digest(tmp_path, monkeypatch):
+    """review-15 P2#4: --verify must catch a CHANGED dependency specifier / constraint — the
+    name-coverage check alone missed a version change. The lock carries a SHA-256 of its inputs
+    (declared deps + constraints.txt); a lock whose stamped digest doesn't match the current inputs
+    is rejected. Also: a lock with no input-digest header is rejected."""
+    from pathlib import Path
+
+    import scripts.gen_lock as g
+
+    text = Path("requirements.lock").read_text()
+    assert g._INPUT_DIGEST_PREFIX in text  # the committed lock carries the digest header
+    assert g._input_digest() == next(
+        ln.split("sha256=")[1].strip()
+        for ln in text.splitlines()
+        if ln.startswith(g._INPUT_DIGEST_PREFIX)
+    )
+
+    # A lock with a TAMPERED digest (simulating changed inputs) must fail --verify.
+    tampered = tmp_path / "requirements.lock"
+    tampered.write_text(text.replace(g._input_digest(), "0" * 64))
+    monkeypatch.setattr(g, "_LOCK", tampered)
+    assert g._verify_frozen() == 1  # input-digest mismatch → non-zero
+
+    # A lock with NO digest header (older format) is also rejected.
+    nodigest = tmp_path / "nodigest.lock"
+    nodigest.write_text(
+        "\n".join(ln for ln in text.splitlines() if not ln.startswith(g._INPUT_DIGEST_PREFIX))
+        + "\n"
+    )
+    monkeypatch.setattr(g, "_LOCK", nodigest)
+    assert g._verify_frozen() == 1  # missing input-digest → non-zero
 
 
 def test_vendored_artifact_reproduces_from_source_digest():
