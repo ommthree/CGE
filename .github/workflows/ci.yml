@@ -110,6 +110,10 @@ jobs:
           /tmp/lockenv/bin/pip install --require-hashes -r requirements.lock
           /tmp/lockenv/bin/pip check
           /tmp/lockenv/bin/pip install --no-deps -e .
+          # review-15 P2#4: re-run pip check AFTER the editable project install, so a project
+          # dependency the lock does not satisfy (a drifted spec) is caught, not just the lock's
+          # internal consistency before the project was added.
+          /tmp/lockenv/bin/pip check
           /tmp/lockenv/bin/ruff check src tests scripts
           /tmp/lockenv/bin/ruff format --check src tests scripts
           /tmp/lockenv/bin/pytest -q
