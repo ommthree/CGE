@@ -1,6 +1,6 @@
 {
   "provenance": {
-    "source": "Structural-trajectory region concordance v5: country-level development archetypes (World Bank income classification, FY2025) aggregated to EXIOBASE coarse-v3 blocks with PER-DRIVER, TIME-VARYING block_weights — total-pop shares, 15+ shares, and output shares (UN WPP 2024 per knot; PWT 10.01 rgdpo 2019); plus a PER-SECTOR EMISSIONS-CHANNEL BLEND map (sector_emissions_channel). The static v2 IMF-2024 GDP weights survive ONLY as the participation proxy and the back-compat block_membership.",
+    "source": "Structural-trajectory region concordance v5: country-level development archetypes (World Bank income classification, FY2025) aggregated to EXIOBASE coarse-v3 blocks with PER-DRIVER, TIME-VARYING block_weights — total-pop shares, and output shares (UN WPP 2024 per knot; PWT 10.01 rgdpo 2019); plus a PER-SECTOR EMISSIONS-CHANNEL BLEND map (sector_emissions_channel). The static v2 IMF-2024 GDP weights survive ONLY as the participation proxy and the back-compat block_membership.",
     "source_version": "structural-concordance-v5",
     "licence": "derived mapping (CC BY 4.0); World Bank income classification (CC BY 4.0), IMF WEO (public, cited not redistributed)",
     "reference_year": 2024,

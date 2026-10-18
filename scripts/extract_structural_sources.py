@@ -900,10 +900,10 @@ def _rebuild_digest_impl() -> tuple[dict, list[str]]:
         wa_rates = extract_wpp_population(pd.read_csv(wpp_wa, low_memory=False), cmap)
         wa_src = (
             "UN WPP 2024 Data Portal, indicator 70 (population by broad age group), Medium "
-            "variant, both sexes, summed over the 15+ bands per country; knots 2025/2035/2050 as "
-            "interval "
-            "CAGRs (final: one-year). The 15+ denominator matches ILOSTAT's 15+ LFPR, so labour "
-            "supply = 15+ population × 15+ LFPR without a constant-age-share assumption. "
+            "variant, both sexes, the CUMULATIVE 15+ category (ageId 26) per country — NOT a sum "
+            "of the overlapping 15-prefixed bands; knots 2025/2035/2050 as interval CAGRs (final: "
+            "one-year). The 15+ denominator matches ILOSTAT's 15+ LFPR, so labour supply = 15+ "
+            "population × 15+ LFPR without a constant-age-share assumption. "
             "https://population.un.org/dataportal/"
         )
         _apply_region(digest, "working_age_population", wa_rates, source=wa_src)

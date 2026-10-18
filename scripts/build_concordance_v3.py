@@ -193,6 +193,9 @@ def _build() -> dict:
         "TOTAL-population shares as an EXPLICIT documented approximation until wpp2024_working_age."
         "csv is vendored)"
     )
+    # review-14 P3#6: the source string must list only the weight classes ACTUALLY present — the
+    # committed artifact has no 15+ class while the by-age file is absent, so don't claim one.
+    _wa_src_phrase = "15+ shares, " if wa_pop is not None else ""
     # Map each region driver to a weight class; participation has no per-country basis → v2 proxy.
     v3["driver_weight_class"] = {
         "population": "population",
@@ -209,8 +212,9 @@ def _build() -> dict:
         "source": (
             "Structural-trajectory region concordance v5: country-level development archetypes "
             "(World Bank income classification, FY2025) aggregated to EXIOBASE coarse-v3 blocks "
-            "with PER-DRIVER, TIME-VARYING block_weights — total-pop shares, 15+ shares, and "
-            "output shares (UN WPP 2024 per knot; PWT 10.01 rgdpo 2019); plus a PER-SECTOR "
+            "with PER-DRIVER, TIME-VARYING block_weights — total-pop shares, "
+            + _wa_src_phrase
+            + "and output shares (UN WPP 2024 per knot; PWT 10.01 rgdpo 2019); plus a PER-SECTOR "
             "EMISSIONS-CHANNEL BLEND map (sector_emissions_channel). The static v2 IMF-2024 GDP "
             "weights survive ONLY as the participation proxy and the back-compat block_membership."
         ),

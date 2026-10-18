@@ -2,7 +2,8 @@
 """Generate or verify a resolver-complete, hash-pinned dependency lock (`requirements.lock`).
 
     python scripts/gen_lock.py          # (re)compile the lock from pyproject + constraints.txt
-    python scripts/gen_lock.py --check  # exit non-zero if the committed lock is stale/uncommitted
+    python scripts/gen_lock.py --verify # DETERMINISTIC CI gate (no re-resolve; see below)
+    python scripts/gen_lock.py --check  # DEVELOPER: re-resolve & compare before a deliberate bump
 
 This produces a DETERMINISTIC lock, not an ambient environment snapshot (review P2 2026-09-05, which
 correctly flagged that ``pip freeze`` is neither hash-pinned nor resolver-complete). It shells out
@@ -13,11 +14,17 @@ A consumer then gets a byte-for-byte install with:
 
     pip install --require-hashes -r requirements.lock
 
-The lock is resolved ``--universal`` (platform markers, e.g. watchdog on non-Darwin). CI regenerates
-it on a clean runner, fails if the committed file drifts, and then proves a FRESH venv installs from
-the lock with ``--require-hashes`` followed by ``pip check`` — so "reproducible" is tested
-end-to-end, not asserted. Regenerate (drop ``--check``) whenever ``constraints.txt`` or the
-``pyproject`` dependency set changes, and commit the result.
+The lock is resolved ``--universal`` (platform markers, e.g. watchdog on non-Darwin).
+
+The committed lock is the FROZEN resolution (review-14 P2#5). CI gates on ``--verify``, a
+DETERMINISTIC check that the lock exists, is hash-pinned, and covers every DIRECT dependency
+declared in pyproject + extras — it does NOT re-resolve transitives against today's package index
+(that re-resolve, ``--check``, drifts on every run as new transitives publish, which forced a string
+of "transitive drift" commits). CI then APPLICATION-tests the exact lock: ``pip install
+--require-hashes`` + ``pip check``, install the project ``--no-deps``, and run the full suite +
+validation IN the locked venv. Regenerate DELIBERATELY with the bare command (and verify with
+``--check``) whenever ``constraints.txt`` or the ``pyproject`` dependency set changes; commit the
+result. Transitive-only refreshes are a deliberate maintenance choice, not an every-CI-run event.
 """
 
 from __future__ import annotations
@@ -105,14 +112,94 @@ def _resolve() -> str:
         out.unlink(missing_ok=True)
 
 
+_NAME_RE = __import__("re").compile(r"^\s*([A-Za-z0-9._-]+)")
+
+
+def _canon(name: str) -> str:
+    # PEP 503 canonical form: lowercase, runs of -/_/. collapsed to a single hyphen.
+    return __import__("re").sub(r"[-_.]+", "-", name.strip().lower())
+
+
+def _declared_top_level() -> set[str]:
+    """The project's DIRECT dependencies (base + the locked extras) from pyproject — the names whose
+    presence in the lock we verify deterministically. Transitives are NOT enumerated here."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # py<3.11
+        import tomli as tomllib
+
+    data = tomllib.loads((_ROOT / "pyproject.toml").read_text())
+    proj = data.get("project", {})
+    reqs: list[str] = list(proj.get("dependencies", []))
+    optional = proj.get("optional-dependencies", {})
+    for extra in _EXTRAS.split(","):
+        reqs += optional.get(extra, [])
+    names: set[str] = set()
+    for r in reqs:
+        # Strip any environment marker / extras / version spec; keep the distribution name.
+        head = r.split(";", 1)[0].split("[", 1)[0]
+        m = _NAME_RE.match(head)
+        if m:
+            names.add(_canon(m.group(1)))
+    return names
+
+
+def _locked_names() -> set[str]:
+    names: set[str] = set()
+    for ln in _LOCK.read_text().splitlines():
+        if ln.startswith("#") or not ln.strip() or ln.lstrip().startswith(("--", "    ")):
+            continue
+        m = _NAME_RE.match(ln)
+        if m and "==" in ln:
+            names.add(_canon(m.group(1)))
+    return names
+
+
+def _verify_frozen() -> int:
+    """DETERMINISTIC check (review-14 P2#5): the committed lock is the FROZEN resolution, so verify
+    it WITHOUT re-resolving against today's package index (which drifts every run as new transitives
+    publish — the six prior "transitive drift" commits). We assert the lock exists, is hash-pinned,
+    and covers every DIRECT dependency declared in pyproject + the locked extras; a missing one
+    means a real input change that needs a deliberate regenerate. The full installability proof is
+    CI's
+    `pip install --require-hashes` + `pip check` + running the suite IN the locked venv."""
+    if not _LOCK.exists():
+        print("requirements.lock is missing — run `python scripts/gen_lock.py` and commit it.")
+        return 1
+    text = _LOCK.read_text()
+    if "--hash=" not in text:
+        print("requirements.lock is not hash-pinned — regenerate with `scripts/gen_lock.py`.")
+        return 1
+    locked = _locked_names()
+    missing = sorted(_declared_top_level() - locked)
+    if missing:
+        print(
+            "requirements.lock is MISSING declared direct dependenc(ies) "
+            f"{missing} — a pyproject/extras input changed. Deliberately regenerate with "
+            "`python scripts/gen_lock.py` and commit."
+        )
+        return 1
+    print(f"requirements.lock is frozen & complete ({len(locked)} pinned, hash-enforced).")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--check",
         action="store_true",
-        help="verify the committed lock matches a fresh resolve (CI); non-zero on drift",
+        help="re-resolve and compare (DEVELOPER use before a deliberate bump); non-zero on drift",
+    )
+    ap.add_argument(
+        "--verify",
+        action="store_true",
+        help="DETERMINISTIC CI gate: lock exists, hash-pinned, covers declared direct deps (no "
+        "re-resolve against today's index)",
     )
     args = ap.parse_args()
+
+    if args.verify:
+        return _verify_frozen()
 
     fresh = _resolve()
     if not args.check:
@@ -120,17 +207,19 @@ def main() -> int:
         print(f"Wrote {_LOCK}.")
         return 0
 
-    # --check: compare the committed lock against a fresh resolve (both normalised).
+    # --check: compare the committed lock against a fresh resolve (both normalised). This
+    # RE-RESOLVES against the current index, so it drifts as new transitives publish — it is a
+    # DEVELOPER tool for a deliberate refresh, NOT the CI gate (see --verify, review-14 P2#5).
     if not _LOCK.exists():
         print("requirements.lock is missing — run `python scripts/gen_lock.py` and commit it.")
         return 1
     if _LOCK.read_text() != fresh:
         print(
-            "requirements.lock is OUT OF DATE vs a fresh resolve of pyproject + constraints.txt.\n"
-            "Regenerate with `python scripts/gen_lock.py` and commit the result."
+            "requirements.lock differs from a fresh resolve (newer transitives available).\n"
+            "If pyproject/constraints changed, regenerate with `python scripts/gen_lock.py`."
         )
         return 1
-    print("requirements.lock is up to date.")
+    print("requirements.lock matches a fresh resolve.")
     return 0
 
 

@@ -806,14 +806,77 @@ def test_wpp_parse_raises_when_no_15plus_present():
         _parse_records(records)
 
 
-def test_wpp_page_payload_accepts_object_and_bare_list():
-    """The documented response is {data, nextPage, …}; some deployments return a bare list for a
-    single page. Both are accepted; an object WITHOUT a 'data' key raises (contract changed)."""
-    from scripts.fetch_wpp_by_age import _page_payload
+def test_wpp_page_records_accepts_object_and_bare_list():
+    """review-14 P1#2: a page is an object {data, …} OR a bare array; both yield their records. An
+    object WITHOUT a 'data' key raises (contract changed) — it is NOT treated as empty."""
+    from scripts.fetch_wpp_by_age import _page_records
 
-    recs, nxt = _page_payload({"data": [{"x": 1}], "nextPage": "u2", "pages": 2})
-    assert recs == [{"x": 1}] and nxt == "u2"
-    recs, nxt = _page_payload([{"x": 1}])
-    assert recs == [{"x": 1}] and nxt is None
+    assert _page_records({"data": [{"x": 1}], "nextPage": "u2", "pages": 2}) == [{"x": 1}]
+    assert _page_records([{"x": 1}]) == [{"x": 1}]
+    assert _page_records({"data": None}) == []  # explicit empty page
     with pytest.raises(SystemExit, match="without a 'data' key"):
-        _page_payload({"total": 0, "pages": 0})
+        _page_records({"total": 0, "pages": 0})
+
+
+def test_wpp_fetch_pages_walks_pagenumber_until_short_page(monkeypatch):
+    """review-14 P1#2: the fetcher must NOT assume the first page is the whole dataset — it pages by
+    an explicit pageNumber until a page shorter than PAGE_SIZE. Three pages (100, 100, 37) → 237
+    records across all pages; a naive single-request fetch would see only the first 100."""
+    import scripts.fetch_wpp_by_age as mod
+
+    # Build three synthetic pages keyed by the pageNumber in the URL; full pages are PAGE_SIZE long.
+    full = mod.PAGE_SIZE
+    pages = {
+        1: [{"i": k} for k in range(full)],
+        2: [{"i": k} for k in range(full, 2 * full)],
+        3: [{"i": k} for k in range(2 * full, 2 * full + 37)],
+    }
+    calls: list[int] = []
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": self._body, "pages": 3}
+
+    def fake_get(url, headers=None, timeout=None):
+        import re
+
+        page = int(re.search(r"pageNumber=(\d+)", url).group(1))
+        calls.append(page)
+        return _Resp(pages.get(page, []))
+
+    # _fetch_pages does a local `import requests`; patch the module in sys.modules it resolves.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "requests", type("R", (), {"get": staticmethod(fake_get)}))
+    rows = mod._fetch_pages("tok")
+    assert len(rows) == 2 * full + 37  # ALL pages, not just the first
+    assert calls == [1, 2, 3]  # stopped after the short third page
+
+
+def test_wpp_validate_coverage_rejects_truncated_and_missing_years():
+    """review-14 P1#2: refuse to write a partial file. Too few countries (pagination truncated) or a
+    missing knot year must raise before the CSV is written."""
+    from scripts.fetch_wpp_by_age import _validate_coverage
+
+    # Full year set but far too few countries → truncation guard fires.
+    years = [2025, 2026, 2035, 2036, 2050, 2051]
+    few = [{"iso3": "USA", "year": y, "population": 1.0} for y in years]
+    with pytest.raises(SystemExit, match="truncated"):
+        _validate_coverage(few)
+
+    # Enough countries but a knot year missing → year guard fires.
+    many = [
+        {"iso3": f"C{n:03d}", "year": y, "population": 1.0}
+        for n in range(200)
+        for y in [2025, 2026, 2035, 2036, 2050]  # 2051 missing
+    ]
+    with pytest.raises(SystemExit, match="missing required knot year"):
+        _validate_coverage(many)
